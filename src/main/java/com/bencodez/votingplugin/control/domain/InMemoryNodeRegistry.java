@@ -25,10 +25,11 @@ import java.util.regex.Pattern;
 /** Thread-safe, deterministic current topology registry. State is intentionally in memory for this milestone. */
 public final class InMemoryNodeRegistry implements NodeRegistry {
     public static final Set<String> SUPPORTED_CAPABILITIES = Set.of("discovery.read", "presence.snapshot",
-            ConfigurationOperations.CAPABILITY);
+            ConfigurationOperations.CAPABILITY, ConfigurationOperations.FILE_CAPABILITY,
+            ConfigurationOperations.QUICK_SETUP_CAPABILITY);
     private static final Pattern ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final Pattern CAPABILITY = Pattern.compile("[a-z][a-z0-9.-]{0,63}");
-    private static final Set<String> PLATFORMS = Set.of("BUNGEECORD", "VELOCITY");
+    private static final Set<String> PLATFORMS = Set.of("BUNGEECORD", "VELOCITY", "BUKKIT");
     private static final int MAX_CAPABILITIES = 64;
     private static final int MAX_BACKENDS = 4096;
 
@@ -179,7 +180,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         requireText(registration.displayName(), "displayName", 100);
         requireText(registration.pluginVersion(), "pluginVersion", 40);
         if (registration.platform() == null || !PLATFORMS.contains(registration.platform())) {
-            throw invalid("platform must be BUNGEECORD or VELOCITY");
+            throw invalid("platform must be BUNGEECORD, VELOCITY, or BUKKIT");
         }
         validateProtocol(registration.protocolVersion());
         validateCapabilities(registration.capabilities(), registration.requiredCapabilities());

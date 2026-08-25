@@ -9,6 +9,8 @@ import java.nio.file.Path;
 import java.nio.file.LinkOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.StandardCopyOption;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.util.HexFormat;
@@ -17,11 +19,13 @@ import java.util.Map;
 import java.util.UUID;
 
 /** Local append-only, hash-chained operation metadata. Values and approval tokens are never recorded. */
-public final class ConfigurationAuditLog {
+public final class ConfigurationAuditLog implements AutoCloseable {
     private static final long MAX_BYTES = 5L * 1024 * 1024;
     private final Path file;
     private final Path previousFile;
     private final Path checkpointFile;
+    private final FileChannel lockChannel;
+    private final FileLock processLock;
     private final Clock clock;
     private final long maxBytes;
     private final ObjectMapper json = new ObjectMapper();
@@ -42,17 +46,31 @@ public final class ConfigurationAuditLog {
         this.checkpointFile = dataDirectory.resolve("configuration-audit.checkpoint");
         this.clock = clock;
         this.maxBytes = maxBytes;
-        SegmentState retained = validateOptional(previousFile, "Retained configuration audit log");
-        SegmentState active = validateOptional(file, "Configuration audit log");
-        retainedHash = retained.tailHash();
-        retainedRecords = retained.records();
-        previousHash = active.tailHash();
-        activeRecords = active.records();
-        boolean hasSegments = retained.present() || active.present();
-        if (hasSegments) {
-            validateCheckpoint();
-        } else if (Files.exists(checkpointFile, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IOException("Configuration audit checkpoint has no audit segments");
+        FileChannel acquiredChannel = FileChannel.open(dataDirectory.resolve("configuration-audit.lock"),
+                StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        FileLock acquiredLock = null;
+        try {
+            acquiredLock = acquiredChannel.tryLock();
+            if (acquiredLock == null) throw new IOException("Configuration audit is already in use");
+            this.lockChannel = acquiredChannel;
+            this.processLock = acquiredLock;
+            SegmentState retained = validateOptional(previousFile, "Retained configuration audit log");
+            SegmentState active = validateOptional(file, "Configuration audit log");
+            retainedHash = retained.tailHash();
+            retainedRecords = retained.records();
+            previousHash = active.tailHash();
+            activeRecords = active.records();
+            boolean hasSegments = retained.present() || active.present();
+            if (hasSegments) {
+                validateCheckpoint();
+            } else if (Files.exists(checkpointFile, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("Configuration audit checkpoint has no audit segments");
+            }
+        } catch (Exception e) {
+            if (acquiredLock != null) acquiredLock.close();
+            acquiredChannel.close();
+            if (e instanceof IOException io) throw io;
+            throw new IOException("Configuration audit is already in use", e);
         }
     }
 
@@ -181,6 +199,12 @@ public final class ConfigurationAuditLog {
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
+
+    @Override
+    public synchronized void close() throws IOException {
+        processLock.close();
+        lockChannel.close();
     }
 
     private record SegmentState(boolean present, String tailHash, long records) { }

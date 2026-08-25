@@ -8,6 +8,7 @@ import com.bencodez.votingplugin.control.protocol.ConfigurationTask;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
+import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
 import java.nio.file.Path;
 import java.nio.file.Files;
 import java.time.Clock;
@@ -57,8 +58,10 @@ class ConfigurationOperationsTest {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         ConfigurationAuditLog first = new ConfigurationAuditLog(directory, clock);
         first.append("TEST", UUID.randomUUID(), "proxy-a", "OK");
+        first.close();
         ConfigurationAuditLog reopened = new ConfigurationAuditLog(directory, clock);
         reopened.append("TEST", UUID.randomUUID(), null, "OK");
+        reopened.close();
         Path file = directory.resolve("configuration-audit.jsonl");
         Files.writeString(file, Files.readString(file).replaceFirst("TEST", "EDIT"));
         assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory, clock));
@@ -108,6 +111,7 @@ class ConfigurationOperationsTest {
         ConfigurationAuditLog first = new ConfigurationAuditLog(directory, clock, 1);
         first.append("TEST", UUID.randomUUID(), "proxy-a", "OK");
         first.append("TEST", UUID.randomUUID(), "proxy-b", "OK");
+        first.close();
         Files.writeString(retained, Files.readString(retained).replaceFirst("TEST", "EDIT"));
 
         assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory, clock));
@@ -119,10 +123,18 @@ class ConfigurationOperationsTest {
         ConfigurationAuditLog log = new ConfigurationAuditLog(directory, clock);
         log.append("FIRST", UUID.randomUUID(), "proxy-a", "OK");
         log.append("SECOND", UUID.randomUUID(), "proxy-a", "OK");
+        log.close();
         List<String> records = Files.readAllLines(active);
         Files.writeString(active, records.get(0) + System.lineSeparator());
 
         assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory, clock));
+    }
+
+    @Test void auditLogRejectsASecondProcessWriter() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        try (ConfigurationAuditLog first = new ConfigurationAuditLog(directory, clock)) {
+            assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory, clock));
+        }
     }
 
     @Test void operationLimitDoesNotConsumePreviewApproval() throws Exception {
@@ -145,6 +157,30 @@ class ConfigurationOperationsTest {
                 () -> operations.createApply(previewId, approval)).code());
         clock.advance(Duration.ofMinutes(16));
         assertEquals("APPLY", operations.createApply(previewId, approval).type());
+    }
+
+    @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY, ConfigurationOperations.QUICK_SETUP_CAPABILITY),
+                Set.of(ConfigurationOperations.FILE_CAPABILITY)));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+
+        ManagedConfiguration file = ManagedConfiguration.file("Config.yml", "Feature: true\n");
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-a"), file);
+        assertEquals(null, preview.configuration().content());
+        assertEquals("file", operations.claim("backend-a", session).configuration().domain());
+        ManagedConfiguration current = ManagedConfiguration.file("Config.yml", "Feature: false\n");
+        preview = operations.complete(preview.operationId(), "backend-a", new ConfigurationTaskResult(session, true,
+                "OK", "valid", "d".repeat(64), current, List.of("changed Feature"), false, false));
+        assertNotNull(preview.approvalToken());
+
+        assertEquals("NODE_UNAVAILABLE", assertThrows(ValidationException.class,
+                () -> operations.createPreview(List.of("backend-a"),
+                        ManagedConfiguration.proxy(new ProxyRoutingConfiguration(false, List.of())))).code());
     }
 
     private static final class MutableClock extends Clock {

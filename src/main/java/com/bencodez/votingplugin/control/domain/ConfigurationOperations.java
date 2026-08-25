@@ -4,6 +4,7 @@ import com.bencodez.votingplugin.control.protocol.ConfigurationTask;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import com.bencodez.votingplugin.control.protocol.NodeStatus;
 import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
+import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -21,8 +22,10 @@ import java.util.Set;
 import java.util.UUID;
 
 /** In-memory, bounded coordinator for outbound node configuration tasks. */
-public final class ConfigurationOperations {
+public final class ConfigurationOperations implements AutoCloseable {
     public static final String CAPABILITY = "config.proxy-routing.v1";
+    public static final String FILE_CAPABILITY = "config.files.v1";
+    public static final String QUICK_SETUP_CAPABILITY = "config.quick-setup.v1";
     private static final int MAX_OPERATIONS = 1000;
     private static final Duration LEASE = Duration.ofMinutes(2);
     private static final Duration ACTIVE_RETENTION = Duration.ofMinutes(15);
@@ -41,14 +44,23 @@ public final class ConfigurationOperations {
     }
 
     public synchronized OperationView createRead(List<String> nodeIds) {
-        return create("READ", validateTargets(nodeIds), null, null);
+        return createRead(nodeIds, ManagedConfiguration.proxy(new ProxyRoutingConfiguration(false, List.of())));
     }
 
     public synchronized OperationView createPreview(List<String> nodeIds, ProxyRoutingConfiguration configuration) {
+        return createPreview(nodeIds, configuration == null ? null : ManagedConfiguration.proxy(configuration));
+    }
+
+    public synchronized OperationView createRead(List<String> nodeIds, ManagedConfiguration selector) {
+        if (selector == null) selector = ManagedConfiguration.proxy(new ProxyRoutingConfiguration(false, List.of()));
+        return create("READ", validateTargets(nodeIds, selector.capability()), selector, null);
+    }
+
+    public synchronized OperationView createPreview(List<String> nodeIds, ManagedConfiguration configuration) {
         if (configuration == null) throw invalid("configuration is required");
         byte[] token = new byte[32];
         random.nextBytes(token);
-        return create("PREVIEW", validateTargets(nodeIds), configuration,
+        return create("PREVIEW", validateTargets(nodeIds, configuration.capability()), configuration,
                 Base64.getUrlEncoder().withoutPadding().encodeToString(token));
     }
 
@@ -135,7 +147,7 @@ public final class ConfigurationOperations {
         return view(operation);
     }
 
-    private OperationView create(String type, List<String> targets, ProxyRoutingConfiguration config, String token) {
+    private OperationView create(String type, List<String> targets, ManagedConfiguration config, String token) {
         StoredOperation operation = store(type, targets, config, token, Map.of());
         try {
             audit.append("OPERATION_CREATED", operation.id, null, type);
@@ -146,7 +158,7 @@ public final class ConfigurationOperations {
         return view(operation);
     }
 
-    private StoredOperation store(String type, List<String> targets, ProxyRoutingConfiguration config,
+    private StoredOperation store(String type, List<String> targets, ManagedConfiguration config,
                                   String token, Map<String, String> revisions) {
         prune();
         if (operations.size() >= MAX_OPERATIONS) throw new ValidationException("OPERATION_LIMIT",
@@ -160,14 +172,14 @@ public final class ConfigurationOperations {
         return result;
     }
 
-    private List<String> validateTargets(List<String> nodeIds) {
+    private List<String> validateTargets(List<String> nodeIds, String capability) {
         if (nodeIds == null || nodeIds.isEmpty() || nodeIds.size() > 100) throw invalid("nodeIds must contain 1 to 100 entries");
         Set<String> unique = new HashSet<>();
         List<String> result = new ArrayList<>();
         for (String nodeId : nodeIds) {
             if (nodeId == null || !unique.add(nodeId)) throw invalid("nodeIds must be unique");
             NodeStatus node = registry.find(nodeId);
-            if (node == null || !node.online() || !node.acceptedCapabilities().contains(CAPABILITY)) {
+            if (node == null || !node.online() || !node.acceptedCapabilities().contains(capability)) {
                 throw new ValidationException("NODE_UNAVAILABLE", "Node cannot accept configuration operations", List.of(nodeId));
             }
             result.add(nodeId);
@@ -181,7 +193,8 @@ public final class ConfigurationOperations {
         String approval = "PREVIEW".equals(operation.type) && operation.complete()
                 && operation.results.values().stream().allMatch(ConfigurationTaskResult::success)
                 && !operation.approvalUsed ? operation.approvalToken : null;
-        return new OperationView(operation.id, operation.type, state, operation.createdAt, operation.configuration,
+        return new OperationView(operation.id, operation.type, state, operation.createdAt,
+                operation.configuration == null ? null : operation.configuration.publicView(),
                 Map.copyOf(operation.states), Map.copyOf(operation.results), approval);
     }
 
@@ -217,14 +230,19 @@ public final class ConfigurationOperations {
         }
     }
 
+    @Override
+    public void close() throws java.io.IOException {
+        audit.close();
+    }
+
     public record OperationView(UUID operationId, String type, String state, Instant createdAt,
-                                ProxyRoutingConfiguration configuration, Map<String, String> nodeStates,
+                                ManagedConfiguration configuration, Map<String, String> nodeStates,
                                 Map<String, ConfigurationTaskResult> results, String approvalToken) { }
 
     private static final class StoredOperation {
         private final UUID id;
         private final String type;
-        private final ProxyRoutingConfiguration configuration;
+        private final ManagedConfiguration configuration;
         private final String approvalToken;
         private final Instant createdAt;
         private final LinkedHashMap<String, String> states;
@@ -233,7 +251,7 @@ public final class ConfigurationOperations {
         private final LinkedHashMap<String, String> expectedRevisions;
         private boolean approvalUsed;
 
-        private StoredOperation(UUID id, String type, ProxyRoutingConfiguration configuration, String approvalToken,
+        private StoredOperation(UUID id, String type, ManagedConfiguration configuration, String approvalToken,
                                 Instant createdAt, LinkedHashMap<String, String> states,
                                 LinkedHashMap<String, ConfigurationTaskResult> results,
                                 LinkedHashMap<String, Instant> leasedAt,

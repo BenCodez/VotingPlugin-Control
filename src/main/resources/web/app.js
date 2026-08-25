@@ -16,12 +16,29 @@ const readConfiguration = document.querySelector('#read-configuration');
 const previewConfiguration = document.querySelector('#preview-configuration');
 const applyConfiguration = document.querySelector('#apply-configuration');
 const operationStatus = document.querySelector('#operation-status');
+const configurationFile = document.querySelector('#configuration-file');
+const configurationContent = document.querySelector('#configuration-content');
+const readFileConfiguration = document.querySelector('#read-file-configuration');
+const previewFileConfiguration = document.querySelector('#preview-file-configuration');
+const applyFileConfiguration = document.querySelector('#apply-file-configuration');
+const fileOperationStatus = document.querySelector('#file-operation-status');
+const quickPreset = document.querySelector('#quick-preset');
+const quickName = document.querySelector('#quick-name');
+const quickService = document.querySelector('#quick-service');
+const quickUrl = document.querySelector('#quick-url');
+const quickDelay = document.querySelector('#quick-delay');
+const previewQuickSetup = document.querySelector('#preview-quick-setup');
+const applyQuickSetup = document.querySelector('#apply-quick-setup');
+const quickOperationStatus = document.querySelector('#quick-operation-status');
 const PAGE_SIZE = 100;
 let authenticated = false;
 let csrfToken = '';
 let pageOffset = 0;
 let selectedNodes = new Set();
 let approvedPreview = null;
+let approvedFilePreview = null;
+let approvedQuickPreview = null;
+let nodeCapabilities = new Map();
 let inputGeneration = 0;
 
 function text(element, value) {
@@ -60,17 +77,21 @@ function nodeCard(node) {
   selector.className = 'node-select';
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
-  checkbox.disabled = !node.online || !node.acceptedCapabilities.includes('config.proxy-routing.v1');
+  const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.quick-setup.v1']
+    .some(capability => node.acceptedCapabilities.includes(capability));
+  checkbox.disabled = !node.online || !controllable;
   checkbox.checked = selectedNodes.has(node.nodeId) && !checkbox.disabled;
   checkbox.addEventListener('change', () => {
     if (checkbox.checked) selectedNodes.add(node.nodeId); else selectedNodes.delete(node.nodeId);
     approvedPreview = null;
+    approvedFilePreview = null;
+    approvedQuickPreview = null;
     inputGeneration++;
     updateConfigurationButtons();
   });
   selector.append(checkbox, title);
   const meta = text(document.createElement('p'),
-    `${node.platform} · VotingPlugin ${node.pluginVersion} · ${node.online ? 'online' : 'offline'}`);
+    `${node.platform} · VotingPlugin ${node.pluginVersion} · ${node.online ? 'online' : 'offline'} · ${node.acceptedCapabilities.filter(value => value.startsWith('config.')).join(', ') || 'discovery only'}`);
   const list = document.createElement('ul');
   const backends = Array.isArray(node.backends) ? node.backends : [];
   if (backends.length === 0) {
@@ -83,10 +104,29 @@ function nodeCard(node) {
 }
 
 function updateConfigurationButtons(busy = false) {
-  const ready = authenticated && selectedNodes.size > 0 && !busy;
-  readConfiguration.disabled = !ready;
-  previewConfiguration.disabled = !ready;
-  applyConfiguration.disabled = !ready || !approvedPreview;
+  const routingReady = authenticated && targets('config.proxy-routing.v1').length > 0 && !busy;
+  const fileReady = authenticated && targets('config.files.v1').length > 0 && !busy;
+  const quickReady = authenticated && targets('config.quick-setup.v1').length > 0 && !busy;
+  readConfiguration.disabled = !routingReady;
+  previewConfiguration.disabled = !routingReady;
+  applyConfiguration.disabled = !routingReady || !approvedPreview;
+  readFileConfiguration.disabled = !fileReady;
+  previewFileConfiguration.disabled = !fileReady || !configurationContent.value;
+  applyFileConfiguration.disabled = !fileReady || !approvedFilePreview;
+  previewQuickSetup.disabled = !quickReady;
+  applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
+}
+
+function targets(capability) {
+  return [...selectedNodes].filter(node => nodeCapabilities.get(node)?.includes(capability));
+}
+
+function clearApprovals() {
+  approvedPreview = null;
+  approvedFilePreview = null;
+  approvedQuickPreview = null;
+  inputGeneration++;
+  updateConfigurationButtons();
 }
 
 async function authorized(path, options = {}) {
@@ -120,22 +160,22 @@ function operationSummary(operation) {
   return lines.join('\n');
 }
 
-async function waitForOperation(operation) {
-  text(operationStatus, operationSummary(operation));
+async function waitForOperation(operation, statusElement = operationStatus) {
+  text(statusElement, operationSummary(operation));
   while (operation.state === 'RUNNING') {
     await new Promise(resolve => window.setTimeout(resolve, 1500));
     operation = await authorized(`/api/v1/operations/${operation.operationId}`);
-    text(operationStatus, operationSummary(operation));
+    text(statusElement, operationSummary(operation));
   }
   return operation;
 }
 
-async function startConfigurationOperation(path, body) {
+async function startConfigurationOperation(path, body, statusElement = operationStatus) {
   updateConfigurationButtons(true);
   try {
     return await waitForOperation(await authorized(path, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
-    }));
+    }), statusElement);
   } finally {
     updateConfigurationButtons(false);
   }
@@ -156,11 +196,14 @@ async function loadNodes() {
     } else {
       body.items.forEach(node => nodes.append(nodeCard(node)));
     }
-    const visibleIds = new Set(body.items.filter(node => node.online && node.acceptedCapabilities.includes('config.proxy-routing.v1'))
+    nodeCapabilities = new Map(body.items.map(node => [node.nodeId, node.acceptedCapabilities]));
+    const visibleIds = new Set(body.items.filter(node => node.online && node.acceptedCapabilities.some(value => value.startsWith('config.')))
       .map(node => node.nodeId));
     const filteredSelection = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
     if (filteredSelection.size !== selectedNodes.size) {
       approvedPreview = null;
+      approvedFilePreview = null;
+      approvedQuickPreview = null;
       inputGeneration++;
       text(operationStatus, 'The selected proxies changed during refresh. Preview again before apply.');
     }
@@ -196,6 +239,8 @@ form.addEventListener('submit', async event => {
     authenticated = true;
     csrfToken = body.csrfToken;
     approvedPreview = null;
+    approvedFilePreview = null;
+    approvedQuickPreview = null;
     selectedNodes.clear();
     inputGeneration++;
     logout.hidden = false;
@@ -211,9 +256,12 @@ logout.addEventListener('click', async () => {
   authenticated = false;
   csrfToken = '';
   approvedPreview = null;
+  approvedFilePreview = null;
+  approvedQuickPreview = null;
   inputGeneration++;
   logout.hidden = true;
   selectedNodes.clear();
+  nodeCapabilities.clear();
   nodes.replaceChildren();
   nodes.classList.add('empty');
   text(nodes, 'Authenticate to view the network.');
@@ -236,7 +284,7 @@ async function restoreSession() {
 readConfiguration.addEventListener('click', async () => {
   approvedPreview = null;
   try {
-    const operation = await startConfigurationOperation('/api/v1/configuration/read', {nodeIds: [...selectedNodes]});
+    const operation = await startConfigurationOperation('/api/v1/configuration/read', {nodeIds: targets('config.proxy-routing.v1')});
     const successful = Object.values(operation.results).filter(result => result.success);
     if (successful.length) {
       const first = successful[0].configuration;
@@ -251,7 +299,7 @@ previewConfiguration.addEventListener('click', async () => {
   const previewGeneration = inputGeneration;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
-      nodeIds: [...selectedNodes], configuration: proposal()
+      nodeIds: targets('config.proxy-routing.v1'), configuration: proposal()
     });
     if (operation.state === 'SUCCEEDED' && operation.approvalToken
         && previewGeneration === inputGeneration) {
@@ -280,6 +328,97 @@ applyConfiguration.addEventListener('click', async () => {
   inputGeneration++;
   updateConfigurationButtons();
 }));
+
+readFileConfiguration.addEventListener('click', async () => {
+  approvedFilePreview = null;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/read', {
+      nodeIds: targets('config.files.v1'),
+      configuration: {domain: 'file', fileName: configurationFile.value}
+    }, fileOperationStatus);
+    const successful = Object.values(operation.results).filter(result => result.success);
+    if (successful.length) {
+      configurationContent.value = successful[0].configuration.content;
+      text(fileOperationStatus, operationSummary(operation));
+      inputGeneration++;
+      updateConfigurationButtons();
+    }
+  } catch (error) { text(fileOperationStatus, error.message); }
+});
+
+previewFileConfiguration.addEventListener('click', async () => {
+  approvedFilePreview = null;
+  const previewGeneration = inputGeneration;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
+      nodeIds: targets('config.files.v1'),
+      configuration: {domain: 'file', fileName: configurationFile.value, content: configurationContent.value}
+    }, fileOperationStatus);
+    text(fileOperationStatus, operationSummary(operation));
+    if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration) {
+      approvedFilePreview = {operationId: operation.operationId, approvalToken: operation.approvalToken};
+      updateConfigurationButtons();
+    } else if (previewGeneration !== inputGeneration) {
+      text(fileOperationStatus, 'The targets or file changed while previewing. Preview again before apply.');
+    }
+  } catch (error) { text(fileOperationStatus, error.message); }
+});
+
+applyFileConfiguration.addEventListener('click', async () => {
+  if (!approvedFilePreview || !window.confirm(`Apply this exact ${configurationFile.value} preview to every selected Bukkit node?`)) return;
+  const approval = approvedFilePreview;
+  approvedFilePreview = null;
+  inputGeneration++;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
+      previewOperationId: approval.operationId, approvalToken: approval.approvalToken
+    }, fileOperationStatus);
+    text(fileOperationStatus, operationSummary(operation));
+  } catch (error) { text(fileOperationStatus, error.message); }
+});
+
+function quickOptions() {
+  if (quickPreset.value === 'standalone') return {};
+  if (quickPreset.value === 'proxy-backend') return {server: quickName.value.trim(), method: 'PLUGINMESSAGING'};
+  return {
+    name: quickName.value.trim(), displayName: quickName.value.trim(), serviceSite: quickService.value.trim(),
+    voteUrl: quickUrl.value.trim(), voteDelay: quickDelay.value.trim(), priority: '5', material: 'DIAMOND'
+  };
+}
+
+previewQuickSetup.addEventListener('click', async () => {
+  approvedQuickPreview = null;
+  const previewGeneration = inputGeneration;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
+      nodeIds: targets('config.quick-setup.v1'),
+      configuration: {domain: 'quick-setup', preset: quickPreset.value, options: quickOptions()}
+    }, quickOperationStatus);
+    text(quickOperationStatus, operationSummary(operation));
+    if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration) {
+      approvedQuickPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken};
+      updateConfigurationButtons();
+    } else if (previewGeneration !== inputGeneration) {
+      text(quickOperationStatus, 'The targets or setup changed while previewing. Preview again before apply.');
+    }
+  } catch (error) { text(quickOperationStatus, error.message); }
+});
+
+applyQuickSetup.addEventListener('click', async () => {
+  if (!approvedQuickPreview || !window.confirm('Apply this exact quick setup to every selected Bukkit node?')) return;
+  const approval = approvedQuickPreview;
+  approvedQuickPreview = null;
+  inputGeneration++;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
+      previewOperationId: approval.operationId, approvalToken: approval.approvalToken
+    }, quickOperationStatus);
+    text(quickOperationStatus, operationSummary(operation));
+  } catch (error) { text(quickOperationStatus, error.message); }
+});
+
+[configurationFile, configurationContent, quickPreset, quickName, quickService, quickUrl, quickDelay]
+  .forEach(field => field.addEventListener('input', clearApprovals));
 refresh.addEventListener('click', loadNodes);
 previousPage.addEventListener('click', () => {
   pageOffset = Math.max(0, pageOffset - PAGE_SIZE);

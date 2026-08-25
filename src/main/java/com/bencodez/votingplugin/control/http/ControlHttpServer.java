@@ -10,6 +10,7 @@ import com.bencodez.votingplugin.control.protocol.ConfigurationTask;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import com.bencodez.votingplugin.control.protocol.ControlIdentity;
 import com.bencodez.votingplugin.control.protocol.Heartbeat;
+import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.bencodez.votingplugin.control.protocol.NodeStatus;
 import com.bencodez.votingplugin.control.protocol.PresenceSnapshot;
@@ -46,10 +47,11 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Semaphore;
 
 /** Bounded HTTP adapter. Node writes are enrolled; node listings require the local admin credential. */
 public final class ControlHttpServer implements AutoCloseable {
-    public static final int MAX_REQUEST_BYTES = 64 * 1024;
+    public static final int MAX_REQUEST_BYTES = 768 * 1024;
     private static final String HEALTH = "/api/v1/health";
     private static final String NODES = "/api/v1/nodes";
     private static final String REGISTER = "/api/v1/nodes/register";
@@ -76,6 +78,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private final AuthFailureLimiter authLimiter;
     private final WebSessionStore webSessions;
     private final boolean secureCookies;
+    private final Semaphore passwordVerifications = new Semaphore(2, true);
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials) throws IOException {
@@ -115,7 +118,8 @@ public final class ControlHttpServer implements AutoCloseable {
         json.enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
         json.getFactory().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION.mappedFeature());
         json.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
-                .maxNestingDepth(20).maxStringLength(4096).maxNumberLength(64).build());
+                .maxNestingDepth(20).maxStringLength(ManagedConfiguration.MAX_CONTENT + 4096)
+                .maxNumberLength(64).build());
         authLimiter = new AuthFailureLimiter(nanoTime, MAX_AUTH_FAILURES_PER_MINUTE, TimeUnit.MINUTES.toNanos(1));
         webSessions = new WebSessionStore(clock);
         server = HttpServer.create(address, 32);
@@ -146,6 +150,11 @@ public final class ControlHttpServer implements AutoCloseable {
             executor.awaitTermination(2, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+        try {
+            configurationOperations.close();
+        } catch (IOException ignored) {
+            // The server is already stopped; startup validation will detect any later audit problem.
         }
     }
 
@@ -201,7 +210,16 @@ public final class ControlHttpServer implements AutoCloseable {
         if (AUTH_LOGIN.equals(path)) {
             requireMethod(exchange, "POST");
             PasswordRequest request = read(exchange, PasswordRequest.class);
-            String credentialRevision = request == null ? null : credentials.authenticateWebPassword(request.password());
+            requireRequest(request);
+            if (!passwordVerifications.tryAcquire()) {
+                throw new AuthenticationException(true);
+            }
+            String credentialRevision;
+            try {
+                credentialRevision = credentials.authenticateWebPassword(request.password());
+            } finally {
+                passwordVerifications.release();
+            }
             if (credentialRevision == null) {
                 authenticationFailed();
             }
@@ -257,13 +275,15 @@ public final class ControlHttpServer implements AutoCloseable {
             requireMethod(exchange, "POST");
             authenticateAdmin(exchange, true);
             ConfigurationRequests.Read request = read(exchange, ConfigurationRequests.Read.class);
-            send(exchange, 202, configurationOperations.createRead(request.nodeIds()));
+            requireRequest(request);
+            send(exchange, 202, configurationOperations.createRead(request.nodeIds(), request.configuration()));
             return;
         }
         if ((CONFIGURATION + "/preview").equals(path)) {
             requireMethod(exchange, "POST");
             authenticateAdmin(exchange, true);
             ConfigurationRequests.Preview request = read(exchange, ConfigurationRequests.Preview.class);
+            requireRequest(request);
             send(exchange, 202, configurationOperations.createPreview(request.nodeIds(), request.configuration()));
             return;
         }
@@ -271,6 +291,7 @@ public final class ControlHttpServer implements AutoCloseable {
             requireMethod(exchange, "POST");
             authenticateAdmin(exchange, true);
             ConfigurationRequests.Apply request = read(exchange, ConfigurationRequests.Apply.class);
+            requireRequest(request);
             send(exchange, 202, configurationOperations.createApply(request.previewOperationId(), request.approvalToken()));
             return;
         }
@@ -305,6 +326,7 @@ public final class ControlHttpServer implements AutoCloseable {
                     requireMethod(exchange, "POST");
                     authenticateNode(exchange, nodeId);
                     ConfigurationRequests.Claim claim = read(exchange, ConfigurationRequests.Claim.class);
+                    requireRequest(claim);
                     ConfigurationTask task = configurationOperations.claim(nodeId, claim.sessionId());
                     if (task == null) {
                         noContent(exchange);
@@ -367,6 +389,13 @@ public final class ControlHttpServer implements AutoCloseable {
                 .onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(bytes)).toString();
         return json.readValue(text, type);
+    }
+
+    private static void requireRequest(Object request) {
+        if (request == null) {
+            throw new ValidationException("VALIDATION_ERROR", "Request validation failed",
+                    List.of("request body must be a JSON object"));
+        }
     }
 
     private void authenticateNode(HttpExchange exchange, String nodeId) {

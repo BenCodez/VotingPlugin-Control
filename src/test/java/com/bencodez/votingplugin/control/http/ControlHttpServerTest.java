@@ -196,6 +196,12 @@ class ControlHttpServerTest {
         assertError(send("POST", "/api/v1/nodes/register", "{", nodeToken), 400, "MALFORMED_JSON");
         assertError(send("POST", "/api/v1/nodes/register", "", nodeToken), 400, "MALFORMED_JSON");
         assertError(send("POST", "/api/v1/nodes/register", "null", nodeToken), 400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/auth/login", "null", null), 400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/configuration/read", "null", adminToken), 400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/configuration/preview", "null", adminToken), 400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/configuration/apply", "null", adminToken), 400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/nodes/proxy-a/operations", "null", nodeToken), 400,
+                "VALIDATION_ERROR");
         String duplicate = registration().replaceFirst("\\{", "{\"nodeId\":\"proxy-a\",");
         assertError(send("POST", "/api/v1/nodes/register", duplicate, nodeToken), 400, "MALFORMED_JSON");
         String nested = "[".repeat(25) + "0" + "]".repeat(25);
