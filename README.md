@@ -135,7 +135,9 @@ Control records its own observation time; it does not trust remote wall-clock ti
 Configuration is split into independently negotiated capabilities. `config.proxy-routing.v1` exposes typed proxy routing.
 `config.files.v1` manages `Config.yml`, `VoteSites.yml`, `SpecialRewards.yml`, `GUI.yml`, `Shop.yml`, and
 `BungeeSettings.yml` on enrolled Bukkit nodes through a bounded YAML editor. `config.quick-setup.v1` supplies standalone,
-proxy-backend, and vote-site presets. Password, secret, token, API-key, authorization, and webhook-secret values are masked
+proxy-backend, vote-site, easy-reward, common-settings, and vote-party presets. Bukkit registration also reports a bounded
+set of installed plugin names so the WebUI can offer editable Minecraft, Essentials, CMI, and LuckPerms command suggestions;
+these are suggestions, not executed commands, and follow the normal preview/approval path. Password, secret, token, API-key, authorization, and webhook-secret values are masked
 on every read; leaving the redaction marker in a proposal preserves the current value. A newly entered secret is accepted
 only in the authenticated proposal and is not returned in results or written to the audit log.
 
@@ -148,7 +150,8 @@ when applying through the full editor.
 `configuration-audit.jsonl` records bounded, append-only, hash-chained operation metadata and rotates once at 5 MiB. A
 cross-process lifetime lock prevents two Control processes from forking the same audit chain. Both
 the active and retained segment are verified against a durable atomic tail/count checkpoint before startup accepts new
-operations, so record-boundary truncation also fails closed. It does not contain configuration
+operations, so record-boundary truncation also fails closed. A durable pending-append record makes audit and checkpoint
+publication recoverable when the process stops between their writes. It does not contain configuration
 values, credentials, or approval tokens. Operation queues are bounded; abandoned operations expire after 15 minutes and
 completed operations after 24 hours. Active operations are intentionally lost on Control restart and must be previewed
 again.

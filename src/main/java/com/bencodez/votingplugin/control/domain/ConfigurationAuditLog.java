@@ -24,6 +24,7 @@ public final class ConfigurationAuditLog implements AutoCloseable {
     private final Path file;
     private final Path previousFile;
     private final Path checkpointFile;
+    private final Path pendingFile;
     private final FileChannel lockChannel;
     private final FileLock processLock;
     private final Clock clock;
@@ -44,6 +45,7 @@ public final class ConfigurationAuditLog implements AutoCloseable {
         this.file = dataDirectory.resolve("configuration-audit.jsonl");
         this.previousFile = dataDirectory.resolve("configuration-audit.jsonl.1");
         this.checkpointFile = dataDirectory.resolve("configuration-audit.checkpoint");
+        this.pendingFile = dataDirectory.resolve("configuration-audit.pending");
         this.clock = clock;
         this.maxBytes = maxBytes;
         FileChannel acquiredChannel = FileChannel.open(dataDirectory.resolve("configuration-audit.lock"),
@@ -54,6 +56,7 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             if (acquiredLock == null) throw new IOException("Configuration audit is already in use");
             this.lockChannel = acquiredChannel;
             this.processLock = acquiredLock;
+            recoverPending();
             SegmentState retained = validateOptional(previousFile, "Retained configuration audit log");
             SegmentState active = validateOptional(file, "Configuration audit log");
             retainedHash = retained.tailHash();
@@ -76,35 +79,110 @@ public final class ConfigurationAuditLog implements AutoCloseable {
 
     public synchronized void append(String action, UUID operationId, String nodeId, String outcome) {
         try {
-            rotateIfNeeded();
+            boolean rotate = Files.exists(file) && Files.size(file) >= maxBytes;
+            String recordPrevious = rotate ? "GENESIS" : previousHash;
             Map<String, Object> core = new LinkedHashMap<>();
             core.put("time", clock.instant().toString());
             core.put("action", action);
             core.put("operationId", operationId == null ? null : operationId.toString());
             core.put("nodeId", nodeId);
             core.put("outcome", outcome);
-            core.put("previousHash", previousHash);
+            core.put("previousHash", recordPrevious);
             byte[] canonical = json.writeValueAsBytes(core);
             String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical));
             core.put("hash", hash);
-            Files.writeString(file, json.writeValueAsString(core) + System.lineSeparator(), StandardCharsets.UTF_8,
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND, StandardOpenOption.WRITE);
-            previousHash = hash;
-            activeRecords++;
-            writeCheckpoint();
+            String line = json.writeValueAsString(core) + System.lineSeparator();
+            PendingAppend pending = new PendingAppend(line, rotate, previousHash, activeRecords, retainedHash,
+                    retainedRecords, hash, rotate ? 1 : activeRecords + 1,
+                    rotate ? previousHash : retainedHash, rotate ? activeRecords : retainedRecords);
+            writePending(pending);
+            completePending(pending);
         } catch (Exception e) {
             throw new AuditException(e);
         }
     }
 
-    private void rotateIfNeeded() throws IOException {
-        if (Files.exists(file) && Files.size(file) >= maxBytes) {
-            Files.move(file, previousFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            retainedHash = previousHash;
-            retainedRecords = activeRecords;
-            previousHash = "GENESIS";
-            activeRecords = 0;
+    private void recoverPending() throws IOException {
+        if (!Files.exists(pendingFile, LinkOption.NOFOLLOW_LINKS)) return;
+        if (!Files.isRegularFile(pendingFile, LinkOption.NOFOLLOW_LINKS) || Files.size(pendingFile) > 16384) {
+            throw new IOException("Configuration audit pending transaction is invalid");
         }
+        try {
+            JsonNode stored = json.readTree(Files.readAllBytes(pendingFile));
+            if (stored == null || !stored.isObject() || stored.size() != 10
+                    || !stored.path("rotate").isBoolean()
+                    || !integral(stored, "preActiveRecords") || !integral(stored, "preRetainedRecords")
+                    || !integral(stored, "postActiveRecords") || !integral(stored, "postRetainedRecords")) {
+                throw new IOException("Configuration audit pending transaction is invalid");
+            }
+            completePending(new PendingAppend(stored.path("line").asText(), stored.path("rotate").asBoolean(),
+                    stored.path("preActiveHash").asText(), stored.path("preActiveRecords").asLong(),
+                    stored.path("preRetainedHash").asText(), stored.path("preRetainedRecords").asLong(),
+                    stored.path("postActiveHash").asText(), stored.path("postActiveRecords").asLong(),
+                    stored.path("postRetainedHash").asText(), stored.path("postRetainedRecords").asLong()));
+        } catch (IOException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new IOException("Configuration audit pending transaction is invalid", e);
+        }
+    }
+
+    private void completePending(PendingAppend pending) throws IOException {
+        SegmentState retained = validateOptional(previousFile, "Retained configuration audit log");
+        SegmentState active = validateOptional(file, "Configuration audit log");
+        if (matches(active, pending.postActiveHash(), pending.postActiveRecords())
+                && matches(retained, pending.postRetainedHash(), pending.postRetainedRecords())) {
+            // The record is durable; only checkpoint publication or cleanup was interrupted.
+        } else if (!pending.rotate() && matches(active, pending.preActiveHash(), pending.preActiveRecords())
+                && matches(retained, pending.preRetainedHash(), pending.preRetainedRecords())) {
+            appendDurably(pending.line());
+        } else if (pending.rotate() && matches(active, pending.preActiveHash(), pending.preActiveRecords())
+                && matches(retained, pending.preRetainedHash(), pending.preRetainedRecords())) {
+            moveReplacing(file, previousFile);
+            appendDurably(pending.line());
+        } else if (pending.rotate() && !active.present()
+                && matches(retained, pending.postRetainedHash(), pending.postRetainedRecords())) {
+            appendDurably(pending.line());
+        } else {
+            throw new IOException("Configuration audit pending transaction does not match the audit chain");
+        }
+        retainedHash = pending.postRetainedHash();
+        retainedRecords = pending.postRetainedRecords();
+        previousHash = pending.postActiveHash();
+        activeRecords = pending.postActiveRecords();
+        writeCheckpoint();
+        Files.delete(pendingFile);
+    }
+
+    private static boolean matches(SegmentState state, String hash, long records) {
+        return state.tailHash().equals(hash) && state.records() == records
+                && (records > 0 ? state.present() : !state.present() || "GENESIS".equals(hash));
+    }
+
+    private void appendDurably(String line) throws IOException {
+        Files.writeString(file, line, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
+                StandardOpenOption.APPEND, StandardOpenOption.WRITE);
+        try (FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE)) { channel.force(true); }
+    }
+
+    private void writePending(PendingAppend pending) throws IOException {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("line", pending.line());
+        value.put("rotate", pending.rotate());
+        value.put("preActiveHash", pending.preActiveHash());
+        value.put("preActiveRecords", pending.preActiveRecords());
+        value.put("preRetainedHash", pending.preRetainedHash());
+        value.put("preRetainedRecords", pending.preRetainedRecords());
+        value.put("postActiveHash", pending.postActiveHash());
+        value.put("postActiveRecords", pending.postActiveRecords());
+        value.put("postRetainedHash", pending.postRetainedHash());
+        value.put("postRetainedRecords", pending.postRetainedRecords());
+        writeAtomically(pendingFile, json.writeValueAsBytes(value));
+    }
+
+    private static boolean integral(JsonNode object, String name) {
+        return object.path(name).isIntegralNumber() && object.path(name).canConvertToLong()
+                && object.path(name).asLong() >= 0;
     }
 
     private SegmentState validateOptional(Path selected, String label) throws IOException {
@@ -183,21 +261,33 @@ public final class ConfigurationAuditLog implements AutoCloseable {
         checkpoint.put("activeRecords", activeRecords);
         checkpoint.put("retainedHash", retainedHash);
         checkpoint.put("retainedRecords", retainedRecords);
-        Path temporary = Files.createTempFile(checkpointFile.getParent(), "configuration-audit-", ".checkpoint");
+        writeAtomically(checkpointFile, json.writeValueAsBytes(checkpoint));
+    }
+
+    private static void writeAtomically(Path target, byte[] bytes) throws IOException {
+        Path temporary = Files.createTempFile(target.getParent(), "configuration-audit-", ".temporary");
         try {
-            Files.write(temporary, json.writeValueAsBytes(checkpoint), StandardOpenOption.TRUNCATE_EXISTING);
+            Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING);
             try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(temporary,
                     StandardOpenOption.WRITE)) {
                 channel.force(true);
             }
             try {
-                Files.move(temporary, checkpointFile, StandardCopyOption.ATOMIC_MOVE,
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE,
                         StandardCopyOption.REPLACE_EXISTING);
             } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                Files.move(temporary, checkpointFile, StandardCopyOption.REPLACE_EXISTING);
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
             }
         } finally {
             Files.deleteIfExists(temporary);
+        }
+    }
+
+    private static void moveReplacing(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -208,6 +298,9 @@ public final class ConfigurationAuditLog implements AutoCloseable {
     }
 
     private record SegmentState(boolean present, String tailHash, long records) { }
+    private record PendingAppend(String line, boolean rotate, String preActiveHash, long preActiveRecords,
+                                 String preRetainedHash, long preRetainedRecords, String postActiveHash,
+                                 long postActiveRecords, String postRetainedHash, long postRetainedRecords) { }
 
     @SuppressWarnings("serial")
     public static final class AuditException extends RuntimeException {

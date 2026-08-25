@@ -31,6 +31,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
     private static final Pattern CAPABILITY = Pattern.compile("[a-z][a-z0-9.-]{0,63}");
     private static final Set<String> PLATFORMS = Set.of("BUNGEECORD", "VELOCITY", "BUKKIT");
     private static final int MAX_CAPABILITIES = 64;
+    private static final int MAX_DETECTED_PLUGINS = 128;
     private static final int MAX_BACKENDS = 4096;
 
     private final Map<String, StoredNode> nodes = new ConcurrentHashMap<>();
@@ -60,7 +61,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
             StoredNode replacement = new StoredNode(registration.nodeId(), registration.sessionId(),
                     registration.displayName().trim(), registration.platform(), registration.pluginVersion().trim(),
                     registration.protocolVersion(), registration.capabilities(), accepted(registration.capabilities()),
-                    backends, sequence, now, now);
+                    registration.detectedPlugins(), backends, sequence, now, now);
             result.set(replacement);
             return replacement;
         });
@@ -82,7 +83,8 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
             requireSession(existing, heartbeat.sessionId());
             StoredNode updated = new StoredNode(existing.nodeId, existing.sessionId, existing.displayName,
                     existing.platform, existing.pluginVersion, existing.protocolVersion, heartbeat.capabilities(),
-                    accepted(heartbeat.capabilities()), existing.backends, existing.snapshotSequence, now, now);
+                    accepted(heartbeat.capabilities()), existing.detectedPlugins, existing.backends,
+                    existing.snapshotSequence, now, now);
             result.set(updated);
             return updated;
         });
@@ -109,8 +111,8 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
                     .sorted(Comparator.comparing(BackendServerIdentity::backendId)).toList();
             StoredNode updated = new StoredNode(existing.nodeId, existing.sessionId, existing.displayName,
                     existing.platform, existing.pluginVersion, existing.protocolVersion,
-                    existing.advertisedCapabilities, existing.acceptedCapabilities, sorted, snapshot.sequence(),
-                    now, now);
+                    existing.advertisedCapabilities, existing.acceptedCapabilities, existing.detectedPlugins,
+                    sorted, snapshot.sequence(), now, now);
             applied.set(true);
             result.set(updated);
             return updated;
@@ -167,8 +169,8 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         // The exact boundary is offline: lastSeen + timeout must be strictly after now.
         boolean online = clock.instant().isBefore(node.lastSeen.plus(offlineTimeout));
         return new NodeStatus(node.nodeId, node.sessionId, node.displayName, node.platform, node.pluginVersion,
-                node.protocolVersion, node.advertisedCapabilities, node.acceptedCapabilities, node.backends,
-                node.snapshotSequence, node.lastSeen, node.lastAuthenticatedUpdate, online);
+                node.protocolVersion, node.advertisedCapabilities, node.acceptedCapabilities, node.detectedPlugins,
+                node.backends, node.snapshotSequence, node.lastSeen, node.lastAuthenticatedUpdate, online);
     }
 
     private static void validate(NodeRegistration registration) {
@@ -184,6 +186,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         }
         validateProtocol(registration.protocolVersion());
         validateCapabilities(registration.capabilities(), registration.requiredCapabilities());
+        validateDetectedPlugins(registration.detectedPlugins());
     }
 
     private static void validateSnapshot(PresenceSnapshot snapshot) {
@@ -258,6 +261,14 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         }
     }
 
+    private static void validateDetectedPlugins(Set<String> plugins) {
+        if (plugins == null || plugins.size() > MAX_DETECTED_PLUGINS || plugins.stream().anyMatch(value ->
+                value == null || value.isBlank() || value.length() > 100
+                        || value.chars().anyMatch(Character::isISOControl))) {
+            throw invalid("detectedPlugins must contain at most 128 names of 1 to 100 characters");
+        }
+    }
+
     private static Set<String> accepted(Set<String> advertised) {
         Set<String> result = new HashSet<>(advertised);
         result.retainAll(SUPPORTED_CAPABILITIES);
@@ -276,11 +287,13 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
 
     private record StoredNode(String nodeId, UUID sessionId, String displayName, String platform,
                               String pluginVersion, int protocolVersion, Set<String> advertisedCapabilities,
-                              Set<String> acceptedCapabilities, List<BackendServerIdentity> backends,
+                              Set<String> acceptedCapabilities, Set<String> detectedPlugins,
+                              List<BackendServerIdentity> backends,
                               long snapshotSequence, Instant lastSeen, Instant lastAuthenticatedUpdate) {
         private StoredNode {
             advertisedCapabilities = Set.copyOf(advertisedCapabilities);
             acceptedCapabilities = Set.copyOf(acceptedCapabilities);
+            detectedPlugins = Set.copyOf(detectedPlugins);
             backends = List.copyOf(backends);
         }
     }

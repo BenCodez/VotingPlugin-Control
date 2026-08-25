@@ -106,12 +106,40 @@
           <option value="standalone">Standalone backend</option>
           <option value="proxy-backend">Proxy-connected backend</option>
           <option value="vote-site">Add or update vote site</option>
+          <option value="easy-reward">Easy vote reward</option>
+          <option value="common-settings">Common settings</option>
+          <option value="vote-party">Vote party</option>
         </select>
-        <div class="form-grid">
+        <p id="detected-plugins">Select Bukkit nodes to see detected plugins and command suggestions.</p>
+        <div class="form-grid quick-fields" data-presets="proxy-backend vote-site easy-reward">
           <label>Server / site key<input id="quick-name" maxlength="64" placeholder="lobby"></label>
+        </div>
+        <div class="form-grid quick-fields" data-presets="vote-site">
           <label>Service site<input id="quick-service" maxlength="200" placeholder="PlanetMinecraft.com"></label>
           <label>Vote URL<input id="quick-url" maxlength="500" placeholder="https://example.com/vote"></label>
           <label>Vote delay<input id="quick-delay" maxlength="20" value="24h"></label>
+        </div>
+        <div class="form-grid quick-fields" data-presets="easy-reward">
+          <label>Reward scope<select id="quick-reward-scope"><option value="site">One vote site</option><option value="every-site">Every site</option></select></label>
+          <label>Console command<input id="quick-command" maxlength="500" list="quick-command-suggestions" placeholder="give %player% diamond 1"></label>
+          <datalist id="quick-command-suggestions"></datalist>
+          <label>Player message<input id="quick-message" maxlength="500" value="&aThanks for voting!"></label>
+        </div>
+        <fieldset class="quick-fields" data-presets="common-settings">
+          <legend>Common settings</legend>
+          <label class="check-row"><input id="quick-process-rewards" type="checkbox" checked> Process rewards on this server</label>
+          <label class="check-row"><input id="quick-auto-sites" type="checkbox" checked> Auto-create vote sites</label>
+          <label class="check-row"><input id="quick-extra-check" type="checkbox"> Prevent duplicate all-sites rewards</label>
+          <label class="check-row"><input id="quick-count-fake" type="checkbox" checked> Count fake/test votes</label>
+          <label class="check-row"><input id="quick-hide-site-warning" type="checkbox"> Hide unknown service-site warnings</label>
+          <label class="check-row"><input id="quick-disable-updates" type="checkbox"> Disable update checks</label>
+        </fieldset>
+        <div class="form-grid quick-fields" data-presets="vote-party">
+          <label>Votes required<input id="quick-party-votes" type="number" min="1" max="100000" value="20"></label>
+          <label>Reward command<input id="quick-party-command" maxlength="500" list="quick-command-suggestions" value="give %player% diamond 1"></label>
+          <label>Broadcast<input id="quick-party-broadcast" maxlength="500" value="&aVote party reached!"></label>
+          <label class="check-row"><input id="quick-party-all" type="checkbox"> Reward all players</label>
+          <label class="check-row"><input id="quick-party-online" type="checkbox" checked> Online players only</label>
         </div>
         <div class="operation-actions">
           <button id="preview-quick-setup" type="button" disabled>Preview setup</button>

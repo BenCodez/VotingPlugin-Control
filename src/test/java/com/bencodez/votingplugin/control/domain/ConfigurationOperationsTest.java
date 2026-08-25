@@ -9,6 +9,8 @@ import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Path;
 import java.nio.file.Files;
 import java.time.Clock;
@@ -17,6 +19,8 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -128,6 +132,41 @@ class ConfigurationOperationsTest {
         Files.writeString(active, records.get(0) + System.lineSeparator());
 
         assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory, clock));
+    }
+
+    @Test void auditPendingTransactionRecoversRecordBeforeCheckpointCrash() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        Path active = directory.resolve("configuration-audit.jsonl");
+        Path checkpoint = directory.resolve("configuration-audit.checkpoint");
+        ObjectMapper json = new ObjectMapper();
+        try (ConfigurationAuditLog log = new ConfigurationAuditLog(directory, clock)) {
+            log.append("FIRST", UUID.randomUUID(), "proxy-a", "OK");
+        }
+        byte[] before = Files.readAllBytes(checkpoint);
+        try (ConfigurationAuditLog log = new ConfigurationAuditLog(directory, clock)) {
+            log.append("SECOND", UUID.randomUUID(), "proxy-a", "OK");
+        }
+        byte[] after = Files.readAllBytes(checkpoint);
+        List<String> lines = Files.readAllLines(active);
+        JsonNode pre = json.readTree(before);
+        JsonNode post = json.readTree(after);
+        Map<String, Object> pending = new LinkedHashMap<>();
+        pending.put("line", lines.get(1) + System.lineSeparator());
+        pending.put("rotate", false);
+        pending.put("preActiveHash", pre.path("activeHash").asText());
+        pending.put("preActiveRecords", pre.path("activeRecords").asLong());
+        pending.put("preRetainedHash", pre.path("retainedHash").asText());
+        pending.put("preRetainedRecords", pre.path("retainedRecords").asLong());
+        pending.put("postActiveHash", post.path("activeHash").asText());
+        pending.put("postActiveRecords", post.path("activeRecords").asLong());
+        pending.put("postRetainedHash", post.path("retainedHash").asText());
+        pending.put("postRetainedRecords", post.path("retainedRecords").asLong());
+        Files.write(directory.resolve("configuration-audit.pending"), json.writeValueAsBytes(pending));
+        Files.write(checkpoint, before);
+
+        try (ConfigurationAuditLog ignored = new ConfigurationAuditLog(directory, clock)) { }
+        assertEquals(json.readTree(after), json.readTree(Files.readAllBytes(checkpoint)));
+        assertEquals(false, Files.exists(directory.resolve("configuration-audit.pending")));
     }
 
     @Test void auditLogRejectsASecondProcessWriter() throws Exception {

@@ -63,6 +63,9 @@ class ControlHttpServerTest {
         assertEquals(200, script.statusCode());
         assertTrue(script.body().contains("offset=${pageOffset}&limit=${PAGE_SIZE}"));
         assertTrue(script.body().contains("nextPage.addEventListener"));
+        assertTrue(script.body().contains("result.configuration?.content != null"));
+        assertTrue(script.body().contains("authenticationGeneration"));
+        assertTrue(web.body().contains("Easy vote reward"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
@@ -95,6 +98,7 @@ class ControlHttpServerTest {
         assertEquals(200, send("PUT", "/api/v1/nodes/proxy-a/presence", snapshot, nodeToken).statusCode());
         JsonNode listed = json.readTree(get("/api/v1/nodes?offset=0&limit=10", adminToken).body());
         assertEquals("lobby", listed.at("/items/0/backends/0/backendId").asText());
+        assertTrue(listed.at("/items/0/detectedPlugins").toString().contains("LuckPerms"));
         assertTrue(listed.at("/items/0/online").asBoolean());
     }
 
@@ -248,7 +252,8 @@ class ControlHttpServerTest {
     private String registration() {
         return "{\"nodeId\":\"proxy-a\",\"sessionId\":\"" + SESSION + "\",\"displayName\":\"Proxy A\","
                 + "\"platform\":\"VELOCITY\",\"pluginVersion\":\"7.1.2\",\"protocolVersion\":1,"
-                + "\"capabilities\":[\"presence.snapshot\"],\"requiredCapabilities\":[]}";
+                + "\"capabilities\":[\"presence.snapshot\"],\"requiredCapabilities\":[],"
+                + "\"detectedPlugins\":[\"LuckPerms\",\"Essentials\"]}";
     }
 
     private HttpResponse<String> get(String path, String token) throws Exception {
