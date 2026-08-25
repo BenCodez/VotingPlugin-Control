@@ -6,6 +6,7 @@ import com.bencodez.votingplugin.control.protocol.ControlIdentity;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -120,8 +121,13 @@ class ControlHttpServerTest {
         assertError(send("POST", "/api/v1/nodes/register", duplicate, nodeToken), 400, "MALFORMED_JSON");
         String nested = "[".repeat(25) + "0" + "]".repeat(25);
         assertError(send("POST", "/api/v1/nodes/register", nested, nodeToken), 400, "MALFORMED_JSON");
-        assertError(send("POST", "/api/v1/nodes/register", " ".repeat(ControlHttpServer.MAX_REQUEST_BYTES + 1),
-                nodeToken), 413, "REQUEST_TOO_LARGE");
+        String oversized = sendRaw("POST /api/v1/nodes/register HTTP/1.1\r\n"
+                + "Host: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                + "Authorization: Bearer " + nodeToken + "\r\n"
+                + "Content-Length: " + (ControlHttpServer.MAX_REQUEST_BYTES + 1) + "\r\n"
+                + "Connection: close\r\n\r\n");
+        assertTrue(oversized.startsWith("HTTP/1.1 413"), oversized);
+        assertTrue(oversized.contains("REQUEST_TOO_LARGE"), oversized);
         assertError(send("POST", "/api/v1/nodes/register", registration().replace("Proxy A", "x".repeat(101)),
                 nodeToken), 400, "VALIDATION_ERROR");
         HttpRequest invalidUtf8 = HttpRequest.newBuilder(base.resolve("/api/v1/nodes/register"))
@@ -172,6 +178,16 @@ class ControlHttpServerTest {
         builder.method(method, body == null ? HttpRequest.BodyPublishers.noBody()
                 : HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
         return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private String sendRaw(String request) throws Exception {
+        try (Socket socket = new Socket("127.0.0.1", server.port())) {
+            socket.setSoTimeout(3000);
+            socket.getOutputStream().write(request.getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            socket.shutdownOutput();
+            return new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     private void assertAuthFailure(HttpResponse<String> response) throws Exception {
