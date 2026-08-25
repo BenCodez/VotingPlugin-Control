@@ -44,10 +44,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.Semaphore;
 
 /** Bounded HTTP adapter. Node writes are enrolled; node listings require the local admin credential. */
 public final class ControlHttpServer implements AutoCloseable {
@@ -75,10 +75,10 @@ public final class ControlHttpServer implements AutoCloseable {
     private final CredentialStore credentials;
     private final ConfigurationOperations configurationOperations;
     private final ThreadPoolExecutor executor;
+    private final ThreadPoolExecutor passwordExecutor;
     private final AuthFailureLimiter authLimiter;
     private final WebSessionStore webSessions;
     private final boolean secureCookies;
-    private final Semaphore passwordVerifications = new Semaphore(2, true);
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials) throws IOException {
@@ -131,6 +131,13 @@ public final class ControlHttpServer implements AutoCloseable {
         };
         executor = new ThreadPoolExecutor(2, 8, 30, TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(32), threads, new ThreadPoolExecutor.AbortPolicy());
+        ThreadFactory passwordThreads = runnable -> {
+            Thread thread = new Thread(runnable, "votingplugin-control-password");
+            thread.setDaemon(true);
+            return thread;
+        };
+        passwordExecutor = new ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(32), passwordThreads, new ThreadPoolExecutor.AbortPolicy());
         server.setExecutor(executor);
     }
 
@@ -146,8 +153,10 @@ public final class ControlHttpServer implements AutoCloseable {
     public void close() {
         server.stop(0);
         executor.shutdownNow();
+        passwordExecutor.shutdownNow();
         try {
             executor.awaitTermination(2, TimeUnit.SECONDS);
+            passwordExecutor.awaitTermination(2, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -159,8 +168,11 @@ public final class ControlHttpServer implements AutoCloseable {
     }
 
     private void handle(HttpExchange exchange) throws IOException {
+        boolean deferred = false;
         try {
             route(exchange);
+        } catch (DeferredResponseException ignored) {
+            deferred = true;
         } catch (AuthenticationException e) {
             exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
             error(exchange, e.rateLimited ? 429 : 401, e.rateLimited ? "AUTH_RATE_LIMITED" : "UNAUTHORIZED",
@@ -189,7 +201,7 @@ public final class ControlHttpServer implements AutoCloseable {
         } catch (RuntimeException e) {
             error(exchange, 500, "INTERNAL_ERROR", "Request could not be completed", List.of());
         } finally {
-            exchange.close();
+            if (!deferred) exchange.close();
         }
     }
 
@@ -212,25 +224,11 @@ public final class ControlHttpServer implements AutoCloseable {
             PasswordRequest request = read(exchange, PasswordRequest.class);
             requireRequest(request);
             try {
-                passwordVerifications.acquire();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+                passwordExecutor.execute(() -> handlePasswordLogin(exchange, request));
+            } catch (RejectedExecutionException e) {
                 throw new AuthenticationException(true);
             }
-            String credentialRevision;
-            try {
-                credentialRevision = credentials.authenticateWebPassword(request.password());
-            } finally {
-                passwordVerifications.release();
-            }
-            if (credentialRevision == null) {
-                authenticationFailed();
-            }
-            webSessions.remove(cookie(exchange, SESSION_COOKIE));
-            WebSessionStore.Session session = webSessions.create(credentialRevision);
-            setSessionCookie(exchange, session.id(), false);
-            send(exchange, 200, Map.of("csrfToken", session.csrfToken()));
-            return;
+            throw new DeferredResponseException();
         }
         if (AUTH_SESSION.equals(path)) {
             requireMethod(exchange, "GET");
@@ -349,6 +347,36 @@ public final class ControlHttpServer implements AutoCloseable {
             }
         }
         error(exchange, 404, "NOT_FOUND", "Endpoint not found", List.of());
+    }
+
+    private void handlePasswordLogin(HttpExchange exchange, PasswordRequest request) {
+        try {
+            String credentialRevision = credentials.authenticateWebPassword(request.password());
+            if (credentialRevision == null) {
+                authenticationFailed();
+            }
+            webSessions.remove(cookie(exchange, SESSION_COOKIE));
+            WebSessionStore.Session session = webSessions.create(credentialRevision);
+            setSessionCookie(exchange, session.id(), false);
+            send(exchange, 200, Map.of("csrfToken", session.csrfToken()));
+        } catch (AuthenticationException e) {
+            exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
+            try {
+                error(exchange, e.rateLimited ? 429 : 401,
+                        e.rateLimited ? "AUTH_RATE_LIMITED" : "UNAUTHORIZED",
+                        e.rateLimited ? "Too many authentication failures" : "Authentication failed", List.of());
+            } catch (IOException ignored) {
+                // The client disconnected while password verification was in progress.
+            }
+        } catch (IOException | RuntimeException e) {
+            try {
+                error(exchange, 500, "INTERNAL_ERROR", "Request could not be completed", List.of());
+            } catch (IOException ignored) {
+                // The client disconnected while password verification was in progress.
+            }
+        } finally {
+            exchange.close();
+        }
     }
 
     private <T> T read(HttpExchange exchange, Class<T> type) throws IOException {
@@ -590,6 +618,8 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final class CsrfException extends RuntimeException { }
     @SuppressWarnings("serial")
     private static final class ResponseCompleteException extends RuntimeException { }
+    @SuppressWarnings("serial")
+    private static final class DeferredResponseException extends RuntimeException { }
 
     private record WebResource(String classpath, String contentType) { }
     private record PasswordRequest(String password) { }

@@ -65,6 +65,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("nextPage.addEventListener"));
         assertTrue(script.body().contains("result.configuration?.content != null"));
         assertTrue(script.body().contains("authenticationGeneration"));
+        assertTrue(script.body().contains("if (loginInFlight) return"));
         assertTrue(web.body().contains("Easy vote reward"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
@@ -211,6 +212,25 @@ class ControlHttpServerTest {
                         })).toList();
         for (java.util.concurrent.CompletableFuture<HttpResponse<String>> attempt : attempts) {
             assertEquals(200, attempt.join().statusCode());
+        }
+    }
+
+    @Test void queuedPasswordVerificationDoesNotBlockHealthOrAdminRequests() throws Exception {
+        credentials.setWebPassword("a-secure-web-password".toCharArray());
+        java.util.List<java.util.concurrent.CompletableFuture<HttpResponse<String>>> attempts =
+                java.util.stream.IntStream.range(0, 8).mapToObj(index ->
+                        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                            try {
+                                return send("POST", "/api/v1/auth/login",
+                                        "{\"password\":\"invalid-password-" + index + "\"}", null);
+                            } catch (Exception e) {
+                                throw new java.util.concurrent.CompletionException(e);
+                            }
+                        })).toList();
+        assertEquals(200, get("/api/v1/health", null).statusCode());
+        assertEquals(200, get("/api/v1/nodes", adminToken).statusCode());
+        for (java.util.concurrent.CompletableFuture<HttpResponse<String>> attempt : attempts) {
+            assertEquals(401, attempt.join().statusCode());
         }
     }
 

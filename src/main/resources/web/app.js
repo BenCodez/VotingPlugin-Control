@@ -3,6 +3,7 @@
 const health = document.querySelector('#health');
 const form = document.querySelector('#auth-form');
 const passwordInput = document.querySelector('#password');
+const loginButton = form.querySelector('button[type="submit"]');
 const logout = document.querySelector('#logout');
 const message = document.querySelector('#message');
 const nodes = document.querySelector('#nodes');
@@ -58,6 +59,7 @@ let nodeCapabilities = new Map();
 let nodePlugins = new Map();
 let inputGeneration = 0;
 let authenticationGeneration = 0;
+let loginInFlight = false;
 
 function text(element, value) {
   element.textContent = value;
@@ -297,6 +299,10 @@ async function loadNodes() {
 
 form.addEventListener('submit', async event => {
   event.preventDefault();
+  if (loginInFlight) return;
+  loginInFlight = true;
+  loginButton.disabled = true;
+  logout.disabled = true;
   const loginGeneration = ++authenticationGeneration;
   const password = passwordInput.value;
   passwordInput.value = '';
@@ -320,6 +326,10 @@ form.addEventListener('submit', async event => {
     await loadNodes();
   } catch (error) {
     text(message, error.message || 'Authentication failed.');
+  } finally {
+    loginInFlight = false;
+    loginButton.disabled = false;
+    logout.disabled = false;
   }
 });
 

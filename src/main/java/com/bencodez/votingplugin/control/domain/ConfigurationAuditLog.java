@@ -139,6 +139,12 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             active = repairTornActive(pending, retained, invalidActive);
         }
         if (matches(active, pending.postActiveHash(), pending.postActiveRecords())
+                && matches(retained, pending.postRetainedHash(), pending.postRetainedRecords())
+                && !hasCompletePendingBytes(pending)) {
+            active = repairTornActive(pending, retained,
+                    new IOException("Configuration audit pending record is incomplete"));
+        }
+        if (matches(active, pending.postActiveHash(), pending.postActiveRecords())
                 && matches(retained, pending.postRetainedHash(), pending.postRetainedRecords())) {
             // The record is durable; only checkpoint publication or cleanup was interrupted.
         } else if (!pending.rotate() && matches(active, pending.preActiveHash(), pending.preActiveRecords())
@@ -192,6 +198,12 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             }
         }
         return validateOptional(file, "Configuration audit log");
+    }
+
+    private boolean hasCompletePendingBytes(PendingAppend pending) throws IOException {
+        long base = pending.rotate() ? 0 : pending.preActiveBytes();
+        return Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)
+                && Files.size(file) == base + pending.line().getBytes(StandardCharsets.UTF_8).length;
     }
 
     private static boolean matches(SegmentState state, String hash, long records) {
