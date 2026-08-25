@@ -104,16 +104,47 @@ class ConfigurationOperationsTest {
 
     @Test void retainedAuditSegmentIsVerifiedBeforeStartup() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
-        Path active = directory.resolve("configuration-audit.jsonl");
         Path retained = directory.resolve("configuration-audit.jsonl.1");
-        ConfigurationAuditLog first = new ConfigurationAuditLog(directory, clock);
+        ConfigurationAuditLog first = new ConfigurationAuditLog(directory, clock, 1);
         first.append("TEST", UUID.randomUUID(), "proxy-a", "OK");
-        Files.move(active, retained);
-        ConfigurationAuditLog second = new ConfigurationAuditLog(directory, clock);
-        second.append("TEST", UUID.randomUUID(), "proxy-b", "OK");
+        first.append("TEST", UUID.randomUUID(), "proxy-b", "OK");
         Files.writeString(retained, Files.readString(retained).replaceFirst("TEST", "EDIT"));
 
         assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory, clock));
+    }
+
+    @Test void auditCheckpointDetectsRecordBoundaryTruncation() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        Path active = directory.resolve("configuration-audit.jsonl");
+        ConfigurationAuditLog log = new ConfigurationAuditLog(directory, clock);
+        log.append("FIRST", UUID.randomUUID(), "proxy-a", "OK");
+        log.append("SECOND", UUID.randomUUID(), "proxy-a", "OK");
+        List<String> records = Files.readAllLines(active);
+        Files.writeString(active, records.get(0) + System.lineSeparator());
+
+        assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory, clock));
+    }
+
+    @Test void operationLimitDoesNotConsumePreviewApproval() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-08-25T00:00:00Z"));
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofHours(1));
+        registry.register(registration(UUID.randomUUID()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ProxyRoutingConfiguration proposal = new ProxyRoutingConfiguration(true, List.of());
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("proxy-a"), proposal);
+        operations.claim("proxy-a", registry.find("proxy-a").sessionId());
+        preview = operations.complete(preview.operationId(), "proxy-a",
+                new ConfigurationTaskResult(registry.find("proxy-a").sessionId(), true, "OK", "valid",
+                        "c".repeat(64), proposal, List.of(), false, false));
+        for (int i = 0; i < 999; i++) operations.createRead(List.of("proxy-a"));
+
+        UUID previewId = preview.operationId();
+        String approval = preview.approvalToken();
+        assertEquals("OPERATION_LIMIT", assertThrows(ValidationException.class,
+                () -> operations.createApply(previewId, approval)).code());
+        clock.advance(Duration.ofMinutes(16));
+        assertEquals("APPLY", operations.createApply(previewId, approval).type());
     }
 
     private static final class MutableClock extends Clock {

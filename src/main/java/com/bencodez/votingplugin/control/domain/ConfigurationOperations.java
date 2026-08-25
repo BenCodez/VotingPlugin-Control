@@ -64,11 +64,11 @@ public final class ConfigurationOperations {
                 approvalToken.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
             throw new ValidationException("APPROVAL_REQUIRED", "A valid unused preview approval is required", List.of());
         }
-        preview.approvalUsed = true;
         Map<String, String> revisions = new LinkedHashMap<>();
         preview.results.forEach((node, result) -> revisions.put(node, result.revision()));
         StoredOperation apply = store("APPLY", new ArrayList<>(preview.states.keySet()), preview.configuration,
                 null, revisions);
+        preview.approvalUsed = true;
         try {
             audit.append("APPLY_APPROVED", apply.id, null, "QUEUED");
         } catch (RuntimeException e) {

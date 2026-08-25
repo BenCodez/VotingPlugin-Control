@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.LinkOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.util.HexFormat;
@@ -20,22 +21,38 @@ public final class ConfigurationAuditLog {
     private static final long MAX_BYTES = 5L * 1024 * 1024;
     private final Path file;
     private final Path previousFile;
+    private final Path checkpointFile;
     private final Clock clock;
+    private final long maxBytes;
     private final ObjectMapper json = new ObjectMapper();
     private String previousHash = "GENESIS";
+    private long activeRecords;
+    private String retainedHash = "GENESIS";
+    private long retainedRecords;
 
     public ConfigurationAuditLog(Path dataDirectory, Clock clock) throws IOException {
+        this(dataDirectory, clock, MAX_BYTES);
+    }
+
+    ConfigurationAuditLog(Path dataDirectory, Clock clock, long maxBytes) throws IOException {
+        if (maxBytes < 1) throw new IllegalArgumentException("maxBytes must be positive");
         Files.createDirectories(dataDirectory);
         this.file = dataDirectory.resolve("configuration-audit.jsonl");
         this.previousFile = dataDirectory.resolve("configuration-audit.jsonl.1");
+        this.checkpointFile = dataDirectory.resolve("configuration-audit.checkpoint");
         this.clock = clock;
-        validateRetainedFile(previousFile);
-        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
-            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
-                throw new IOException("Configuration audit log is not a regular file");
-            if (Files.size(file) > MAX_BYTES + 64 * 1024)
-                throw new IOException("Configuration audit log exceeds its bounded size");
-            previousHash = validateExisting(file);
+        this.maxBytes = maxBytes;
+        SegmentState retained = validateOptional(previousFile, "Retained configuration audit log");
+        SegmentState active = validateOptional(file, "Configuration audit log");
+        retainedHash = retained.tailHash();
+        retainedRecords = retained.records();
+        previousHash = active.tailHash();
+        activeRecords = active.records();
+        boolean hasSegments = retained.present() || active.present();
+        if (hasSegments) {
+            validateCheckpoint();
+        } else if (Files.exists(checkpointFile, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Configuration audit checkpoint has no audit segments");
         }
     }
 
@@ -55,29 +72,35 @@ public final class ConfigurationAuditLog {
             Files.writeString(file, json.writeValueAsString(core) + System.lineSeparator(), StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND, StandardOpenOption.WRITE);
             previousHash = hash;
+            activeRecords++;
+            writeCheckpoint();
         } catch (Exception e) {
             throw new AuditException(e);
         }
     }
 
     private void rotateIfNeeded() throws IOException {
-        if (Files.exists(file) && Files.size(file) >= MAX_BYTES) {
+        if (Files.exists(file) && Files.size(file) >= maxBytes) {
             Files.move(file, previousFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            retainedHash = previousHash;
+            retainedRecords = activeRecords;
             previousHash = "GENESIS";
+            activeRecords = 0;
         }
     }
 
-    private void validateRetainedFile(Path retained) throws IOException {
-        if (!Files.exists(retained, LinkOption.NOFOLLOW_LINKS)) return;
-        if (!Files.isRegularFile(retained, LinkOption.NOFOLLOW_LINKS))
-            throw new IOException("Retained configuration audit log is not a regular file");
-        if (Files.size(retained) > MAX_BYTES + 64 * 1024)
-            throw new IOException("Retained configuration audit log exceeds its bounded size");
-        validateExisting(retained);
+    private SegmentState validateOptional(Path selected, String label) throws IOException {
+        if (!Files.exists(selected, LinkOption.NOFOLLOW_LINKS)) return new SegmentState(false, "GENESIS", 0);
+        if (!Files.isRegularFile(selected, LinkOption.NOFOLLOW_LINKS))
+            throw new IOException(label + " is not a regular file");
+        if (Files.size(selected) > maxBytes + 64 * 1024)
+            throw new IOException(label + " exceeds its bounded size");
+        return validateExisting(selected);
     }
 
-    private String validateExisting(Path selected) throws IOException {
+    private SegmentState validateExisting(Path selected) throws IOException {
         String expectedPrevious = "GENESIS";
+        long records = 0;
         for (String line : Files.readAllLines(selected, StandardCharsets.UTF_8)) {
             if (line.isBlank()) continue;
             try {
@@ -101,14 +124,66 @@ public final class ConfigurationAuditLog {
                     throw new IOException("Configuration audit chain is invalid");
                 }
                 expectedPrevious = calculated;
+                records++;
             } catch (IOException e) {
                 throw e;
             } catch (Exception e) {
                 throw new IOException("Configuration audit chain is invalid", e);
             }
         }
-        return expectedPrevious;
+        return new SegmentState(true, expectedPrevious, records);
     }
+
+    private void validateCheckpoint() throws IOException {
+        if (!Files.isRegularFile(checkpointFile, LinkOption.NOFOLLOW_LINKS)
+                || Files.size(checkpointFile) > 4096) {
+            throw new IOException("Configuration audit checkpoint is missing or invalid");
+        }
+        try {
+            JsonNode checkpoint = json.readTree(Files.readAllBytes(checkpointFile));
+            if (checkpoint == null || !checkpoint.isObject() || checkpoint.size() != 4
+                    || !checkpoint.path("activeHash").asText().equals(previousHash)
+                    || !checkpoint.path("retainedHash").asText().equals(retainedHash)
+                    || !checkpoint.path("activeRecords").isIntegralNumber()
+                    || !checkpoint.path("retainedRecords").isIntegralNumber()
+                    || !checkpoint.path("activeRecords").canConvertToLong()
+                    || !checkpoint.path("retainedRecords").canConvertToLong()
+                    || checkpoint.path("activeRecords").asLong() != activeRecords
+                    || checkpoint.path("retainedRecords").asLong() != retainedRecords) {
+                throw new IOException("Configuration audit checkpoint does not match the audit chain");
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new IOException("Configuration audit checkpoint is invalid", e);
+        }
+    }
+
+    private void writeCheckpoint() throws IOException {
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("activeHash", previousHash);
+        checkpoint.put("activeRecords", activeRecords);
+        checkpoint.put("retainedHash", retainedHash);
+        checkpoint.put("retainedRecords", retainedRecords);
+        Path temporary = Files.createTempFile(checkpointFile.getParent(), "configuration-audit-", ".checkpoint");
+        try {
+            Files.write(temporary, json.writeValueAsBytes(checkpoint), StandardOpenOption.TRUNCATE_EXISTING);
+            try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(temporary,
+                    StandardOpenOption.WRITE)) {
+                channel.force(true);
+            }
+            try {
+                Files.move(temporary, checkpointFile, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(temporary, checkpointFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private record SegmentState(boolean present, String tailHash, long records) { }
 
     @SuppressWarnings("serial")
     public static final class AuditException extends RuntimeException {

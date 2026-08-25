@@ -135,7 +135,8 @@ network-wide success. Proxies create a local backup, require atomic replacement 
 the backup if reload fails.
 
 `configuration-audit.jsonl` records bounded, append-only, hash-chained operation metadata and rotates once at 5 MiB. Both
-the active and retained segment are verified before startup accepts new operations. It does not contain configuration
+the active and retained segment are verified against a durable atomic tail/count checkpoint before startup accepts new
+operations, so record-boundary truncation also fails closed. It does not contain configuration
 values, credentials, or approval tokens. Operation queues are bounded; abandoned operations expire after 15 minutes and
 completed operations after 24 hours. Active operations are intentionally lost on Control restart and must be previewed
 again.

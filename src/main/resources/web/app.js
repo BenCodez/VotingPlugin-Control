@@ -22,6 +22,7 @@ let csrfToken = '';
 let pageOffset = 0;
 let selectedNodes = new Set();
 let approvedPreview = null;
+let inputGeneration = 0;
 
 function text(element, value) {
   element.textContent = value;
@@ -64,6 +65,7 @@ function nodeCard(node) {
   checkbox.addEventListener('change', () => {
     if (checkbox.checked) selectedNodes.add(node.nodeId); else selectedNodes.delete(node.nodeId);
     approvedPreview = null;
+    inputGeneration++;
     updateConfigurationButtons();
   });
   selector.append(checkbox, title);
@@ -159,6 +161,7 @@ async function loadNodes() {
     const filteredSelection = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
     if (filteredSelection.size !== selectedNodes.size) {
       approvedPreview = null;
+      inputGeneration++;
       text(operationStatus, 'The selected proxies changed during refresh. Preview again before apply.');
     }
     selectedNodes = filteredSelection;
@@ -194,6 +197,7 @@ form.addEventListener('submit', async event => {
     csrfToken = body.csrfToken;
     approvedPreview = null;
     selectedNodes.clear();
+    inputGeneration++;
     logout.hidden = false;
     pageOffset = 0;
     await loadNodes();
@@ -207,6 +211,7 @@ logout.addEventListener('click', async () => {
   authenticated = false;
   csrfToken = '';
   approvedPreview = null;
+  inputGeneration++;
   logout.hidden = true;
   selectedNodes.clear();
   nodes.replaceChildren();
@@ -243,13 +248,17 @@ readConfiguration.addEventListener('click', async () => {
 
 previewConfiguration.addEventListener('click', async () => {
   approvedPreview = null;
+  const previewGeneration = inputGeneration;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
       nodeIds: [...selectedNodes], configuration: proposal()
     });
-    if (operation.state === 'SUCCEEDED' && operation.approvalToken) {
+    if (operation.state === 'SUCCEEDED' && operation.approvalToken
+        && previewGeneration === inputGeneration) {
       approvedPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken};
       updateConfigurationButtons();
+    } else if (previewGeneration !== inputGeneration) {
+      text(operationStatus, 'The targets or proposal changed while previewing. Preview again before apply.');
     }
   } catch (error) { text(operationStatus, error.message); }
 });
@@ -258,6 +267,7 @@ applyConfiguration.addEventListener('click', async () => {
   if (!approvedPreview || !window.confirm('Apply this exact preview to every selected proxy? Each node may still reject a stale revision.')) return;
   const approval = approvedPreview;
   approvedPreview = null;
+  inputGeneration++;
   try {
     await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
@@ -267,6 +277,7 @@ applyConfiguration.addEventListener('click', async () => {
 [sendAll, blockedServers].forEach(field => field.addEventListener('input', () => {
   if (approvedPreview) text(operationStatus, 'The proposal changed. Preview it again before apply.');
   approvedPreview = null;
+  inputGeneration++;
   updateConfigurationButtons();
 }));
 refresh.addEventListener('click', loadNodes);
