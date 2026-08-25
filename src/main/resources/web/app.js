@@ -9,9 +9,17 @@ const refresh = document.querySelector('#refresh');
 const previousPage = document.querySelector('#previous-page');
 const nextPage = document.querySelector('#next-page');
 const pageNumber = document.querySelector('#page-number');
+const sendAll = document.querySelector('#send-all');
+const blockedServers = document.querySelector('#blocked-servers');
+const readConfiguration = document.querySelector('#read-configuration');
+const previewConfiguration = document.querySelector('#preview-configuration');
+const applyConfiguration = document.querySelector('#apply-configuration');
+const operationStatus = document.querySelector('#operation-status');
 const PAGE_SIZE = 100;
 let adminToken = '';
 let pageOffset = 0;
+let selectedNodes = new Set();
+let approvedPreview = null;
 
 function text(element, value) {
   element.textContent = value;
@@ -45,6 +53,18 @@ function nodeCard(node) {
   const article = document.createElement('article');
   article.className = 'node';
   const title = text(document.createElement('h3'), node.displayName);
+  const selector = document.createElement('label');
+  selector.className = 'node-select';
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.disabled = !node.online || !node.acceptedCapabilities.includes('config.proxy-routing.v1');
+  checkbox.checked = selectedNodes.has(node.nodeId) && !checkbox.disabled;
+  checkbox.addEventListener('change', () => {
+    if (checkbox.checked) selectedNodes.add(node.nodeId); else selectedNodes.delete(node.nodeId);
+    approvedPreview = null;
+    updateConfigurationButtons();
+  });
+  selector.append(checkbox, title);
   const meta = text(document.createElement('p'),
     `${node.platform} · VotingPlugin ${node.pluginVersion} · ${node.online ? 'online' : 'offline'}`);
   const list = document.createElement('ul');
@@ -54,8 +74,65 @@ function nodeCard(node) {
   } else {
     backends.forEach(backend => list.append(backendCard(backend)));
   }
-  article.append(title, meta, list);
+  article.append(selector, meta, list);
   return article;
+}
+
+function updateConfigurationButtons(busy = false) {
+  const ready = adminToken && selectedNodes.size > 0 && !busy;
+  readConfiguration.disabled = !ready;
+  previewConfiguration.disabled = !ready;
+  applyConfiguration.disabled = !ready || !approvedPreview;
+}
+
+async function authorized(path, options = {}) {
+  const response = await fetch(path, {
+    cache: 'no-store',
+    ...options,
+    headers: {...(options.headers || {}), 'Authorization': `Bearer ${adminToken}`}
+  });
+  const body = response.status === 204 ? null : await response.json();
+  if (!response.ok) throw new Error(body?.error?.message || `Control request failed (${response.status}).`);
+  return body;
+}
+
+function proposal() {
+  return {
+    sendVotesToAllServers: sendAll.checked,
+    blockedServers: blockedServers.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+  };
+}
+
+function operationSummary(operation) {
+  const lines = [`${operation.type} · ${operation.state} · ${operation.operationId}`];
+  Object.entries(operation.nodeStates).forEach(([node, state]) => {
+    const result = operation.results[node];
+    lines.push(`${node}: ${result ? `${result.success ? 'success' : result.code} — ${result.message}` : state}`);
+    if (result?.changes?.length) result.changes.forEach(change => lines.push(`  ${change}`));
+    if (result?.rolledBack) lines.push('  previous file restored after reload failure');
+  });
+  return lines.join('\n');
+}
+
+async function waitForOperation(operation) {
+  text(operationStatus, operationSummary(operation));
+  while (operation.state === 'RUNNING') {
+    await new Promise(resolve => window.setTimeout(resolve, 1500));
+    operation = await authorized(`/api/v1/operations/${operation.operationId}`);
+    text(operationStatus, operationSummary(operation));
+  }
+  return operation;
+}
+
+async function startConfigurationOperation(path, body) {
+  updateConfigurationButtons(true);
+  try {
+    return await waitForOperation(await authorized(path, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    }));
+  } finally {
+    updateConfigurationButtons(false);
+  }
 }
 
 async function loadNodes() {
@@ -80,6 +157,10 @@ async function loadNodes() {
     } else {
       body.items.forEach(node => nodes.append(nodeCard(node)));
     }
+    const visibleIds = new Set(body.items.filter(node => node.online && node.acceptedCapabilities.includes('config.proxy-routing.v1'))
+      .map(node => node.nodeId));
+    selectedNodes = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
+    updateConfigurationButtons();
     const first = body.items.length === 0 ? 0 : pageOffset + 1;
     const last = pageOffset + body.items.length;
     text(message, body.items.length === 0 ? 'No proxies on this page.' : `Showing proxies ${first}–${last}.`);
@@ -103,6 +184,48 @@ form.addEventListener('submit', event => {
   pageOffset = 0;
   loadNodes();
 });
+
+readConfiguration.addEventListener('click', async () => {
+  approvedPreview = null;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/read', {nodeIds: [...selectedNodes]});
+    const successful = Object.values(operation.results).filter(result => result.success);
+    if (successful.length) {
+      const first = successful[0].configuration;
+      sendAll.checked = first.sendVotesToAllServers;
+      blockedServers.value = first.blockedServers.join('\n');
+    }
+  } catch (error) { text(operationStatus, error.message); }
+});
+
+previewConfiguration.addEventListener('click', async () => {
+  approvedPreview = null;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
+      nodeIds: [...selectedNodes], configuration: proposal()
+    });
+    if (operation.state === 'SUCCEEDED' && operation.approvalToken) {
+      approvedPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken};
+      updateConfigurationButtons();
+    }
+  } catch (error) { text(operationStatus, error.message); }
+});
+
+applyConfiguration.addEventListener('click', async () => {
+  if (!approvedPreview || !window.confirm('Apply this exact preview to every selected proxy? Each node may still reject a stale revision.')) return;
+  const approval = approvedPreview;
+  approvedPreview = null;
+  try {
+    await startConfigurationOperation('/api/v1/configuration/apply', {
+      previewOperationId: approval.operationId, approvalToken: approval.approvalToken
+    });
+  } catch (error) { text(operationStatus, error.message); }
+});
+[sendAll, blockedServers].forEach(field => field.addEventListener('input', () => {
+  if (approvedPreview) text(operationStatus, 'The proposal changed. Preview it again before apply.');
+  approvedPreview = null;
+  updateConfigurationButtons();
+}));
 refresh.addEventListener('click', loadNodes);
 previousPage.addEventListener('click', () => {
   pageOffset = Math.max(0, pageOffset - PAGE_SIZE);

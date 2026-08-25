@@ -24,7 +24,8 @@ import java.util.regex.Pattern;
 
 /** Thread-safe, deterministic current topology registry. State is intentionally in memory for this milestone. */
 public final class InMemoryNodeRegistry implements NodeRegistry {
-    public static final Set<String> SUPPORTED_CAPABILITIES = Set.of("discovery.read", "presence.snapshot");
+    public static final Set<String> SUPPORTED_CAPABILITIES = Set.of("discovery.read", "presence.snapshot",
+            ConfigurationOperations.CAPABILITY);
     private static final Pattern ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final Pattern CAPABILITY = Pattern.compile("[a-z][a-z0-9.-]{0,63}");
     private static final Set<String> PLATFORMS = Set.of("BUNGEECORD", "VELOCITY");
@@ -126,6 +127,21 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         }
         return nodes.values().stream().sorted(Comparator.comparing(node -> node.nodeId))
                 .skip(offset).limit(limit).map(this::view).toList();
+    }
+
+    @Override
+    public NodeStatus find(String nodeId) {
+        StoredNode node = nodes.get(nodeId);
+        return node == null ? null : view(node);
+    }
+
+    @Override
+    public void requireSession(String nodeId, UUID sessionId) {
+        validateId(nodeId, "nodeId");
+        validateSession(sessionId);
+        StoredNode node = nodes.get(nodeId);
+        if (node == null) throw new ValidationException("NODE_NOT_FOUND", "Node is not registered", List.of());
+        requireSession(node, sessionId);
     }
 
     private NodeStatus view(StoredNode node) {

@@ -2,6 +2,8 @@ package com.bencodez.votingplugin.control;
 
 import com.bencodez.votingplugin.control.auth.CredentialStore;
 import com.bencodez.votingplugin.control.domain.InMemoryNodeRegistry;
+import com.bencodez.votingplugin.control.domain.ConfigurationAuditLog;
+import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
 import com.bencodez.votingplugin.control.http.ControlHttpServer;
 import com.bencodez.votingplugin.control.protocol.ControlIdentity;
 import com.bencodez.votingplugin.control.protocol.Protocol;
@@ -90,8 +92,12 @@ public final class ControlApplication {
         System.setProperty("sun.net.httpserver.maxRspTime", Integer.toString(configuration.requestTimeoutSeconds()));
         ControlIdentity identity = new ControlIdentity(loadIdentity(configuration.dataDirectory()),
                 VersionInfo.applicationVersion(), Protocol.VERSION);
-        ControlHttpServer server = new ControlHttpServer(configuration.address(),
-                new InMemoryNodeRegistry(Clock.systemUTC(), configuration.offlineTimeout()), identity, credentials);
+        Clock clock = Clock.systemUTC();
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, configuration.offlineTimeout());
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(configuration.dataDirectory(), clock), clock);
+        ControlHttpServer server = new ControlHttpServer(configuration.address(), registry, identity, credentials,
+                operations);
         CountDownLatch shutdown = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             server.close();

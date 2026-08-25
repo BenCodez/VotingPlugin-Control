@@ -94,6 +94,42 @@ class ControlHttpServerTest {
         assertTrue(listed.at("/items/0/online").asBoolean());
     }
 
+    @Test void configurationPreviewApprovalAndRevisionCheckedApplyAreEndToEnd() throws Exception {
+        String capableRegistration = registration().replace("\"presence.snapshot\"]",
+                "\"presence.snapshot\",\"config.proxy-routing.v1\"]");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", capableRegistration, nodeToken).statusCode());
+        String proposal = "{\"sendVotesToAllServers\":true,\"blockedServers\":[\"lobby\"]}";
+        HttpResponse<String> queued = send("POST", "/api/v1/configuration/preview",
+                "{\"nodeIds\":[\"proxy-a\"],\"configuration\":" + proposal + "}", adminToken);
+        assertEquals(202, queued.statusCode());
+        String previewId = json.readTree(queued.body()).get("operationId").asText();
+
+        JsonNode previewTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        assertEquals("PREVIEW", previewTask.get("type").asText());
+        String previewResult = "{\"sessionId\":\"" + SESSION + "\",\"success\":true,\"code\":\"OK\","+
+                "\"message\":\"valid\",\"revision\":\"" + "a".repeat(64) + "\",\"configuration\":"
+                + proposal + ",\"changes\":[\"blockedServers changed\"],\"reloaded\":false,\"rolledBack\":false}";
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/operations/" + previewId + "/result",
+                previewResult, nodeToken).statusCode());
+
+        JsonNode preview = json.readTree(get("/api/v1/operations/" + previewId, adminToken).body());
+        String approval = preview.get("approvalToken").asText();
+        HttpResponse<String> applyQueued = send("POST", "/api/v1/configuration/apply",
+                "{\"previewOperationId\":\"" + previewId + "\",\"approvalToken\":\"" + approval + "\"}",
+                adminToken);
+        assertEquals(202, applyQueued.statusCode());
+        String applyId = json.readTree(applyQueued.body()).get("operationId").asText();
+        JsonNode applyTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        assertEquals("APPLY", applyTask.get("type").asText());
+        assertEquals("a".repeat(64), applyTask.get("expectedRevision").asText());
+        assertError(send("POST", "/api/v1/configuration/apply",
+                "{\"previewOperationId\":\"" + previewId + "\",\"approvalToken\":\"" + approval + "\"}",
+                adminToken), 409, "APPROVAL_REQUIRED");
+        assertEquals(applyId, applyTask.get("operationId").asText());
+    }
+
     @Test void missingInvalidWrongNodeRevokedAndRotatedCredentialsFailWithoutDisclosure() throws Exception {
         assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), null));
         assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), "wrong"));
@@ -146,6 +182,8 @@ class ControlHttpServerTest {
         nodeToken = credentials.rotateNode("proxy-a");
         assertError(send("POST", "/api/v1/nodes/register", registration().replace("\"protocolVersion\":1",
                 "\"protocolVersion\":2"), nodeToken), 409, "UNSUPPORTED_PROTOCOL");
+        assertError(send("POST", "/api/v1/nodes/register", registration().replace("\"protocolVersion\":1",
+                "\"protocolVersion\":1.9"), nodeToken), 400, "MALFORMED_JSON");
         assertError(send("POST", "/api/v1/nodes/register", registration().replace("\"requiredCapabilities\":[]",
                 "\"requiredCapabilities\":[\"future.required\"]"), nodeToken), 409,
                 "INCOMPATIBLE_CAPABILITIES");

@@ -41,6 +41,26 @@
         <button id="next-page" type="button" disabled>Next</button>
       </nav>
     </section>
+
+    <section class="card" id="configuration-card">
+      <div class="section-title">
+        <div>
+          <h2>Proxy routing configuration</h2>
+          <p>Only the typed, non-secret routing domain is writable. Select capable proxies above, read or preview them, then explicitly approve the exact preview.</p>
+        </div>
+      </div>
+      <form id="configuration-form">
+        <label class="check-row"><input id="send-all" type="checkbox"> Send votes to all backend servers</label>
+        <label for="blocked-servers">Blocked servers <span>(one configured backend name per line)</span></label>
+        <textarea id="blocked-servers" rows="5" spellcheck="false"></textarea>
+        <div class="operation-actions">
+          <button id="read-configuration" type="button" disabled>Read selected</button>
+          <button id="preview-configuration" type="button" disabled>Preview changes</button>
+          <button id="apply-configuration" type="button" disabled>Approve and apply</button>
+        </div>
+      </form>
+      <pre id="operation-status" aria-live="polite">Select at least one online, capable proxy.</pre>
+    </section>
   </main>
   <script src="/app.js" defer></script>
 </body>

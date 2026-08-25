@@ -2,7 +2,11 @@ package com.bencodez.votingplugin.control.http;
 
 import com.bencodez.votingplugin.control.auth.CredentialStore;
 import com.bencodez.votingplugin.control.domain.NodeRegistry;
+import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
 import com.bencodez.votingplugin.control.domain.ValidationException;
+import com.bencodez.votingplugin.control.protocol.ConfigurationRequests;
+import com.bencodez.votingplugin.control.protocol.ConfigurationTask;
+import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import com.bencodez.votingplugin.control.protocol.ControlIdentity;
 import com.bencodez.votingplugin.control.protocol.Heartbeat;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
@@ -34,6 +38,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -45,6 +50,8 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final String HEALTH = "/api/v1/health";
     private static final String NODES = "/api/v1/nodes";
     private static final String REGISTER = "/api/v1/nodes/register";
+    private static final String CONFIGURATION = "/api/v1/configuration";
+    private static final String OPERATIONS = "/api/v1/operations";
     private static final Map<String, WebResource> WEB_RESOURCES = Map.of(
             "/", new WebResource("/web/index.html", "text/html; charset=utf-8"),
             "/index.html", new WebResource("/web/index.html", "text/html; charset=utf-8"),
@@ -57,23 +64,36 @@ public final class ControlHttpServer implements AutoCloseable {
     private final NodeRegistry registry;
     private final ControlIdentity identity;
     private final CredentialStore credentials;
+    private final ConfigurationOperations configurationOperations;
     private final ThreadPoolExecutor executor;
     private final AuthFailureLimiter authLimiter;
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials) throws IOException {
-        this(address, registry, identity, credentials, Clock.systemUTC(), System::nanoTime);
+        this(address, registry, identity, credentials,
+                new ConfigurationOperations(registry, new com.bencodez.votingplugin.control.domain.ConfigurationAuditLog(
+                        java.nio.file.Files.createTempDirectory("votingplugin-control-test-audit"), Clock.systemUTC()),
+                        Clock.systemUTC()), Clock.systemUTC(), System::nanoTime);
+    }
+
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, ConfigurationOperations configurationOperations)
+            throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime);
     }
 
     ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
-                      CredentialStore credentials, Clock clock, java.util.function.LongSupplier nanoTime) throws IOException {
+                      CredentialStore credentials, ConfigurationOperations configurationOperations, Clock clock,
+                      java.util.function.LongSupplier nanoTime) throws IOException {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.credentials = Objects.requireNonNull(credentials, "credentials");
+        this.configurationOperations = Objects.requireNonNull(configurationOperations, "configurationOperations");
         Objects.requireNonNull(clock, "clock");
         json = new ObjectMapper();
         json.findAndRegisterModules();
         json.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        json.disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT);
         json.enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
         json.getFactory().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION.mappedFeature());
         json.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
@@ -119,8 +139,10 @@ public final class ControlHttpServer implements AutoCloseable {
                     e.rateLimited ? "Too many authentication failures" : "Authentication failed", List.of());
         } catch (ValidationException e) {
             int status = switch (e.code()) {
-                case "NODE_NOT_FOUND" -> 404;
-                case "UNSUPPORTED_PROTOCOL", "INCOMPATIBLE_CAPABILITIES", "SESSION_MISMATCH" -> 409;
+                case "NODE_NOT_FOUND", "OPERATION_NOT_FOUND" -> 404;
+                case "UNSUPPORTED_PROTOCOL", "INCOMPATIBLE_CAPABILITIES", "SESSION_MISMATCH",
+                        "PREVIEW_INCOMPLETE", "APPROVAL_REQUIRED", "NODE_UNAVAILABLE", "OPERATION_LIMIT" -> 409;
+                case "TASK_NOT_CLAIMED" -> 409;
                 case "UNSUPPORTED_MEDIA_TYPE" -> 415;
                 default -> 400;
             };
@@ -178,24 +200,75 @@ public final class ControlHttpServer implements AutoCloseable {
                     Map.of("created", result.created(), "node", result.node(), "identity", identity));
             return;
         }
+        if ((CONFIGURATION + "/read").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange);
+            ConfigurationRequests.Read request = read(exchange, ConfigurationRequests.Read.class);
+            send(exchange, 202, configurationOperations.createRead(request.nodeIds()));
+            return;
+        }
+        if ((CONFIGURATION + "/preview").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange);
+            ConfigurationRequests.Preview request = read(exchange, ConfigurationRequests.Preview.class);
+            send(exchange, 202, configurationOperations.createPreview(request.nodeIds(), request.configuration()));
+            return;
+        }
+        if ((CONFIGURATION + "/apply").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange);
+            ConfigurationRequests.Apply request = read(exchange, ConfigurationRequests.Apply.class);
+            send(exchange, 202, configurationOperations.createApply(request.previewOperationId(), request.approvalToken()));
+            return;
+        }
+        if (path != null && path.startsWith(OPERATIONS + "/")) {
+            String remainder = path.substring((OPERATIONS + "/").length());
+            if (!remainder.contains("/")) {
+                requireMethod(exchange, "GET");
+                authenticateAdmin(exchange);
+                send(exchange, 200, configurationOperations.get(UUID.fromString(remainder)));
+                return;
+            }
+        }
 
         String prefix = NODES + "/";
         if (path != null && path.startsWith(prefix)) {
             String remainder = path.substring(prefix.length());
             String[] segments = remainder.split("/", -1);
-            if (segments.length == 2 && ("heartbeat".equals(segments[1]) || "presence".equals(segments[1]))) {
+            if (segments.length == 2 && ("heartbeat".equals(segments[1]) || "presence".equals(segments[1])
+                    || "operations".equals(segments[1]))) {
                 String nodeId = decodePathSegment(segments[0]);
                 if ("heartbeat".equals(segments[1])) {
                     requireMethod(exchange, "PUT");
                     authenticateNode(exchange, nodeId);
                     send(exchange, 200, Map.of("node", registry.heartbeat(nodeId, read(exchange, Heartbeat.class))));
-                } else {
+                } else if ("presence".equals(segments[1])) {
                     requireMethod(exchange, "PUT");
                     authenticateNode(exchange, nodeId);
                     NodeRegistry.SnapshotResult result = registry.replacePresence(nodeId,
                             read(exchange, PresenceSnapshot.class));
                     send(exchange, 200, Map.of("applied", result.applied(), "node", result.node()));
+                } else {
+                    requireMethod(exchange, "POST");
+                    authenticateNode(exchange, nodeId);
+                    ConfigurationRequests.Claim claim = read(exchange, ConfigurationRequests.Claim.class);
+                    registry.requireSession(nodeId, claim.sessionId());
+                    ConfigurationTask task = configurationOperations.claim(nodeId);
+                    if (task == null) {
+                        noContent(exchange);
+                    } else {
+                        send(exchange, 200, task);
+                    }
                 }
+                return;
+            }
+            if (segments.length == 4 && "operations".equals(segments[1]) && "result".equals(segments[3])) {
+                String nodeId = decodePathSegment(segments[0]);
+                requireMethod(exchange, "POST");
+                authenticateNode(exchange, nodeId);
+                ConfigurationTaskResult result = read(exchange, ConfigurationTaskResult.class);
+                registry.requireSession(nodeId, result.sessionId());
+                send(exchange, 200, configurationOperations.complete(UUID.fromString(segments[2]), nodeId, result));
                 return;
             }
         }
@@ -287,6 +360,11 @@ public final class ControlHttpServer implements AutoCloseable {
     private void send(HttpExchange exchange, int status, Object value) throws IOException {
         byte[] body = json.writeValueAsBytes(value);
         sendBytes(exchange, status, "application/json; charset=utf-8", body);
+    }
+
+    private void noContent(HttpExchange exchange) throws IOException {
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        exchange.sendResponseHeaders(204, -1);
     }
 
     private void sendResource(HttpExchange exchange, WebResource resource) throws IOException {

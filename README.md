@@ -1,8 +1,8 @@
 # VotingPlugin Control
 
 VotingPlugin Control is a separate, local-first administration service for a VotingPlugin network. The current milestone
-provides authenticated, read-only discovery of multiple BungeeCord and Velocity proxies and the backend servers each
-proxy observes. It includes a minimal local WebUI over the same versioned API. It does not process votes, and VotingPlugin
+provides authenticated discovery of multiple BungeeCord and Velocity proxies and a bounded proxy-routing configuration
+workflow. It includes a local WebUI over the same versioned API. It does not process votes, and VotingPlugin
 does not depend on it for startup, joins, routing, or shutdown.
 
 ## Trust and deployment boundary
@@ -48,9 +48,9 @@ JSON depth/string/number sizes, and a bounded invalid-authentication failure lim
 usable even while invalid traffic is throttled. Shutdown stops the server and its daemon request workers without waiting
 indefinitely.
 
-Open `http://127.0.0.1:8080/` for the local WebUI. Its static shell is public on the Control listener, but topology reads
-still require the admin bearer token. The token remains only in page memory and is not persisted by the UI. Static assets
-use a restrictive Content Security Policy and the browser calls the same `/api/v1` endpoints documented below.
+Open `http://127.0.0.1:8080/` for the local WebUI. Its static shell is public on the Control listener, but topology and
+configuration operations require the admin bearer token. The token and one-time preview approval remain only in page
+memory. Static assets use a restrictive Content Security Policy and the browser calls the same `/api/v1` endpoints.
 
 ## Enrollment
 
@@ -94,7 +94,13 @@ All errors have the stable form:
 | `POST` | `/api/v1/nodes/register` | node | Idempotently create/replace one enrolled proxy session |
 | `PUT` | `/api/v1/nodes/{nodeId}/heartbeat` | matching node | Refresh liveness and replace capability advertisement |
 | `PUT` | `/api/v1/nodes/{nodeId}/presence` | matching node | Replace that session's backend snapshot |
+| `POST` | `/api/v1/nodes/{nodeId}/operations` | matching node | Claim one queued configuration task, or `204` |
+| `POST` | `/api/v1/nodes/{nodeId}/operations/{operationId}/result` | matching node | Complete that node's task |
 | `GET` | `/api/v1/nodes?offset=0&limit=50` | admin | Stable node-ID ordering; limit `1`–`100` |
+| `POST` | `/api/v1/configuration/read` | admin | Queue a typed read for selected capable nodes |
+| `POST` | `/api/v1/configuration/preview` | admin | Queue independent validation and normalized diffs |
+| `POST` | `/api/v1/configuration/apply` | admin + one-time approval | Apply the exact successful preview |
+| `GET` | `/api/v1/operations/{operationId}` | admin | Read overall and per-node operation status |
 
 Routes are exact. Child suffixes do not inherit a handler, every known endpoint has an intentional method/structured 405,
 and all unknown endpoints return a structured 404.
@@ -103,6 +109,18 @@ Registration includes a stable node ID and a random process session ID. A new se
 clears its old topology. Presence snapshots are full replacements, contain at most 4096 unique backend IDs, and use a
 monotonic sequence within the registered session. Replayed or out-of-order sequence numbers are idempotently ignored.
 Control records its own observation time; it does not trust remote wall-clock time for online/offline decisions.
+
+Configuration control is deliberately not a YAML editor. Protocol capability `config.proxy-routing.v1` exposes only
+`sendVotesToAllServers` and `blockedServers`; credentials, database settings, plugin channels, and unknown keys never enter
+the API. Preview validates each node without writing and returns its current revision and typed changes. Apply consumes a
+single-use random approval token, carries each previewed revision to that node, and reports partial failures instead of a
+network-wide success. Proxies create a local backup, require atomic replacement of the configuration file, soft-reload, and restore
+the backup if reload fails.
+
+`configuration-audit.jsonl` records bounded, append-only, hash-chained operation metadata and rotates once at 5 MiB. It
+does not contain configuration values, credentials, or approval tokens. Operation queues are bounded and retained in
+memory for 24 hours after completion; active operations are intentionally lost on Control restart and must be previewed
+again.
 
 A node is online only while `lastSeen + offlineTimeout` is strictly after Control's current time. The exact timeout boundary
 is offline. Backend entries distinguish whether authoritative backend presence is known from the existing VotingPlugin
@@ -124,7 +142,7 @@ They are not misleadingly used by these simple HTTP resource endpoints.
 
 ## Intentionally out of scope
 
-This milestone has no configuration reads or writes, topology persistence/history, audit log, diagnostics bundle, cloud
-relay, or remote-support sessions. Node registry state is currently in memory, so proxies automatically re-register after
-a Control restart. Manual installation remains supported; the companion VotingPlugin development PR can also opt in to
-verified download and child-process hosting.
+This milestone has no unrestricted configuration editor, manual rollback endpoint, topology persistence/history,
+diagnostics bundle, cloud relay, or remote-support sessions. Node and operation state is currently in memory, so proxies
+automatically re-register after a Control restart and an interrupted change requires a new preview. Manual installation
+remains supported; the companion VotingPlugin development PR can also opt in to verified download and child-process hosting.
