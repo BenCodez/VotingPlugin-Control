@@ -6,9 +6,11 @@ import com.bencodez.votingplugin.control.http.ControlHttpServer;
 import com.bencodez.votingplugin.control.protocol.ControlIdentity;
 import com.bencodez.votingplugin.control.protocol.Protocol;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.nio.file.FileAlreadyExistsException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -19,6 +21,8 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 
 public final class ControlApplication {
+    private static final Object IDENTITY_LOCK = new Object();
+
     private ControlApplication() { }
 
     public static void main(String[] args) {
@@ -39,32 +43,40 @@ public final class ControlApplication {
     }
 
     private static void runOwnerCommand(String[] args) throws IOException {
-        Path dataDirectory = args.length >= 3 ? requirePath(args[2])
-                : requirePath(System.getenv().getOrDefault("CONTROL_DATA_DIR", "data"));
-        CredentialStore credentials = new CredentialStore(dataDirectory);
+        runOwnerCommand(args, System.getenv(), System.out);
+    }
+
+    static void runOwnerCommand(String[] args, Map<String, String> environment, PrintStream output)
+            throws IOException {
         switch (args[0]) {
             case "enroll" -> {
                 if (args.length < 2 || args.length > 3) {
                     throw new IllegalArgumentException("Usage: enroll <nodeId> [dataDirectory]");
                 }
-                System.out.println(credentials.rotateNode(args[1]));
+                Path selected = ownerDataDirectory(args.length == 3 ? args[2] : null, environment);
+                output.println(new CredentialStore(selected).rotateNode(args[1]));
             }
             case "revoke" -> {
                 if (args.length < 2 || args.length > 3) {
                     throw new IllegalArgumentException("Usage: revoke <nodeId> [dataDirectory]");
                 }
-                credentials.revokeNode(args[1]);
-                System.out.println("Enrollment revoked.");
+                Path selected = ownerDataDirectory(args.length == 3 ? args[2] : null, environment);
+                new CredentialStore(selected).revokeNode(args[1]);
+                output.println("Enrollment revoked.");
             }
             case "admin-token" -> {
                 if (args.length > 2) {
                     throw new IllegalArgumentException("Usage: admin-token [dataDirectory]");
                 }
-                Path selected = args.length == 2 ? requirePath(args[1]) : dataDirectory;
-                System.out.println(new CredentialStore(selected).rotateAdmin());
+                Path selected = ownerDataDirectory(args.length == 2 ? args[1] : null, environment);
+                output.println(new CredentialStore(selected).rotateAdmin());
             }
             default -> throw new IllegalArgumentException("Unknown command");
         }
+    }
+
+    private static Path ownerDataDirectory(String explicit, Map<String, String> environment) {
+        return requirePath(explicit != null ? explicit : environment.getOrDefault("CONTROL_DATA_DIR", "data"));
     }
 
     static void runServer(Map<String, String> environment) throws Exception {
@@ -97,16 +109,22 @@ public final class ControlApplication {
         }
     }
 
-    /** Create-if-absent publication cannot replace a concurrent startup's winning identity. */
+    /** A process lock keeps the first identity private until its complete contents are readable. */
     static UUID loadIdentity(Path directory) throws IOException {
         Files.createDirectories(directory);
         Path file = directory.resolve("instance-id");
-        UUID candidate = UUID.randomUUID();
-        try {
-            Files.writeString(file, candidate.toString(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
-            return candidate;
-        } catch (FileAlreadyExistsException e) {
-            return readIdentity(file);
+        Path lockFile = directory.resolve("instance-id.lock");
+        synchronized (IDENTITY_LOCK) {
+            try (FileChannel channel = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                 FileLock ignored = channel.lock()) {
+                if (Files.exists(file)) {
+                    return readIdentity(file);
+                }
+                UUID candidate = UUID.randomUUID();
+                Files.writeString(file, candidate.toString(), StandardOpenOption.CREATE_NEW,
+                        StandardOpenOption.WRITE);
+                return candidate;
+            }
         }
     }
 

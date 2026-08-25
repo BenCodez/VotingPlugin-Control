@@ -1,5 +1,7 @@
 package com.bencodez.votingplugin.control;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -50,6 +52,19 @@ class ControlApplicationTest {
     @Test void corruptIdentityFailsClosed() throws Exception {
         Files.writeString(directory.resolve("instance-id"), "not-a-uuid");
         assertThrows(java.io.IOException.class, () -> ControlApplication.loadIdentity(directory));
+    }
+
+    @Test void explicitAdminDirectoryDoesNotTouchConfiguredDefault() throws Exception {
+        Path configuredDefault = directory.resolve("unwritable-default");
+        Path explicit = directory.resolve("explicit");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        ControlApplication.runOwnerCommand(new String[]{"admin-token", explicit.toString()},
+                java.util.Map.of("CONTROL_DATA_DIR", configuredDefault.toString()), new PrintStream(output));
+
+        assertFalse(Files.exists(configuredDefault));
+        assertTrue(Files.exists(explicit.resolve("credentials.json")));
+        assertTrue(output.toString().trim().startsWith("vpctl_admin_"));
     }
 
     @Test void startupConfigurationValidatesAllBounds() {
