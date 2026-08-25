@@ -28,7 +28,10 @@ public final class ConfigurationAuditLog {
         this.file = dataDirectory.resolve("configuration-audit.jsonl");
         this.previousFile = dataDirectory.resolve("configuration-audit.jsonl.1");
         this.clock = clock;
-        if (Files.isRegularFile(file) && Files.size(file) <= MAX_BYTES) {
+        if (Files.isRegularFile(file)) {
+            if (Files.size(file) > MAX_BYTES + 64 * 1024) {
+                throw new IOException("Configuration audit log exceeds its bounded size");
+            }
             previousHash = validateExisting();
         }
     }
@@ -67,6 +70,12 @@ public final class ConfigurationAuditLog {
             if (line.isBlank()) continue;
             try {
                 JsonNode stored = json.readTree(line);
+                if (stored == null || !stored.isObject() || stored.size() != 7
+                        || !stored.has("time") || !stored.has("action") || !stored.has("operationId")
+                        || !stored.has("nodeId") || !stored.has("outcome") || !stored.has("previousHash")
+                        || !stored.has("hash")) {
+                    throw new IOException("Configuration audit chain is invalid");
+                }
                 Map<String, Object> core = new LinkedHashMap<>();
                 core.put("time", stored.path("time").asText());
                 core.put("action", stored.path("action").asText());
