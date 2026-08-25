@@ -13,17 +13,25 @@ import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.security.spec.InvalidKeySpecException;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 
-/** Persistent SHA-256 verifiers for high-entropy enrollment and local admin credentials. */
+/** Persistent token verifiers and a salted PBKDF2 WebUI password verifier. */
 public final class CredentialStore {
     private static final Pattern NODE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final int MAX_ENROLLMENTS = 10_000;
+    private static final int WEB_PASSWORD_ITERATIONS = 600_000;
+    private static final int WEB_PASSWORD_BYTES = 32;
+    private static final int WEB_PASSWORD_MINIMUM = 12;
+    private static final byte[] DUMMY_PASSWORD_SALT = new byte[16];
+    private static final byte[] DUMMY_PASSWORD_HASH = new byte[WEB_PASSWORD_BYTES];
     private static final byte[] DUMMY_HASH = new byte[32];
 
     private final Path directory;
@@ -73,6 +81,85 @@ public final class CredentialStore {
     public boolean hasAdmin() throws IOException {
         String hash = read().adminHash;
         return hash != null && !hash.isBlank();
+    }
+
+    /** Replaces the WebUI password verifier. The supplied password is never persisted. */
+    public void setWebPassword(char[] password) throws IOException {
+        validateWebPassword(password);
+        byte[] salt = new byte[16];
+        random.nextBytes(salt);
+        byte[] verifier = derivePassword(password, salt, WEB_PASSWORD_ITERATIONS);
+        mutate(data -> {
+            data.webPasswordSalt = Base64.getEncoder().encodeToString(salt);
+            data.webPasswordHash = Base64.getEncoder().encodeToString(verifier);
+            data.webPasswordIterations = WEB_PASSWORD_ITERATIONS;
+        });
+    }
+
+    public boolean hasWebPassword() throws IOException {
+        return passwordRevision(read()) != null;
+    }
+
+    /** Opaque verifier revision used to invalidate sessions immediately after password rotation. */
+    public String webPasswordRevision() {
+        try {
+            StoreData data = read();
+            return passwordRevision(data);
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /** Performs the same bounded password derivation even when the verifier is absent or malformed. */
+    public boolean verifyWebPassword(String password) {
+        return authenticateWebPassword(password) != null;
+    }
+
+    /** Returns an opaque verifier revision only when the supplied password is valid. */
+    public String authenticateWebPassword(String password) {
+        byte[] salt = DUMMY_PASSWORD_SALT;
+        byte[] expected = DUMMY_PASSWORD_HASH;
+        int iterations = WEB_PASSWORD_ITERATIONS;
+        boolean configured = false;
+        String revision = null;
+        try {
+            StoreData data = read();
+            if (data.webPasswordSalt != null && data.webPasswordHash != null
+                    && data.webPasswordIterations >= 100_000 && data.webPasswordIterations <= 1_000_000) {
+                byte[] parsedSalt = Base64.getDecoder().decode(data.webPasswordSalt);
+                byte[] parsedHash = Base64.getDecoder().decode(data.webPasswordHash);
+                if (parsedSalt.length == 16 && parsedHash.length == WEB_PASSWORD_BYTES) {
+                    salt = parsedSalt;
+                    expected = parsedHash;
+                    iterations = data.webPasswordIterations;
+                    configured = true;
+                    revision = passwordRevision(data);
+                }
+            }
+        } catch (IOException | IllegalArgumentException ignored) {
+            // Authentication remains closed if the verifier cannot be read.
+        }
+        char[] supplied = password == null ? new char[0] : password.toCharArray();
+        try {
+            byte[] actual = derivePassword(supplied, salt, iterations);
+            return configured && password != null && MessageDigest.isEqual(expected, actual) ? revision : null;
+        } finally {
+            java.util.Arrays.fill(supplied, '\0');
+        }
+    }
+
+    private static String passwordRevision(StoreData data) {
+        try {
+            if (data.webPasswordSalt == null || data.webPasswordHash == null
+                    || data.webPasswordIterations < 100_000 || data.webPasswordIterations > 1_000_000
+                    || Base64.getDecoder().decode(data.webPasswordSalt).length != 16
+                    || Base64.getDecoder().decode(data.webPasswordHash).length != WEB_PASSWORD_BYTES) {
+                return null;
+            }
+            return hashHex(data.webPasswordSalt + ":" + data.webPasswordHash + ":" + data.webPasswordIterations);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     public boolean verifyNode(String nodeId, String token) {
@@ -172,6 +259,28 @@ public final class CredentialStore {
         }
     }
 
+    private static byte[] derivePassword(char[] password, byte[] salt, int iterations) {
+        PBEKeySpec spec = new PBEKeySpec(password, salt, iterations, WEB_PASSWORD_BYTES * 8);
+        try {
+            return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+        } catch (NoSuchAlgorithmException | InvalidKeySpecException e) {
+            throw new IllegalStateException("PBKDF2-HMAC-SHA256 is unavailable", e);
+        } finally {
+            spec.clearPassword();
+        }
+    }
+
+    private static void validateWebPassword(char[] password) {
+        if (password == null || password.length < WEB_PASSWORD_MINIMUM || password.length > 256) {
+            throw new IllegalArgumentException("WebUI password must contain 12 to 256 characters");
+        }
+        for (char value : password) {
+            if (Character.isISOControl(value)) {
+                throw new IllegalArgumentException("WebUI password cannot contain control characters");
+            }
+        }
+    }
+
     private static void validateNodeId(String nodeId) {
         if (nodeId == null || !NODE_ID.matcher(nodeId).matches()) {
             throw new IllegalArgumentException("nodeId must match " + NODE_ID.pattern());
@@ -185,6 +294,9 @@ public final class CredentialStore {
 
     private static final class StoreData {
         public String adminHash;
+        public String webPasswordSalt;
+        public String webPasswordHash;
+        public int webPasswordIterations;
         public Map<String, String> nodeHashes = new HashMap<>();
     }
 }

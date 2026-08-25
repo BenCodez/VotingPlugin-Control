@@ -18,12 +18,15 @@
 
     <section class="card">
       <h2>Network discovery</h2>
-      <p>Enter the local admin token to load enrolled proxies and their observed backend servers. The token stays in this page's memory and is never saved.</p>
+      <p>Sign in with the WebUI password configured by the Control owner. Sessions use an HttpOnly cookie and expire automatically.</p>
       <form id="auth-form">
-        <label for="token">Admin token</label>
+        <label for="password">WebUI password</label>
         <div class="auth-row">
-          <input id="token" type="password" autocomplete="off" spellcheck="false" required>
-          <button type="submit">Load network</button>
+          <input id="password" type="password" autocomplete="current-password" spellcheck="false" required>
+          <div class="auth-actions">
+            <button type="submit">Sign in</button>
+            <button id="logout" type="button" hidden>Sign out</button>
+          </div>
         </div>
       </form>
       <p id="message" role="status"></p>

@@ -45,11 +45,17 @@ public final class ControlApplication {
     }
 
     private static void runOwnerCommand(String[] args) throws IOException {
-        runOwnerCommand(args, System.getenv(), System.out);
+        runOwnerCommand(args, System.getenv(), System.out, ControlApplication::readWebPassword);
     }
 
     static void runOwnerCommand(String[] args, Map<String, String> environment, PrintStream output)
             throws IOException {
+        runOwnerCommand(args, environment, output,
+                () -> { throw new IllegalArgumentException("A console is required to read the WebUI password"); });
+    }
+
+    static void runOwnerCommand(String[] args, Map<String, String> environment, PrintStream output,
+                                PasswordReader passwordReader) throws IOException {
         switch (args[0]) {
             case "enroll" -> {
                 if (args.length < 2 || args.length > 3) {
@@ -73,8 +79,37 @@ public final class ControlApplication {
                 Path selected = ownerDataDirectory(args.length == 2 ? args[1] : null, environment);
                 output.println(new CredentialStore(selected).rotateAdmin());
             }
+            case "web-password" -> {
+                if (args.length > 2) {
+                    throw new IllegalArgumentException("Usage: web-password [dataDirectory]");
+                }
+                Path selected = ownerDataDirectory(args.length == 2 ? args[1] : null, environment);
+                char[] password = passwordReader.read();
+                try {
+                    new CredentialStore(selected).setWebPassword(password);
+                } finally {
+                    if (password != null) java.util.Arrays.fill(password, '\0');
+                }
+                output.println("WebUI password updated. Existing browser sessions are now invalid.");
+            }
             default -> throw new IllegalArgumentException("Unknown command");
         }
+    }
+
+    private static char[] readWebPassword() {
+        java.io.Console console = System.console();
+        if (console == null) {
+            throw new IllegalArgumentException("The web-password command requires an interactive console");
+        }
+        char[] first = console.readPassword("New WebUI password: ");
+        char[] second = console.readPassword("Confirm WebUI password: ");
+        if (first == null || second == null || !java.util.Arrays.equals(first, second)) {
+            if (first != null) java.util.Arrays.fill(first, '\0');
+            if (second != null) java.util.Arrays.fill(second, '\0');
+            throw new IllegalArgumentException("WebUI passwords did not match");
+        }
+        java.util.Arrays.fill(second, '\0');
+        return first;
     }
 
     private static Path ownerDataDirectory(String explicit, Map<String, String> environment) {
@@ -84,8 +119,9 @@ public final class ControlApplication {
     static void runServer(Map<String, String> environment) throws Exception {
         Configuration configuration = Configuration.from(environment);
         CredentialStore credentials = new CredentialStore(configuration.dataDirectory());
-        if (!configuration.address().getAddress().isLoopbackAddress() && !credentials.hasAdmin()) {
-            throw new IllegalArgumentException("An admin credential is required for non-loopback binding");
+        if (!configuration.address().getAddress().isLoopbackAddress()
+                && !credentials.hasAdmin() && !credentials.hasWebPassword()) {
+            throw new IllegalArgumentException("An admin token or WebUI password is required for non-loopback binding");
         }
         // JDK HttpServer honors these bounds for stalled request and response bodies.
         System.setProperty("sun.net.httpserver.maxReqTime", Integer.toString(configuration.requestTimeoutSeconds()));
@@ -97,7 +133,7 @@ public final class ControlApplication {
         ConfigurationOperations operations = new ConfigurationOperations(registry,
                 new ConfigurationAuditLog(configuration.dataDirectory(), clock), clock);
         ControlHttpServer server = new ControlHttpServer(configuration.address(), registry, identity, credentials,
-                operations);
+                operations, configuration.secureCookies());
         CountDownLatch shutdown = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             server.close();
@@ -150,7 +186,7 @@ public final class ControlApplication {
     }
 
     record Configuration(InetSocketAddress address, Path dataDirectory, Duration offlineTimeout,
-                         int requestTimeoutSeconds) {
+                         int requestTimeoutSeconds, boolean secureCookies) {
         static Configuration from(Map<String, String> environment) throws IOException {
             String host = environment.getOrDefault("CONTROL_HOST", "127.0.0.1").trim();
             if (host.isEmpty()) {
@@ -162,9 +198,11 @@ public final class ControlApplication {
                     "offline timeout", 1, 3600);
             int requestSeconds = boundedInteger(environment.getOrDefault("CONTROL_REQUEST_TIMEOUT_SECONDS", "10"),
                     "request timeout", 1, 60);
+            boolean secureCookies = strictBoolean(environment.getOrDefault("CONTROL_SECURE_COOKIE", "false"),
+                    "secure cookie");
             return new Configuration(new InetSocketAddress(resolved, port),
                     requirePath(environment.getOrDefault("CONTROL_DATA_DIR", "data")),
-                    Duration.ofSeconds(offlineSeconds), requestSeconds);
+                    Duration.ofSeconds(offlineSeconds), requestSeconds, secureCookies);
         }
 
         private static int boundedInteger(String value, String name, int minimum, int maximum) {
@@ -179,5 +217,16 @@ public final class ControlApplication {
             }
             return parsed;
         }
+
+        private static boolean strictBoolean(String value, String name) {
+            if ("true".equalsIgnoreCase(value)) return true;
+            if ("false".equalsIgnoreCase(value)) return false;
+            throw new IllegalArgumentException("Invalid " + name);
+        }
+    }
+
+    @FunctionalInterface
+    interface PasswordReader {
+        char[] read();
     }
 }

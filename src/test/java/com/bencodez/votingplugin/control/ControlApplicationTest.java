@@ -67,6 +67,19 @@ class ControlApplicationTest {
         assertTrue(output.toString().trim().startsWith("vpctl_admin_"));
     }
 
+    @Test void webPasswordCommandReadsSecretOutOfBand() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        char[] supplied = "command-password-value".toCharArray();
+
+        ControlApplication.runOwnerCommand(new String[]{"web-password", directory.toString()},
+                java.util.Map.of(), new PrintStream(output), () -> supplied);
+
+        assertTrue(new com.bencodez.votingplugin.control.auth.CredentialStore(directory)
+                .verifyWebPassword("command-password-value"));
+        assertTrue(output.toString().contains("WebUI password updated"));
+        assertTrue(java.util.Arrays.equals(new char[supplied.length], supplied));
+    }
+
     @Test void startupConfigurationValidatesAllBounds() {
         assertThrows(IllegalArgumentException.class,
                 () -> ControlApplication.Configuration.from(java.util.Map.of("CONTROL_PORT", "70000")));

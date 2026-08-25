@@ -1,6 +1,7 @@
 package com.bencodez.votingplugin.control.http;
 
 import com.bencodez.votingplugin.control.auth.CredentialStore;
+import com.bencodez.votingplugin.control.auth.WebSessionStore;
 import com.bencodez.votingplugin.control.domain.NodeRegistry;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
 import com.bencodez.votingplugin.control.domain.ValidationException;
@@ -20,6 +21,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsExchange;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -31,6 +33,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.HashMap;
@@ -52,6 +55,10 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final String REGISTER = "/api/v1/nodes/register";
     private static final String CONFIGURATION = "/api/v1/configuration";
     private static final String OPERATIONS = "/api/v1/operations";
+    private static final String AUTH_LOGIN = "/api/v1/auth/login";
+    private static final String AUTH_SESSION = "/api/v1/auth/session";
+    private static final String AUTH_LOGOUT = "/api/v1/auth/logout";
+    private static final String SESSION_COOKIE = "vpctl_session";
     private static final Map<String, WebResource> WEB_RESOURCES = Map.of(
             "/", new WebResource("/web/index.html", "text/html; charset=utf-8"),
             "/index.html", new WebResource("/web/index.html", "text/html; charset=utf-8"),
@@ -67,28 +74,39 @@ public final class ControlHttpServer implements AutoCloseable {
     private final ConfigurationOperations configurationOperations;
     private final ThreadPoolExecutor executor;
     private final AuthFailureLimiter authLimiter;
+    private final WebSessionStore webSessions;
+    private final boolean secureCookies;
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials) throws IOException {
         this(address, registry, identity, credentials,
                 new ConfigurationOperations(registry, new com.bencodez.votingplugin.control.domain.ConfigurationAuditLog(
                         java.nio.file.Files.createTempDirectory("votingplugin-control-test-audit"), Clock.systemUTC()),
-                        Clock.systemUTC()), Clock.systemUTC(), System::nanoTime);
+                        Clock.systemUTC()), Clock.systemUTC(), System::nanoTime, false);
     }
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials, ConfigurationOperations configurationOperations)
             throws IOException {
-        this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime);
+        this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime,
+                false);
+    }
+
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, ConfigurationOperations configurationOperations,
+                             boolean secureCookies) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime,
+                secureCookies);
     }
 
     ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                       CredentialStore credentials, ConfigurationOperations configurationOperations, Clock clock,
-                      java.util.function.LongSupplier nanoTime) throws IOException {
+                      java.util.function.LongSupplier nanoTime, boolean secureCookies) throws IOException {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.credentials = Objects.requireNonNull(credentials, "credentials");
         this.configurationOperations = Objects.requireNonNull(configurationOperations, "configurationOperations");
+        this.secureCookies = secureCookies;
         Objects.requireNonNull(clock, "clock");
         json = new ObjectMapper();
         json.findAndRegisterModules();
@@ -99,6 +117,7 @@ public final class ControlHttpServer implements AutoCloseable {
         json.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
                 .maxNestingDepth(20).maxStringLength(4096).maxNumberLength(64).build());
         authLimiter = new AuthFailureLimiter(nanoTime, MAX_AUTH_FAILURES_PER_MINUTE, TimeUnit.MINUTES.toNanos(1));
+        webSessions = new WebSessionStore(clock);
         server = HttpServer.create(address, 32);
         server.createContext("/", this::handle);
         ThreadFactory threads = runnable -> {
@@ -137,6 +156,8 @@ public final class ControlHttpServer implements AutoCloseable {
             exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
             error(exchange, e.rateLimited ? 429 : 401, e.rateLimited ? "AUTH_RATE_LIMITED" : "UNAUTHORIZED",
                     e.rateLimited ? "Too many authentication failures" : "Authentication failed", List.of());
+        } catch (CsrfException e) {
+            error(exchange, 403, "CSRF_REQUIRED", "A valid CSRF token is required", List.of());
         } catch (ValidationException e) {
             int status = switch (e.code()) {
                 case "NODE_NOT_FOUND", "OPERATION_NOT_FOUND" -> 404;
@@ -177,9 +198,43 @@ public final class ControlHttpServer implements AutoCloseable {
             send(exchange, 200, Map.of("status", "ok", "time", Instant.now(), "identity", identity));
             return;
         }
+        if (AUTH_LOGIN.equals(path)) {
+            requireMethod(exchange, "POST");
+            if (!authLimiter.allowAttempt()) throw new AuthenticationException(true);
+            PasswordRequest request = read(exchange, PasswordRequest.class);
+            String credentialRevision = request == null ? null : credentials.authenticateWebPassword(request.password());
+            if (credentialRevision == null) {
+                authLimiter.recordFailure();
+                throw new AuthenticationException(false);
+            }
+            webSessions.remove(cookie(exchange, SESSION_COOKIE));
+            WebSessionStore.Session session = webSessions.create(credentialRevision);
+            setSessionCookie(exchange, session.id(), false);
+            send(exchange, 200, Map.of("csrfToken", session.csrfToken()));
+            return;
+        }
+        if (AUTH_SESSION.equals(path)) {
+            requireMethod(exchange, "GET");
+            WebSessionStore.Session session = webSessions.authenticate(cookie(exchange, SESSION_COOKIE),
+                    credentials.webPasswordRevision());
+            if (session == null) {
+                noContent(exchange);
+                return;
+            }
+            send(exchange, 200, Map.of("csrfToken", session.csrfToken()));
+            return;
+        }
+        if (AUTH_LOGOUT.equals(path)) {
+            requireMethod(exchange, "POST");
+            WebSessionStore.Session session = authenticateWebSession(exchange, true);
+            webSessions.remove(session.id());
+            setSessionCookie(exchange, "", true);
+            send(exchange, 200, Map.of("loggedOut", true));
+            return;
+        }
         if (NODES.equals(path)) {
             requireMethod(exchange, "GET");
-            authenticateAdmin(exchange);
+            authenticateAdmin(exchange, false);
             Map<String, String> query = query(uri.getRawQuery());
             int offset = integer(query.getOrDefault("offset", "0"), "offset");
             int limit = integer(query.getOrDefault("limit", "50"), "limit");
@@ -202,21 +257,21 @@ public final class ControlHttpServer implements AutoCloseable {
         }
         if ((CONFIGURATION + "/read").equals(path)) {
             requireMethod(exchange, "POST");
-            authenticateAdmin(exchange);
+            authenticateAdmin(exchange, true);
             ConfigurationRequests.Read request = read(exchange, ConfigurationRequests.Read.class);
             send(exchange, 202, configurationOperations.createRead(request.nodeIds()));
             return;
         }
         if ((CONFIGURATION + "/preview").equals(path)) {
             requireMethod(exchange, "POST");
-            authenticateAdmin(exchange);
+            authenticateAdmin(exchange, true);
             ConfigurationRequests.Preview request = read(exchange, ConfigurationRequests.Preview.class);
             send(exchange, 202, configurationOperations.createPreview(request.nodeIds(), request.configuration()));
             return;
         }
         if ((CONFIGURATION + "/apply").equals(path)) {
             requireMethod(exchange, "POST");
-            authenticateAdmin(exchange);
+            authenticateAdmin(exchange, true);
             ConfigurationRequests.Apply request = read(exchange, ConfigurationRequests.Apply.class);
             send(exchange, 202, configurationOperations.createApply(request.previewOperationId(), request.approvalToken()));
             return;
@@ -225,7 +280,7 @@ public final class ControlHttpServer implements AutoCloseable {
             String remainder = path.substring((OPERATIONS + "/").length());
             if (!remainder.contains("/")) {
                 requireMethod(exchange, "GET");
-                authenticateAdmin(exchange);
+                authenticateAdmin(exchange, false);
                 send(exchange, 200, configurationOperations.get(UUID.fromString(remainder)));
                 return;
             }
@@ -322,8 +377,11 @@ public final class ControlHttpServer implements AutoCloseable {
         authenticate(exchange, token -> credentials.verifyNode(nodeId, token));
     }
 
-    private void authenticateAdmin(HttpExchange exchange) {
-        authenticate(exchange, credentials::verifyAdmin);
+    private void authenticateAdmin(HttpExchange exchange, boolean csrfRequired) {
+        if (credentials.verifyAdmin(bearer(exchange))) {
+            return;
+        }
+        authenticateWebSession(exchange, csrfRequired);
     }
 
     private void authenticate(HttpExchange exchange, java.util.function.Predicate<String> verifier) {
@@ -331,9 +389,23 @@ public final class ControlHttpServer implements AutoCloseable {
         if (verifier.test(token)) {
             return;
         }
-        if (!authLimiter.allowAttempt()) {
-            throw new AuthenticationException(true);
+        authenticationFailed();
+    }
+
+    private WebSessionStore.Session authenticateWebSession(HttpExchange exchange, boolean csrfRequired) {
+        WebSessionStore.Session session = webSessions.authenticate(cookie(exchange, SESSION_COOKIE),
+                credentials.webPasswordRevision());
+        if (session == null) {
+            authenticationFailed();
         }
+        if (csrfRequired && !constantTimeEquals(session.csrfToken(), singleHeader(exchange, "X-CSRF-Token"))) {
+            throw new CsrfException();
+        }
+        return session;
+    }
+
+    private void authenticationFailed() {
+        if (!authLimiter.allowAttempt()) throw new AuthenticationException(true);
         authLimiter.recordFailure();
         throw new AuthenticationException(false);
     }
@@ -346,6 +418,40 @@ public final class ControlHttpServer implements AutoCloseable {
         String value = values.get(0);
         return value.regionMatches(true, 0, "Bearer ", 0, 7) && value.length() > 7
                 ? value.substring(7) : null;
+    }
+
+    private static String cookie(HttpExchange exchange, String name) {
+        String found = null;
+        List<String> headers = exchange.getRequestHeaders().get("Cookie");
+        if (headers == null) return null;
+        for (String header : headers) {
+            for (String item : header.split(";")) {
+                String[] pair = item.trim().split("=", 2);
+                if (pair.length == 2 && name.equals(pair[0])) {
+                    if (found != null) return null;
+                    found = pair[1];
+                }
+            }
+        }
+        return found;
+    }
+
+    private static String singleHeader(HttpExchange exchange, String name) {
+        List<String> values = exchange.getRequestHeaders().get(name);
+        return values != null && values.size() == 1 ? values.get(0) : null;
+    }
+
+    private static boolean constantTimeEquals(String expected, String actual) {
+        byte[] first = expected == null ? new byte[32] : expected.getBytes(StandardCharsets.UTF_8);
+        byte[] second = actual == null ? new byte[32] : actual.getBytes(StandardCharsets.UTF_8);
+        return expected != null && actual != null && MessageDigest.isEqual(first, second);
+    }
+
+    private void setSessionCookie(HttpExchange exchange, String value, boolean expired) {
+        String cookie = SESSION_COOKIE + "=" + value + "; Path=/; HttpOnly; SameSite=Strict"
+                + (secureCookies || exchange instanceof HttpsExchange ? "; Secure" : "")
+                + (expired ? "; Max-Age=0" : "");
+        exchange.getResponseHeaders().add("Set-Cookie", cookie);
     }
 
     private void requireMethod(HttpExchange exchange, String expected) throws IOException {
@@ -453,9 +559,12 @@ public final class ControlHttpServer implements AutoCloseable {
         }
     }
     @SuppressWarnings("serial")
+    private static final class CsrfException extends RuntimeException { }
+    @SuppressWarnings("serial")
     private static final class ResponseCompleteException extends RuntimeException { }
 
     private record WebResource(String classpath, String contentType) { }
+    private record PasswordRequest(String password) { }
 
     static final class AuthFailureLimiter {
         private final java.util.function.LongSupplier nanoTime;

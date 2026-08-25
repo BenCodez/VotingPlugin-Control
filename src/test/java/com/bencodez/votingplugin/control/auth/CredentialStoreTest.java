@@ -37,4 +37,22 @@ class CredentialStoreTest {
         assertFalse(store.verifyAdmin(token));
         assertTrue(store.verifyAdmin(replacement));
     }
+
+    @Test void webPasswordUsesSaltedPbkdf2VerifierAndRotates() throws Exception {
+        CredentialStore store = new CredentialStore(directory);
+        assertFalse(store.hasWebPassword());
+        char[] first = "a-long-local-password".toCharArray();
+        store.setWebPassword(first);
+        assertTrue(store.hasWebPassword());
+        assertTrue(store.verifyWebPassword("a-long-local-password"));
+        assertFalse(store.verifyWebPassword("not-the-password"));
+        String persisted = Files.readString(directory.resolve("credentials.json"));
+        assertFalse(persisted.contains("a-long-local-password"));
+        assertTrue(persisted.contains("webPasswordSalt"));
+
+        store.setWebPassword("a-different-long-password".toCharArray());
+        assertFalse(store.verifyWebPassword("a-long-local-password"));
+        assertTrue(store.verifyWebPassword("a-different-long-password"));
+        assertThrows(IllegalArgumentException.class, () -> store.setWebPassword("too-short".toCharArray()));
+    }
 }

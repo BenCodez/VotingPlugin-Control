@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -152,6 +153,40 @@ class ControlHttpServerTest {
         assertEquals(201, send("POST", "/api/v1/nodes/register", registration(), nodeToken).statusCode());
     }
 
+    @Test void webPasswordCreatesHttpOnlySessionRequiresCsrfAndLogsOut() throws Exception {
+        credentials.setWebPassword("a-secure-web-password".toCharArray());
+        assertAuthFailure(send("POST", "/api/v1/auth/login", "{\"password\":\"wrong-password-value\"}", null));
+
+        HttpResponse<String> login = send("POST", "/api/v1/auth/login",
+                "{\"password\":\"a-secure-web-password\"}", null);
+        assertEquals(200, login.statusCode());
+        String setCookie = login.headers().firstValue("Set-Cookie").orElseThrow();
+        assertTrue(setCookie.contains("HttpOnly"));
+        assertTrue(setCookie.contains("SameSite=Strict"));
+        String cookie = setCookie.substring(0, setCookie.indexOf(';'));
+        String csrf = json.readTree(login.body()).get("csrfToken").asText();
+
+        assertEquals(200, sendWithHeaders("GET", "/api/v1/auth/session", null,
+                Map.of("Cookie", cookie)).statusCode());
+        assertEquals(200, sendWithHeaders("GET", "/api/v1/nodes", null,
+                Map.of("Cookie", cookie)).statusCode());
+        assertError(sendWithHeaders("POST", "/api/v1/auth/logout", null,
+                Map.of("Cookie", cookie)), 403, "CSRF_REQUIRED");
+        HttpResponse<String> logout = sendWithHeaders("POST", "/api/v1/auth/logout", null,
+                Map.of("Cookie", cookie, "X-CSRF-Token", csrf));
+        assertEquals(200, logout.statusCode());
+        assertTrue(logout.headers().firstValue("Set-Cookie").orElseThrow().contains("Max-Age=0"));
+        assertEquals(204, sendWithHeaders("GET", "/api/v1/auth/session", null, Map.of("Cookie", cookie)).statusCode());
+
+        HttpResponse<String> secondLogin = send("POST", "/api/v1/auth/login",
+                "{\"password\":\"a-secure-web-password\"}", null);
+        String secondCookie = secondLogin.headers().firstValue("Set-Cookie").orElseThrow();
+        secondCookie = secondCookie.substring(0, secondCookie.indexOf(';'));
+        credentials.setWebPassword("a-rotated-web-password".toCharArray());
+        assertEquals(204, sendWithHeaders("GET", "/api/v1/auth/session", null,
+                Map.of("Cookie", secondCookie)).statusCode());
+    }
+
     @Test void malformedEmptyNullDuplicateNestedOversizedAndLongPayloadsAreDeterministic() throws Exception {
         assertError(send("POST", "/api/v1/nodes/register", "{", nodeToken), 400, "MALFORMED_JSON");
         assertError(send("POST", "/api/v1/nodes/register", "", nodeToken), 400, "MALFORMED_JSON");
@@ -209,10 +244,14 @@ class ControlHttpServerTest {
     }
 
     private HttpResponse<String> send(String method, String path, String body, String token) throws Exception {
+        return sendWithHeaders(method, path, body,
+                token == null ? Map.of() : Map.of("Authorization", "Bearer " + token));
+    }
+
+    private HttpResponse<String> sendWithHeaders(String method, String path, String body,
+                                                  Map<String, String> headers) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder(base.resolve(path)).timeout(Duration.ofSeconds(3));
-        if (token != null) {
-            builder.header("Authorization", "Bearer " + token);
-        }
+        headers.forEach(builder::header);
         if (body != null) {
             builder.header("Content-Type", "application/json");
         }

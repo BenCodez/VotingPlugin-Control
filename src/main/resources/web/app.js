@@ -2,7 +2,8 @@
 
 const health = document.querySelector('#health');
 const form = document.querySelector('#auth-form');
-const tokenInput = document.querySelector('#token');
+const passwordInput = document.querySelector('#password');
+const logout = document.querySelector('#logout');
 const message = document.querySelector('#message');
 const nodes = document.querySelector('#nodes');
 const refresh = document.querySelector('#refresh');
@@ -16,7 +17,8 @@ const previewConfiguration = document.querySelector('#preview-configuration');
 const applyConfiguration = document.querySelector('#apply-configuration');
 const operationStatus = document.querySelector('#operation-status');
 const PAGE_SIZE = 100;
-let adminToken = '';
+let authenticated = false;
+let csrfToken = '';
 let pageOffset = 0;
 let selectedNodes = new Set();
 let approvedPreview = null;
@@ -79,17 +81,19 @@ function nodeCard(node) {
 }
 
 function updateConfigurationButtons(busy = false) {
-  const ready = adminToken && selectedNodes.size > 0 && !busy;
+  const ready = authenticated && selectedNodes.size > 0 && !busy;
   readConfiguration.disabled = !ready;
   previewConfiguration.disabled = !ready;
   applyConfiguration.disabled = !ready || !approvedPreview;
 }
 
 async function authorized(path, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
   const response = await fetch(path, {
     cache: 'no-store',
+    credentials: 'same-origin',
     ...options,
-    headers: {...(options.headers || {}), 'Authorization': `Bearer ${adminToken}`}
+    headers: {...(options.headers || {}), ...(method === 'GET' ? {} : {'X-CSRF-Token': csrfToken})}
   });
   const body = response.status === 204 ? null : await response.json();
   if (!response.ok) throw new Error(body?.error?.message || `Control request failed (${response.status}).`);
@@ -136,20 +140,13 @@ async function startConfigurationOperation(path, body) {
 }
 
 async function loadNodes() {
-  if (!adminToken) return;
+  if (!authenticated) return;
   refresh.disabled = true;
   previousPage.disabled = true;
   nextPage.disabled = true;
   text(message, 'Loading…');
   try {
-    const response = await fetch(`/api/v1/nodes?offset=${pageOffset}&limit=${PAGE_SIZE}`, {
-      cache: 'no-store',
-      headers: {'Authorization': `Bearer ${adminToken}`}
-    });
-    if (!response.ok) {
-      throw new Error(response.status === 401 || response.status === 429 ? 'Authentication failed.' : 'Control request failed.');
-    }
-    const body = await response.json();
+    const body = await authorized(`/api/v1/nodes?offset=${pageOffset}&limit=${PAGE_SIZE}`);
     nodes.replaceChildren();
     nodes.classList.toggle('empty', body.items.length === 0);
     if (body.items.length === 0) {
@@ -177,13 +174,51 @@ async function loadNodes() {
   }
 }
 
-form.addEventListener('submit', event => {
+form.addEventListener('submit', async event => {
   event.preventDefault();
-  adminToken = tokenInput.value.trim();
-  tokenInput.value = '';
-  pageOffset = 0;
-  loadNodes();
+  const password = passwordInput.value;
+  passwordInput.value = '';
+  try {
+    const response = await fetch('/api/v1/auth/login', {
+      method: 'POST', cache: 'no-store', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({password})
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body?.error?.message || 'Authentication failed.');
+    authenticated = true;
+    csrfToken = body.csrfToken;
+    logout.hidden = false;
+    pageOffset = 0;
+    await loadNodes();
+  } catch (error) {
+    text(message, error.message || 'Authentication failed.');
+  }
 });
+
+logout.addEventListener('click', async () => {
+  try { await authorized('/api/v1/auth/logout', {method: 'POST'}); } catch (_) { /* Expired is logged out too. */ }
+  authenticated = false;
+  csrfToken = '';
+  logout.hidden = true;
+  selectedNodes.clear();
+  nodes.replaceChildren();
+  nodes.classList.add('empty');
+  text(nodes, 'Authenticate to view the network.');
+  text(message, 'Signed out.');
+  updateConfigurationButtons();
+});
+
+async function restoreSession() {
+  try {
+    const response = await fetch('/api/v1/auth/session', {cache: 'no-store', credentials: 'same-origin'});
+    if (!response.ok || response.status === 204) return;
+    const body = await response.json();
+    authenticated = true;
+    csrfToken = body.csrfToken;
+    logout.hidden = false;
+    await loadNodes();
+  } catch (_) { /* The login form remains available. */ }
+}
 
 readConfiguration.addEventListener('click', async () => {
   approvedPreview = null;
@@ -236,3 +271,4 @@ nextPage.addEventListener('click', () => {
   loadNodes();
 });
 loadHealth();
+restoreSession();
