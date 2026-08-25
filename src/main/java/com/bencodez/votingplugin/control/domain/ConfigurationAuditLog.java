@@ -92,8 +92,9 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical));
             core.put("hash", hash);
             String line = json.writeValueAsString(core) + System.lineSeparator();
+            long preActiveBytes = Files.exists(file, LinkOption.NOFOLLOW_LINKS) ? Files.size(file) : 0;
             PendingAppend pending = new PendingAppend(line, rotate, previousHash, activeRecords, retainedHash,
-                    retainedRecords, hash, rotate ? 1 : activeRecords + 1,
+                    retainedRecords, preActiveBytes, hash, rotate ? 1 : activeRecords + 1,
                     rotate ? previousHash : retainedHash, rotate ? activeRecords : retainedRecords);
             writePending(pending);
             completePending(pending);
@@ -109,15 +110,17 @@ public final class ConfigurationAuditLog implements AutoCloseable {
         }
         try {
             JsonNode stored = json.readTree(Files.readAllBytes(pendingFile));
-            if (stored == null || !stored.isObject() || stored.size() != 10
+            if (stored == null || !stored.isObject() || stored.size() != 11
                     || !stored.path("rotate").isBoolean()
                     || !integral(stored, "preActiveRecords") || !integral(stored, "preRetainedRecords")
+                    || !integral(stored, "preActiveBytes")
                     || !integral(stored, "postActiveRecords") || !integral(stored, "postRetainedRecords")) {
                 throw new IOException("Configuration audit pending transaction is invalid");
             }
             completePending(new PendingAppend(stored.path("line").asText(), stored.path("rotate").asBoolean(),
                     stored.path("preActiveHash").asText(), stored.path("preActiveRecords").asLong(),
                     stored.path("preRetainedHash").asText(), stored.path("preRetainedRecords").asLong(),
+                    stored.path("preActiveBytes").asLong(),
                     stored.path("postActiveHash").asText(), stored.path("postActiveRecords").asLong(),
                     stored.path("postRetainedHash").asText(), stored.path("postRetainedRecords").asLong()));
         } catch (IOException e) {
@@ -129,7 +132,12 @@ public final class ConfigurationAuditLog implements AutoCloseable {
 
     private void completePending(PendingAppend pending) throws IOException {
         SegmentState retained = validateOptional(previousFile, "Retained configuration audit log");
-        SegmentState active = validateOptional(file, "Configuration audit log");
+        SegmentState active;
+        try {
+            active = validateOptional(file, "Configuration audit log");
+        } catch (IOException invalidActive) {
+            active = repairTornActive(pending, retained, invalidActive);
+        }
         if (matches(active, pending.postActiveHash(), pending.postActiveRecords())
                 && matches(retained, pending.postRetainedHash(), pending.postRetainedRecords())) {
             // The record is durable; only checkpoint publication or cleanup was interrupted.
@@ -154,6 +162,38 @@ public final class ConfigurationAuditLog implements AutoCloseable {
         Files.delete(pendingFile);
     }
 
+    private SegmentState repairTornActive(PendingAppend pending, SegmentState retained,
+                                          IOException invalidActive) throws IOException {
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw invalidActive;
+        byte[] actual = Files.readAllBytes(file);
+        byte[] intended = pending.line().getBytes(StandardCharsets.UTF_8);
+        long baseLong = pending.rotate() ? 0 : pending.preActiveBytes();
+        if (baseLong > Integer.MAX_VALUE || actual.length <= baseLong
+                || actual.length >= baseLong + intended.length) throw invalidActive;
+        int base = (int) baseLong;
+        if (pending.rotate()) {
+            if (!matches(retained, pending.postRetainedHash(), pending.postRetainedRecords())) throw invalidActive;
+        } else {
+            SegmentState prefix = validateBytes(java.util.Arrays.copyOf(actual, base));
+            if (!matches(prefix, pending.preActiveHash(), pending.preActiveRecords())
+                    || !matches(retained, pending.preRetainedHash(), pending.preRetainedRecords())) {
+                throw invalidActive;
+            }
+        }
+        for (int index = base; index < actual.length; index++) {
+            if (actual[index] != intended[index - base]) throw invalidActive;
+        }
+        if (base == 0) {
+            Files.delete(file);
+        } else {
+            try (FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE)) {
+                channel.truncate(base);
+                channel.force(true);
+            }
+        }
+        return validateOptional(file, "Configuration audit log");
+    }
+
     private static boolean matches(SegmentState state, String hash, long records) {
         return state.tailHash().equals(hash) && state.records() == records
                 && (records > 0 ? state.present() : !state.present() || "GENESIS".equals(hash));
@@ -173,6 +213,7 @@ public final class ConfigurationAuditLog implements AutoCloseable {
         value.put("preActiveRecords", pending.preActiveRecords());
         value.put("preRetainedHash", pending.preRetainedHash());
         value.put("preRetainedRecords", pending.preRetainedRecords());
+        value.put("preActiveBytes", pending.preActiveBytes());
         value.put("postActiveHash", pending.postActiveHash());
         value.put("postActiveRecords", pending.postActiveRecords());
         value.put("postRetainedHash", pending.postRetainedHash());
@@ -195,9 +236,25 @@ public final class ConfigurationAuditLog implements AutoCloseable {
     }
 
     private SegmentState validateExisting(Path selected) throws IOException {
+        return validateLines(Files.readAllLines(selected, StandardCharsets.UTF_8));
+    }
+
+    private SegmentState validateBytes(byte[] bytes) throws IOException {
+        try {
+            String content = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+            return validateLines(content.lines().toList());
+        } catch (java.nio.charset.CharacterCodingException e) {
+            throw new IOException("Configuration audit chain is invalid", e);
+        }
+    }
+
+    private SegmentState validateLines(Iterable<String> lines) throws IOException {
         String expectedPrevious = "GENESIS";
         long records = 0;
-        for (String line : Files.readAllLines(selected, StandardCharsets.UTF_8)) {
+        for (String line : lines) {
             if (line.isBlank()) continue;
             try {
                 JsonNode stored = json.readTree(line);
@@ -299,7 +356,8 @@ public final class ConfigurationAuditLog implements AutoCloseable {
 
     private record SegmentState(boolean present, String tailHash, long records) { }
     private record PendingAppend(String line, boolean rotate, String preActiveHash, long preActiveRecords,
-                                 String preRetainedHash, long preRetainedRecords, String postActiveHash,
+                                 String preRetainedHash, long preRetainedRecords, long preActiveBytes,
+                                 String postActiveHash,
                                  long postActiveRecords, String postRetainedHash, long postRetainedRecords) { }
 
     @SuppressWarnings("serial")

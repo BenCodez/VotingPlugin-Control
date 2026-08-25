@@ -9,6 +9,7 @@ import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
+import com.bencodez.votingplugin.control.protocol.Heartbeat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Path;
@@ -134,7 +135,7 @@ class ConfigurationOperationsTest {
         assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory, clock));
     }
 
-    @Test void auditPendingTransactionRecoversRecordBeforeCheckpointCrash() throws Exception {
+    @Test void auditPendingTransactionRecoversTornRecordBeforeCheckpointCrash() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         Path active = directory.resolve("configuration-audit.jsonl");
         Path checkpoint = directory.resolve("configuration-audit.checkpoint");
@@ -157,15 +158,22 @@ class ConfigurationOperationsTest {
         pending.put("preActiveRecords", pre.path("activeRecords").asLong());
         pending.put("preRetainedHash", pre.path("retainedHash").asText());
         pending.put("preRetainedRecords", pre.path("retainedRecords").asLong());
+        byte[] firstLine = (lines.get(0) + System.lineSeparator()).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        pending.put("preActiveBytes", firstLine.length);
         pending.put("postActiveHash", post.path("activeHash").asText());
         pending.put("postActiveRecords", post.path("activeRecords").asLong());
         pending.put("postRetainedHash", post.path("retainedHash").asText());
         pending.put("postRetainedRecords", post.path("retainedRecords").asLong());
         Files.write(directory.resolve("configuration-audit.pending"), json.writeValueAsBytes(pending));
         Files.write(checkpoint, before);
+        byte[] secondLine = (lines.get(1) + System.lineSeparator()).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] torn = java.util.Arrays.copyOf(firstLine, firstLine.length + secondLine.length / 2);
+        System.arraycopy(secondLine, 0, torn, firstLine.length, secondLine.length / 2);
+        Files.write(active, torn);
 
         try (ConfigurationAuditLog ignored = new ConfigurationAuditLog(directory, clock)) { }
         assertEquals(json.readTree(after), json.readTree(Files.readAllBytes(checkpoint)));
+        assertEquals(2, Files.readAllLines(active).size());
         assertEquals(false, Files.exists(directory.resolve("configuration-audit.pending")));
     }
 
@@ -220,6 +228,25 @@ class ConfigurationOperationsTest {
         assertEquals("NODE_UNAVAILABLE", assertThrows(ValidationException.class,
                 () -> operations.createPreview(List.of("backend-a"),
                         ManagedConfiguration.proxy(new ProxyRoutingConfiguration(false, List.of())))).code());
+    }
+
+    @Test void claimCancelsTaskWhenCurrentSessionLostItsCapability() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of(ConfigurationOperations.FILE_CAPABILITY)));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        UUID operation = operations.createRead(List.of("backend-a"),
+                ManagedConfiguration.file("Config.yml", null)).operationId();
+
+        registry.heartbeat("backend-a", new Heartbeat(session, 1, Set.of("discovery.read"), Set.of()));
+
+        assertEquals(null, operations.claim("backend-a", session));
+        ConfigurationOperations.OperationView view = operations.get(operation);
+        assertEquals("COMPLETED_WITH_ERRORS", view.state());
+        assertEquals("CAPABILITY_LOST", view.results().get("backend-a").code());
     }
 
     @Test void fileOperationRetentionAndMultiNodeContentsAreBounded() throws Exception {

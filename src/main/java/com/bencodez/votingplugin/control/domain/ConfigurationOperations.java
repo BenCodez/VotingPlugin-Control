@@ -100,10 +100,10 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     public synchronized ConfigurationTask claim(String nodeId, UUID sessionId) {
-        return registry.withSession(nodeId, sessionId, () -> claimCurrentSession(nodeId));
+        return registry.withSession(nodeId, sessionId, node -> claimCurrentSession(nodeId, node));
     }
 
-    private ConfigurationTask claimCurrentSession(String nodeId) {
+    private ConfigurationTask claimCurrentSession(String nodeId, NodeStatus node) {
         prune();
         Instant now = clock.instant();
         for (StoredOperation operation : operations.values()) {
@@ -111,6 +111,15 @@ public final class ConfigurationOperations implements AutoCloseable {
             Instant leased = operation.leasedAt.get(nodeId);
             if ("QUEUED".equals(state) || ("IN_PROGRESS".equals(state) && leased != null
                     && !now.isBefore(leased.plus(LEASE)))) {
+                if (!node.online() || !node.acceptedCapabilities().contains(operation.configuration.capability())) {
+                    audit.append("TASK_CANCELLED", operation.id, nodeId, "CAPABILITY_LOST");
+                    operation.results.put(nodeId, new ConfigurationTaskResult(sessionId(node), false,
+                            "CAPABILITY_LOST", "Node no longer accepts this configuration capability", null,
+                            (ManagedConfiguration) null, List.of(), false, false));
+                    operation.states.put(nodeId, "COMPLETE");
+                    operation.leasedAt.remove(nodeId);
+                    continue;
+                }
                 operation.states.put(nodeId, "IN_PROGRESS");
                 operation.leasedAt.put(nodeId, now);
                 try {
@@ -129,7 +138,12 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     public synchronized OperationView complete(UUID operationId, String nodeId, ConfigurationTaskResult result) {
         validateResult(result);
-        return registry.withSession(nodeId, result.sessionId(), () -> completeCurrentSession(operationId, nodeId, result));
+        return registry.withSession(nodeId, result.sessionId(),
+                ignored -> completeCurrentSession(operationId, nodeId, result));
+    }
+
+    private static UUID sessionId(NodeStatus node) {
+        return node.sessionId();
     }
 
     private OperationView completeCurrentSession(UUID operationId, String nodeId, ConfigurationTaskResult result) {

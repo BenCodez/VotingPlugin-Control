@@ -211,7 +211,10 @@ public final class ControlHttpServer implements AutoCloseable {
             requireMethod(exchange, "POST");
             PasswordRequest request = read(exchange, PasswordRequest.class);
             requireRequest(request);
-            if (!passwordVerifications.tryAcquire()) {
+            try {
+                passwordVerifications.acquire();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
                 throw new AuthenticationException(true);
             }
             String credentialRevision;

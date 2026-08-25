@@ -197,6 +197,23 @@ class ControlHttpServerTest {
                 Map.of("Cookie", secondCookie)).statusCode());
     }
 
+    @Test void concurrentValidPasswordAttemptsQueueBehindVerificationLimit() throws Exception {
+        credentials.setWebPassword("a-secure-web-password".toCharArray());
+        java.util.List<java.util.concurrent.CompletableFuture<HttpResponse<String>>> attempts =
+                java.util.stream.IntStream.range(0, 6).mapToObj(ignored ->
+                        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                            try {
+                                return send("POST", "/api/v1/auth/login",
+                                        "{\"password\":\"a-secure-web-password\"}", null);
+                            } catch (Exception e) {
+                                throw new java.util.concurrent.CompletionException(e);
+                            }
+                        })).toList();
+        for (java.util.concurrent.CompletableFuture<HttpResponse<String>> attempt : attempts) {
+            assertEquals(200, attempt.join().statusCode());
+        }
+    }
+
     @Test void malformedEmptyNullDuplicateNestedOversizedAndLongPayloadsAreDeterministic() throws Exception {
         assertError(send("POST", "/api/v1/nodes/register", "{", nodeToken), 400, "MALFORMED_JSON");
         assertError(send("POST", "/api/v1/nodes/register", "", nodeToken), 400, "MALFORMED_JSON");

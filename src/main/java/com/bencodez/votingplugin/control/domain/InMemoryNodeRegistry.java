@@ -149,7 +149,8 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
 
     /** Runs one task mutation while replacement registration for this node is excluded. */
     @Override
-    public <T> T withSession(String nodeId, UUID sessionId, java.util.function.Supplier<T> action) {
+    public <T> T withSession(String nodeId, UUID sessionId,
+                             java.util.function.Function<NodeStatus, T> action) {
         validateId(nodeId, "nodeId");
         validateSession(sessionId);
         Objects.requireNonNull(action, "action");
@@ -158,7 +159,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         nodes.computeIfPresent(nodeId, (ignored, existing) -> {
             found.set(true);
             requireSession(existing, sessionId);
-            result.set(action.get());
+            result.set(action.apply(view(existing)));
             return existing;
         });
         if (!found.get()) throw new ValidationException("NODE_NOT_FOUND", "Node is not registered", List.of());
