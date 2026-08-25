@@ -86,7 +86,11 @@ public final class ConfigurationOperations {
         return view(operation);
     }
 
-    public synchronized ConfigurationTask claim(String nodeId) {
+    public synchronized ConfigurationTask claim(String nodeId, UUID sessionId) {
+        return registry.withSession(nodeId, sessionId, () -> claimCurrentSession(nodeId));
+    }
+
+    private ConfigurationTask claimCurrentSession(String nodeId) {
         prune();
         Instant now = clock.instant();
         for (StoredOperation operation : operations.values()) {
@@ -111,11 +115,15 @@ public final class ConfigurationOperations {
     }
 
     public synchronized OperationView complete(UUID operationId, String nodeId, ConfigurationTaskResult result) {
+        validateResult(result);
+        return registry.withSession(nodeId, result.sessionId(), () -> completeCurrentSession(operationId, nodeId, result));
+    }
+
+    private OperationView completeCurrentSession(UUID operationId, String nodeId, ConfigurationTaskResult result) {
         StoredOperation operation = operations.get(operationId);
         if (operation == null || !operation.states.containsKey(nodeId)) {
             throw new ValidationException("OPERATION_NOT_FOUND", "Operation task was not found", List.of());
         }
-        validateResult(result);
         if ("COMPLETE".equals(operation.states.get(nodeId))) return view(operation);
         if (!"IN_PROGRESS".equals(operation.states.get(nodeId))) {
             throw new ValidationException("TASK_NOT_CLAIMED", "Operation task must be claimed before completion", List.of());

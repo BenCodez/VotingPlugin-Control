@@ -192,6 +192,8 @@ form.addEventListener('submit', async event => {
     if (!response.ok) throw new Error(body?.error?.message || 'Authentication failed.');
     authenticated = true;
     csrfToken = body.csrfToken;
+    approvedPreview = null;
+    selectedNodes.clear();
     logout.hidden = false;
     pageOffset = 0;
     await loadNodes();
@@ -204,6 +206,7 @@ logout.addEventListener('click', async () => {
   try { await authorized('/api/v1/auth/logout', {method: 'POST'}); } catch (_) { /* Expired is logged out too. */ }
   authenticated = false;
   csrfToken = '';
+  approvedPreview = null;
   logout.hidden = true;
   selectedNodes.clear();
   nodes.replaceChildren();

@@ -200,12 +200,10 @@ public final class ControlHttpServer implements AutoCloseable {
         }
         if (AUTH_LOGIN.equals(path)) {
             requireMethod(exchange, "POST");
-            if (!authLimiter.allowAttempt()) throw new AuthenticationException(true);
             PasswordRequest request = read(exchange, PasswordRequest.class);
             String credentialRevision = request == null ? null : credentials.authenticateWebPassword(request.password());
             if (credentialRevision == null) {
-                authLimiter.recordFailure();
-                throw new AuthenticationException(false);
+                authenticationFailed();
             }
             webSessions.remove(cookie(exchange, SESSION_COOKIE));
             WebSessionStore.Session session = webSessions.create(credentialRevision);
@@ -307,8 +305,7 @@ public final class ControlHttpServer implements AutoCloseable {
                     requireMethod(exchange, "POST");
                     authenticateNode(exchange, nodeId);
                     ConfigurationRequests.Claim claim = read(exchange, ConfigurationRequests.Claim.class);
-                    registry.requireSession(nodeId, claim.sessionId());
-                    ConfigurationTask task = configurationOperations.claim(nodeId);
+                    ConfigurationTask task = configurationOperations.claim(nodeId, claim.sessionId());
                     if (task == null) {
                         noContent(exchange);
                     } else {
@@ -322,7 +319,6 @@ public final class ControlHttpServer implements AutoCloseable {
                 requireMethod(exchange, "POST");
                 authenticateNode(exchange, nodeId);
                 ConfigurationTaskResult result = read(exchange, ConfigurationTaskResult.class);
-                registry.requireSession(nodeId, result.sessionId());
                 send(exchange, 200, configurationOperations.complete(UUID.fromString(segments[2]), nodeId, result));
                 return;
             }

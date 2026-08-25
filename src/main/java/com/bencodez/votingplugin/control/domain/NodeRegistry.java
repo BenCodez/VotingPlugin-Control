@@ -13,6 +13,7 @@ public interface NodeRegistry {
     List<NodeStatus> list(int offset, int limit);
     NodeStatus find(String nodeId);
     void requireSession(String nodeId, java.util.UUID sessionId);
+    <T> T withSession(String nodeId, java.util.UUID sessionId, java.util.function.Supplier<T> action);
 
     record RegistrationResult(NodeStatus node, boolean created) { }
     record SnapshotResult(NodeStatus node, boolean applied) { }

@@ -34,7 +34,7 @@ class ConfigurationOperationsTest {
         ProxyRoutingConfiguration proposal = new ProxyRoutingConfiguration(true, List.of("lobby"));
 
         ConfigurationOperations.OperationView preview = operations.createPreview(List.of("proxy-a"), proposal);
-        ConfigurationTask previewTask = operations.claim("proxy-a");
+        ConfigurationTask previewTask = operations.claim("proxy-a", registry.find("proxy-a").sessionId());
         assertEquals("PREVIEW", previewTask.type());
         preview = operations.complete(preview.operationId(), "proxy-a",
                 new ConfigurationTaskResult(registry.find("proxy-a").sessionId(), true, "OK", "valid", "a".repeat(64), proposal,
@@ -45,7 +45,7 @@ class ConfigurationOperationsTest {
         UUID previewId = preview.operationId();
         String approvalToken = preview.approvalToken();
         ConfigurationOperations.OperationView apply = operations.createApply(previewId, approvalToken);
-        ConfigurationTask applyTask = operations.claim("proxy-a");
+        ConfigurationTask applyTask = operations.claim("proxy-a", registry.find("proxy-a").sessionId());
         assertEquals("APPLY", applyTask.type());
         assertEquals("a".repeat(64), applyTask.expectedRevision());
         assertThrows(ValidationException.class,
@@ -79,6 +79,29 @@ class ConfigurationOperationsTest {
                 assertThrows(ValidationException.class, () -> operations.get(abandoned)).code());
     }
 
+    @Test void replacementSessionExcludesOldClaimsAndCompletions() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        UUID third = UUID.randomUUID();
+        registry.register(registration(first));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ConfigurationOperations.OperationView operation = operations.createRead(List.of("proxy-a"));
+
+        registry.register(registration(second));
+        assertEquals("SESSION_MISMATCH",
+                assertThrows(ValidationException.class, () -> operations.claim("proxy-a", first)).code());
+        operations.claim("proxy-a", second);
+        registry.register(registration(third));
+        ProxyRoutingConfiguration configuration = new ProxyRoutingConfiguration(false, List.of());
+        ConfigurationTaskResult stale = new ConfigurationTaskResult(second, true, "OK", "read", "b".repeat(64),
+                configuration, List.of(), false, false);
+        assertEquals("SESSION_MISMATCH", assertThrows(ValidationException.class,
+                () -> operations.complete(operation.operationId(), "proxy-a", stale)).code());
+    }
+
     @Test void retainedAuditSegmentIsVerifiedBeforeStartup() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         Path active = directory.resolve("configuration-audit.jsonl");
@@ -100,5 +123,10 @@ class ConfigurationOperationsTest {
         @Override public ZoneId getZone() { return ZoneOffset.UTC; }
         @Override public Clock withZone(ZoneId zone) { return this; }
         @Override public Instant instant() { return instant; }
+    }
+
+    private static NodeRegistration registration(UUID sessionId) {
+        return new NodeRegistration("proxy-a", sessionId, "Proxy A", "VELOCITY", "test", 1,
+                Set.of("presence.snapshot", ConfigurationOperations.CAPABILITY), Set.of("presence.snapshot"));
     }
 }

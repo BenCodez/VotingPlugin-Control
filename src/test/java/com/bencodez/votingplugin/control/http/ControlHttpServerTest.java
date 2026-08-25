@@ -152,6 +152,9 @@ class ControlHttpServerTest {
         assertError(get("/api/v1/nodes", "one-too-many"), 429, "AUTH_RATE_LIMITED");
         assertEquals(200, get("/api/v1/nodes", adminToken).statusCode());
         assertEquals(201, send("POST", "/api/v1/nodes/register", registration(), nodeToken).statusCode());
+        credentials.setWebPassword("valid-owner-password".toCharArray());
+        assertEquals(200, send("POST", "/api/v1/auth/login",
+                "{\"password\":\"valid-owner-password\"}", null).statusCode());
     }
 
     @Test void webPasswordCreatesHttpOnlySessionRequiresCsrfAndLogsOut() throws Exception {

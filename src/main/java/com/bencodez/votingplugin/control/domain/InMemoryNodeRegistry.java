@@ -144,6 +144,24 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         requireSession(node, sessionId);
     }
 
+    /** Runs one task mutation while replacement registration for this node is excluded. */
+    @Override
+    public <T> T withSession(String nodeId, UUID sessionId, java.util.function.Supplier<T> action) {
+        validateId(nodeId, "nodeId");
+        validateSession(sessionId);
+        Objects.requireNonNull(action, "action");
+        AtomicBoolean found = new AtomicBoolean();
+        AtomicReference<T> result = new AtomicReference<>();
+        nodes.computeIfPresent(nodeId, (ignored, existing) -> {
+            found.set(true);
+            requireSession(existing, sessionId);
+            result.set(action.get());
+            return existing;
+        });
+        if (!found.get()) throw new ValidationException("NODE_NOT_FOUND", "Node is not registered", List.of());
+        return result.get();
+    }
+
     private NodeStatus view(StoredNode node) {
         // The exact boundary is offline: lastSeen + timeout must be strictly after now.
         boolean online = clock.instant().isBefore(node.lastSeen.plus(offlineTimeout));
