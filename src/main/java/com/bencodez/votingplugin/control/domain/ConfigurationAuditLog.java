@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.LinkOption;
 import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.time.Clock;
@@ -28,11 +29,13 @@ public final class ConfigurationAuditLog {
         this.file = dataDirectory.resolve("configuration-audit.jsonl");
         this.previousFile = dataDirectory.resolve("configuration-audit.jsonl.1");
         this.clock = clock;
-        if (Files.isRegularFile(file)) {
-            if (Files.size(file) > MAX_BYTES + 64 * 1024) {
+        validateRetainedFile(previousFile);
+        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
+            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))
+                throw new IOException("Configuration audit log is not a regular file");
+            if (Files.size(file) > MAX_BYTES + 64 * 1024)
                 throw new IOException("Configuration audit log exceeds its bounded size");
-            }
-            previousHash = validateExisting();
+            previousHash = validateExisting(file);
         }
     }
 
@@ -64,9 +67,18 @@ public final class ConfigurationAuditLog {
         }
     }
 
-    private String validateExisting() throws IOException {
+    private void validateRetainedFile(Path retained) throws IOException {
+        if (!Files.exists(retained, LinkOption.NOFOLLOW_LINKS)) return;
+        if (!Files.isRegularFile(retained, LinkOption.NOFOLLOW_LINKS))
+            throw new IOException("Retained configuration audit log is not a regular file");
+        if (Files.size(retained) > MAX_BYTES + 64 * 1024)
+            throw new IOException("Retained configuration audit log exceeds its bounded size");
+        validateExisting(retained);
+    }
+
+    private String validateExisting(Path selected) throws IOException {
         String expectedPrevious = "GENESIS";
-        for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+        for (String line : Files.readAllLines(selected, StandardCharsets.UTF_8)) {
             if (line.isBlank()) continue;
             try {
                 JsonNode stored = json.readTree(line);

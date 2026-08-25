@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +25,7 @@ public final class ConfigurationOperations {
     public static final String CAPABILITY = "config.proxy-routing.v1";
     private static final int MAX_OPERATIONS = 1000;
     private static final Duration LEASE = Duration.ofMinutes(2);
+    private static final Duration ACTIVE_RETENTION = Duration.ofMinutes(15);
     private static final Duration RETENTION = Duration.ofHours(24);
 
     private final NodeRegistry registry;
@@ -176,8 +178,18 @@ public final class ConfigurationOperations {
     }
 
     private void prune() {
-        Instant cutoff = clock.instant().minus(RETENTION);
-        operations.entrySet().removeIf(entry -> entry.getValue().complete() && entry.getValue().createdAt.isBefore(cutoff));
+        Instant now = clock.instant();
+        Instant completedCutoff = now.minus(RETENTION);
+        Instant activeCutoff = now.minus(ACTIVE_RETENTION);
+        Iterator<Map.Entry<UUID, StoredOperation>> iterator = operations.entrySet().iterator();
+        while (iterator.hasNext()) {
+            StoredOperation operation = iterator.next().getValue();
+            if (operation.createdAt.isBefore(operation.complete() ? completedCutoff : activeCutoff)) {
+                audit.append("OPERATION_EXPIRED", operation.id, null,
+                        operation.complete() ? "RETAINED" : "ABANDONED");
+                iterator.remove();
+            }
+        }
     }
 
     private static ValidationException invalid(String detail) {

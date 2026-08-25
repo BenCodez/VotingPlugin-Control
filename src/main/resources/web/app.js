@@ -156,7 +156,12 @@ async function loadNodes() {
     }
     const visibleIds = new Set(body.items.filter(node => node.online && node.acceptedCapabilities.includes('config.proxy-routing.v1'))
       .map(node => node.nodeId));
-    selectedNodes = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
+    const filteredSelection = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
+    if (filteredSelection.size !== selectedNodes.size) {
+      approvedPreview = null;
+      text(operationStatus, 'The selected proxies changed during refresh. Preview again before apply.');
+    }
+    selectedNodes = filteredSelection;
     updateConfigurationButtons();
     const first = body.items.length === 0 ? 0 : pageOffset + 1;
     const last = pageOffset + body.items.length;
