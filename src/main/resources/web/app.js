@@ -6,7 +6,12 @@ const tokenInput = document.querySelector('#token');
 const message = document.querySelector('#message');
 const nodes = document.querySelector('#nodes');
 const refresh = document.querySelector('#refresh');
+const previousPage = document.querySelector('#previous-page');
+const nextPage = document.querySelector('#next-page');
+const pageNumber = document.querySelector('#page-number');
+const PAGE_SIZE = 100;
 let adminToken = '';
+let pageOffset = 0;
 
 function text(element, value) {
   element.textContent = value;
@@ -56,9 +61,11 @@ function nodeCard(node) {
 async function loadNodes() {
   if (!adminToken) return;
   refresh.disabled = true;
+  previousPage.disabled = true;
+  nextPage.disabled = true;
   text(message, 'Loading…');
   try {
-    const response = await fetch('/api/v1/nodes?offset=0&limit=100', {
+    const response = await fetch(`/api/v1/nodes?offset=${pageOffset}&limit=${PAGE_SIZE}`, {
       cache: 'no-store',
       headers: {'Authorization': `Bearer ${adminToken}`}
     });
@@ -69,11 +76,16 @@ async function loadNodes() {
     nodes.replaceChildren();
     nodes.classList.toggle('empty', body.items.length === 0);
     if (body.items.length === 0) {
-      text(nodes, 'No proxies have registered yet.');
+      text(nodes, pageOffset === 0 ? 'No proxies have registered yet.' : 'No proxies on this page.');
     } else {
       body.items.forEach(node => nodes.append(nodeCard(node)));
     }
-    text(message, `${body.items.length} prox${body.items.length === 1 ? 'y' : 'ies'} loaded.`);
+    const first = body.items.length === 0 ? 0 : pageOffset + 1;
+    const last = pageOffset + body.items.length;
+    text(message, body.items.length === 0 ? 'No proxies on this page.' : `Showing proxies ${first}–${last}.`);
+    text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);
+    previousPage.disabled = pageOffset === 0;
+    nextPage.disabled = body.items.length < PAGE_SIZE;
   } catch (error) {
     nodes.replaceChildren();
     nodes.classList.add('empty');
@@ -88,7 +100,16 @@ form.addEventListener('submit', event => {
   event.preventDefault();
   adminToken = tokenInput.value.trim();
   tokenInput.value = '';
+  pageOffset = 0;
   loadNodes();
 });
 refresh.addEventListener('click', loadNodes);
+previousPage.addEventListener('click', () => {
+  pageOffset = Math.max(0, pageOffset - PAGE_SIZE);
+  loadNodes();
+});
+nextPage.addEventListener('click', () => {
+  pageOffset += PAGE_SIZE;
+  loadNodes();
+});
 loadHealth();

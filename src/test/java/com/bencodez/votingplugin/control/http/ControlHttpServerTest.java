@@ -58,7 +58,10 @@ class ControlHttpServerTest {
         assertEquals(200, web.statusCode());
         assertTrue(web.body().contains("VotingPlugin Control"));
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
-        assertEquals(200, get("/app.js", null).statusCode());
+        HttpResponse<String> script = get("/app.js", null);
+        assertEquals(200, script.statusCode());
+        assertTrue(script.body().contains("offset=${pageOffset}&limit=${PAGE_SIZE}"));
+        assertTrue(script.body().contains("nextPage.addEventListener"));
         assertEquals(200, get("/app.css", null).statusCode());
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         assertEquals(200, get("/api/v1/health", null).statusCode());
