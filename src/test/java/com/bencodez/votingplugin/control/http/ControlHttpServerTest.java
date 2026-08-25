@@ -65,6 +65,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("nextPage.addEventListener"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
+        assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
         assertEquals(200, get("/app.css", null).statusCode());
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         assertEquals(200, get("/api/v1/health", null).statusCode());

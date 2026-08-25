@@ -27,6 +27,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     public static final String FILE_CAPABILITY = "config.files.v1";
     public static final String QUICK_SETUP_CAPABILITY = "config.quick-setup.v1";
     private static final int MAX_OPERATIONS = 1000;
+    private static final int MAX_FILE_OPERATIONS = 16;
     private static final Duration LEASE = Duration.ofMinutes(2);
     private static final Duration ACTIVE_RETENTION = Duration.ofMinutes(15);
     private static final Duration RETENTION = Duration.ofHours(24);
@@ -79,7 +80,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         Map<String, String> revisions = new LinkedHashMap<>();
         preview.results.forEach((node, result) -> revisions.put(node, result.revision()));
         StoredOperation apply = store("APPLY", new ArrayList<>(preview.states.keySet()), preview.configuration,
-                null, revisions);
+                null, revisions, preview.id);
         preview.approvalUsed = true;
         try {
             audit.append("APPLY_APPROVED", apply.id, null, "QUEUED");
@@ -141,14 +142,14 @@ public final class ConfigurationOperations implements AutoCloseable {
             throw new ValidationException("TASK_NOT_CLAIMED", "Operation task must be claimed before completion", List.of());
         }
         audit.append("TASK_COMPLETED", operation.id, nodeId, result.success() ? "SUCCESS" : result.code());
-        operation.results.put(nodeId, result);
+        operation.results.put(nodeId, boundedResult(operation, result));
         operation.states.put(nodeId, "COMPLETE");
         operation.leasedAt.remove(nodeId);
         return view(operation);
     }
 
     private OperationView create(String type, List<String> targets, ManagedConfiguration config, String token) {
-        StoredOperation operation = store(type, targets, config, token, Map.of());
+        StoredOperation operation = store(type, targets, config, token, Map.of(), null);
         try {
             audit.append("OPERATION_CREATED", operation.id, null, type);
         } catch (RuntimeException e) {
@@ -159,8 +160,9 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private StoredOperation store(String type, List<String> targets, ManagedConfiguration config,
-                                  String token, Map<String, String> revisions) {
+                                  String token, Map<String, String> revisions, UUID protectedOperation) {
         prune();
+        ensureFileCapacity(config, protectedOperation);
         if (operations.size() >= MAX_OPERATIONS) throw new ValidationException("OPERATION_LIMIT",
                 "Too many retained operations", List.of());
         UUID id = UUID.randomUUID();
@@ -170,6 +172,34 @@ public final class ConfigurationOperations implements AutoCloseable {
                 new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(revisions));
         operations.put(id, result);
         return result;
+    }
+
+    private void ensureFileCapacity(ManagedConfiguration config, UUID protectedOperation) {
+        if (config == null || !ManagedConfiguration.FILE.equals(config.domain())) return;
+        long retained = operations.values().stream().filter(StoredOperation::fileOperation).count();
+        Iterator<Map.Entry<UUID, StoredOperation>> iterator = operations.entrySet().iterator();
+        while (retained >= MAX_FILE_OPERATIONS && iterator.hasNext()) {
+            StoredOperation candidate = iterator.next().getValue();
+            if (candidate.fileOperation() && candidate.complete() && !candidate.id.equals(protectedOperation)) {
+                audit.append("OPERATION_EVICTED", candidate.id, null, "FILE_RETENTION_LIMIT");
+                iterator.remove();
+                retained--;
+            }
+        }
+        if (retained >= MAX_FILE_OPERATIONS) {
+            throw new ValidationException("OPERATION_LIMIT", "Too many active file operations", List.of());
+        }
+    }
+
+    private static ConfigurationTaskResult boundedResult(StoredOperation operation, ConfigurationTaskResult result) {
+        ManagedConfiguration configuration = result.configuration();
+        if (configuration == null || !ManagedConfiguration.FILE.equals(configuration.domain())) return result;
+        boolean keepContent = "READ".equals(operation.type) && operation.results.values().stream()
+                .map(ConfigurationTaskResult::configuration).filter(Objects::nonNull)
+                .noneMatch(value -> ManagedConfiguration.FILE.equals(value.domain()) && value.content() != null);
+        if (keepContent) return result;
+        return new ConfigurationTaskResult(result.sessionId(), result.success(), result.code(), result.message(),
+                result.revision(), configuration.publicView(), result.changes(), result.reloaded(), result.rolledBack());
     }
 
     private List<String> validateTargets(List<String> nodeIds, String capability) {
@@ -261,5 +291,8 @@ public final class ConfigurationOperations implements AutoCloseable {
             this.expectedRevisions = expectedRevisions;
         }
         private boolean complete() { return states.values().stream().allMatch("COMPLETE"::equals); }
+        private boolean fileOperation() {
+            return configuration != null && ManagedConfiguration.FILE.equals(configuration.domain());
+        }
     }
 }

@@ -196,7 +196,20 @@ async function loadNodes() {
     } else {
       body.items.forEach(node => nodes.append(nodeCard(node)));
     }
-    nodeCapabilities = new Map(body.items.map(node => [node.nodeId, node.acceptedCapabilities]));
+    nodeCapabilities = new Map(body.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
+    const invalidRoutingApproval = approvedPreview && !approvedPreview.nodeIds.every(node =>
+      nodeCapabilities.get(node)?.includes('config.proxy-routing.v1'));
+    const invalidFileApproval = approvedFilePreview && !approvedFilePreview.nodeIds.every(node =>
+      nodeCapabilities.get(node)?.includes('config.files.v1'));
+    const invalidQuickApproval = approvedQuickPreview && !approvedQuickPreview.nodeIds.every(node =>
+      nodeCapabilities.get(node)?.includes('config.quick-setup.v1'));
+    if (invalidRoutingApproval || invalidFileApproval || invalidQuickApproval) {
+      if (invalidRoutingApproval) approvedPreview = null;
+      if (invalidFileApproval) approvedFilePreview = null;
+      if (invalidQuickApproval) approvedQuickPreview = null;
+      inputGeneration++;
+      text(operationStatus, 'A preview target went offline or lost the required capability. Preview again before apply.');
+    }
     const visibleIds = new Set(body.items.filter(node => node.online && node.acceptedCapabilities.some(value => value.startsWith('config.')))
       .map(node => node.nodeId));
     const filteredSelection = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
@@ -303,7 +316,8 @@ previewConfiguration.addEventListener('click', async () => {
     });
     if (operation.state === 'SUCCEEDED' && operation.approvalToken
         && previewGeneration === inputGeneration) {
-      approvedPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken};
+      approvedPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken,
+        nodeIds: targets('config.proxy-routing.v1')};
       updateConfigurationButtons();
     } else if (previewGeneration !== inputGeneration) {
       text(operationStatus, 'The targets or proposal changed while previewing. Preview again before apply.');
@@ -356,7 +370,8 @@ previewFileConfiguration.addEventListener('click', async () => {
     }, fileOperationStatus);
     text(fileOperationStatus, operationSummary(operation));
     if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration) {
-      approvedFilePreview = {operationId: operation.operationId, approvalToken: operation.approvalToken};
+      approvedFilePreview = {operationId: operation.operationId, approvalToken: operation.approvalToken,
+        nodeIds: targets('config.files.v1')};
       updateConfigurationButtons();
     } else if (previewGeneration !== inputGeneration) {
       text(fileOperationStatus, 'The targets or file changed while previewing. Preview again before apply.');
@@ -396,7 +411,8 @@ previewQuickSetup.addEventListener('click', async () => {
     }, quickOperationStatus);
     text(quickOperationStatus, operationSummary(operation));
     if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration) {
-      approvedQuickPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken};
+      approvedQuickPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken,
+        nodeIds: targets('config.quick-setup.v1')};
       updateConfigurationButtons();
     } else if (previewGeneration !== inputGeneration) {
       text(quickOperationStatus, 'The targets or setup changed while previewing. Preview again before apply.');

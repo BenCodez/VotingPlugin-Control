@@ -183,6 +183,35 @@ class ConfigurationOperationsTest {
                         ManagedConfiguration.proxy(new ProxyRoutingConfiguration(false, List.of())))).code());
     }
 
+    @Test void fileOperationRetentionAndMultiNodeContentsAreBounded() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.FILE_CAPABILITY);
+        registry.register(new NodeRegistration("backend-a", first, "Backend A", "BUKKIT", "test", 1,
+                capabilities, capabilities));
+        registry.register(new NodeRegistration("backend-b", second, "Backend B", "BUKKIT", "test", 1,
+                capabilities, capabilities));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = ManagedConfiguration.file("Config.yml", null);
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("backend-a", "backend-b"), selector);
+        operations.claim("backend-a", first);
+        operations.claim("backend-b", second);
+        ManagedConfiguration content = ManagedConfiguration.file("Config.yml", "Feature: true\n");
+        operations.complete(read.operationId(), "backend-a", new ConfigurationTaskResult(first, true, "OK", "read",
+                "e".repeat(64), content, List.of(), false, false));
+        read = operations.complete(read.operationId(), "backend-b", new ConfigurationTaskResult(second, true, "OK",
+                "read", "f".repeat(64), content, List.of(), false, false));
+        assertNotNull(read.results().get("backend-a").configuration().content());
+        assertEquals(null, read.results().get("backend-b").configuration().content());
+
+        for (int i = 0; i < 16; i++) operations.createRead(List.of("backend-a"), selector);
+        assertEquals("OPERATION_LIMIT", assertThrows(ValidationException.class,
+                () -> operations.createRead(List.of("backend-a"), selector)).code());
+    }
+
     private static final class MutableClock extends Clock {
         private Instant instant;
         private MutableClock(Instant instant) { this.instant = instant; }
