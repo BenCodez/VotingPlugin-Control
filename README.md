@@ -1,78 +1,122 @@
 # VotingPlugin Control
 
-VotingPlugin Control is the local-first administration service for a VotingPlugin network. This repository currently
-contains the first runnable protocol and service foundation—not a VotingPlugin integration or a finished management UI.
+VotingPlugin Control is a separate, local-first administration service for a VotingPlugin network. The current milestone
+provides authenticated, read-only discovery of multiple BungeeCord and Velocity proxies and the backend servers each
+proxy observes. It does not process votes, and VotingPlugin does not depend on it for startup, joins, routing, or shutdown.
 
-## Architecture and boundaries
+## Trust and deployment boundary
 
-Control is one local application intended to observe and, in later milestones, coordinate multiple BungeeCord and
-Velocity proxies and their backend servers. VotingPlugin nodes will connect to Control; Control is never in the vote
-processing path. A stopped or unreachable Control instance must therefore have no effect on voting.
+One Control process can observe an entire network:
 
-The protocol/domain package has no HTTP, Bukkit, BungeeCord, Velocity, or cloud dependencies. HTTP is the first transport
-adapter. The immutable request/response envelope DTOs provide the correlation and version fields needed by future
-transports. An optional cloud relay can later carry the same versioned API over an outbound authenticated WebSocket.
-Control remains authoritative and local access continues without cloud connectivity.
+```text
+Browser (future local UI) -> Control <- Proxy A / Proxy B / Proxy C <- backend servers
+```
 
-The server binds to `127.0.0.1` by default. **There is no authentication in this milestone; do not bind it to an
-untrusted interface.** Registration is discovery data, not an authenticated identity proof. The API accepts unknown JSON
-fields so additive fields from newer peers can be ignored, but requires protocol version `1` and validates all understood
-fields. Bodies are limited to 16 KiB and node listings are paginated (maximum 100 items).
+Proxy connectors initiate outbound HTTP(S) requests. Bukkit backend nodes do not connect directly. Control works without
+Internet or a cloud account. Node calls require explicitly created, node-bound bearer credentials; management reads
+require a separate admin credential. Raw credentials are never stored by Control: `data/credentials.json` contains only
+SHA-256 verifiers for 256-bit random tokens.
 
-## Build and run
+Control binds to `127.0.0.1` by default. A non-loopback bind is refused until an admin credential exists. Authentication
+does not encrypt traffic: use HTTPS or a trusted private tunnel/network when traffic can cross an untrusted network. Do
+not publish the HTTP service directly to the Internet.
 
-Requirements: JDK 17+ and Maven 3.9+.
+## Requirements, build, and run
+
+- Java 17 or newer (the produced JAR targets Java 17)
+- Maven 3.9 or newer
 
 ```shell
 mvn clean verify
 java -jar target/votingplugin-control-0.1.0-SNAPSHOT-all.jar
 ```
 
-The service stores only its stable Control instance UUID under `./data`; node registrations are currently in memory.
-Configuration is available through environment variables:
+The application version comes from the JAR manifest generated from the Maven project version. Development classpath runs
+report `development` rather than maintaining a second version literal.
 
-| Variable | Default | Purpose |
+| Variable | Default | Constraint |
 | --- | --- | --- |
-| `CONTROL_HOST` | `127.0.0.1` | Listen address |
-| `CONTROL_PORT` | `8080` | Listen port (`0` selects a free port) |
-| `CONTROL_DATA_DIR` | `data` | Local identity/data directory |
+| `CONTROL_HOST` | `127.0.0.1` | Valid bind host; non-loopback requires an admin credential |
+| `CONTROL_PORT` | `8080` | `0`–`65535`; `0` selects a free port |
+| `CONTROL_DATA_DIR` | `data` | Writable directory for identity and credential verifiers |
+| `CONTROL_OFFLINE_TIMEOUT_SECONDS` | `90` | `1`–`3600` |
+| `CONTROL_REQUEST_TIMEOUT_SECONDS` | `10` | `1`–`60`; bounds stalled JDK HTTP exchanges |
 
-Example health check: `curl http://127.0.0.1:8080/api/v1/health`.
+The server also uses a bounded HTTP executor (8 active requests and a 32-request queue), a 64 KiB request limit, bounded
+JSON depth/string/number sizes, and a global authentication-failure limit. Shutdown stops the server and its daemon request
+workers without waiting indefinitely.
 
-## API v1
+## Enrollment
 
-All bodies and responses use JSON. Errors have the form
-`{"error":{"code":"VALIDATION_ERROR","message":"...","details":["..."]}}`.
+Owner commands modify the configured data directory and print a new secret once. Stop shell history capture or otherwise
+handle the output as a password.
 
-| Method | Endpoint | Behavior |
-| --- | --- | --- |
-| `GET` | `/api/v1/health` | Health, application/protocol version, and Control identity |
-| `POST` | `/api/v1/nodes/register` | Register a node, or replace discovery metadata for the same stable node ID |
-| `PUT` | `/api/v1/nodes/{nodeId}/heartbeat` | Refresh last-seen and optionally negotiated capabilities |
-| `GET` | `/api/v1/nodes?offset=0&limit=50` | List nodes with computed online state |
+```shell
+# Create or rotate a credential bound to proxy-a
+java -jar target/votingplugin-control-0.1.0-SNAPSHOT-all.jar enroll proxy-a data
 
-Registration fields are `nodeId`, `displayName`, `platform` (`BUNGEECORD`, `VELOCITY`, `BUKKIT`, or `OTHER`),
-`pluginVersion`, `protocolVersion`, and `capabilities`. Capability identifiers are bounded lowercase tokens such as
-`status.read` or `servers.list`. A node is offline when it has not registered or sent a heartbeat for 90 seconds.
+# Immediately revoke it
+java -jar target/votingplugin-control-0.1.0-SNAPSHOT-all.jar revoke proxy-a data
 
-## Planned security and management model
+# Create or rotate the credential used for management GET endpoints
+java -jar target/votingplugin-control-0.1.0-SNAPSHOT-all.jar admin-token data
+```
 
-Configuration management will start with a narrow typed domain—not unrestricted YAML—and use revision reads,
-per-target validation, preview, compare-and-set application, backup, atomic writes, reload-after-persist, per-node results,
-and local audit records. APIs will redact credentials, database passwords, encryption keys, webhook secrets, and device
-credentials.
+Rotating replaces the prior verifier immediately. The store is reread for every authentication decision, so a running
+Control process observes rotation and revocation without restart. A credential for one node cannot register or update a
+different node identity. Credentials belong in the `Authorization: Bearer ...` header, never URLs, logs, health output,
+node listings, diagnostics, or plugin messages.
 
-Remote support will use expiring, revocable, permission-scoped owner invitations. Typed operations (status, redacted
-configuration, diagnostics, proposing changes, and owner-approved application) will be audited locally. It will not expose
-a shell, arbitrary files, raw databases, or unrestricted console commands.
+## Protocol and API
 
-Future distribution will support explicit opt-in, pinned compatible versions, signed metadata and SHA-256 verification,
-staging, atomic activation, rollback retention, health checks, manual installs, disabling updates, and an update lock while
-configuration work is active.
+Protocol version `1` is exact for this milestone. Unsupported versions and unavailable required capabilities return a
+structured `409`. Unknown advertised capabilities are retained but not negotiated; accepted capabilities are the
+intersection with Control's supported capabilities. A heartbeat replaces the advertised capability set, so removal is
+explicit. Unknown JSON fields are accepted for additive forward compatibility, while duplicate fields and trailing JSON
+are rejected.
+
+All errors have the stable form:
+
+```json
+{"error":{"code":"VALIDATION_ERROR","message":"Request validation failed","details":[]}}
+```
+
+| Method | Endpoint | Authentication | Behavior |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/health` | none | Health plus Control identity/application/protocol version |
+| `POST` | `/api/v1/nodes/register` | node | Idempotently create/replace one enrolled proxy session |
+| `PUT` | `/api/v1/nodes/{nodeId}/heartbeat` | matching node | Refresh liveness and replace capability advertisement |
+| `PUT` | `/api/v1/nodes/{nodeId}/presence` | matching node | Replace that session's backend snapshot |
+| `GET` | `/api/v1/nodes?offset=0&limit=50` | admin | Stable node-ID ordering; limit `1`–`100` |
+
+Routes are exact. Child suffixes do not inherit a handler, every known endpoint has an intentional method/structured 405,
+and all unknown endpoints return a structured 404.
+
+Registration includes a stable node ID and a random process session ID. A new session replaces the old registration and
+clears its old topology. Presence snapshots are full replacements, contain at most 4096 unique backend IDs, and use a
+monotonic sequence within the registered session. Replayed or out-of-order sequence numbers are idempotently ignored.
+Control records its own observation time; it does not trust remote wall-clock time for online/offline decisions.
+
+A node is online only while `lastSeen + offlineTimeout` is strictly after Control's current time. The exact timeout boundary
+is offline. Backend entries distinguish whether authoritative backend presence is known from the existing VotingPlugin
+presence protocol; server addresses and all unrelated configuration are excluded.
+
+The immutable correlated request/response envelope DTOs are reserved for later typed node operations and relay transports.
+They are not misleadingly used by these simple HTTP resource endpoints.
+
+## Troubleshooting
+
+- `401 UNAUTHORIZED`: the credential is missing, invalid, revoked, rotated, or enrolled for another node ID.
+- `409 SESSION_MISMATCH`: re-register; Control has a newer process session for that stable node.
+- `409 UNSUPPORTED_PROTOCOL` / `INCOMPATIBLE_CAPABILITIES`: upgrade the older side before retrying.
+- Node stays offline: verify the proxy connector is enabled, the node ID matches enrollment, and heartbeat timeouts permit
+  the configured interval.
+- LAN startup is refused: create the admin token first and protect transport with HTTPS/private tunneling.
+- Corrupt `instance-id` or credential data fails closed; restore a known backup or deliberately recreate the affected file
+  and re-enroll nodes.
 
 ## Intentionally out of scope
 
-This milestone does not include a WebUI, persistence of node registrations, TLS/authenticated node enrollment,
-VotingPlugin-side code, server-presence ingestion, configuration mutation, audit storage, release downloading, automatic
-updates, cloud service, relay connection, or remote-support sessions. VotingPlugin integration details must be based on
-its actual implementations before a connector is added; that source was not available in this development environment.
+This milestone has no configuration reads or writes, WebUI, topology persistence/history, audit log, diagnostics bundle,
+automatic distribution, cloud relay, or remote-support sessions. Node registry state is currently in memory, so proxies
+automatically re-register after a Control restart. Manual installation remains supported.

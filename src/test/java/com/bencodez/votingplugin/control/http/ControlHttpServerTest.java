@@ -1,89 +1,172 @@
 package com.bencodez.votingplugin.control.http;
 
+import com.bencodez.votingplugin.control.auth.CredentialStore;
 import com.bencodez.votingplugin.control.domain.InMemoryNodeRegistry;
-import com.bencodez.votingplugin.control.protocol.*;
-import com.fasterxml.jackson.databind.*;
-import org.junit.jupiter.api.*;
-import java.net.*;
-import java.net.http.*;
-import java.time.*;
+import com.bencodez.votingplugin.control.protocol.ControlIdentity;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ControlHttpServerTest {
+    private static final String SESSION = "00000000-0000-0000-0000-000000000001";
+    @TempDir Path directory;
     private ControlHttpServer server;
+    private CredentialStore credentials;
+    private String nodeToken;
+    private String adminToken;
     private HttpClient client;
     private ObjectMapper json;
     private URI base;
 
     @BeforeEach void start() throws Exception {
+        credentials = new CredentialStore(directory);
+        nodeToken = credentials.rotateNode("proxy-a");
+        adminToken = credentials.rotateAdmin();
         server = new ControlHttpServer(new InetSocketAddress("127.0.0.1", 0),
                 new InMemoryNodeRegistry(Clock.systemUTC(), Duration.ofSeconds(90)),
-                new ControlIdentity(UUID.fromString("00000000-0000-0000-0000-000000000001"), "test", 1));
+                new ControlIdentity(UUID.fromString("00000000-0000-0000-0000-000000000099"), "test", 1),
+                credentials);
         server.start();
         base = URI.create("http://127.0.0.1:" + server.port());
-        client = HttpClient.newHttpClient();
+        client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
         json = new ObjectMapper();
     }
-    @AfterEach void stop() { server.close(); }
 
-    @Test void healthIsVersionedAndHealthy() throws Exception {
-        HttpResponse<String> response = get("/api/v1/health");
-        assertEquals(200, response.statusCode());
-        JsonNode body = json.readTree(response.body());
-        assertEquals("ok", body.get("status").asText());
-        assertEquals(1, body.at("/identity/protocolVersion").asInt());
+    @AfterEach void stop() {
+        if (server != null) {
+            server.close();
+        }
     }
 
-    @Test void registrationIsCreatedThenUpdatedAndListed() throws Exception {
-        String first = "{\"nodeId\":\"proxy-a\",\"displayName\":\"Proxy A\",\"platform\":\"VELOCITY\",\"pluginVersion\":\"6.20\",\"protocolVersion\":1,\"capabilities\":[\"status.read\"]}";
-        assertEquals(201, send("POST", "/api/v1/nodes/register", first).statusCode());
-        String update = first.replace("Proxy A", "Main Proxy");
-        HttpResponse<String> updated = send("POST", "/api/v1/nodes/register", update);
-        assertEquals(200, updated.statusCode());
-        assertFalse(json.readTree(updated.body()).get("created").asBoolean());
-        JsonNode listed = json.readTree(get("/api/v1/nodes?limit=10").body());
-        assertEquals(1, listed.get("items").size());
-        assertEquals("Main Proxy", listed.at("/items/0/displayName").asText());
+    @Test void healthRouteIsExactUnknownRoutesAreStructuredAndMethodsAreIntentional() throws Exception {
+        assertEquals(200, get("/api/v1/health", null).statusCode());
+        assertError(get("/api/v1/health/anything", null), 404, "NOT_FOUND");
+        assertError(get("/api/v1/nodes/register/anything", null), 404, "NOT_FOUND");
+        HttpResponse<String> method = send("POST", "/api/v1/health", "{}", null);
+        assertError(method, 405, "METHOD_NOT_ALLOWED");
+        assertEquals("GET", method.headers().firstValue("Allow").orElseThrow());
+        assertError(send("GET", "/api/v1/nodes/register", null, null), 405, "METHOD_NOT_ALLOWED");
+        assertError(send("POST", "/api/v1/nodes/proxy-a/heartbeat", "{}", null), 405,
+                "METHOD_NOT_ALLOWED");
     }
 
-    @Test void heartbeatUpdatesLastSeenAndCapabilities() throws Exception {
-        register("proxy-a", "[\"status.read\"]");
-        HttpResponse<String> response = send("PUT", "/api/v1/nodes/proxy-a/heartbeat",
-                "{\"protocolVersion\":1,\"capabilities\":[\"servers.list\"]}");
-        assertEquals(200, response.statusCode());
-        JsonNode node = json.readTree(response.body()).get("node");
-        assertEquals("servers.list", node.get("capabilities").get(0).asText());
-        assertNotNull(Instant.parse(node.get("lastSeen").asText()));
+    @Test void validEnrollmentAuthenticatesRegistrationHeartbeatPresenceAndAdminListing() throws Exception {
+        HttpResponse<String> registered = send("POST", "/api/v1/nodes/register", registration(), nodeToken);
+        assertEquals(201, registered.statusCode());
+        JsonNode node = json.readTree(registered.body()).get("node");
+        assertEquals("proxy-a", node.get("nodeId").asText());
+        assertEquals("presence.snapshot", node.get("acceptedCapabilities").get(0).asText());
+
+        String heartbeat = "{\"sessionId\":\"" + SESSION + "\",\"protocolVersion\":1,"
+                + "\"capabilities\":[\"discovery.read\"],\"requiredCapabilities\":[]}";
+        assertEquals(200, send("PUT", "/api/v1/nodes/proxy-a/heartbeat", heartbeat, nodeToken).statusCode());
+        String snapshot = "{\"sessionId\":\"" + SESSION + "\",\"protocolVersion\":1,\"sequence\":1,"
+                + "\"backends\":[{\"backendId\":\"lobby\",\"displayName\":\"Lobby\","
+                + "\"presenceKnown\":true,\"available\":true,\"playerCount\":3}]}";
+        assertEquals(200, send("PUT", "/api/v1/nodes/proxy-a/presence", snapshot, nodeToken).statusCode());
+        JsonNode listed = json.readTree(get("/api/v1/nodes?offset=0&limit=10", adminToken).body());
+        assertEquals("lobby", listed.at("/items/0/backends/0/backendId").asText());
+        assertTrue(listed.at("/items/0/online").asBoolean());
     }
 
-    @Test void malformedPayloadInvalidIdAndOversizedBodyReturnStructuredErrors() throws Exception {
-        assertError(send("POST", "/api/v1/nodes/register", "{"), 400, "MALFORMED_JSON");
-        String invalid = "{\"nodeId\":\"bad/id\",\"displayName\":\"x\",\"platform\":\"OTHER\",\"pluginVersion\":\"1\",\"protocolVersion\":1}";
-        assertError(send("POST", "/api/v1/nodes/register", invalid), 400, "VALIDATION_ERROR");
-        assertError(send("POST", "/api/v1/nodes/register", " ".repeat(ControlHttpServer.MAX_REQUEST_BYTES + 1)), 413, "REQUEST_TOO_LARGE");
+    @Test void missingInvalidWrongNodeRevokedAndRotatedCredentialsFailWithoutDisclosure() throws Exception {
+        assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), null));
+        assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), "wrong"));
+        String other = credentials.rotateNode("proxy-b");
+        assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), other));
+        credentials.revokeNode("proxy-a");
+        assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), nodeToken));
+        String rotated = credentials.rotateNode("proxy-a");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", registration(), rotated).statusCode());
+        assertAuthFailure(get("/api/v1/nodes", nodeToken));
+        assertEquals(200, get("/api/v1/nodes", adminToken).statusCode());
     }
 
-    @Test void ignoresUnknownJsonFieldsForForwardCompatibility() throws Exception {
-        String payload = "{\"nodeId\":\"future-proxy\",\"displayName\":\"Future\",\"platform\":\"BUNGEECORD\",\"pluginVersion\":\"1\",\"protocolVersion\":1,\"futureField\":{\"value\":true}}";
-        assertEquals(201, send("POST", "/api/v1/nodes/register", payload).statusCode());
+    @Test void malformedEmptyNullDuplicateNestedOversizedAndLongPayloadsAreDeterministic() throws Exception {
+        assertError(send("POST", "/api/v1/nodes/register", "{", nodeToken), 400, "MALFORMED_JSON");
+        assertError(send("POST", "/api/v1/nodes/register", "", nodeToken), 400, "MALFORMED_JSON");
+        assertError(send("POST", "/api/v1/nodes/register", "null", nodeToken), 400, "VALIDATION_ERROR");
+        String duplicate = registration().replaceFirst("\\{", "{\"nodeId\":\"proxy-a\",");
+        assertError(send("POST", "/api/v1/nodes/register", duplicate, nodeToken), 400, "MALFORMED_JSON");
+        String nested = "[".repeat(25) + "0" + "]".repeat(25);
+        assertError(send("POST", "/api/v1/nodes/register", nested, nodeToken), 400, "MALFORMED_JSON");
+        assertError(send("POST", "/api/v1/nodes/register", " ".repeat(ControlHttpServer.MAX_REQUEST_BYTES + 1),
+                nodeToken), 413, "REQUEST_TOO_LARGE");
+        assertError(send("POST", "/api/v1/nodes/register", registration().replace("Proxy A", "x".repeat(101)),
+                nodeToken), 400, "VALIDATION_ERROR");
+        HttpRequest invalidUtf8 = HttpRequest.newBuilder(base.resolve("/api/v1/nodes/register"))
+                .header("Content-Type", "application/json").header("Authorization", "Bearer " + nodeToken)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(new byte[] {(byte) 0xc3, (byte) 0x28})).build();
+        assertError(client.send(invalidUtf8, HttpResponse.BodyHandlers.ofString()), 400, "MALFORMED_JSON");
     }
 
-    @Test void rejectsInvalidCapabilitiesAndProtocolVersions() throws Exception {
-        assertError(register("proxy-a", "[\"INVALID CAPABILITY\"]"), 400, "VALIDATION_ERROR");
-        String payload = "{\"nodeId\":\"proxy-a\",\"displayName\":\"A\",\"platform\":\"OTHER\",\"pluginVersion\":\"1\",\"protocolVersion\":2}";
-        assertError(send("POST", "/api/v1/nodes/register", payload), 409, "UNSUPPORTED_PROTOCOL");
+    @Test void unknownFieldsAreAdditivelyCompatibleButUnsupportedProtocolAndRequirementsAreExplicit() throws Exception {
+        assertEquals(201, send("POST", "/api/v1/nodes/register",
+                registration().replace("}", ",\"futureField\":{\"value\":true}}"), nodeToken).statusCode());
+        credentials.rotateNode("proxy-a");
+        nodeToken = credentials.rotateNode("proxy-a");
+        assertError(send("POST", "/api/v1/nodes/register", registration().replace("\"protocolVersion\":1",
+                "\"protocolVersion\":2"), nodeToken), 409, "UNSUPPORTED_PROTOCOL");
+        assertError(send("POST", "/api/v1/nodes/register", registration().replace("\"requiredCapabilities\":[]",
+                "\"requiredCapabilities\":[\"future.required\"]"), nodeToken), 409,
+                "INCOMPATIBLE_CAPABILITIES");
     }
 
-    private HttpResponse<String> register(String id, String capabilities) throws Exception {
-        return send("POST", "/api/v1/nodes/register", "{\"nodeId\":\"" + id + "\",\"displayName\":\"A\",\"platform\":\"OTHER\",\"pluginVersion\":\"1\",\"protocolVersion\":1,\"capabilities\":" + capabilities + "}");
+    @Test void queryValidationAndShutdownAreBounded() throws Exception {
+        assertError(get("/api/v1/nodes?limit=101", adminToken), 400, "VALIDATION_ERROR");
+        assertError(get("/api/v1/nodes?limit=1&limit=2", adminToken), 400, "VALIDATION_ERROR");
+        server.close();
+        server = null;
+        assertTrue(Thread.getAllStackTraces().keySet().stream()
+                .noneMatch(thread -> thread.isAlive() && "votingplugin-control-http".equals(thread.getName())));
     }
-    private HttpResponse<String> get(String path) throws Exception { return client.send(HttpRequest.newBuilder(base.resolve(path)).GET().build(), HttpResponse.BodyHandlers.ofString()); }
-    private HttpResponse<String> send(String method, String path, String body) throws Exception {
-        return client.send(HttpRequest.newBuilder(base.resolve(path)).header("Content-Type", "application/json")
-                .method(method, HttpRequest.BodyPublishers.ofString(body)).build(), HttpResponse.BodyHandlers.ofString());
+
+    private String registration() {
+        return "{\"nodeId\":\"proxy-a\",\"sessionId\":\"" + SESSION + "\",\"displayName\":\"Proxy A\","
+                + "\"platform\":\"VELOCITY\",\"pluginVersion\":\"7.1.2\",\"protocolVersion\":1,"
+                + "\"capabilities\":[\"presence.snapshot\"],\"requiredCapabilities\":[]}";
     }
+
+    private HttpResponse<String> get(String path, String token) throws Exception {
+        return send("GET", path, null, token);
+    }
+
+    private HttpResponse<String> send(String method, String path, String body, String token) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(base.resolve(path)).timeout(Duration.ofSeconds(3));
+        if (token != null) {
+            builder.header("Authorization", "Bearer " + token);
+        }
+        if (body != null) {
+            builder.header("Content-Type", "application/json");
+        }
+        builder.method(method, body == null ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+        return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private void assertAuthFailure(HttpResponse<String> response) throws Exception {
+        assertError(response, 401, "UNAUTHORIZED");
+        assertEquals("Authentication failed", json.readTree(response.body()).at("/error/message").asText());
+        assertFalse(response.body().contains("proxy-a"));
+        assertFalse(response.body().contains("credential"));
+    }
+
     private void assertError(HttpResponse<String> response, int status, String code) throws Exception {
-        assertEquals(status, response.statusCode()); assertEquals(code, json.readTree(response.body()).at("/error/code").asText());
+        assertEquals(status, response.statusCode(), response.body());
+        assertEquals(code, json.readTree(response.body()).at("/error/code").asText(), response.body());
     }
 }

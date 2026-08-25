@@ -7,6 +7,7 @@
   <version>0.1.0-SNAPSHOT</version>
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
+    <maven.version>3.9.0</maven.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <junit.version>5.11.4</junit.version>
     <jackson.version>2.18.2</jackson.version>
@@ -25,6 +26,13 @@
   <build>
     <plugins>
       <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-enforcer-plugin</artifactId><version>3.5.0</version>
+        <executions><execution><goals><goal>enforce</goal></goals><configuration><rules>
+          <requireJavaVersion><version>[17,)</version></requireJavaVersion>
+          <requireMavenVersion><version>[${maven.version},)</version></requireMavenVersion>
+        </rules></configuration></execution></executions>
+      </plugin>
+      <plugin>
         <groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version>
       </plugin>
       <plugin>
@@ -32,7 +40,7 @@
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId><artifactId>maven-jar-plugin</artifactId><version>3.4.2</version>
-        <configuration><archive><manifest><mainClass>com.bencodez.votingplugin.control.ControlApplication</mainClass></manifest></archive></configuration>
+        <configuration><archive><manifest><mainClass>com.bencodez.votingplugin.control.ControlApplication</mainClass><addDefaultImplementationEntries>true</addDefaultImplementationEntries></manifest></archive></configuration>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId><artifactId>maven-shade-plugin</artifactId><version>3.6.0</version>
