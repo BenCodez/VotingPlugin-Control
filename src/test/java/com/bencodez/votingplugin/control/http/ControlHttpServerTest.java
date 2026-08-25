@@ -53,6 +53,13 @@ class ControlHttpServerTest {
     }
 
     @Test void healthRouteIsExactUnknownRoutesAreStructuredAndMethodsAreIntentional() throws Exception {
+        HttpResponse<String> web = get("/", null);
+        assertEquals(200, web.statusCode());
+        assertTrue(web.body().contains("VotingPlugin Control"));
+        assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
+        assertEquals(200, get("/app.js", null).statusCode());
+        assertEquals(200, get("/app.css", null).statusCode());
+        assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         assertEquals(200, get("/api/v1/health", null).statusCode());
         assertError(get("/api/v1/health/anything", null), 404, "NOT_FOUND");
         assertError(get("/api/v1/nodes/register/anything", null), 404, "NOT_FOUND");
@@ -94,6 +101,15 @@ class ControlHttpServerTest {
         assertEquals(201, send("POST", "/api/v1/nodes/register", registration(), rotated).statusCode());
         assertAuthFailure(get("/api/v1/nodes", nodeToken));
         assertEquals(200, get("/api/v1/nodes", adminToken).statusCode());
+    }
+
+    @Test void validCredentialsBypassSaturatedFailureLimiter() throws Exception {
+        for (int i = 0; i < 100; i++) {
+            assertAuthFailure(get("/api/v1/nodes", "wrong-" + i));
+        }
+        assertError(get("/api/v1/nodes", "one-too-many"), 429, "AUTH_RATE_LIMITED");
+        assertEquals(200, get("/api/v1/nodes", adminToken).statusCode());
+        assertEquals(201, send("POST", "/api/v1/nodes/register", registration(), nodeToken).statusCode());
     }
 
     @Test void malformedEmptyNullDuplicateNestedOversizedAndLongPayloadsAreDeterministic() throws Exception {

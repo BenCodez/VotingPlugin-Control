@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VotingPlugin Control</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <p class="eyebrow">Local network console</p>
+        <h1>VotingPlugin Control</h1>
+      </div>
+      <output id="health" class="status">Connecting…</output>
+    </header>
+
+    <section class="card">
+      <h2>Network discovery</h2>
+      <p>Enter the local admin token to load enrolled proxies and their observed backend servers. The token stays in this page's memory and is never saved.</p>
+      <form id="auth-form">
+        <label for="token">Admin token</label>
+        <div class="auth-row">
+          <input id="token" type="password" autocomplete="off" spellcheck="false" required>
+          <button type="submit">Load network</button>
+        </div>
+      </form>
+      <p id="message" role="status"></p>
+    </section>
+
+    <section class="card">
+      <div class="section-title">
+        <h2>Proxies and backends</h2>
+        <button id="refresh" type="button" disabled>Refresh</button>
+      </div>
+      <div id="nodes" class="nodes empty">Authenticate to view the network.</div>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

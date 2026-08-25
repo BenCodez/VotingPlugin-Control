@@ -45,6 +45,11 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final String HEALTH = "/api/v1/health";
     private static final String NODES = "/api/v1/nodes";
     private static final String REGISTER = "/api/v1/nodes/register";
+    private static final Map<String, WebResource> WEB_RESOURCES = Map.of(
+            "/", new WebResource("/web/index.html", "text/html; charset=utf-8"),
+            "/index.html", new WebResource("/web/index.html", "text/html; charset=utf-8"),
+            "/app.js", new WebResource("/web/app.js", "text/javascript; charset=utf-8"),
+            "/app.css", new WebResource("/web/app.css", "text/css; charset=utf-8"));
     private static final int MAX_AUTH_FAILURES_PER_MINUTE = 100;
 
     private final HttpServer server;
@@ -139,6 +144,12 @@ public final class ControlHttpServer implements AutoCloseable {
     private void route(HttpExchange exchange) throws IOException {
         URI uri = exchange.getRequestURI();
         String path = uri.getPath();
+        WebResource resource = WEB_RESOURCES.get(path);
+        if (resource != null) {
+            requireMethod(exchange, "GET");
+            sendResource(exchange, resource);
+            return;
+        }
         if (HEALTH.equals(path)) {
             requireMethod(exchange, "GET");
             send(exchange, 200, Map.of("status", "ok", "time", Instant.now(), "identity", identity));
@@ -243,14 +254,15 @@ public final class ControlHttpServer implements AutoCloseable {
     }
 
     private void authenticate(HttpExchange exchange, java.util.function.Predicate<String> verifier) {
+        String token = bearer(exchange);
+        if (verifier.test(token)) {
+            return;
+        }
         if (!authLimiter.allowAttempt()) {
             throw new AuthenticationException(true);
         }
-        String token = bearer(exchange);
-        if (!verifier.test(token)) {
-            authLimiter.recordFailure();
-            throw new AuthenticationException(false);
-        }
+        authLimiter.recordFailure();
+        throw new AuthenticationException(false);
     }
 
     private static String bearer(HttpExchange exchange) {
@@ -274,9 +286,29 @@ public final class ControlHttpServer implements AutoCloseable {
 
     private void send(HttpExchange exchange, int status, Object value) throws IOException {
         byte[] body = json.writeValueAsBytes(value);
-        exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        sendBytes(exchange, status, "application/json; charset=utf-8", body);
+    }
+
+    private void sendResource(HttpExchange exchange, WebResource resource) throws IOException {
+        byte[] body;
+        try (InputStream input = ControlHttpServer.class.getResourceAsStream(resource.classpath())) {
+            if (input == null) {
+                throw new IOException("Web resource is unavailable");
+            }
+            body = input.readAllBytes();
+        }
+        sendBytes(exchange, 200, resource.contentType(), body);
+    }
+
+    private void sendBytes(HttpExchange exchange, int status, String contentType, byte[] body) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", contentType);
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
         exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        exchange.getResponseHeaders().set("Content-Security-Policy",
+                "default-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; "
+                        + "base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+        exchange.getResponseHeaders().set("Referrer-Policy", "no-referrer");
+        exchange.getResponseHeaders().set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
         exchange.sendResponseHeaders(status, body.length);
         try (OutputStream output = exchange.getResponseBody()) {
             output.write(body);
@@ -344,6 +376,8 @@ public final class ControlHttpServer implements AutoCloseable {
     }
     @SuppressWarnings("serial")
     private static final class ResponseCompleteException extends RuntimeException { }
+
+    private record WebResource(String classpath, String contentType) { }
 
     static final class AuthFailureLimiter {
         private final java.util.function.LongSupplier nanoTime;

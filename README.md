@@ -2,14 +2,15 @@
 
 VotingPlugin Control is a separate, local-first administration service for a VotingPlugin network. The current milestone
 provides authenticated, read-only discovery of multiple BungeeCord and Velocity proxies and the backend servers each
-proxy observes. It does not process votes, and VotingPlugin does not depend on it for startup, joins, routing, or shutdown.
+proxy observes. It includes a minimal local WebUI over the same versioned API. It does not process votes, and VotingPlugin
+does not depend on it for startup, joins, routing, or shutdown.
 
 ## Trust and deployment boundary
 
 One Control process can observe an entire network:
 
 ```text
-Browser (future local UI) -> Control <- Proxy A / Proxy B / Proxy C <- backend servers
+Browser -> Control WebUI/API <- Proxy A / Proxy B / Proxy C <- backend servers
 ```
 
 Proxy connectors initiate outbound HTTP(S) requests. Bukkit backend nodes do not connect directly. Control works without
@@ -43,8 +44,13 @@ report `development` rather than maintaining a second version literal.
 | `CONTROL_REQUEST_TIMEOUT_SECONDS` | `10` | `1`–`60`; bounds stalled JDK HTTP exchanges |
 
 The server also uses a bounded HTTP executor (8 active requests and a 32-request queue), a 64 KiB request limit, bounded
-JSON depth/string/number sizes, and a global authentication-failure limit. Shutdown stops the server and its daemon request
-workers without waiting indefinitely.
+JSON depth/string/number sizes, and a bounded invalid-authentication failure limit. Valid enrolled/admin credentials remain
+usable even while invalid traffic is throttled. Shutdown stops the server and its daemon request workers without waiting
+indefinitely.
+
+Open `http://127.0.0.1:8080/` for the local WebUI. Its static shell is public on the Control listener, but topology reads
+still require the admin bearer token. The token remains only in page memory and is not persisted by the UI. Static assets
+use a restrictive Content Security Policy and the browser calls the same `/api/v1` endpoints documented below.
 
 ## Enrollment
 
@@ -83,6 +89,7 @@ All errors have the stable form:
 
 | Method | Endpoint | Authentication | Behavior |
 | --- | --- | --- | --- |
+| `GET` | `/`, `/app.js`, `/app.css` | none | Minimal local WebUI static assets |
 | `GET` | `/api/v1/health` | none | Health plus Control identity/application/protocol version |
 | `POST` | `/api/v1/nodes/register` | node | Idempotently create/replace one enrolled proxy session |
 | `PUT` | `/api/v1/nodes/{nodeId}/heartbeat` | matching node | Refresh liveness and replace capability advertisement |
@@ -117,6 +124,7 @@ They are not misleadingly used by these simple HTTP resource endpoints.
 
 ## Intentionally out of scope
 
-This milestone has no configuration reads or writes, WebUI, topology persistence/history, audit log, diagnostics bundle,
-automatic distribution, cloud relay, or remote-support sessions. Node registry state is currently in memory, so proxies
-automatically re-register after a Control restart. Manual installation remains supported.
+This milestone has no configuration reads or writes, topology persistence/history, audit log, diagnostics bundle, cloud
+relay, or remote-support sessions. Node registry state is currently in memory, so proxies automatically re-register after
+a Control restart. Manual installation remains supported; the companion VotingPlugin development PR can also opt in to
+verified download and child-process hosting.
