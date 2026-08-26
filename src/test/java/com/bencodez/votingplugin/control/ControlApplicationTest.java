@@ -80,12 +80,17 @@ class ControlApplicationTest {
         assertTrue(java.util.Arrays.equals(new char[supplied.length], supplied));
     }
 
-    @Test void startupConfigurationValidatesAllBounds() {
+    @Test void startupConfigurationValidatesAllBounds() throws Exception {
         assertThrows(IllegalArgumentException.class,
                 () -> ControlApplication.Configuration.from(java.util.Map.of("CONTROL_PORT", "70000")));
         assertThrows(IllegalArgumentException.class,
                 () -> ControlApplication.Configuration.from(java.util.Map.of("CONTROL_OFFLINE_TIMEOUT_SECONDS", "0")));
         assertThrows(IllegalArgumentException.class,
                 () -> ControlApplication.Configuration.from(java.util.Map.of("CONTROL_REQUEST_TIMEOUT_SECONDS", "61")));
+        assertThrows(IllegalArgumentException.class,
+                () -> ControlApplication.Configuration.from(java.util.Map.of(
+                        "CONTROL_TRUSTED_PROXY_ADDRESSES", "proxy.local")));
+        assertEquals(Set.of("127.0.0.1"), ControlApplication.Configuration.from(java.util.Map.of(
+                "CONTROL_TRUSTED_PROXY_ADDRESSES", "127.0.0.1")).trustedProxyAddresses());
     }
 }

@@ -27,6 +27,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
@@ -42,6 +43,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
@@ -83,37 +85,47 @@ public final class ControlHttpServer implements AutoCloseable {
     private final AuthFailureLimiter authLimiter;
     private final WebSessionStore webSessions;
     private final boolean secureCookies;
+    private final Set<String> trustedProxyAddresses;
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials) throws IOException {
         this(address, registry, identity, credentials,
                 new ConfigurationOperations(registry, new com.bencodez.votingplugin.control.domain.ConfigurationAuditLog(
                         java.nio.file.Files.createTempDirectory("votingplugin-control-test-audit"), Clock.systemUTC()),
-                        Clock.systemUTC()), Clock.systemUTC(), System::nanoTime, false);
+                        Clock.systemUTC()), Clock.systemUTC(), System::nanoTime, false, Set.of());
     }
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials, ConfigurationOperations configurationOperations)
             throws IOException {
         this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime,
-                false);
+                false, Set.of());
     }
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials, ConfigurationOperations configurationOperations,
                              boolean secureCookies) throws IOException {
         this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime,
-                secureCookies);
+                secureCookies, Set.of());
+    }
+
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, ConfigurationOperations configurationOperations,
+                             boolean secureCookies, Set<String> trustedProxyAddresses) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime,
+                secureCookies, trustedProxyAddresses);
     }
 
     ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                       CredentialStore credentials, ConfigurationOperations configurationOperations, Clock clock,
-                      java.util.function.LongSupplier nanoTime, boolean secureCookies) throws IOException {
+                      java.util.function.LongSupplier nanoTime, boolean secureCookies,
+                      Set<String> trustedProxyAddresses) throws IOException {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.credentials = Objects.requireNonNull(credentials, "credentials");
         this.configurationOperations = Objects.requireNonNull(configurationOperations, "configurationOperations");
         this.secureCookies = secureCookies;
+        this.trustedProxyAddresses = Set.copyOf(Objects.requireNonNull(trustedProxyAddresses, "trustedProxyAddresses"));
         Objects.requireNonNull(clock, "clock");
         json = new ObjectMapper();
         json.findAndRegisterModules();
@@ -512,10 +524,36 @@ public final class ControlHttpServer implements AutoCloseable {
                 ? value.substring(7) : null;
     }
 
-    private static String passwordClient(HttpExchange exchange) {
+    private String passwordClient(HttpExchange exchange) {
         InetSocketAddress remote = exchange.getRemoteAddress();
         if (remote == null) return "unknown";
-        return remote.getAddress() == null ? remote.getHostString() : remote.getAddress().getHostAddress();
+        String peer = remote.getAddress() == null ? remote.getHostString() : remote.getAddress().getHostAddress();
+        return forwardedPasswordClient(peer, singleHeader(exchange, "X-Forwarded-For"), trustedProxyAddresses);
+    }
+
+    static String forwardedPasswordClient(String peer, String forwardedFor, Set<String> trustedProxies) {
+        if (!trustedProxies.contains(peer) || forwardedFor == null || forwardedFor.isBlank()) return peer;
+        String selected = peer;
+        String[] chain = forwardedFor.split(",", -1);
+        for (int index = chain.length - 1; index >= 0; index--) {
+            String address = canonicalIpLiteral(chain[index]);
+            if (address == null) return peer;
+            selected = address;
+            if (!trustedProxies.contains(address)) return address;
+        }
+        return selected;
+    }
+
+    private static String canonicalIpLiteral(String value) {
+        String candidate = value == null ? "" : value.trim();
+        boolean ipv4 = candidate.matches("[0-9]{1,3}(\\.[0-9]{1,3}){3}");
+        boolean ipv6 = candidate.indexOf(':') >= 0 && candidate.matches("[0-9A-Fa-f:.]+");
+        if (!ipv4 && !ipv6) return null;
+        try {
+            return InetAddress.getByName(candidate).getHostAddress();
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     private static String cookie(HttpExchange exchange, String name) {

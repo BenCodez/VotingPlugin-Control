@@ -252,9 +252,21 @@ async function loadNodes() {
     } else {
       body.items.forEach(node => nodes.append(nodeCard(node)));
     }
+    const previousCapabilities = nodeCapabilities;
     nodeCapabilities = new Map(body.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
     nodePlugins = new Map(body.items.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
       ? node.detectedPlugins : []]));
+    const selectedCapabilitiesChanged = [...selectedNodes].some(node =>
+      ['config.proxy-routing.v1', 'config.files.v1', 'config.quick-setup.v1'].some(capability =>
+        Boolean(previousCapabilities.get(node)?.includes(capability)) !==
+          Boolean(nodeCapabilities.get(node)?.includes(capability))));
+    if (selectedCapabilitiesChanged) {
+      approvedPreview = null;
+      approvedFilePreview = null;
+      approvedQuickPreview = null;
+      inputGeneration++;
+      text(operationStatus, 'A selected node changed capabilities during refresh. Preview again before apply.');
+    }
     const invalidRoutingApproval = approvedPreview && !approvedPreview.nodeIds.every(node =>
       nodeCapabilities.get(node)?.includes('config.proxy-routing.v1'));
     const invalidFileApproval = approvedFilePreview && !approvedFilePreview.nodeIds.every(node =>

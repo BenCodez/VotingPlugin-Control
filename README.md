@@ -46,9 +46,10 @@ report `development` rather than maintaining a second version literal.
 | `CONTROL_OFFLINE_TIMEOUT_SECONDS` | `90` | `1`–`3600` |
 | `CONTROL_REQUEST_TIMEOUT_SECONDS` | `10` | `1`–`60`; bounds stalled JDK HTTP exchanges |
 | `CONTROL_SECURE_COOKIE` | `false` | Set `true` only when browsers reach Control through a trusted HTTPS reverse proxy |
+| `CONTROL_TRUSTED_PROXY_ADDRESSES` | empty | Comma-separated IP literals for reverse proxies allowed to supply `X-Forwarded-For` login admission identity |
 
 The server also uses a bounded HTTP executor (8 active requests and a 32-request queue), a 768 KiB request limit, bounded
-JSON depth/string/number sizes, a two-slot password-verification semaphore, and a bounded invalid-authentication failure limit. Valid enrolled/admin credentials remain
+JSON depth/string/number sizes, a two-worker password-verification executor with per-client admission, and a bounded invalid-authentication failure limit. Configure the exact reverse-proxy IP addresses when HTTPS terminates upstream; forwarding headers from every other peer are ignored. Valid enrolled/admin credentials remain
 usable even while invalid traffic is throttled. Shutdown stops the server and its daemon request workers without waiting
 indefinitely.
 

@@ -73,6 +73,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
+        assertTrue(script.body().contains("selectedCapabilitiesChanged"));
         assertEquals(200, get("/app.css", null).statusCode());
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         assertEquals(200, get("/api/v1/health", null).statusCode());
@@ -243,6 +244,15 @@ class ControlHttpServerTest {
         admission.release("attacker");
         assertTrue(admission.acquire("attacker"));
         admission.release("owner");
+    }
+
+    @Test void trustedProxyUsesForwardedClientWhileDirectPeersCannotSpoofIt() {
+        assertEquals("203.0.113.9", ControlHttpServer.forwardedPasswordClient("127.0.0.1", "203.0.113.9",
+                java.util.Set.of("127.0.0.1")));
+        assertEquals("198.51.100.4", ControlHttpServer.forwardedPasswordClient("198.51.100.4", "203.0.113.9",
+                java.util.Set.of("127.0.0.1")));
+        assertEquals("127.0.0.1", ControlHttpServer.forwardedPasswordClient("127.0.0.1", "not-an-address",
+                java.util.Set.of("127.0.0.1")));
     }
 
     @Test void queuedPasswordVerificationDoesNotBlockHealthOrAdminRequests() throws Exception {

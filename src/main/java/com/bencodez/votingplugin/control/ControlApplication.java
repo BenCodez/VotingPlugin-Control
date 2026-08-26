@@ -18,7 +18,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 
@@ -133,7 +135,7 @@ public final class ControlApplication {
         ConfigurationOperations operations = new ConfigurationOperations(registry,
                 new ConfigurationAuditLog(configuration.dataDirectory(), clock), clock);
         ControlHttpServer server = new ControlHttpServer(configuration.address(), registry, identity, credentials,
-                operations, configuration.secureCookies());
+                operations, configuration.secureCookies(), configuration.trustedProxyAddresses());
         CountDownLatch shutdown = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             server.close();
@@ -186,7 +188,7 @@ public final class ControlApplication {
     }
 
     record Configuration(InetSocketAddress address, Path dataDirectory, Duration offlineTimeout,
-                         int requestTimeoutSeconds, boolean secureCookies) {
+                         int requestTimeoutSeconds, boolean secureCookies, Set<String> trustedProxyAddresses) {
         static Configuration from(Map<String, String> environment) throws IOException {
             String host = environment.getOrDefault("CONTROL_HOST", "127.0.0.1").trim();
             if (host.isEmpty()) {
@@ -200,9 +202,24 @@ public final class ControlApplication {
                     "request timeout", 1, 60);
             boolean secureCookies = strictBoolean(environment.getOrDefault("CONTROL_SECURE_COOKIE", "false"),
                     "secure cookie");
+            Set<String> trustedProxies = trustedProxyAddresses(
+                    environment.getOrDefault("CONTROL_TRUSTED_PROXY_ADDRESSES", ""));
             return new Configuration(new InetSocketAddress(resolved, port),
                     requirePath(environment.getOrDefault("CONTROL_DATA_DIR", "data")),
-                    Duration.ofSeconds(offlineSeconds), requestSeconds, secureCookies);
+                    Duration.ofSeconds(offlineSeconds), requestSeconds, secureCookies, trustedProxies);
+        }
+
+        private static Set<String> trustedProxyAddresses(String value) throws IOException {
+            if (value == null || value.isBlank()) return Set.of();
+            Set<String> result = new LinkedHashSet<>();
+            for (String item : value.split(",", -1)) {
+                String candidate = item.trim();
+                boolean ipv4 = candidate.matches("[0-9]{1,3}(\\.[0-9]{1,3}){3}");
+                boolean ipv6 = candidate.indexOf(':') >= 0 && candidate.matches("[0-9A-Fa-f:.]+");
+                if (!ipv4 && !ipv6) throw new IllegalArgumentException("Invalid trusted proxy address");
+                result.add(InetAddress.getByName(candidate).getHostAddress());
+            }
+            return Set.copyOf(result);
         }
 
         private static int boundedInteger(String value, String name, int minimum, int maximum) {

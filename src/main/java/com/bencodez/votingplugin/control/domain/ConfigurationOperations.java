@@ -216,6 +216,9 @@ public final class ConfigurationOperations implements AutoCloseable {
                     .map(ConfigurationTaskResult::configuration).filter(Objects::nonNull)
                     .noneMatch(value -> ManagedConfiguration.FILE.equals(value.domain()) && value.content() != null);
             if (!keepContent) configuration = configuration.publicView();
+        } else if (configuration != null && operation.results.values().stream()
+                .anyMatch(existing -> existing.configuration() != null)) {
+            configuration = null;
         }
         List<String> changes = retainChanges(result.changes());
         return new ConfigurationTaskResult(result.sessionId(), result.success(), result.code(), result.message(),

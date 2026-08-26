@@ -404,6 +404,7 @@ class ConfigurationOperationsTest {
                 .mapToLong(value -> value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length).sum();
         assertTrue(retainedBytes <= ConfigurationOperations.MAX_RETAINED_CHANGE_BYTES);
         assertTrue(retainedBytes < 100L * 20 * 500);
+        assertEquals(1, read.results().values().stream().filter(result -> result.configuration() != null).count());
     }
 
     private static final class MutableClock extends Clock {
