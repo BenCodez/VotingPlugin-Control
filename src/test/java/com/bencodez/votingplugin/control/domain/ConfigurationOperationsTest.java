@@ -352,6 +352,15 @@ class ConfigurationOperationsTest {
                         ManagedConfiguration.file("Config.yml", "large: value\n"), List.of(), false, false))).code());
     }
 
+    @Test void managedConfigurationRejectsFieldsFromAnotherUnionDomain() {
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(
+                ManagedConfiguration.PROXY_ROUTING, false, List.of(), null, "hidden", null, Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(
+                ManagedConfiguration.QUICK_SETUP, null, List.of(), null, "hidden", "standalone", Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(
+                ManagedConfiguration.FILE, null, List.of("other"), "Config.yml", null, null, Map.of()));
+    }
+
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

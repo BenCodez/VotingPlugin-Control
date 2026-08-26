@@ -20,14 +20,20 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             throw new IllegalArgumentException("configuration domain is unsupported");
         }
         if (PROXY_ROUTING.equals(domain)) {
-            if (sendVotesToAllServers == null) throw new IllegalArgumentException("proxy routing is incomplete");
+            if (sendVotesToAllServers == null || fileName != null || content != null || preset != null || !options.isEmpty())
+                throw new IllegalArgumentException("proxy routing contains fields from another domain");
             new ProxyRoutingConfiguration(sendVotesToAllServers, blockedServers);
         } else if (FILE.equals(domain)) {
+            if (sendVotesToAllServers != null || !blockedServers.isEmpty() || preset != null || !options.isEmpty())
+                throw new IllegalArgumentException("file configuration contains fields from another domain");
             validateFileName(fileName);
             if (content != null && (content.length() > MAX_CONTENT || content.indexOf('\0') >= 0)) {
                 throw new IllegalArgumentException("configuration file content is invalid");
             }
         } else {
+            if (sendVotesToAllServers != null || !blockedServers.isEmpty() || fileName != null || content != null) {
+                throw new IllegalArgumentException("quick setup contains fields from another domain");
+            }
             if (preset == null || !preset.matches("[a-z][a-z0-9-]{0,39}")) {
                 throw new IllegalArgumentException("quick setup preset is invalid");
             }

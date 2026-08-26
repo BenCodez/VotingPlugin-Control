@@ -105,6 +105,17 @@ class InMemoryNodeRegistryTest {
                 .node().detectedPlugins());
     }
 
+    @Test void staleNodeInventoriesReleaseRegistryWideCapacity() {
+        InMemoryNodeRegistry bounded = new InMemoryNodeRegistry(clock, Duration.ofSeconds(90), 10, 3);
+        bounded.register(registration("proxy-a", session, Set.of(), Set.of(), Set.of("One", "Two", "Three")));
+
+        clock.advance(Duration.ofSeconds(90));
+        bounded.register(registration("proxy-b", UUID.randomUUID(), Set.of(), Set.of(), Set.of("Four")));
+
+        assertTrue(bounded.find("proxy-a").detectedPlugins().isEmpty());
+        assertEquals(Set.of("Four"), bounded.find("proxy-b").detectedPlugins());
+    }
+
     @Test void duplicateRegistrationIsAtomicUnderConcurrency() throws Exception {
         int count = 32;
         CountDownLatch ready = new CountDownLatch(count);

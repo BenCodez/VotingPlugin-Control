@@ -69,6 +69,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
     public synchronized RegistrationResult register(NodeRegistration registration) {
         validate(registration);
         Instant now = clock.instant();
+        reclaimOfflineTopology(now, registration.nodeId());
         StoredNode current = nodes.get(registration.nodeId());
         int replacementPluginTotal = retainedDetectedPlugins
                 - (current == null ? 0 : current.detectedPlugins.size()) + registration.detectedPlugins().size();
@@ -127,6 +128,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         validateId(nodeId, "nodeId");
         validateSnapshot(snapshot);
         Instant now = clock.instant();
+        reclaimOfflineTopology(now, nodeId);
         AtomicBoolean applied = new AtomicBoolean();
         AtomicReference<StoredNode> result = new AtomicReference<>();
         nodes.computeIfPresent(nodeId, (ignored, existing) -> {
@@ -206,6 +208,22 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         return new NodeStatus(node.nodeId, node.sessionId, node.displayName, node.platform, node.pluginVersion,
                 node.protocolVersion, node.advertisedCapabilities, node.acceptedCapabilities, node.detectedPlugins,
                 node.backends, node.snapshotSequence, node.lastSeen, node.lastAuthenticatedUpdate, online);
+    }
+
+    private void reclaimOfflineTopology(Instant now, String excludedNodeId) {
+        for (String candidate : List.copyOf(nodes.keySet())) {
+            if (candidate.equals(excludedNodeId)) continue;
+            nodes.computeIfPresent(candidate, (ignored, existing) -> {
+                if (now.isBefore(existing.lastSeen.plus(offlineTimeout))
+                        || (existing.detectedPlugins.isEmpty() && existing.backends.isEmpty())) return existing;
+                retainedDetectedPlugins -= existing.detectedPlugins.size();
+                retainedBackends -= existing.backends.size();
+                return new StoredNode(existing.nodeId, existing.sessionId, existing.displayName, existing.platform,
+                        existing.pluginVersion, existing.protocolVersion, existing.advertisedCapabilities,
+                        existing.acceptedCapabilities, Set.of(), List.of(), existing.snapshotSequence,
+                        existing.lastSeen, existing.lastAuthenticatedUpdate);
+            });
+        }
     }
 
     private static void validate(NodeRegistration registration) {
