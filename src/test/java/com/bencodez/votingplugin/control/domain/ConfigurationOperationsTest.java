@@ -303,6 +303,25 @@ class ConfigurationOperationsTest {
         assertEquals("APPLY", operations.createApply(previewId, approval).type());
     }
 
+    @Test void activeTaskLeasePostponesOperationAbandonmentUntilLeaseExpires() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-08-25T00:00:00Z"));
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofHours(1));
+        UUID session = UUID.randomUUID();
+        registry.register(registration(session));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        UUID operation = operations.createRead(List.of("proxy-a")).operationId();
+
+        clock.advance(Duration.ofMinutes(14));
+        assertNotNull(operations.claim("proxy-a", session));
+        clock.advance(Duration.ofSeconds(90));
+        assertEquals("RUNNING", operations.get(operation).state());
+
+        clock.advance(Duration.ofSeconds(31));
+        assertEquals("OPERATION_NOT_FOUND", assertThrows(ValidationException.class,
+                () -> operations.get(operation)).code());
+    }
+
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

@@ -304,7 +304,9 @@ public final class ConfigurationOperations implements AutoCloseable {
         Iterator<Map.Entry<UUID, StoredOperation>> iterator = operations.entrySet().iterator();
         while (iterator.hasNext()) {
             StoredOperation operation = iterator.next().getValue();
-            if (operation.createdAt.isBefore(operation.complete() ? completedCutoff : activeCutoff)) {
+            boolean activeLease = operation.leasedAt.values().stream()
+                    .anyMatch(leased -> now.isBefore(leased.plus(LEASE)));
+            if (!activeLease && operation.createdAt.isBefore(operation.complete() ? completedCutoff : activeCutoff)) {
                 audit.append("OPERATION_EXPIRED", operation.id, null,
                         operation.complete() ? "RETAINED" : "ABANDONED");
                 releaseResultDetails(operation);

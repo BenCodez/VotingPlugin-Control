@@ -447,15 +447,18 @@ applyConfiguration.addEventListener('click', async () => {
 
 readFileConfiguration.addEventListener('click', async () => {
   approvedFilePreview = null;
-  const readGeneration = authenticationGeneration;
+  const readAuthenticationGeneration = authenticationGeneration;
+  const readInputGeneration = inputGeneration;
+  const selectedFile = configurationFile.value;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: targets('config.files.v1'),
-      configuration: {domain: 'file', fileName: configurationFile.value}
+      configuration: {domain: 'file', fileName: selectedFile}
     }, fileOperationStatus);
     const contentResult = Object.values(operation.results).find(result =>
       result.success && result.configuration?.content != null);
-    if (contentResult && authenticated && readGeneration === authenticationGeneration) {
+    if (contentResult && authenticated && readAuthenticationGeneration === authenticationGeneration
+        && readInputGeneration === inputGeneration && selectedFile === configurationFile.value) {
       configurationContent.value = contentResult.configuration.content;
       text(fileOperationStatus, operationSummary(operation));
       inputGeneration++;
@@ -548,10 +551,15 @@ applyQuickSetup.addEventListener('click', async () => {
   } catch (error) { text(quickOperationStatus, error.message); }
 });
 
-[configurationFile, configurationContent, quickName, quickService, quickUrl, quickDelay, quickRewardScope,
+[configurationContent, quickName, quickService, quickUrl, quickDelay, quickRewardScope,
   quickCommand, quickMessage, quickProcessRewards, quickAutoSites, quickExtraCheck, quickCountFake,
   quickHideSiteWarning, quickDisableUpdates, quickPartyVotes, quickPartyCommand, quickPartyBroadcast,
   quickPartyAll, quickPartyOnline].forEach(field => field.addEventListener('input', clearApprovals));
+configurationFile.addEventListener('input', () => {
+  configurationContent.value = '';
+  text(fileOperationStatus, 'Read the selected file before previewing changes.');
+  clearApprovals();
+});
 quickPreset.addEventListener('input', () => { updateQuickFields(); clearApprovals(); });
 refresh.addEventListener('click', loadNodes);
 previousPage.addEventListener('click', () => {

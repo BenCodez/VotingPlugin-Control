@@ -229,11 +229,17 @@ public final class CredentialStore {
             Path temporary = Files.createTempFile(directory, "credentials-", ".tmp");
             try {
                 Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING);
+                try (FileChannel temporaryChannel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+                    temporaryChannel.force(true);
+                }
                 try {
                     Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE,
                             StandardCopyOption.REPLACE_EXISTING);
                 } catch (java.nio.file.AtomicMoveNotSupportedException e) {
                     Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
+                }
+                try (FileChannel directoryChannel = FileChannel.open(directory, StandardOpenOption.READ)) {
+                    directoryChannel.force(true);
                 }
             } finally {
                 Files.deleteIfExists(temporary);
