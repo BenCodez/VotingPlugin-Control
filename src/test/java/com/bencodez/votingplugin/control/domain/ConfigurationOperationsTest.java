@@ -503,7 +503,7 @@ class ConfigurationOperationsTest {
         read = operations.complete(read.operationId(), "backend-b", new ConfigurationTaskResult(second, true, "OK",
                 "read", "b".repeat(64), content, List.of(), false, false));
 
-        assertEquals(null, read.results().get("backend-a").configuration().content());
+        assertEquals(null, read.results().get("backend-a").configuration());
         assertEquals("Feature: true\n", read.results().get("backend-b").configuration().content());
     }
 

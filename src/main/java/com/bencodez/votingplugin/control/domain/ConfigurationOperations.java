@@ -213,7 +213,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private ConfigurationTaskResult boundedResult(StoredOperation operation, ConfigurationTaskResult result) {
-        ManagedConfiguration configuration = result.configuration();
+        ManagedConfiguration configuration = result.success() ? result.configuration() : null;
         if (configuration != null && ManagedConfiguration.FILE.equals(configuration.domain())) {
             boolean keepContent = result.success() && "READ".equals(operation.type)
                     && operation.results.values().stream().filter(ConfigurationTaskResult::success)
