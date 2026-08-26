@@ -230,6 +230,49 @@ class ConfigurationOperationsTest {
         assertEquals(false, Files.exists(directory.resolve("configuration-audit.pending")));
     }
 
+    @Test void liveAuditLogRecoversExistingPendingTransactionBeforeNextAppend() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        Path active = directory.resolve("configuration-audit.jsonl");
+        Path checkpoint = directory.resolve("configuration-audit.checkpoint");
+        Path pendingPath = directory.resolve("configuration-audit.pending");
+        ObjectMapper json = new ObjectMapper();
+        try (ConfigurationAuditLog log = new ConfigurationAuditLog(directory, clock)) {
+            log.append("FIRST", UUID.randomUUID(), "proxy-a", "OK");
+        }
+        byte[] before = Files.readAllBytes(checkpoint);
+        try (ConfigurationAuditLog log = new ConfigurationAuditLog(directory, clock)) {
+            log.append("SECOND", UUID.randomUUID(), "proxy-a", "OK");
+        }
+        byte[] after = Files.readAllBytes(checkpoint);
+        List<String> lines = Files.readAllLines(active);
+        JsonNode pre = json.readTree(before);
+        JsonNode post = json.readTree(after);
+        byte[] firstLine = (lines.get(0) + System.lineSeparator()).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Map<String, Object> pending = new LinkedHashMap<>();
+        pending.put("line", lines.get(1) + System.lineSeparator());
+        pending.put("rotate", false);
+        pending.put("preActiveHash", pre.path("activeHash").asText());
+        pending.put("preActiveRecords", pre.path("activeRecords").asLong());
+        pending.put("preRetainedHash", pre.path("retainedHash").asText());
+        pending.put("preRetainedRecords", pre.path("retainedRecords").asLong());
+        pending.put("preActiveBytes", firstLine.length);
+        pending.put("postActiveHash", post.path("activeHash").asText());
+        pending.put("postActiveRecords", post.path("activeRecords").asLong());
+        pending.put("postRetainedHash", post.path("retainedHash").asText());
+        pending.put("postRetainedRecords", post.path("retainedRecords").asLong());
+        Files.write(active, firstLine);
+        Files.write(checkpoint, before);
+
+        try (ConfigurationAuditLog live = new ConfigurationAuditLog(directory, clock)) {
+            Files.writeString(active, lines.get(0) + System.lineSeparator() + lines.get(1)
+                    + System.lineSeparator());
+            Files.write(pendingPath, json.writeValueAsBytes(pending));
+            live.append("THIRD", UUID.randomUUID(), "proxy-a", "OK");
+        }
+        assertEquals(3, Files.readAllLines(active).size());
+        assertEquals(false, Files.exists(pendingPath));
+    }
+
     @Test void auditLogRejectsASecondProcessWriter() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         try (ConfigurationAuditLog first = new ConfigurationAuditLog(directory, clock)) {

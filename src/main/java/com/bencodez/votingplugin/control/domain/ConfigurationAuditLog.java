@@ -79,6 +79,9 @@ public final class ConfigurationAuditLog implements AutoCloseable {
 
     public synchronized void append(String action, UUID operationId, String nodeId, String outcome) {
         try {
+            // A prior append may have changed a segment before checkpoint publication failed.
+            // Never replace its only durable recovery description with a new transaction.
+            if (Files.exists(pendingFile, LinkOption.NOFOLLOW_LINKS)) recoverPending();
             boolean rotate = Files.exists(file) && Files.size(file) >= maxBytes;
             String recordPrevious = rotate ? "GENESIS" : previousHash;
             Map<String, Object> core = new LinkedHashMap<>();
