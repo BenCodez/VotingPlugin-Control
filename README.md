@@ -138,7 +138,8 @@ Configuration is split into independently negotiated capabilities. `config.proxy
 `config.files.v1` manages `Config.yml`, `VoteSites.yml`, `SpecialRewards.yml`, `GUI.yml`, `Shop.yml`, and
 `BungeeSettings.yml` on enrolled Bukkit nodes through a bounded YAML editor. `config.quick-setup.v1` supplies standalone,
 proxy-backend, vote-site, easy-reward, common-settings, and vote-party presets. Bukkit registration also reports a bounded
-set of installed plugin names so the WebUI can offer editable Minecraft, Essentials, CMI, and LuckPerms command suggestions;
+set of installed plugin names (at most 16384 entries across the registry) so the WebUI can offer editable Minecraft,
+Essentials, CMI, and LuckPerms command suggestions;
 these are suggestions, not executed commands, and follow the normal preview/approval path. Password, secret, token, API-key, authorization, and webhook-secret values are masked
 on every read; leaving the redaction marker in a proposal preserves the current value. A newly entered secret is accepted
 only in the authenticated proposal and is not returned in results or written to the audit log.

@@ -398,11 +398,13 @@ async function restoreSession() {
 
 readConfiguration.addEventListener('click', async () => {
   approvedPreview = null;
-  const readGeneration = authenticationGeneration;
+  const readAuthenticationGeneration = authenticationGeneration;
+  const readInputGeneration = inputGeneration;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {nodeIds: targets('config.proxy-routing.v1')});
     const retained = Object.values(operation.results).find(result => result.success && result.configuration);
-    if (retained && authenticated && readGeneration === authenticationGeneration) {
+    if (retained && authenticated && readAuthenticationGeneration === authenticationGeneration
+        && readInputGeneration === inputGeneration) {
       sendAll.checked = retained.configuration.sendVotesToAllServers;
       blockedServers.value = retained.configuration.blockedServers.join('\n');
     }

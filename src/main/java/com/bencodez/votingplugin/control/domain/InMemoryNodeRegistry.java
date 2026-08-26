@@ -34,22 +34,32 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
     private static final int MAX_DETECTED_PLUGINS = 128;
     private static final int MAX_BACKENDS = 4096;
     private static final int MAX_TOTAL_BACKENDS = 65536;
+    private static final int MAX_TOTAL_DETECTED_PLUGINS = 16384;
 
     private final Map<String, StoredNode> nodes = new ConcurrentHashMap<>();
     private final Clock clock;
     private final Duration offlineTimeout;
     private final int maxTotalBackends;
+    private final int maxTotalDetectedPlugins;
     private int retainedBackends;
+    private int retainedDetectedPlugins;
 
     public InMemoryNodeRegistry(Clock clock, Duration offlineTimeout) {
-        this(clock, offlineTimeout, MAX_TOTAL_BACKENDS);
+        this(clock, offlineTimeout, MAX_TOTAL_BACKENDS, MAX_TOTAL_DETECTED_PLUGINS);
     }
 
     InMemoryNodeRegistry(Clock clock, Duration offlineTimeout, int maxTotalBackends) {
+        this(clock, offlineTimeout, maxTotalBackends, MAX_TOTAL_DETECTED_PLUGINS);
+    }
+
+    InMemoryNodeRegistry(Clock clock, Duration offlineTimeout, int maxTotalBackends,
+                         int maxTotalDetectedPlugins) {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.offlineTimeout = Objects.requireNonNull(offlineTimeout, "offlineTimeout");
         if (maxTotalBackends < 1) throw new IllegalArgumentException("maxTotalBackends must be positive");
+        if (maxTotalDetectedPlugins < 1) throw new IllegalArgumentException("maxTotalDetectedPlugins must be positive");
         this.maxTotalBackends = maxTotalBackends;
+        this.maxTotalDetectedPlugins = maxTotalDetectedPlugins;
         if (offlineTimeout.isNegative() || offlineTimeout.isZero()) {
             throw new IllegalArgumentException("offlineTimeout must be positive");
         }
@@ -59,6 +69,13 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
     public synchronized RegistrationResult register(NodeRegistration registration) {
         validate(registration);
         Instant now = clock.instant();
+        StoredNode current = nodes.get(registration.nodeId());
+        int replacementPluginTotal = retainedDetectedPlugins
+                - (current == null ? 0 : current.detectedPlugins.size()) + registration.detectedPlugins().size();
+        if (replacementPluginTotal > maxTotalDetectedPlugins) {
+            throw new ValidationException("REGISTRY_LIMIT", "Plugin inventory exceeds registry capacity",
+                    List.of(registration.nodeId()));
+        }
         AtomicBoolean created = new AtomicBoolean();
         AtomicReference<StoredNode> result = new AtomicReference<>();
         nodes.compute(registration.nodeId(), (ignored, existing) -> {
@@ -75,6 +92,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
             result.set(replacement);
             return replacement;
         });
+        retainedDetectedPlugins = replacementPluginTotal;
         return new RegistrationResult(view(result.get()), created.get());
     }
 

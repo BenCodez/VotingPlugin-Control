@@ -323,7 +323,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (result == null || result.sessionId() == null || result.code() == null
                 || !result.code().matches("[A-Z][A-Z0-9_]{0,63}") || result.message() == null
                 || result.message().isBlank() || result.message().length() > 500 || result.changes().size() > 20
-                || result.changes().stream().anyMatch(value -> value == null || value.length() > 500)) {
+                || result.changes().stream().anyMatch(value -> value == null || value.length() > 500)
+                || (result.revision() != null && !result.revision().matches("[0-9a-f]{64}"))) {
             throw invalid("result is invalid");
         }
         if (result.success() && (result.revision() == null || !result.revision().matches("[0-9a-f]{64}")

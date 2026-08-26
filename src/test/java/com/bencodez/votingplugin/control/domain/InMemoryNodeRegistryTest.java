@@ -88,6 +88,23 @@ class InMemoryNodeRegistryTest {
                 snapshot(secondSession, 1, backend("c"), backend("d"))).applied());
     }
 
+    @Test void registryWidePluginInventoryBudgetRejectsAtomicallyAndIsReclaimed() {
+        InMemoryNodeRegistry bounded = new InMemoryNodeRegistry(clock, Duration.ofSeconds(90), 10, 3);
+        UUID secondSession = UUID.fromString("00000000-0000-0000-0000-000000000002");
+        bounded.register(registration("proxy-a", session, Set.of(), Set.of(), Set.of("One", "Two")));
+        bounded.register(registration("proxy-b", secondSession, Set.of(), Set.of(), Set.of("Three")));
+
+        ValidationException full = assertThrows(ValidationException.class, () -> bounded.register(
+                registration("proxy-a", session, Set.of(), Set.of(), Set.of("One", "Two", "Four"))));
+        assertEquals("REGISTRY_LIMIT", full.code());
+        assertEquals(Set.of("One", "Two"), bounded.find("proxy-a").detectedPlugins());
+
+        bounded.register(registration("proxy-b", secondSession, Set.of(), Set.of(), Set.of()));
+        assertEquals(Set.of("One", "Two", "Four"), bounded.register(
+                registration("proxy-a", session, Set.of(), Set.of(), Set.of("One", "Two", "Four")))
+                .node().detectedPlugins());
+    }
+
     @Test void duplicateRegistrationIsAtomicUnderConcurrency() throws Exception {
         int count = 32;
         CountDownLatch ready = new CountDownLatch(count);
@@ -143,8 +160,13 @@ class InMemoryNodeRegistryTest {
 
     private NodeRegistration registration(String nodeId, UUID registrationSession, Set<String> capabilities,
                                           Set<String> required) {
+        return registration(nodeId, registrationSession, capabilities, required, Set.of());
+    }
+
+    private NodeRegistration registration(String nodeId, UUID registrationSession, Set<String> capabilities,
+                                            Set<String> required, Set<String> detectedPlugins) {
         return new NodeRegistration(nodeId, registrationSession, "Proxy A", "VELOCITY", "7.1.2", 1,
-                capabilities, required);
+                capabilities, required, detectedPlugins);
     }
 
     private PresenceSnapshot snapshot(long sequence, BackendServerIdentity... backends) {

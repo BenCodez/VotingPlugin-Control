@@ -322,6 +322,21 @@ class ConfigurationOperationsTest {
                 () -> operations.get(operation)).code());
     }
 
+    @Test void failedTaskResultCannotRetainAnUnboundedRevision() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofHours(1));
+        UUID session = UUID.randomUUID();
+        registry.register(registration(session));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        UUID operation = operations.createRead(List.of("proxy-a")).operationId();
+        operations.claim("proxy-a", session);
+
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class, () -> operations.complete(operation,
+                "proxy-a", new ConfigurationTaskResult(session, false, "FAILED", "failed", "x".repeat(1000),
+                        (ManagedConfiguration) null, List.of(), false, false))).code());
+    }
+
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
