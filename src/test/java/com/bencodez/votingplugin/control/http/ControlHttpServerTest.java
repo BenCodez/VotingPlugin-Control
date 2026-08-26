@@ -74,6 +74,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
         assertTrue(script.body().contains("selectedCapabilitiesChanged"));
+        assertTrue(script.body().contains("discardAuthenticationState"));
+        assertTrue(script.body().contains("result.success && result.configuration"));
         assertEquals(200, get("/app.css", null).statusCode());
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         assertEquals(200, get("/api/v1/health", null).statusCode());

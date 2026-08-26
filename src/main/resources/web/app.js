@@ -194,8 +194,30 @@ async function authorized(path, options = {}) {
     headers: {...(options.headers || {}), ...(method === 'GET' ? {} : {'X-CSRF-Token': csrfToken})}
   });
   const body = response.status === 204 ? null : await response.json();
+  if (response.status === 401) discardAuthenticationState('Session expired. Sign in again.');
   if (!response.ok) throw new Error(body?.error?.message || `Control request failed (${response.status}).`);
   return body;
+}
+
+function discardAuthenticationState(reason) {
+  authenticationGeneration++;
+  authenticated = false;
+  csrfToken = '';
+  approvedPreview = null;
+  approvedFilePreview = null;
+  approvedQuickPreview = null;
+  inputGeneration++;
+  logout.hidden = true;
+  selectedNodes.clear();
+  nodeCapabilities.clear();
+  nodePlugins.clear();
+  configurationContent.value = '';
+  blockedServers.value = '';
+  nodes.replaceChildren();
+  nodes.classList.add('empty');
+  text(nodes, 'Authenticate to view the network.');
+  text(message, reason);
+  updateConfigurationButtons();
 }
 
 function proposal() {
@@ -335,6 +357,7 @@ form.addEventListener('submit', async event => {
     approvedFilePreview = null;
     approvedQuickPreview = null;
     selectedNodes.clear();
+    configurationContent.value = '';
     inputGeneration++;
     logout.hidden = false;
     pageOffset = 0;
@@ -349,23 +372,8 @@ form.addEventListener('submit', async event => {
 });
 
 logout.addEventListener('click', async () => {
-  authenticationGeneration++;
   try { await authorized('/api/v1/auth/logout', {method: 'POST'}); } catch (_) { /* Expired is logged out too. */ }
-  authenticated = false;
-  csrfToken = '';
-  approvedPreview = null;
-  approvedFilePreview = null;
-  approvedQuickPreview = null;
-  inputGeneration++;
-  logout.hidden = true;
-  selectedNodes.clear();
-  nodeCapabilities.clear();
-  nodePlugins.clear();
-  nodes.replaceChildren();
-  nodes.classList.add('empty');
-  text(nodes, 'Authenticate to view the network.');
-  text(message, 'Signed out.');
-  updateConfigurationButtons();
+  discardAuthenticationState('Signed out.');
 });
 
 async function restoreSession() {
@@ -386,11 +394,10 @@ readConfiguration.addEventListener('click', async () => {
   approvedPreview = null;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {nodeIds: targets('config.proxy-routing.v1')});
-    const successful = Object.values(operation.results).filter(result => result.success);
-    if (successful.length) {
-      const first = successful[0].configuration;
-      sendAll.checked = first.sendVotesToAllServers;
-      blockedServers.value = first.blockedServers.join('\n');
+    const retained = Object.values(operation.results).find(result => result.success && result.configuration);
+    if (retained) {
+      sendAll.checked = retained.configuration.sendVotesToAllServers;
+      blockedServers.value = retained.configuration.blockedServers.join('\n');
     }
   } catch (error) { text(operationStatus, error.message); }
 });
