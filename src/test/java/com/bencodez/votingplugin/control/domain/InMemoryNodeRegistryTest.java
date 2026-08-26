@@ -71,6 +71,23 @@ class InMemoryNodeRegistryTest {
                 () -> registry.heartbeat("proxy-a", new Heartbeat(session, 1, Set.of(), Set.of()))).code());
     }
 
+    @Test void registryWideBackendBudgetRejectsAtomicallyAndIsReclaimed() {
+        InMemoryNodeRegistry bounded = new InMemoryNodeRegistry(clock, Duration.ofSeconds(90), 3);
+        UUID secondSession = UUID.fromString("00000000-0000-0000-0000-000000000002");
+        bounded.register(registration("proxy-a", session, Set.of("presence.snapshot"), Set.of()));
+        bounded.register(registration("proxy-b", secondSession, Set.of("presence.snapshot"), Set.of()));
+        bounded.replacePresence("proxy-a", snapshot(session, 1, backend("a"), backend("b")));
+
+        ValidationException full = assertThrows(ValidationException.class, () -> bounded.replacePresence(
+                "proxy-b", snapshot(secondSession, 1, backend("c"), backend("d"))));
+        assertEquals("REGISTRY_LIMIT", full.code());
+        assertTrue(bounded.find("proxy-b").backends().isEmpty());
+
+        bounded.replacePresence("proxy-a", snapshot(session, 2, backend("a")));
+        assertTrue(bounded.replacePresence("proxy-b",
+                snapshot(secondSession, 1, backend("c"), backend("d"))).applied());
+    }
+
     @Test void duplicateRegistrationIsAtomicUnderConcurrency() throws Exception {
         int count = 32;
         CountDownLatch ready = new CountDownLatch(count);
@@ -131,7 +148,11 @@ class InMemoryNodeRegistryTest {
     }
 
     private PresenceSnapshot snapshot(long sequence, BackendServerIdentity... backends) {
-        return new PresenceSnapshot(session, 1, sequence, List.of(backends));
+        return snapshot(session, sequence, backends);
+    }
+
+    private PresenceSnapshot snapshot(UUID snapshotSession, long sequence, BackendServerIdentity... backends) {
+        return new PresenceSnapshot(snapshotSession, 1, sequence, List.of(backends));
     }
 
     private static BackendServerIdentity backend(String id) {

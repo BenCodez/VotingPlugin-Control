@@ -199,7 +199,8 @@ public final class ControlHttpServer implements AutoCloseable {
             int status = switch (e.code()) {
                 case "NODE_NOT_FOUND", "OPERATION_NOT_FOUND" -> 404;
                 case "UNSUPPORTED_PROTOCOL", "INCOMPATIBLE_CAPABILITIES", "SESSION_MISMATCH",
-                        "PREVIEW_INCOMPLETE", "APPROVAL_REQUIRED", "NODE_UNAVAILABLE", "OPERATION_LIMIT" -> 409;
+                        "PREVIEW_INCOMPLETE", "APPROVAL_REQUIRED", "NODE_UNAVAILABLE", "OPERATION_LIMIT",
+                        "REGISTRY_LIMIT" -> 409;
                 case "TASK_NOT_CLAIMED" -> 409;
                 case "UNSUPPORTED_MEDIA_TYPE" -> 415;
                 default -> 400;

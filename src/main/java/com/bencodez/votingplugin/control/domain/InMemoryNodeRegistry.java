@@ -33,21 +33,30 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
     private static final int MAX_CAPABILITIES = 64;
     private static final int MAX_DETECTED_PLUGINS = 128;
     private static final int MAX_BACKENDS = 4096;
+    private static final int MAX_TOTAL_BACKENDS = 65536;
 
     private final Map<String, StoredNode> nodes = new ConcurrentHashMap<>();
     private final Clock clock;
     private final Duration offlineTimeout;
+    private final int maxTotalBackends;
+    private int retainedBackends;
 
     public InMemoryNodeRegistry(Clock clock, Duration offlineTimeout) {
+        this(clock, offlineTimeout, MAX_TOTAL_BACKENDS);
+    }
+
+    InMemoryNodeRegistry(Clock clock, Duration offlineTimeout, int maxTotalBackends) {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.offlineTimeout = Objects.requireNonNull(offlineTimeout, "offlineTimeout");
+        if (maxTotalBackends < 1) throw new IllegalArgumentException("maxTotalBackends must be positive");
+        this.maxTotalBackends = maxTotalBackends;
         if (offlineTimeout.isNegative() || offlineTimeout.isZero()) {
             throw new IllegalArgumentException("offlineTimeout must be positive");
         }
     }
 
     @Override
-    public RegistrationResult register(NodeRegistration registration) {
+    public synchronized RegistrationResult register(NodeRegistration registration) {
         validate(registration);
         Instant now = clock.instant();
         AtomicBoolean created = new AtomicBoolean();
@@ -56,6 +65,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
             created.set(existing == null);
             List<BackendServerIdentity> backends = existing != null
                     && existing.sessionId.equals(registration.sessionId()) ? existing.backends : List.of();
+            if (existing != null && backends.isEmpty()) retainedBackends -= existing.backends.size();
             long sequence = existing != null && existing.sessionId.equals(registration.sessionId())
                     ? existing.snapshotSequence : -1L;
             StoredNode replacement = new StoredNode(registration.nodeId(), registration.sessionId(),
@@ -95,7 +105,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
     }
 
     @Override
-    public SnapshotResult replacePresence(String nodeId, PresenceSnapshot snapshot) {
+    public synchronized SnapshotResult replacePresence(String nodeId, PresenceSnapshot snapshot) {
         validateId(nodeId, "nodeId");
         validateSnapshot(snapshot);
         Instant now = clock.instant();
@@ -109,11 +119,17 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
             }
             List<BackendServerIdentity> sorted = snapshot.backends().stream()
                     .sorted(Comparator.comparing(BackendServerIdentity::backendId)).toList();
+            int replacementTotal = retainedBackends - existing.backends.size() + sorted.size();
+            if (replacementTotal > maxTotalBackends) {
+                throw new ValidationException("REGISTRY_LIMIT", "Backend snapshot exceeds registry capacity",
+                        List.of(nodeId));
+            }
             StoredNode updated = new StoredNode(existing.nodeId, existing.sessionId, existing.displayName,
                     existing.platform, existing.pluginVersion, existing.protocolVersion,
                     existing.advertisedCapabilities, existing.acceptedCapabilities, existing.detectedPlugins,
                     sorted, snapshot.sequence(), now, now);
             applied.set(true);
+            retainedBackends = replacementTotal;
             result.set(updated);
             return updated;
         });

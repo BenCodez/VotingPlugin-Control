@@ -168,7 +168,7 @@ public final class ConfigurationAuditLog implements AutoCloseable {
         previousHash = pending.postActiveHash();
         activeRecords = pending.postActiveRecords();
         writeCheckpoint();
-        Files.delete(pendingFile);
+        deleteDurably(pendingFile);
     }
 
     private SegmentState repairTornActive(PendingAppend pending, SegmentState retained,
@@ -193,7 +193,7 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             if (actual[index] != intended[index - base]) throw invalidActive;
         }
         if (base == 0) {
-            Files.delete(file);
+            deleteDurably(file);
         } else {
             try (FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE)) {
                 channel.truncate(base);
@@ -215,9 +215,11 @@ public final class ConfigurationAuditLog implements AutoCloseable {
     }
 
     private void appendDurably(String line) throws IOException {
+        boolean existed = Files.exists(file, LinkOption.NOFOLLOW_LINKS);
         Files.writeString(file, line, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
                 StandardOpenOption.APPEND, StandardOpenOption.WRITE);
         try (FileChannel channel = FileChannel.open(file, StandardOpenOption.WRITE)) { channel.force(true); }
+        if (!existed) forceDirectory(file.getParent());
     }
 
     private void writePending(PendingAppend pending) throws IOException {
@@ -353,6 +355,7 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             } catch (java.nio.file.AtomicMoveNotSupportedException e) {
                 Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
             }
+            forceDirectory(target.getParent());
         } finally {
             Files.deleteIfExists(temporary);
         }
@@ -363,6 +366,18 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (java.nio.file.AtomicMoveNotSupportedException e) {
             Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+        forceDirectory(target.getParent());
+        if (!source.getParent().equals(target.getParent())) forceDirectory(source.getParent());
+    }
+
+    private static void deleteDurably(Path target) throws IOException {
+        if (Files.deleteIfExists(target)) forceDirectory(target.getParent());
+    }
+
+    private static void forceDirectory(Path directory) throws IOException {
+        try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+            channel.force(true);
         }
     }
 

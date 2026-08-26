@@ -186,6 +186,7 @@ function updatePluginSuggestions() {
 }
 
 async function authorized(path, options = {}) {
+  const requestGeneration = authenticationGeneration;
   const method = (options.method || 'GET').toUpperCase();
   const response = await fetch(path, {
     cache: 'no-store',
@@ -194,7 +195,12 @@ async function authorized(path, options = {}) {
     headers: {...(options.headers || {}), ...(method === 'GET' ? {} : {'X-CSRF-Token': csrfToken})}
   });
   const body = response.status === 204 ? null : await response.json();
-  if (response.status === 401) discardAuthenticationState('Session expired. Sign in again.');
+  if (response.status === 401 && requestGeneration === authenticationGeneration) {
+    discardAuthenticationState('Session expired. Sign in again.');
+  }
+  if (requestGeneration !== authenticationGeneration) {
+    throw new Error('Authentication changed while the request was running. Try again.');
+  }
   if (!response.ok) throw new Error(body?.error?.message || `Control request failed (${response.status}).`);
   return body;
 }
@@ -392,10 +398,11 @@ async function restoreSession() {
 
 readConfiguration.addEventListener('click', async () => {
   approvedPreview = null;
+  const readGeneration = authenticationGeneration;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {nodeIds: targets('config.proxy-routing.v1')});
     const retained = Object.values(operation.results).find(result => result.success && result.configuration);
-    if (retained) {
+    if (retained && authenticated && readGeneration === authenticationGeneration) {
       sendAll.checked = retained.configuration.sendVotesToAllServers;
       blockedServers.value = retained.configuration.blockedServers.join('\n');
     }
@@ -440,6 +447,7 @@ applyConfiguration.addEventListener('click', async () => {
 
 readFileConfiguration.addEventListener('click', async () => {
   approvedFilePreview = null;
+  const readGeneration = authenticationGeneration;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: targets('config.files.v1'),
@@ -447,7 +455,7 @@ readFileConfiguration.addEventListener('click', async () => {
     }, fileOperationStatus);
     const contentResult = Object.values(operation.results).find(result =>
       result.success && result.configuration?.content != null);
-    if (contentResult) {
+    if (contentResult && authenticated && readGeneration === authenticationGeneration) {
       configurationContent.value = contentResult.configuration.content;
       text(fileOperationStatus, operationSummary(operation));
       inputGeneration++;

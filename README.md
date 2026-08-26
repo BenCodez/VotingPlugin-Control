@@ -130,7 +130,8 @@ and all unknown endpoints return a structured 404.
 
 Registration includes a stable node ID and a random process session ID. A new session replaces the old registration and
 clears its old topology. Presence snapshots are full replacements, contain at most 4096 unique backend IDs, and use a
-monotonic sequence within the registered session. Replayed or out-of-order sequence numbers are idempotently ignored.
+monotonic sequence within the registered session. Control retains at most 65536 backend entries across the whole registry;
+an over-capacity replacement is rejected atomically with `409 REGISTRY_LIMIT`. Replayed or out-of-order sequence numbers are idempotently ignored.
 Control records its own observation time; it does not trust remote wall-clock time for online/offline decisions.
 
 Configuration is split into independently negotiated capabilities. `config.proxy-routing.v1` exposes typed proxy routing.
@@ -169,6 +170,7 @@ They are not misleadingly used by these simple HTTP resource endpoints.
 - `401 UNAUTHORIZED`: the credential is missing, invalid, revoked, rotated, or enrolled for another node ID.
 - `403 CSRF_REQUIRED`: refresh/sign in again and retry the WebUI write from the same session.
 - `409 SESSION_MISMATCH`: re-register; Control has a newer process session for that stable node.
+- `409 REGISTRY_LIMIT`: reduce a node's backend snapshot before retrying; the previous snapshot remains intact.
 - `409 UNSUPPORTED_PROTOCOL` / `INCOMPATIBLE_CAPABILITIES`: upgrade the older side before retrying.
 - Node stays offline: verify its connector is enabled, the node ID matches enrollment, and heartbeat timeouts permit
   the configured interval.
