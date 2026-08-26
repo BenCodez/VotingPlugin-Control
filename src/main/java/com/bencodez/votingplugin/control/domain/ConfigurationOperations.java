@@ -5,6 +5,7 @@ import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import com.bencodez.votingplugin.control.protocol.NodeStatus;
 import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -28,6 +29,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     public static final String QUICK_SETUP_CAPABILITY = "config.quick-setup.v1";
     private static final int MAX_OPERATIONS = 1000;
     private static final int MAX_FILE_OPERATIONS = 16;
+    static final int MAX_RETAINED_CHANGE_BYTES = 256 * 1024;
     private static final Duration LEASE = Duration.ofMinutes(2);
     private static final Duration ACTIVE_RETENTION = Duration.ofMinutes(15);
     private static final Duration RETENTION = Duration.ofHours(24);
@@ -37,6 +39,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     private final Clock clock;
     private final SecureRandom random = new SecureRandom();
     private final LinkedHashMap<UUID, StoredOperation> operations = new LinkedHashMap<>();
+    private long retainedChangeBytes;
 
     public ConfigurationOperations(NodeRegistry registry, ConfigurationAuditLog audit, Clock clock) {
         this.registry = Objects.requireNonNull(registry);
@@ -196,6 +199,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             StoredOperation candidate = iterator.next().getValue();
             if (candidate.fileOperation() && candidate.complete() && !candidate.id.equals(protectedOperation)) {
                 audit.append("OPERATION_EVICTED", candidate.id, null, "FILE_RETENTION_LIMIT");
+                releaseResultDetails(candidate);
                 iterator.remove();
                 retained--;
             }
@@ -205,15 +209,63 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
     }
 
-    private static ConfigurationTaskResult boundedResult(StoredOperation operation, ConfigurationTaskResult result) {
+    private ConfigurationTaskResult boundedResult(StoredOperation operation, ConfigurationTaskResult result) {
         ManagedConfiguration configuration = result.configuration();
-        if (configuration == null || !ManagedConfiguration.FILE.equals(configuration.domain())) return result;
-        boolean keepContent = "READ".equals(operation.type) && operation.results.values().stream()
-                .map(ConfigurationTaskResult::configuration).filter(Objects::nonNull)
-                .noneMatch(value -> ManagedConfiguration.FILE.equals(value.domain()) && value.content() != null);
-        if (keepContent) return result;
+        if (configuration != null && ManagedConfiguration.FILE.equals(configuration.domain())) {
+            boolean keepContent = "READ".equals(operation.type) && operation.results.values().stream()
+                    .map(ConfigurationTaskResult::configuration).filter(Objects::nonNull)
+                    .noneMatch(value -> ManagedConfiguration.FILE.equals(value.domain()) && value.content() != null);
+            if (!keepContent) configuration = configuration.publicView();
+        }
+        List<String> changes = retainChanges(result.changes());
         return new ConfigurationTaskResult(result.sessionId(), result.success(), result.code(), result.message(),
-                result.revision(), configuration.publicView(), result.changes(), result.reloaded(), result.rolledBack());
+                result.revision(), configuration, changes, result.reloaded(), result.rolledBack());
+    }
+
+    private List<String> retainChanges(List<String> changes) {
+        long remaining = Math.max(0, MAX_RETAINED_CHANGE_BYTES - retainedChangeBytes);
+        if (remaining == 0 || changes.isEmpty()) return List.of();
+        List<String> retained = new ArrayList<>();
+        long added = 0;
+        for (String change : changes) {
+            byte[] bytes = change.getBytes(StandardCharsets.UTF_8);
+            if (bytes.length <= remaining) {
+                retained.add(change);
+                remaining -= bytes.length;
+                added += bytes.length;
+                continue;
+            }
+            String truncated = truncateUtf8(change, (int) remaining);
+            if (!truncated.isEmpty()) {
+                retained.add(truncated);
+                added += truncated.getBytes(StandardCharsets.UTF_8).length;
+            }
+            break;
+        }
+        retainedChangeBytes += added;
+        return List.copyOf(retained);
+    }
+
+    private static String truncateUtf8(String value, int maximumBytes) {
+        int end = 0;
+        int bytes = 0;
+        while (end < value.length()) {
+            int codePoint = value.codePointAt(end);
+            int encoded = codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+            if (bytes + encoded > maximumBytes) break;
+            bytes += encoded;
+            end += Character.charCount(codePoint);
+        }
+        return value.substring(0, end);
+    }
+
+    private void releaseResultDetails(StoredOperation operation) {
+        for (ConfigurationTaskResult result : operation.results.values()) {
+            for (String change : result.changes()) {
+                retainedChangeBytes -= change.getBytes(StandardCharsets.UTF_8).length;
+            }
+        }
+        if (retainedChangeBytes < 0) retainedChangeBytes = 0;
     }
 
     private List<String> validateTargets(List<String> nodeIds, String capability) {
@@ -252,6 +304,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             if (operation.createdAt.isBefore(operation.complete() ? completedCutoff : activeCutoff)) {
                 audit.append("OPERATION_EXPIRED", operation.id, null,
                         operation.complete() ? "RETAINED" : "ABANDONED");
+                releaseResultDetails(operation);
                 iterator.remove();
             }
         }

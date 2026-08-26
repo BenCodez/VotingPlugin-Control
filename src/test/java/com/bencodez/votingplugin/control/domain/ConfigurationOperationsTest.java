@@ -3,6 +3,7 @@ package com.bencodez.votingplugin.control.domain;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.bencodez.votingplugin.control.protocol.ConfigurationTask;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
@@ -372,6 +373,37 @@ class ConfigurationOperationsTest {
         for (int i = 0; i < 16; i++) operations.createRead(List.of("backend-a"), selector);
         assertEquals("OPERATION_LIMIT", assertThrows(ValidationException.class,
                 () -> operations.createRead(List.of("backend-a"), selector)).code());
+    }
+
+    @Test void aggregateRetainedChangeDetailsHaveAGlobalByteBudget() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        List<String> nodes = new java.util.ArrayList<>();
+        Map<String, UUID> sessions = new LinkedHashMap<>();
+        for (int i = 0; i < 100; i++) {
+            String node = "proxy-" + i;
+            UUID session = UUID.randomUUID();
+            nodes.add(node);
+            sessions.put(node, session);
+            registry.register(new NodeRegistration(node, session, node, "VELOCITY", "test", 1,
+                    Set.of(ConfigurationOperations.CAPABILITY), Set.of()));
+        }
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ConfigurationOperations.OperationView read = operations.createRead(nodes);
+        ProxyRoutingConfiguration configuration = new ProxyRoutingConfiguration(false, List.of());
+        List<String> maximumChanges = java.util.stream.IntStream.range(0, 20)
+                .mapToObj(ignored -> "x".repeat(500)).toList();
+        for (String node : nodes) {
+            operations.claim(node, sessions.get(node));
+            read = operations.complete(read.operationId(), node, new ConfigurationTaskResult(sessions.get(node),
+                    true, "OK", "read", "a".repeat(64), configuration, maximumChanges, false, false));
+        }
+
+        long retainedBytes = read.results().values().stream().flatMap(result -> result.changes().stream())
+                .mapToLong(value -> value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length).sum();
+        assertTrue(retainedBytes <= ConfigurationOperations.MAX_RETAINED_CHANGE_BYTES);
+        assertTrue(retainedBytes < 100L * 20 * 500);
     }
 
     private static final class MutableClock extends Clock {

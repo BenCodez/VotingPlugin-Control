@@ -234,6 +234,17 @@ class ControlHttpServerTest {
         }
     }
 
+    @Test void passwordAdmissionPreventsOneClientFromOccupyingAllVerificationCapacity() {
+        ControlHttpServer.PasswordAdmission admission = new ControlHttpServer.PasswordAdmission(2);
+        assertTrue(admission.acquire("attacker"));
+        assertTrue(admission.acquire("attacker"));
+        assertFalse(admission.acquire("attacker"));
+        assertTrue(admission.acquire("owner"));
+        admission.release("attacker");
+        assertTrue(admission.acquire("attacker"));
+        admission.release("owner");
+    }
+
     @Test void queuedPasswordVerificationDoesNotBlockHealthOrAdminRequests() throws Exception {
         credentials.setWebPassword("a-secure-web-password".toCharArray());
         java.util.List<java.util.concurrent.CompletableFuture<HttpResponse<String>>> attempts =

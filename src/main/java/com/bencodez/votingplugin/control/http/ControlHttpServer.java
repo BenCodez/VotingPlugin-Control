@@ -67,6 +67,7 @@ public final class ControlHttpServer implements AutoCloseable {
             "/app.js", new WebResource("/web/app.js", "text/javascript; charset=utf-8"),
             "/app.css", new WebResource("/web/app.css", "text/css; charset=utf-8"));
     private static final int MAX_AUTH_FAILURES_PER_MINUTE = 100;
+    private static final int MAX_PASSWORD_ATTEMPTS_PER_CLIENT = 8;
     static final int MAX_BACKENDS_PER_NODE_PAGE = 4096;
     private static final int MAX_BACKENDS_PER_NODE_SUMMARY = 256;
 
@@ -78,6 +79,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private final ConfigurationOperations configurationOperations;
     private final ThreadPoolExecutor executor;
     private final ThreadPoolExecutor passwordExecutor;
+    private final PasswordAdmission passwordAdmission = new PasswordAdmission(MAX_PASSWORD_ATTEMPTS_PER_CLIENT);
     private final AuthFailureLimiter authLimiter;
     private final WebSessionStore webSessions;
     private final boolean secureCookies;
@@ -225,9 +227,20 @@ public final class ControlHttpServer implements AutoCloseable {
             requireMethod(exchange, "POST");
             PasswordRequest request = read(exchange, PasswordRequest.class);
             requireRequest(request);
+            String client = passwordClient(exchange);
+            if (!passwordAdmission.acquire(client)) {
+                throw new AuthenticationException(true);
+            }
             try {
-                passwordExecutor.execute(() -> handlePasswordLogin(exchange, request));
+                passwordExecutor.execute(() -> {
+                    try {
+                        handlePasswordLogin(exchange, request);
+                    } finally {
+                        passwordAdmission.release(client);
+                    }
+                });
             } catch (RejectedExecutionException e) {
+                passwordAdmission.release(client);
                 throw new AuthenticationException(true);
             }
             throw new DeferredResponseException();
@@ -499,6 +512,12 @@ public final class ControlHttpServer implements AutoCloseable {
                 ? value.substring(7) : null;
     }
 
+    private static String passwordClient(HttpExchange exchange) {
+        InetSocketAddress remote = exchange.getRemoteAddress();
+        if (remote == null) return "unknown";
+        return remote.getAddress() == null ? remote.getHostString() : remote.getAddress().getHostAddress();
+    }
+
     private static String cookie(HttpExchange exchange, String name) {
         String found = null;
         List<String> headers = exchange.getRequestHeaders().get("Cookie");
@@ -679,6 +698,31 @@ public final class ControlHttpServer implements AutoCloseable {
             if (now - windowStarted >= windowNanos || now < windowStarted) {
                 windowStarted = now;
                 failures = 0;
+            }
+        }
+    }
+
+    static final class PasswordAdmission {
+        private final int maximumPerClient;
+        private final Map<String, Integer> inFlight = new HashMap<>();
+
+        PasswordAdmission(int maximumPerClient) {
+            this.maximumPerClient = maximumPerClient;
+        }
+
+        synchronized boolean acquire(String client) {
+            int current = inFlight.getOrDefault(client, 0);
+            if (current >= maximumPerClient) return false;
+            inFlight.put(client, current + 1);
+            return true;
+        }
+
+        synchronized void release(String client) {
+            Integer current = inFlight.get(client);
+            if (current == null || current <= 1) {
+                inFlight.remove(client);
+            } else {
+                inFlight.put(client, current - 1);
             }
         }
     }
