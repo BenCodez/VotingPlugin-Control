@@ -54,6 +54,11 @@ class ControlApplicationTest {
         assertThrows(java.io.IOException.class, () -> ControlApplication.loadIdentity(directory));
     }
 
+    @Test void directoryDurabilityRecognizesWindowsAsUnsupported() {
+        assertFalse(DurableFiles.supportsDirectoryChannels("Windows Server 2025"));
+        assertTrue(DurableFiles.supportsDirectoryChannels("Linux"));
+    }
+
     @Test void explicitAdminDirectoryDoesNotTouchConfiguredDefault() throws Exception {
         Path configuredDefault = directory.resolve("unwritable-default");
         Path explicit = directory.resolve("explicit");

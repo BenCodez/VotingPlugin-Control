@@ -112,7 +112,10 @@ class InMemoryNodeRegistryTest {
         clock.advance(Duration.ofSeconds(90));
         bounded.register(registration("proxy-b", UUID.randomUUID(), Set.of(), Set.of(), Set.of("Four")));
 
-        assertTrue(bounded.find("proxy-a").detectedPlugins().isEmpty());
+        assertNull(bounded.find("proxy-a"));
+        ValidationException missing = assertThrows(ValidationException.class, () -> bounded.heartbeat("proxy-a",
+                new Heartbeat(session, 1, Set.of(), Set.of())));
+        assertEquals("NODE_NOT_FOUND", missing.code());
         assertEquals(Set.of("Four"), bounded.find("proxy-b").detectedPlugins());
     }
 

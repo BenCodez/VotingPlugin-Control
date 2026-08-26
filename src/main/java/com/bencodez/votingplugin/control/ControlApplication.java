@@ -179,9 +179,7 @@ public final class ControlApplication {
                     } catch (java.nio.file.AtomicMoveNotSupportedException e) {
                         Files.move(temporary, file);
                     }
-                    try (FileChannel dataDirectory = FileChannel.open(directory, StandardOpenOption.READ)) {
-                        dataDirectory.force(true);
-                    }
+                    DurableFiles.forceDirectory(directory);
                 } finally {
                     Files.deleteIfExists(temporary);
                 }

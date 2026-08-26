@@ -1,5 +1,6 @@
 package com.bencodez.votingplugin.control.domain;
 
+import com.bencodez.votingplugin.control.DurableFiles;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
@@ -376,9 +377,7 @@ public final class ConfigurationAuditLog implements AutoCloseable {
     }
 
     private static void forceDirectory(Path directory) throws IOException {
-        try (FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)) {
-            channel.force(true);
-        }
+        DurableFiles.forceDirectory(directory);
     }
 
     @Override

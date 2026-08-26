@@ -1,5 +1,6 @@
 package com.bencodez.votingplugin.control.auth;
 
+import com.bencodez.votingplugin.control.DurableFiles;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
@@ -238,9 +239,7 @@ public final class CredentialStore {
                 } catch (java.nio.file.AtomicMoveNotSupportedException e) {
                     Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
                 }
-                try (FileChannel directoryChannel = FileChannel.open(directory, StandardOpenOption.READ)) {
-                    directoryChannel.force(true);
-                }
+                DurableFiles.forceDirectory(directory);
             } finally {
                 Files.deleteIfExists(temporary);
             }

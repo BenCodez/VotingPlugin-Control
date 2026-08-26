@@ -218,10 +218,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
                         || (existing.detectedPlugins.isEmpty() && existing.backends.isEmpty())) return existing;
                 retainedDetectedPlugins -= existing.detectedPlugins.size();
                 retainedBackends -= existing.backends.size();
-                return new StoredNode(existing.nodeId, existing.sessionId, existing.displayName, existing.platform,
-                        existing.pluginVersion, existing.protocolVersion, existing.advertisedCapabilities,
-                        existing.acceptedCapabilities, Set.of(), List.of(), existing.snapshotSequence,
-                        existing.lastSeen, existing.lastAuthenticatedUpdate);
+                return null;
             });
         }
     }
