@@ -481,6 +481,32 @@ class ConfigurationOperationsTest {
         assertTrue(retainedMessages < 6L * 100 * 500);
     }
 
+    @Test void failedReadCannotConsumeTheSuccessfulConfigurationSlot() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", first, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        registry.register(new NodeRegistration("backend-b", second, "Backend B", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = ManagedConfiguration.file("Config.yml", null);
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("backend-a", "backend-b"), selector);
+        ManagedConfiguration content = ManagedConfiguration.file("Config.yml", "Feature: true\n");
+
+        operations.claim("backend-a", first);
+        operations.complete(read.operationId(), "backend-a", new ConfigurationTaskResult(first, false, "READ_FAILED",
+                "failed", "a".repeat(64), content, List.of(), false, false));
+        operations.claim("backend-b", second);
+        read = operations.complete(read.operationId(), "backend-b", new ConfigurationTaskResult(second, true, "OK",
+                "read", "b".repeat(64), content, List.of(), false, false));
+
+        assertEquals(null, read.results().get("backend-a").configuration().content());
+        assertEquals("Feature: true\n", read.results().get("backend-b").configuration().content());
+    }
+
     private static final class MutableClock extends Clock {
         private Instant instant;
         private MutableClock(Instant instant) { this.instant = instant; }
