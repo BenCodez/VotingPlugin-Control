@@ -337,6 +337,21 @@ class ConfigurationOperationsTest {
                         (ManagedConfiguration) null, List.of(), false, false))).code());
     }
 
+    @Test void taskResultConfigurationMustMatchItsOperationDomainAndSelector() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofHours(1));
+        UUID session = UUID.randomUUID();
+        registry.register(registration(session));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        UUID operation = operations.createRead(List.of("proxy-a")).operationId();
+        operations.claim("proxy-a", session);
+
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class, () -> operations.complete(operation,
+                "proxy-a", new ConfigurationTaskResult(session, true, "OK", "read", "a".repeat(64),
+                        ManagedConfiguration.file("Config.yml", "large: value\n"), List.of(), false, false))).code());
+    }
+
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
@@ -409,7 +424,7 @@ class ConfigurationOperationsTest {
                 () -> operations.createRead(List.of("backend-a"), selector)).code());
     }
 
-    @Test void aggregateRetainedChangeDetailsHaveAGlobalByteBudget() throws Exception {
+    @Test void aggregateRetainedResultDetailsHaveGlobalByteBudgets() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
         List<String> nodes = new java.util.ArrayList<>();
@@ -439,6 +454,22 @@ class ConfigurationOperationsTest {
         assertTrue(retainedBytes <= ConfigurationOperations.MAX_RETAINED_CHANGE_BYTES);
         assertTrue(retainedBytes < 100L * 20 * 500);
         assertEquals(1, read.results().values().stream().filter(result -> result.configuration() != null).count());
+
+        List<UUID> messageOperations = new java.util.ArrayList<>();
+        for (int operationIndex = 0; operationIndex < 6; operationIndex++) {
+            ConfigurationOperations.OperationView messages = operations.createRead(nodes);
+            messageOperations.add(messages.operationId());
+            for (String node : nodes) {
+                operations.claim(node, sessions.get(node));
+                operations.complete(messages.operationId(), node, new ConfigurationTaskResult(sessions.get(node),
+                        true, "OK", "m".repeat(500), "b".repeat(64), configuration, List.of(), false, false));
+            }
+        }
+        long retainedMessages = messageOperations.stream().map(operations::get)
+                .flatMap(operation -> operation.results().values().stream())
+                .mapToLong(result -> result.message().getBytes(java.nio.charset.StandardCharsets.UTF_8).length).sum();
+        assertTrue(retainedMessages <= ConfigurationOperations.MAX_RETAINED_MESSAGE_BYTES);
+        assertTrue(retainedMessages < 6L * 100 * 500);
     }
 
     private static final class MutableClock extends Clock {

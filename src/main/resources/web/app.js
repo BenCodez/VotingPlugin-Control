@@ -378,8 +378,20 @@ form.addEventListener('submit', async event => {
 });
 
 logout.addEventListener('click', async () => {
-  try { await authorized('/api/v1/auth/logout', {method: 'POST'}); } catch (_) { /* Expired is logged out too. */ }
-  discardAuthenticationState('Signed out.');
+  if (loginInFlight) return;
+  loginInFlight = true;
+  const logoutGeneration = ++authenticationGeneration;
+  loginButton.disabled = true;
+  logout.disabled = true;
+  try {
+    await authorized('/api/v1/auth/logout', {method: 'POST'});
+  } catch (_) { /* Expired is logged out too. */ }
+  finally {
+    if (logoutGeneration === authenticationGeneration) discardAuthenticationState('Signed out.');
+    loginInFlight = false;
+    loginButton.disabled = false;
+    logout.disabled = false;
+  }
 });
 
 async function restoreSession() {

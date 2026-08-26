@@ -30,6 +30,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     private static final int MAX_OPERATIONS = 1000;
     private static final int MAX_FILE_OPERATIONS = 16;
     static final int MAX_RETAINED_CHANGE_BYTES = 256 * 1024;
+    static final int MAX_RETAINED_MESSAGE_BYTES = 256 * 1024;
     private static final Duration LEASE = Duration.ofMinutes(2);
     private static final Duration ACTIVE_RETENTION = Duration.ofMinutes(15);
     private static final Duration RETENTION = Duration.ofHours(24);
@@ -40,6 +41,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     private final SecureRandom random = new SecureRandom();
     private final LinkedHashMap<UUID, StoredOperation> operations = new LinkedHashMap<>();
     private long retainedChangeBytes;
+    private long retainedMessageBytes;
 
     public ConfigurationOperations(NodeRegistry registry, ConfigurationAuditLog audit, Clock clock) {
         this.registry = Objects.requireNonNull(registry);
@@ -116,9 +118,9 @@ public final class ConfigurationOperations implements AutoCloseable {
                     && !now.isBefore(leased.plus(LEASE)))) {
                 if (!node.online() || !node.acceptedCapabilities().contains(operation.configuration.capability())) {
                     audit.append("TASK_CANCELLED", operation.id, nodeId, "CAPABILITY_LOST");
-                    operation.results.put(nodeId, new ConfigurationTaskResult(sessionId(node), false,
+                    operation.results.put(nodeId, boundedResult(operation, new ConfigurationTaskResult(sessionId(node), false,
                             "CAPABILITY_LOST", "Node no longer accepts this configuration capability", null,
-                            (ManagedConfiguration) null, List.of(), false, false));
+                            (ManagedConfiguration) null, List.of(), false, false)));
                     operation.states.put(nodeId, "COMPLETE");
                     operation.leasedAt.remove(nodeId);
                     continue;
@@ -158,6 +160,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (!"IN_PROGRESS".equals(operation.states.get(nodeId))) {
             throw new ValidationException("TASK_NOT_CLAIMED", "Operation task must be claimed before completion", List.of());
         }
+        validateResultConfiguration(operation, result);
         audit.append("TASK_COMPLETED", operation.id, nodeId, result.success() ? "SUCCESS" : result.code());
         operation.results.put(nodeId, boundedResult(operation, result));
         operation.states.put(nodeId, "COMPLETE");
@@ -221,8 +224,25 @@ public final class ConfigurationOperations implements AutoCloseable {
             configuration = null;
         }
         List<String> changes = retainChanges(result.changes());
-        return new ConfigurationTaskResult(result.sessionId(), result.success(), result.code(), result.message(),
+        return new ConfigurationTaskResult(result.sessionId(), result.success(), result.code(), retainMessage(result.message()),
                 result.revision(), configuration, changes, result.reloaded(), result.rolledBack());
+    }
+
+    private static void validateResultConfiguration(StoredOperation operation, ConfigurationTaskResult result) {
+        ManagedConfiguration actual = result.configuration();
+        if (actual == null) return;
+        ManagedConfiguration expected = operation.configuration;
+        boolean mismatch = expected == null || !expected.domain().equals(actual.domain())
+                || (ManagedConfiguration.FILE.equals(expected.domain()) && !expected.fileName().equals(actual.fileName()))
+                || (ManagedConfiguration.QUICK_SETUP.equals(expected.domain()) && !expected.preset().equals(actual.preset()));
+        if (mismatch) throw invalid("result configuration does not match the operation selector");
+    }
+
+    private String retainMessage(String message) {
+        int remaining = (int) Math.max(0, MAX_RETAINED_MESSAGE_BYTES - retainedMessageBytes);
+        String retained = truncateUtf8(message, remaining);
+        retainedMessageBytes += retained.getBytes(StandardCharsets.UTF_8).length;
+        return retained;
     }
 
     private List<String> retainChanges(List<String> changes) {
@@ -264,11 +284,13 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     private void releaseResultDetails(StoredOperation operation) {
         for (ConfigurationTaskResult result : operation.results.values()) {
+            retainedMessageBytes -= result.message().getBytes(StandardCharsets.UTF_8).length;
             for (String change : result.changes()) {
                 retainedChangeBytes -= change.getBytes(StandardCharsets.UTF_8).length;
             }
         }
         if (retainedChangeBytes < 0) retainedChangeBytes = 0;
+        if (retainedMessageBytes < 0) retainedMessageBytes = 0;
     }
 
     private List<String> validateTargets(List<String> nodeIds, String capability) {

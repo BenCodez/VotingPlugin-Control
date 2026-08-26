@@ -13,8 +13,10 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Duration;
@@ -165,8 +167,24 @@ public final class ControlApplication {
                     return readIdentity(file);
                 }
                 UUID candidate = UUID.randomUUID();
-                Files.writeString(file, candidate.toString(), StandardOpenOption.CREATE_NEW,
-                        StandardOpenOption.WRITE);
+                Path temporary = Files.createTempFile(directory, "instance-id-", ".temporary");
+                try {
+                    Files.writeString(temporary, candidate.toString(), StandardCharsets.UTF_8,
+                            StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+                    try (FileChannel identity = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+                        identity.force(true);
+                    }
+                    try {
+                        Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE);
+                    } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                        Files.move(temporary, file);
+                    }
+                    try (FileChannel dataDirectory = FileChannel.open(directory, StandardOpenOption.READ)) {
+                        dataDirectory.force(true);
+                    }
+                } finally {
+                    Files.deleteIfExists(temporary);
+                }
                 return candidate;
             }
         }
