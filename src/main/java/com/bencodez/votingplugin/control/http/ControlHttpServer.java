@@ -67,6 +67,8 @@ public final class ControlHttpServer implements AutoCloseable {
             "/app.js", new WebResource("/web/app.js", "text/javascript; charset=utf-8"),
             "/app.css", new WebResource("/web/app.css", "text/css; charset=utf-8"));
     private static final int MAX_AUTH_FAILURES_PER_MINUTE = 100;
+    static final int MAX_BACKENDS_PER_NODE_PAGE = 4096;
+    private static final int MAX_BACKENDS_PER_NODE_SUMMARY = 256;
 
     private final HttpServer server;
     private final ObjectMapper json;
@@ -255,8 +257,10 @@ public final class ControlHttpServer implements AutoCloseable {
             Map<String, String> query = query(uri.getRawQuery());
             int offset = integer(query.getOrDefault("offset", "0"), "offset");
             int limit = integer(query.getOrDefault("limit", "50"), "limit");
-            List<NodeStatus> nodes = registry.list(offset, limit);
-            send(exchange, 200, Map.of("items", nodes, "offset", offset, "limit", limit));
+            BackendPage page = boundedNodePage(registry.list(offset, limit));
+            send(exchange, 200, Map.of("items", page.items(), "offset", offset, "limit", limit,
+                    "backendItemsReturned", page.backendItemsReturned(),
+                    "backendItemsTruncated", page.backendItemsTruncated()));
             return;
         }
         if (REGISTER.equals(path)) {
@@ -377,6 +381,25 @@ public final class ControlHttpServer implements AutoCloseable {
         } finally {
             exchange.close();
         }
+    }
+
+    static BackendPage boundedNodePage(List<NodeStatus> nodes) {
+        if (nodes.isEmpty()) return new BackendPage(List.of(), 0, false);
+        int perNode = Math.min(MAX_BACKENDS_PER_NODE_SUMMARY,
+                Math.max(1, MAX_BACKENDS_PER_NODE_PAGE / nodes.size()));
+        int returned = 0;
+        boolean truncated = false;
+        java.util.ArrayList<NodeStatus> items = new java.util.ArrayList<>(nodes.size());
+        for (NodeStatus node : nodes) {
+            int count = Math.min(perNode, node.backends().size());
+            returned += count;
+            truncated |= count < node.backends().size();
+            items.add(new NodeStatus(node.nodeId(), node.sessionId(), node.displayName(), node.platform(),
+                    node.pluginVersion(), node.protocolVersion(), node.advertisedCapabilities(),
+                    node.acceptedCapabilities(), node.detectedPlugins(), node.backends().subList(0, count),
+                    node.snapshotSequence(), node.lastSeen(), node.lastAuthenticatedUpdate(), node.online()));
+        }
+        return new BackendPage(List.copyOf(items), returned, truncated);
     }
 
     private <T> T read(HttpExchange exchange, Class<T> type) throws IOException {
@@ -623,6 +646,7 @@ public final class ControlHttpServer implements AutoCloseable {
 
     private record WebResource(String classpath, String contentType) { }
     private record PasswordRequest(String password) { }
+    record BackendPage(List<NodeStatus> items, int backendItemsReturned, boolean backendItemsTruncated) { }
 
     static final class AuthFailureLimiter {
         private final java.util.function.LongSupplier nanoTime;

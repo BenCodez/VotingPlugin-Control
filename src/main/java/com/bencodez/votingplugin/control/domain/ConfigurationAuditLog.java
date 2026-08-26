@@ -248,10 +248,13 @@ public final class ConfigurationAuditLog implements AutoCloseable {
     }
 
     private SegmentState validateExisting(Path selected) throws IOException {
-        return validateLines(Files.readAllLines(selected, StandardCharsets.UTF_8));
+        return validateBytes(Files.readAllBytes(selected));
     }
 
     private SegmentState validateBytes(byte[] bytes) throws IOException {
+        if (bytes.length > 0 && bytes[bytes.length - 1] != '\n') {
+            throw new IOException("Configuration audit segment is missing its terminal separator");
+        }
         try {
             String content = StandardCharsets.UTF_8.newDecoder()
                     .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)

@@ -135,6 +135,19 @@ class ConfigurationOperationsTest {
         assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory, clock));
     }
 
+    @Test void auditLogRejectsCommittedSegmentWithoutTerminalSeparator() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        Path active = directory.resolve("configuration-audit.jsonl");
+        try (ConfigurationAuditLog log = new ConfigurationAuditLog(directory, clock)) {
+            log.append("FIRST", UUID.randomUUID(), "proxy-a", "OK");
+        }
+        byte[] committed = Files.readAllBytes(active);
+        assertEquals((byte) '\n', committed[committed.length - 1]);
+        Files.write(active, java.util.Arrays.copyOf(committed, committed.length - 1));
+
+        assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory, clock));
+    }
+
     @Test void auditPendingTransactionRecoversTornRecordBeforeCheckpointCrash() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         Path active = directory.resolve("configuration-audit.jsonl");

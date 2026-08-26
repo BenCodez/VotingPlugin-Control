@@ -283,7 +283,10 @@ async function loadNodes() {
     updateConfigurationButtons();
     const first = body.items.length === 0 ? 0 : pageOffset + 1;
     const last = pageOffset + body.items.length;
-    text(message, body.items.length === 0 ? 'No proxies on this page.' : `Showing proxies ${first}–${last}.`);
+    const backendLimit = body.backendItemsTruncated
+      ? ` Backend summaries are limited to ${body.backendItemsReturned} entries on this page.` : '';
+    text(message, body.items.length === 0 ? 'No proxies on this page.'
+      : `Showing proxies ${first}–${last}.${backendLimit}`);
     text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);
     previousPage.disabled = pageOffset === 0;
     nextPage.disabled = body.items.length < PAGE_SIZE;

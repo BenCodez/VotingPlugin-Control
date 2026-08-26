@@ -3,6 +3,8 @@ package com.bencodez.votingplugin.control.http;
 import com.bencodez.votingplugin.control.auth.CredentialStore;
 import com.bencodez.votingplugin.control.domain.InMemoryNodeRegistry;
 import com.bencodez.votingplugin.control.protocol.ControlIdentity;
+import com.bencodez.votingplugin.control.protocol.BackendServerIdentity;
+import com.bencodez.votingplugin.control.protocol.NodeStatus;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.InetSocketAddress;
@@ -66,6 +68,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("result.configuration?.content != null"));
         assertTrue(script.body().contains("authenticationGeneration"));
         assertTrue(script.body().contains("if (loginInFlight) return"));
+        assertTrue(script.body().contains("backendItemsTruncated"));
         assertTrue(web.body().contains("Easy vote reward"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
@@ -81,6 +84,22 @@ class ControlHttpServerTest {
         assertError(send("GET", "/api/v1/nodes/register", null, null), 405, "METHOD_NOT_ALLOWED");
         assertError(send("POST", "/api/v1/nodes/proxy-a/heartbeat", "{}", null), 405,
                 "METHOD_NOT_ALLOWED");
+    }
+
+    @Test void nodePageBoundsBackendSummariesAcrossMaximumProxyPage() {
+        java.util.List<BackendServerIdentity> backends = java.util.stream.IntStream.range(0, 300)
+                .mapToObj(index -> new BackendServerIdentity("backend-" + index, "Backend " + index,
+                        true, true, index)).toList();
+        java.util.List<NodeStatus> nodes = java.util.stream.IntStream.range(0, 100).mapToObj(index ->
+                new NodeStatus("proxy-" + index, UUID.randomUUID(), "Proxy " + index, "BUNGEECORD", "test", 1,
+                        java.util.Set.of("presence.snapshot"), java.util.Set.of("presence.snapshot"),
+                        java.util.Set.of(), backends, 1, java.time.Instant.EPOCH, java.time.Instant.EPOCH, true)).toList();
+
+        ControlHttpServer.BackendPage page = ControlHttpServer.boundedNodePage(nodes);
+        assertTrue(page.backendItemsTruncated());
+        assertTrue(page.backendItemsReturned() <= ControlHttpServer.MAX_BACKENDS_PER_NODE_PAGE);
+        assertEquals(100, page.items().size());
+        assertTrue(page.items().stream().allMatch(node -> node.backends().size() == 40));
     }
 
     @Test void validEnrollmentAuthenticatesRegistrationHeartbeatPresenceAndAdminListing() throws Exception {
