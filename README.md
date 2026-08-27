@@ -48,6 +48,7 @@ report `development` rather than maintaining a second version literal.
 | `CONTROL_SECURE_COOKIE` | `false` | Set `true` only when browsers reach Control through a trusted HTTPS reverse proxy |
 | `CONTROL_TRUSTED_PROXY_ADDRESSES` | empty | Comma-separated IP literals for reverse proxies allowed to supply `X-Forwarded-For` login admission identity |
 | `CONTROL_LAUNCH_ID` | empty | Optional UUID echoed by health checks so a supervising VotingPlugin can verify ownership of the listener |
+| `CONTROL_PARENT_PID` | empty | Optional supervising VotingPlugin process ID; hosted Control exits when that parent process ends |
 
 The server also uses a bounded HTTP executor (8 active requests and a 32-request queue), a 768 KiB request limit, bounded
 JSON depth/string/number sizes, a two-worker password-verification executor with per-client admission, and a bounded invalid-authentication failure limit. Configure the exact reverse-proxy IP addresses when HTTPS terminates upstream; forwarding headers from every other peer are ignored. Valid enrolled/admin credentials remain

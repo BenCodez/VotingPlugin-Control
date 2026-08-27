@@ -139,12 +139,23 @@ public final class ControlApplication {
         ControlHttpServer server = new ControlHttpServer(configuration.address(), registry, identity, credentials,
                 operations, configuration.secureCookies(), configuration.trustedProxyAddresses(),
                 configuration.launchId());
+        ProcessHandle parent = parentProcess(configuration.parentPid());
         CountDownLatch shutdown = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             server.close();
             shutdown.countDown();
         }, "votingplugin-control-shutdown"));
         server.start();
+        if (parent != null) {
+            parent.onExit().thenRun(() -> {
+                server.close();
+                shutdown.countDown();
+            });
+            if (!parent.isAlive()) {
+                server.close();
+                shutdown.countDown();
+            }
+        }
         System.out.printf("VotingPlugin Control %s listening on http://%s:%d (protocol v%d)%n",
                 VersionInfo.applicationVersion(), configuration.address().getHostString(), server.port(),
                 Protocol.VERSION);
@@ -204,9 +215,15 @@ public final class ControlApplication {
         return Path.of(value);
     }
 
+    private static ProcessHandle parentProcess(Long parentPid) {
+        if (parentPid == null) return null;
+        return ProcessHandle.of(parentPid).filter(ProcessHandle::isAlive)
+                .orElseThrow(() -> new IllegalArgumentException("Hosted parent process is unavailable"));
+    }
+
     record Configuration(InetSocketAddress address, Path dataDirectory, Duration offlineTimeout,
                          int requestTimeoutSeconds, boolean secureCookies, Set<String> trustedProxyAddresses,
-                         String launchId) {
+                         String launchId, Long parentPid) {
         static Configuration from(Map<String, String> environment) throws IOException {
             String host = environment.getOrDefault("CONTROL_HOST", "127.0.0.1").trim();
             if (host.isEmpty()) {
@@ -223,9 +240,11 @@ public final class ControlApplication {
             Set<String> trustedProxies = trustedProxyAddresses(
                     environment.getOrDefault("CONTROL_TRUSTED_PROXY_ADDRESSES", ""));
             String launchId = launchId(environment.getOrDefault("CONTROL_LAUNCH_ID", ""));
+            Long parentPid = parentPid(environment.getOrDefault("CONTROL_PARENT_PID", ""));
             return new Configuration(new InetSocketAddress(resolved, port),
                     requirePath(environment.getOrDefault("CONTROL_DATA_DIR", "data")),
-                    Duration.ofSeconds(offlineSeconds), requestSeconds, secureCookies, trustedProxies, launchId);
+                    Duration.ofSeconds(offlineSeconds), requestSeconds, secureCookies, trustedProxies, launchId,
+                    parentPid);
         }
 
         private static String launchId(String value) {
@@ -234,6 +253,17 @@ public final class ControlApplication {
                 return UUID.fromString(value.trim()).toString();
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("Invalid launch ID");
+            }
+        }
+
+        private static Long parentPid(String value) {
+            if (value == null || value.isBlank()) return null;
+            try {
+                long parsed = Long.parseLong(value.trim());
+                if (parsed < 1L) throw new NumberFormatException();
+                return parsed;
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("Invalid hosted parent PID");
             }
         }
 
