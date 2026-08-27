@@ -95,6 +95,8 @@ class ControlApplicationTest {
         assertThrows(IllegalArgumentException.class,
                 () -> ControlApplication.Configuration.from(java.util.Map.of(
                         "CONTROL_TRUSTED_PROXY_ADDRESSES", "proxy.local")));
+        assertThrows(IllegalArgumentException.class,
+                () -> ControlApplication.Configuration.from(java.util.Map.of("CONTROL_LAUNCH_ID", "not-a-uuid")));
         assertEquals(Set.of("127.0.0.1"), ControlApplication.Configuration.from(java.util.Map.of(
                 "CONTROL_TRUSTED_PROXY_ADDRESSES", "127.0.0.1")).trustedProxyAddresses());
     }

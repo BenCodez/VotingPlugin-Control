@@ -86,46 +86,61 @@ public final class ControlHttpServer implements AutoCloseable {
     private final WebSessionStore webSessions;
     private final boolean secureCookies;
     private final Set<String> trustedProxyAddresses;
+    private final String launchId;
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials) throws IOException {
+        this(address, registry, identity, credentials, null);
+    }
+
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, String launchId) throws IOException {
         this(address, registry, identity, credentials,
                 new ConfigurationOperations(registry, new com.bencodez.votingplugin.control.domain.ConfigurationAuditLog(
                         java.nio.file.Files.createTempDirectory("votingplugin-control-test-audit"), Clock.systemUTC()),
-                        Clock.systemUTC()), Clock.systemUTC(), System::nanoTime, false, Set.of());
+                        Clock.systemUTC()), Clock.systemUTC(), System::nanoTime, false, Set.of(), launchId);
     }
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials, ConfigurationOperations configurationOperations)
             throws IOException {
         this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime,
-                false, Set.of());
+                false, Set.of(), null);
     }
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials, ConfigurationOperations configurationOperations,
                              boolean secureCookies) throws IOException {
         this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime,
-                secureCookies, Set.of());
+                secureCookies, Set.of(), null);
     }
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials, ConfigurationOperations configurationOperations,
                              boolean secureCookies, Set<String> trustedProxyAddresses) throws IOException {
         this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime,
-                secureCookies, trustedProxyAddresses);
+                secureCookies, trustedProxyAddresses, null);
+    }
+
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, ConfigurationOperations configurationOperations,
+                             boolean secureCookies, Set<String> trustedProxyAddresses, String launchId)
+            throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, Clock.systemUTC(), System::nanoTime,
+                secureCookies, trustedProxyAddresses, launchId);
     }
 
     ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                       CredentialStore credentials, ConfigurationOperations configurationOperations, Clock clock,
                       java.util.function.LongSupplier nanoTime, boolean secureCookies,
-                      Set<String> trustedProxyAddresses) throws IOException {
+                      Set<String> trustedProxyAddresses, String launchId) throws IOException {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.credentials = Objects.requireNonNull(credentials, "credentials");
         this.configurationOperations = Objects.requireNonNull(configurationOperations, "configurationOperations");
         this.secureCookies = secureCookies;
         this.trustedProxyAddresses = Set.copyOf(Objects.requireNonNull(trustedProxyAddresses, "trustedProxyAddresses"));
+        this.launchId = launchId;
         Objects.requireNonNull(clock, "clock");
         json = new ObjectMapper();
         json.findAndRegisterModules();
@@ -233,7 +248,12 @@ public final class ControlHttpServer implements AutoCloseable {
         }
         if (HEALTH.equals(path)) {
             requireMethod(exchange, "GET");
-            send(exchange, 200, Map.of("status", "ok", "time", Instant.now(), "identity", identity));
+            Map<String, Object> health = new HashMap<>();
+            health.put("status", "ok");
+            health.put("time", Instant.now());
+            health.put("identity", identity);
+            if (launchId != null) health.put("launchId", launchId);
+            send(exchange, 200, health);
             return;
         }
         if (AUTH_LOGIN.equals(path)) {

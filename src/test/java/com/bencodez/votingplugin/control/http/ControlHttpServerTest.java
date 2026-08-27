@@ -43,7 +43,7 @@ class ControlHttpServerTest {
         server = new ControlHttpServer(new InetSocketAddress("127.0.0.1", 0),
                 new InMemoryNodeRegistry(Clock.systemUTC(), Duration.ofSeconds(90)),
                 new ControlIdentity(UUID.fromString("00000000-0000-0000-0000-000000000099"), "test", 1),
-                credentials);
+                credentials, "00000000-0000-0000-0000-000000000123");
         server.start();
         base = URI.create("http://127.0.0.1:" + server.port());
         client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
@@ -78,7 +78,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("result.success && result.configuration"));
         assertEquals(200, get("/app.css", null).statusCode());
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
-        assertEquals(200, get("/api/v1/health", null).statusCode());
+        HttpResponse<String> health = get("/api/v1/health", null);
+        assertEquals(200, health.statusCode());
+        assertEquals("00000000-0000-0000-0000-000000000123",
+                json.readTree(health.body()).get("launchId").asText());
         assertError(get("/api/v1/health/anything", null), 404, "NOT_FOUND");
         assertError(get("/api/v1/nodes/register/anything", null), 404, "NOT_FOUND");
         HttpResponse<String> method = send("POST", "/api/v1/health", "{}", null);

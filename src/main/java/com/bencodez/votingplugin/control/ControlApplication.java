@@ -137,7 +137,8 @@ public final class ControlApplication {
         ConfigurationOperations operations = new ConfigurationOperations(registry,
                 new ConfigurationAuditLog(configuration.dataDirectory(), clock), clock);
         ControlHttpServer server = new ControlHttpServer(configuration.address(), registry, identity, credentials,
-                operations, configuration.secureCookies(), configuration.trustedProxyAddresses());
+                operations, configuration.secureCookies(), configuration.trustedProxyAddresses(),
+                configuration.launchId());
         CountDownLatch shutdown = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             server.close();
@@ -204,7 +205,8 @@ public final class ControlApplication {
     }
 
     record Configuration(InetSocketAddress address, Path dataDirectory, Duration offlineTimeout,
-                         int requestTimeoutSeconds, boolean secureCookies, Set<String> trustedProxyAddresses) {
+                         int requestTimeoutSeconds, boolean secureCookies, Set<String> trustedProxyAddresses,
+                         String launchId) {
         static Configuration from(Map<String, String> environment) throws IOException {
             String host = environment.getOrDefault("CONTROL_HOST", "127.0.0.1").trim();
             if (host.isEmpty()) {
@@ -220,9 +222,19 @@ public final class ControlApplication {
                     "secure cookie");
             Set<String> trustedProxies = trustedProxyAddresses(
                     environment.getOrDefault("CONTROL_TRUSTED_PROXY_ADDRESSES", ""));
+            String launchId = launchId(environment.getOrDefault("CONTROL_LAUNCH_ID", ""));
             return new Configuration(new InetSocketAddress(resolved, port),
                     requirePath(environment.getOrDefault("CONTROL_DATA_DIR", "data")),
-                    Duration.ofSeconds(offlineSeconds), requestSeconds, secureCookies, trustedProxies);
+                    Duration.ofSeconds(offlineSeconds), requestSeconds, secureCookies, trustedProxies, launchId);
+        }
+
+        private static String launchId(String value) {
+            if (value == null || value.isBlank()) return null;
+            try {
+                return UUID.fromString(value.trim()).toString();
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Invalid launch ID");
+            }
         }
 
         private static Set<String> trustedProxyAddresses(String value) throws IOException {
