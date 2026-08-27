@@ -90,7 +90,7 @@ public final class ControlHttpServer implements AutoCloseable {
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials) throws IOException {
-        this(address, registry, identity, credentials, null);
+        this(address, registry, identity, credentials, (String) null);
     }
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
