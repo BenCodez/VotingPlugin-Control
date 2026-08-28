@@ -80,6 +80,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("text(operationStatus, '');"));
         assertTrue(script.body().contains("text(fileOperationStatus, '');"));
         assertTrue(script.body().contains("text(quickOperationStatus, '');"));
+        assertTrue(script.body().contains("configurationForm.reset();"));
+        assertTrue(script.body().contains("quickCommandSuggestions.replaceChildren();"));
         assertTrue(script.body().contains("Sign out could not be confirmed"));
         assertTrue(script.body().contains("result.success && result.configuration"));
         assertEquals(200, get("/app.css", null).statusCode());
