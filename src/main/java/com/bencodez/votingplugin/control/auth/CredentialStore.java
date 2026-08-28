@@ -4,10 +4,13 @@ import com.bencodez.votingplugin.control.DurableFiles;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -20,6 +23,7 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Pattern;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
@@ -28,6 +32,7 @@ import javax.crypto.spec.PBEKeySpec;
 public final class CredentialStore {
     private static final Pattern NODE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final int MAX_ENROLLMENTS = 10_000;
+    private static final int MAX_STORE_BYTES = 2 * 1024 * 1024;
     private static final int WEB_PASSWORD_ITERATIONS = 600_000;
     private static final int WEB_PASSWORD_BYTES = 32;
     private static final int WEB_PASSWORD_MINIMUM = 12;
@@ -200,13 +205,25 @@ public final class CredentialStore {
     }
 
     private synchronized StoreData read() throws IOException {
-        if (!Files.exists(file)) {
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) {
             return new StoreData();
         }
-        byte[] bytes = Files.readAllBytes(file);
-        if (bytes.length > 2 * 1024 * 1024) {
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file)) {
+            throw new IOException("Credential store is unsafe");
+        }
+        long checkedSize = Files.size(file);
+        if (checkedSize > MAX_STORE_BYTES) {
             throw new IOException("Credential store is too large");
         }
+        ByteBuffer buffer = ByteBuffer.allocate((int) checkedSize + 1);
+        try (SeekableByteChannel channel = Files.newByteChannel(file,
+                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            while (channel.read(buffer) >= 0 && buffer.hasRemaining()) { }
+        }
+        if (!buffer.hasRemaining()) throw new IOException("Credential store changed while it was read");
+        buffer.flip();
+        byte[] bytes = new byte[buffer.remaining()];
+        buffer.get(bytes);
         try {
             StoreData data = json.readValue(bytes, StoreData.class);
             if (data == null) {

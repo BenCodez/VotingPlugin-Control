@@ -55,4 +55,12 @@ class CredentialStoreTest {
         assertTrue(store.verifyWebPassword("a-different-long-password"));
         assertThrows(IllegalArgumentException.class, () -> store.setWebPassword("too-short".toCharArray()));
     }
+
+    @Test void oversizedCredentialStoreFailsBeforeReadingItsContents() throws Exception {
+        Files.write(directory.resolve("credentials.json"), new byte[2 * 1024 * 1024 + 1]);
+        CredentialStore store = new CredentialStore(directory);
+
+        assertThrows(java.io.IOException.class, store::hasAdmin);
+        assertFalse(store.verifyAdmin("vpctl_admin_invalid"));
+    }
 }
