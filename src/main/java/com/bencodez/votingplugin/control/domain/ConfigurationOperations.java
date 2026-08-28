@@ -120,22 +120,28 @@ public final class ConfigurationOperations implements AutoCloseable {
                     audit.append("TASK_CANCELLED", operation.id, nodeId, "CAPABILITY_LOST");
                     operation.results.put(nodeId, boundedResult(operation, new ConfigurationTaskResult(sessionId(node), false,
                             "CAPABILITY_LOST", "Node no longer accepts this configuration capability", null,
-                            (ManagedConfiguration) null, List.of(), false, false)));
+                            (ManagedConfiguration) null, List.of(), false, false, null)));
                     operation.states.put(nodeId, "COMPLETE");
                     operation.leasedAt.remove(nodeId);
+                    operation.attemptIds.remove(nodeId);
                     continue;
                 }
+                UUID previousAttempt = operation.attemptIds.get(nodeId);
+                UUID attemptId = UUID.randomUUID();
                 operation.states.put(nodeId, "IN_PROGRESS");
                 operation.leasedAt.put(nodeId, now);
+                operation.attemptIds.put(nodeId, attemptId);
                 try {
                     audit.append("TASK_CLAIMED", operation.id, nodeId, operation.type);
                 } catch (RuntimeException e) {
                     operation.states.put(nodeId, state);
                     if (leased == null) operation.leasedAt.remove(nodeId); else operation.leasedAt.put(nodeId, leased);
+                    if (previousAttempt == null) operation.attemptIds.remove(nodeId);
+                    else operation.attemptIds.put(nodeId, previousAttempt);
                     throw e;
                 }
                 return new ConfigurationTask(operation.id, operation.type, operation.configuration,
-                        operation.expectedRevisions.get(nodeId));
+                        operation.expectedRevisions.get(nodeId), attemptId);
             }
         }
         return null;
@@ -160,11 +166,15 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (!"IN_PROGRESS".equals(operation.states.get(nodeId))) {
             throw new ValidationException("TASK_NOT_CLAIMED", "Operation task must be claimed before completion", List.of());
         }
+        if (!Objects.equals(operation.attemptIds.get(nodeId), result.attemptId())) {
+            throw new ValidationException("TASK_LEASE_EXPIRED", "Operation task lease is no longer active", List.of());
+        }
         validateResultConfiguration(operation, result);
         audit.append("TASK_COMPLETED", operation.id, nodeId, result.success() ? "SUCCESS" : result.code());
         operation.results.put(nodeId, boundedResult(operation, result));
         operation.states.put(nodeId, "COMPLETE");
         operation.leasedAt.remove(nodeId);
+        operation.attemptIds.remove(nodeId);
         return view(operation);
     }
 
@@ -189,7 +199,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         LinkedHashMap<String, String> states = new LinkedHashMap<>();
         targets.forEach(node -> states.put(node, "QUEUED"));
         StoredOperation result = new StoredOperation(id, type, config, token, clock.instant(), states,
-                new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(revisions));
+                new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(revisions));
         operations.put(id, result);
         return result;
     }
@@ -227,7 +237,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
         List<String> changes = retainChanges(result.changes());
         return new ConfigurationTaskResult(result.sessionId(), result.success(), result.code(), retainMessage(result.message()),
-                result.revision(), configuration, changes, result.reloaded(), result.rolledBack());
+                result.revision(), configuration, changes, result.reloaded(), result.rolledBack(), result.attemptId());
     }
 
     private static void validateResultConfiguration(StoredOperation operation, ConfigurationTaskResult result) {
@@ -344,7 +354,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private static void validateResult(ConfigurationTaskResult result) {
-        if (result == null || result.sessionId() == null || result.code() == null
+        if (result == null || result.sessionId() == null || result.attemptId() == null || result.code() == null
                 || !result.code().matches("[A-Z][A-Z0-9_]{0,63}") || result.message() == null
                 || result.message().isBlank() || result.message().length() > 500 || result.changes().size() > 20
                 || result.changes().stream().anyMatch(value -> value == null || value.length() > 500)
@@ -375,6 +385,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         private final LinkedHashMap<String, String> states;
         private final LinkedHashMap<String, ConfigurationTaskResult> results;
         private final LinkedHashMap<String, Instant> leasedAt;
+        private final LinkedHashMap<String, UUID> attemptIds;
         private final LinkedHashMap<String, String> expectedRevisions;
         private boolean approvalUsed;
 
@@ -382,9 +393,11 @@ public final class ConfigurationOperations implements AutoCloseable {
                                 Instant createdAt, LinkedHashMap<String, String> states,
                                 LinkedHashMap<String, ConfigurationTaskResult> results,
                                 LinkedHashMap<String, Instant> leasedAt,
+                                LinkedHashMap<String, UUID> attemptIds,
                                 LinkedHashMap<String, String> expectedRevisions) {
             this.id = id; this.type = type; this.configuration = configuration; this.approvalToken = approvalToken;
             this.createdAt = createdAt; this.states = states; this.results = results; this.leasedAt = leasedAt;
+            this.attemptIds = attemptIds;
             this.expectedRevisions = expectedRevisions;
         }
         private boolean complete() { return states.values().stream().allMatch("COMPLETE"::equals); }

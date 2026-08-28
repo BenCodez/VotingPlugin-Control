@@ -60,6 +60,7 @@ let nodePlugins = new Map();
 let inputGeneration = 0;
 let authenticationGeneration = 0;
 let loginInFlight = false;
+let configurationOperationsInFlight = 0;
 
 function text(element, value) {
   element.textContent = value;
@@ -127,7 +128,7 @@ function nodeCard(node) {
   return article;
 }
 
-function updateConfigurationButtons(busy = false) {
+function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) {
   const routingReady = authenticated && targets('config.proxy-routing.v1').length > 0 && !busy;
   const fileReady = authenticated && targets('config.files.v1').length > 0 && !busy;
   const quickReady = authenticated && targets('config.quick-setup.v1').length > 0 && !busy;
@@ -255,13 +256,15 @@ async function waitForOperation(operation, statusElement = operationStatus) {
 }
 
 async function startConfigurationOperation(path, body, statusElement = operationStatus) {
-  updateConfigurationButtons(true);
+  configurationOperationsInFlight++;
+  updateConfigurationButtons();
   try {
     return await waitForOperation(await authorized(path, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
     }), statusElement);
   } finally {
-    updateConfigurationButtons(false);
+    configurationOperationsInFlight--;
+    updateConfigurationButtons();
   }
 }
 
@@ -419,6 +422,9 @@ readConfiguration.addEventListener('click', async () => {
         && readInputGeneration === inputGeneration) {
       sendAll.checked = retained.configuration.sendVotesToAllServers;
       blockedServers.value = retained.configuration.blockedServers.join('\n');
+      approvedPreview = null;
+      inputGeneration++;
+      updateConfigurationButtons();
     }
   } catch (error) { text(operationStatus, error.message); }
 });

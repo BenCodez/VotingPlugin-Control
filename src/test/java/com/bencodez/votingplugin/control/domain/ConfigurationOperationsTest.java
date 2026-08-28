@@ -45,7 +45,7 @@ class ConfigurationOperationsTest {
         assertEquals("PREVIEW", previewTask.type());
         preview = operations.complete(preview.operationId(), "proxy-a",
                 new ConfigurationTaskResult(registry.find("proxy-a").sessionId(), true, "OK", "valid", "a".repeat(64), proposal,
-                        List.of("blockedServers changed"), false, false));
+                        List.of("blockedServers changed"), false, false, previewTask.attemptId()));
         assertEquals("SUCCEEDED", preview.state());
         assertNotNull(preview.approvalToken());
 
@@ -102,11 +102,11 @@ class ConfigurationOperationsTest {
         registry.register(registration(second));
         assertEquals("SESSION_MISMATCH",
                 assertThrows(ValidationException.class, () -> operations.claim("proxy-a", first)).code());
-        operations.claim("proxy-a", second);
+        ConfigurationTask task = operations.claim("proxy-a", second);
         registry.register(registration(third));
         ProxyRoutingConfiguration configuration = new ProxyRoutingConfiguration(false, List.of());
         ConfigurationTaskResult stale = new ConfigurationTaskResult(second, true, "OK", "read", "b".repeat(64),
-                configuration, List.of(), false, false);
+                configuration, List.of(), false, false, task.attemptId());
         assertEquals("SESSION_MISMATCH", assertThrows(ValidationException.class,
                 () -> operations.complete(operation.operationId(), "proxy-a", stale)).code());
     }
@@ -289,10 +289,10 @@ class ConfigurationOperationsTest {
                 new ConfigurationAuditLog(directory, clock), clock);
         ProxyRoutingConfiguration proposal = new ProxyRoutingConfiguration(true, List.of());
         ConfigurationOperations.OperationView preview = operations.createPreview(List.of("proxy-a"), proposal);
-        operations.claim("proxy-a", registry.find("proxy-a").sessionId());
+        ConfigurationTask task = operations.claim("proxy-a", registry.find("proxy-a").sessionId());
         preview = operations.complete(preview.operationId(), "proxy-a",
                 new ConfigurationTaskResult(registry.find("proxy-a").sessionId(), true, "OK", "valid",
-                        "c".repeat(64), proposal, List.of(), false, false));
+                        "c".repeat(64), proposal, List.of(), false, false, task.attemptId()));
         for (int i = 0; i < 999; i++) operations.createRead(List.of("proxy-a"));
 
         UUID previewId = preview.operationId();
@@ -322,6 +322,30 @@ class ConfigurationOperationsTest {
                 () -> operations.get(operation)).code());
     }
 
+    @Test void expiredLeaseResultCannotCompleteAReissuedAttemptForTheSameSession() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-08-25T00:00:00Z"));
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofHours(1));
+        UUID session = UUID.randomUUID();
+        registry.register(registration(session));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        UUID operation = operations.createRead(List.of("proxy-a")).operationId();
+        ConfigurationTask first = operations.claim("proxy-a", session);
+
+        clock.advance(Duration.ofMinutes(2));
+        ConfigurationTask second = operations.claim("proxy-a", session);
+        assertTrue(!first.attemptId().equals(second.attemptId()));
+        ProxyRoutingConfiguration configuration = new ProxyRoutingConfiguration(false, List.of());
+        ConfigurationTaskResult stale = new ConfigurationTaskResult(session, true, "OK", "read", "a".repeat(64),
+                configuration, List.of(), false, false, first.attemptId());
+        assertEquals("TASK_LEASE_EXPIRED", assertThrows(ValidationException.class,
+                () -> operations.complete(operation, "proxy-a", stale)).code());
+
+        ConfigurationTaskResult current = new ConfigurationTaskResult(session, true, "OK", "read", "a".repeat(64),
+                configuration, List.of(), false, false, second.attemptId());
+        assertEquals("SUCCEEDED", operations.complete(operation, "proxy-a", current).state());
+    }
+
     @Test void failedTaskResultCannotRetainAnUnboundedRevision() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofHours(1));
@@ -330,11 +354,11 @@ class ConfigurationOperationsTest {
         ConfigurationOperations operations = new ConfigurationOperations(registry,
                 new ConfigurationAuditLog(directory, clock), clock);
         UUID operation = operations.createRead(List.of("proxy-a")).operationId();
-        operations.claim("proxy-a", session);
+        ConfigurationTask task = operations.claim("proxy-a", session);
 
         assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class, () -> operations.complete(operation,
                 "proxy-a", new ConfigurationTaskResult(session, false, "FAILED", "failed", "x".repeat(1000),
-                        (ManagedConfiguration) null, List.of(), false, false))).code());
+                        (ManagedConfiguration) null, List.of(), false, false, task.attemptId()))).code());
     }
 
     @Test void taskResultConfigurationMustMatchItsOperationDomainAndSelector() throws Exception {
@@ -345,11 +369,12 @@ class ConfigurationOperationsTest {
         ConfigurationOperations operations = new ConfigurationOperations(registry,
                 new ConfigurationAuditLog(directory, clock), clock);
         UUID operation = operations.createRead(List.of("proxy-a")).operationId();
-        operations.claim("proxy-a", session);
+        ConfigurationTask task = operations.claim("proxy-a", session);
 
         assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class, () -> operations.complete(operation,
                 "proxy-a", new ConfigurationTaskResult(session, true, "OK", "read", "a".repeat(64),
-                        ManagedConfiguration.file("Config.yml", "large: value\n"), List.of(), false, false))).code());
+                        ManagedConfiguration.file("Config.yml", "large: value\n"), List.of(), false, false,
+                        task.attemptId()))).code());
     }
 
     @Test void managedConfigurationRejectsFieldsFromAnotherUnionDomain() {
@@ -374,10 +399,12 @@ class ConfigurationOperationsTest {
         ManagedConfiguration file = ManagedConfiguration.file("Config.yml", "Feature: true\n");
         ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-a"), file);
         assertEquals(null, preview.configuration().content());
-        assertEquals("file", operations.claim("backend-a", session).configuration().domain());
+        ConfigurationTask task = operations.claim("backend-a", session);
+        assertEquals("file", task.configuration().domain());
         ManagedConfiguration current = ManagedConfiguration.file("Config.yml", "Feature: false\n");
         preview = operations.complete(preview.operationId(), "backend-a", new ConfigurationTaskResult(session, true,
-                "OK", "valid", "d".repeat(64), current, List.of("changed Feature"), false, false));
+                "OK", "valid", "d".repeat(64), current, List.of("changed Feature"), false, false,
+                task.attemptId()));
         assertNotNull(preview.approvalToken());
 
         assertEquals("NODE_UNAVAILABLE", assertThrows(ValidationException.class,
@@ -418,13 +445,13 @@ class ConfigurationOperationsTest {
                 new ConfigurationAuditLog(directory, clock), clock);
         ManagedConfiguration selector = ManagedConfiguration.file("Config.yml", null);
         ConfigurationOperations.OperationView read = operations.createRead(List.of("backend-a", "backend-b"), selector);
-        operations.claim("backend-a", first);
-        operations.claim("backend-b", second);
+        ConfigurationTask firstTask = operations.claim("backend-a", first);
+        ConfigurationTask secondTask = operations.claim("backend-b", second);
         ManagedConfiguration content = ManagedConfiguration.file("Config.yml", "Feature: true\n");
         operations.complete(read.operationId(), "backend-a", new ConfigurationTaskResult(first, true, "OK", "read",
-                "e".repeat(64), content, List.of(), false, false));
+                "e".repeat(64), content, List.of(), false, false, firstTask.attemptId()));
         read = operations.complete(read.operationId(), "backend-b", new ConfigurationTaskResult(second, true, "OK",
-                "read", "f".repeat(64), content, List.of(), false, false));
+                "read", "f".repeat(64), content, List.of(), false, false, secondTask.attemptId()));
         assertNotNull(read.results().get("backend-a").configuration().content());
         assertEquals(null, read.results().get("backend-b").configuration().content());
 
@@ -453,9 +480,10 @@ class ConfigurationOperationsTest {
         List<String> maximumChanges = java.util.stream.IntStream.range(0, 20)
                 .mapToObj(ignored -> "x".repeat(500)).toList();
         for (String node : nodes) {
-            operations.claim(node, sessions.get(node));
+            ConfigurationTask task = operations.claim(node, sessions.get(node));
             read = operations.complete(read.operationId(), node, new ConfigurationTaskResult(sessions.get(node),
-                    true, "OK", "read", "a".repeat(64), configuration, maximumChanges, false, false));
+                    true, "OK", "read", "a".repeat(64), configuration, maximumChanges, false, false,
+                    task.attemptId()));
         }
 
         long retainedBytes = read.results().values().stream().flatMap(result -> result.changes().stream())
@@ -469,9 +497,10 @@ class ConfigurationOperationsTest {
             ConfigurationOperations.OperationView messages = operations.createRead(nodes);
             messageOperations.add(messages.operationId());
             for (String node : nodes) {
-                operations.claim(node, sessions.get(node));
+                ConfigurationTask task = operations.claim(node, sessions.get(node));
                 operations.complete(messages.operationId(), node, new ConfigurationTaskResult(sessions.get(node),
-                        true, "OK", "m".repeat(500), "b".repeat(64), configuration, List.of(), false, false));
+                        true, "OK", "m".repeat(500), "b".repeat(64), configuration, List.of(), false, false,
+                        task.attemptId()));
             }
         }
         long retainedMessages = messageOperations.stream().map(operations::get)
@@ -496,12 +525,12 @@ class ConfigurationOperationsTest {
         ConfigurationOperations.OperationView read = operations.createRead(List.of("backend-a", "backend-b"), selector);
         ManagedConfiguration content = ManagedConfiguration.file("Config.yml", "Feature: true\n");
 
-        operations.claim("backend-a", first);
+        ConfigurationTask firstTask = operations.claim("backend-a", first);
         operations.complete(read.operationId(), "backend-a", new ConfigurationTaskResult(first, false, "READ_FAILED",
-                "failed", "a".repeat(64), content, List.of(), false, false));
-        operations.claim("backend-b", second);
+                "failed", "a".repeat(64), content, List.of(), false, false, firstTask.attemptId()));
+        ConfigurationTask secondTask = operations.claim("backend-b", second);
         read = operations.complete(read.operationId(), "backend-b", new ConfigurationTaskResult(second, true, "OK",
-                "read", "b".repeat(64), content, List.of(), false, false));
+                "read", "b".repeat(64), content, List.of(), false, false, secondTask.attemptId()));
 
         assertEquals(null, read.results().get("backend-a").configuration());
         assertEquals("Feature: true\n", read.results().get("backend-b").configuration().content());

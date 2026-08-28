@@ -72,6 +72,8 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("Easy vote reward"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
+        assertTrue(script.body().contains("configurationOperationsInFlight"));
+        assertTrue(script.body().contains("approvedPreview = null;\n      inputGeneration++;"));
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
         assertTrue(script.body().contains("selectedCapabilitiesChanged"));
         assertTrue(script.body().contains("discardAuthenticationState"));
@@ -143,7 +145,8 @@ class ControlHttpServerTest {
         assertEquals("PREVIEW", previewTask.get("type").asText());
         String previewResult = "{\"sessionId\":\"" + SESSION + "\",\"success\":true,\"code\":\"OK\","+
                 "\"message\":\"valid\",\"revision\":\"" + "a".repeat(64) + "\",\"configuration\":"
-                + proposal + ",\"changes\":[\"blockedServers changed\"],\"reloaded\":false,\"rolledBack\":false}";
+                + proposal + ",\"changes\":[\"blockedServers changed\"],\"reloaded\":false,\"rolledBack\":false,"
+                + "\"attemptId\":\"" + previewTask.get("attemptId").asText() + "\"}";
         assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/operations/" + previewId + "/result",
                 previewResult, nodeToken).statusCode());
 
