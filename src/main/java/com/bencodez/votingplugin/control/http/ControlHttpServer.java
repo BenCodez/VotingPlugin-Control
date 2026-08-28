@@ -53,7 +53,8 @@ import java.util.concurrent.TimeUnit;
 
 /** Bounded HTTP adapter. Node writes are enrolled; node listings require the local admin credential. */
 public final class ControlHttpServer implements AutoCloseable {
-    public static final int MAX_REQUEST_BYTES = 768 * 1024;
+    // Covers the worst-case JSON encoding of the 512 KiB managed-configuration limit plus its result envelope.
+    public static final int MAX_REQUEST_BYTES = 4 * 1024 * 1024;
     private static final String HEALTH = "/api/v1/health";
     private static final String NODES = "/api/v1/nodes";
     private static final String REGISTER = "/api/v1/nodes/register";
