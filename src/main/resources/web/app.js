@@ -220,6 +220,9 @@ function discardAuthenticationState(reason) {
   nodePlugins.clear();
   configurationContent.value = '';
   blockedServers.value = '';
+  text(operationStatus, '');
+  text(fileOperationStatus, '');
+  text(quickOperationStatus, '');
   nodes.replaceChildren();
   nodes.classList.add('empty');
   text(nodes, 'Authenticate to view the network.');
@@ -388,9 +391,12 @@ logout.addEventListener('click', async () => {
   logout.disabled = true;
   try {
     await authorized('/api/v1/auth/logout', {method: 'POST'});
-  } catch (_) { /* Expired is logged out too. */ }
-  finally {
     if (logoutGeneration === authenticationGeneration) discardAuthenticationState('Signed out.');
+  } catch (_) {
+    if (logoutGeneration === authenticationGeneration) {
+      text(message, 'Sign out could not be confirmed. Check your connection and try again.');
+    }
+  } finally {
     loginInFlight = false;
     loginButton.disabled = false;
     logout.disabled = false;

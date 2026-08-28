@@ -191,6 +191,27 @@ class ConfigurationOperationsTest {
         assertEquals(false, Files.exists(directory.resolve("configuration-audit.pending")));
     }
 
+    @Test void auditRepairRejectsOversizedActiveSegmentWithoutLoadingIt() throws Exception {
+        Path active = directory.resolve("configuration-audit.jsonl");
+        Files.writeString(active, "x".repeat(70 * 1024));
+        Map<String, Object> pending = new LinkedHashMap<>();
+        pending.put("line", "{}" + System.lineSeparator());
+        pending.put("rotate", false);
+        pending.put("preActiveHash", "GENESIS");
+        pending.put("preActiveRecords", 0);
+        pending.put("preRetainedHash", "GENESIS");
+        pending.put("preRetainedRecords", 0);
+        pending.put("preActiveBytes", 0);
+        pending.put("postActiveHash", "a".repeat(64));
+        pending.put("postActiveRecords", 1);
+        pending.put("postRetainedHash", "GENESIS");
+        pending.put("postRetainedRecords", 0);
+        Files.write(directory.resolve("configuration-audit.pending"), new ObjectMapper().writeValueAsBytes(pending));
+
+        assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory,
+                Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC), 1));
+    }
+
     @Test void auditPendingTransactionRestoresMissingRecordSeparator() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         Path active = directory.resolve("configuration-audit.jsonl");

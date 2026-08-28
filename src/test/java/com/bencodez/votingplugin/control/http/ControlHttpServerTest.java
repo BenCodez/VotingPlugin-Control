@@ -77,6 +77,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
         assertTrue(script.body().contains("selectedCapabilitiesChanged"));
         assertTrue(script.body().contains("discardAuthenticationState"));
+        assertTrue(script.body().contains("text(operationStatus, '');"));
+        assertTrue(script.body().contains("text(fileOperationStatus, '');"));
+        assertTrue(script.body().contains("text(quickOperationStatus, '');"));
+        assertTrue(script.body().contains("Sign out could not be confirmed"));
         assertTrue(script.body().contains("result.success && result.configuration"));
         assertEquals(200, get("/app.css", null).statusCode());
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");

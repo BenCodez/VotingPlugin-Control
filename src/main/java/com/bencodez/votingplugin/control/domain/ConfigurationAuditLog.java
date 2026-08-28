@@ -4,6 +4,7 @@ import com.bencodez.votingplugin.control.DurableFiles;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -12,11 +13,13 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.StandardCopyOption;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.nio.channels.SeekableByteChannel;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /** Local append-only, hash-chained operation metadata. Values and approval tokens are never recorded. */
@@ -175,11 +178,22 @@ public final class ConfigurationAuditLog implements AutoCloseable {
     private SegmentState repairTornActive(PendingAppend pending, SegmentState retained,
                                           IOException invalidActive) throws IOException {
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) throw invalidActive;
-        byte[] actual = Files.readAllBytes(file);
         byte[] intended = pending.line().getBytes(StandardCharsets.UTF_8);
         long baseLong = pending.rotate() ? 0 : pending.preActiveBytes();
-        if (baseLong > Integer.MAX_VALUE || actual.length <= baseLong
-                || actual.length >= baseLong + intended.length) throw invalidActive;
+        long maximumRepairBytes = Math.min(maxBytes, MAX_BYTES) + 64 * 1024;
+        if (baseLong > Integer.MAX_VALUE - intended.length
+                || baseLong + intended.length > maximumRepairBytes) throw invalidActive;
+        int exclusiveLimit = (int) baseLong + intended.length;
+        ByteBuffer buffer = ByteBuffer.allocate(exclusiveLimit);
+        try (SeekableByteChannel channel = Files.newByteChannel(file,
+                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            while (channel.read(buffer) >= 0 && buffer.hasRemaining()) { }
+        }
+        if (!buffer.hasRemaining()) throw invalidActive;
+        buffer.flip();
+        byte[] actual = new byte[buffer.remaining()];
+        buffer.get(actual);
+        if (actual.length <= baseLong) throw invalidActive;
         int base = (int) baseLong;
         if (pending.rotate()) {
             if (!matches(retained, pending.postRetainedHash(), pending.postRetainedRecords())) throw invalidActive;
