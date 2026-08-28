@@ -212,6 +212,13 @@ class ConfigurationOperationsTest {
                 Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC), 1));
     }
 
+    @Test void auditValidationRejectsOversizedActiveSegmentWithoutLoadingIt() throws Exception {
+        Files.writeString(directory.resolve("configuration-audit.jsonl"), "x".repeat(70 * 1024));
+
+        assertThrows(java.io.IOException.class, () -> new ConfigurationAuditLog(directory,
+                Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC), 1));
+    }
+
     @Test void auditPendingTransactionRestoresMissingRecordSeparator() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         Path active = directory.resolve("configuration-audit.jsonl");
@@ -343,7 +350,7 @@ class ConfigurationOperationsTest {
                 () -> operations.get(operation)).code());
     }
 
-    @Test void expiredLeaseResultCannotCompleteAReissuedAttemptForTheSameSession() throws Exception {
+    @Test void expiredLeaseResultCannotCompleteBeforeOrAfterReissueForTheSameSession() throws Exception {
         MutableClock clock = new MutableClock(Instant.parse("2026-08-25T00:00:00Z"));
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofHours(1));
         UUID session = UUID.randomUUID();
@@ -354,9 +361,14 @@ class ConfigurationOperationsTest {
         ConfigurationTask first = operations.claim("proxy-a", session);
 
         clock.advance(Duration.ofMinutes(2));
+        ProxyRoutingConfiguration configuration = new ProxyRoutingConfiguration(false, List.of());
+        ConfigurationTaskResult expired = new ConfigurationTaskResult(session, true, "OK", "read", "a".repeat(64),
+                configuration, List.of(), false, false, first.attemptId());
+        assertEquals("TASK_LEASE_EXPIRED", assertThrows(ValidationException.class,
+                () -> operations.complete(operation, "proxy-a", expired)).code());
+
         ConfigurationTask second = operations.claim("proxy-a", session);
         assertTrue(!first.attemptId().equals(second.attemptId()));
-        ProxyRoutingConfiguration configuration = new ProxyRoutingConfiguration(false, List.of());
         ConfigurationTaskResult stale = new ConfigurationTaskResult(session, true, "OK", "read", "a".repeat(64),
                 configuration, List.of(), false, false, first.attemptId());
         assertEquals("TASK_LEASE_EXPIRED", assertThrows(ValidationException.class,

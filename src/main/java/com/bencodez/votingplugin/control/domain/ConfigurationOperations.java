@@ -166,7 +166,9 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (!"IN_PROGRESS".equals(operation.states.get(nodeId))) {
             throw new ValidationException("TASK_NOT_CLAIMED", "Operation task must be claimed before completion", List.of());
         }
-        if (!Objects.equals(operation.attemptIds.get(nodeId), result.attemptId())) {
+        Instant leasedAt = operation.leasedAt.get(nodeId);
+        if (!Objects.equals(operation.attemptIds.get(nodeId), result.attemptId()) || leasedAt == null
+                || !clock.instant().isBefore(leasedAt.plus(LEASE))) {
             throw new ValidationException("TASK_LEASE_EXPIRED", "Operation task lease is no longer active", List.of());
         }
         validateResultConfiguration(operation, result);

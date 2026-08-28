@@ -116,7 +116,8 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             throw new IOException("Configuration audit pending transaction is invalid");
         }
         try {
-            JsonNode stored = json.readTree(Files.readAllBytes(pendingFile));
+            JsonNode stored = json.readTree(readBounded(pendingFile, 16384,
+                    "Configuration audit pending transaction is invalid"));
             if (stored == null || !stored.isObject() || stored.size() != 11
                     || !stored.path("rotate").isBoolean()
                     || !integral(stored, "preActiveRecords") || !integral(stored, "preRetainedRecords")
@@ -262,13 +263,24 @@ public final class ConfigurationAuditLog implements AutoCloseable {
         if (!Files.exists(selected, LinkOption.NOFOLLOW_LINKS)) return new SegmentState(false, "GENESIS", 0);
         if (!Files.isRegularFile(selected, LinkOption.NOFOLLOW_LINKS))
             throw new IOException(label + " is not a regular file");
-        if (Files.size(selected) > maxBytes + 64 * 1024)
+        long maximumSegmentBytes = Math.min(maxBytes, MAX_BYTES) + 64 * 1024;
+        if (Files.size(selected) > maximumSegmentBytes)
             throw new IOException(label + " exceeds its bounded size");
-        return validateExisting(selected);
+        return validateBytes(readBounded(selected, maximumSegmentBytes, label + " exceeds its bounded size"));
     }
 
-    private SegmentState validateExisting(Path selected) throws IOException {
-        return validateBytes(Files.readAllBytes(selected));
+    private static byte[] readBounded(Path selected, long maximumBytes, String failure) throws IOException {
+        if (maximumBytes < 0 || maximumBytes >= Integer.MAX_VALUE) throw new IOException(failure);
+        ByteBuffer buffer = ByteBuffer.allocate((int) maximumBytes + 1);
+        try (SeekableByteChannel channel = Files.newByteChannel(selected,
+                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            while (channel.read(buffer) >= 0 && buffer.hasRemaining()) { }
+        }
+        if (!buffer.hasRemaining()) throw new IOException(failure);
+        buffer.flip();
+        byte[] bytes = new byte[buffer.remaining()];
+        buffer.get(bytes);
+        return bytes;
     }
 
     private SegmentState validateBytes(byte[] bytes) throws IOException {
@@ -328,7 +340,8 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             throw new IOException("Configuration audit checkpoint is missing or invalid");
         }
         try {
-            JsonNode checkpoint = json.readTree(Files.readAllBytes(checkpointFile));
+            JsonNode checkpoint = json.readTree(readBounded(checkpointFile, 4096,
+                    "Configuration audit checkpoint is missing or invalid"));
             if (checkpoint == null || !checkpoint.isObject() || checkpoint.size() != 4
                     || !checkpoint.path("activeHash").asText().equals(previousHash)
                     || !checkpoint.path("retainedHash").asText().equals(retainedHash)

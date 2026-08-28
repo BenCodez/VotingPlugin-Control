@@ -224,6 +224,7 @@ function discardAuthenticationState(reason) {
   configurationForm.reset();
   fileConfigurationForm.reset();
   quickSetupForm.reset();
+  updateQuickFields();
   quickCommandSuggestions.replaceChildren();
   text(detectedPlugins, 'Authenticate to inspect detected plugins.');
   text(operationStatus, '');
