@@ -39,6 +39,7 @@ import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -71,6 +72,8 @@ public final class ControlHttpServer implements AutoCloseable {
             "/app.css", new WebResource("/web/app.css", "text/css; charset=utf-8"));
     private static final int MAX_AUTH_FAILURES_PER_MINUTE = 100;
     private static final int MAX_PASSWORD_ATTEMPTS_PER_CLIENT = 8;
+    private static final int MAX_PASSWORD_FAILURES_PER_CLIENT = 5;
+    private static final int MAX_PASSWORD_FAILURE_CLIENTS = 4096;
     static final int MAX_BACKENDS_PER_NODE_PAGE = 4096;
     private static final int MAX_BACKENDS_PER_NODE_SUMMARY = 256;
 
@@ -83,6 +86,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private final ThreadPoolExecutor executor;
     private final ThreadPoolExecutor passwordExecutor;
     private final PasswordAdmission passwordAdmission = new PasswordAdmission(MAX_PASSWORD_ATTEMPTS_PER_CLIENT);
+    private final PasswordFailureLimiter passwordFailureLimiter;
     private final AuthFailureLimiter authLimiter;
     private final WebSessionStore webSessions;
     private final boolean secureCookies;
@@ -153,6 +157,8 @@ public final class ControlHttpServer implements AutoCloseable {
                 .maxNestingDepth(20).maxStringLength(ManagedConfiguration.MAX_CONTENT + 4096)
                 .maxNumberLength(64).build());
         authLimiter = new AuthFailureLimiter(nanoTime, MAX_AUTH_FAILURES_PER_MINUTE, TimeUnit.MINUTES.toNanos(1));
+        passwordFailureLimiter = new PasswordFailureLimiter(nanoTime, MAX_PASSWORD_FAILURES_PER_CLIENT,
+                TimeUnit.MINUTES.toNanos(1), MAX_PASSWORD_FAILURE_CLIENTS);
         webSessions = new WebSessionStore(clock);
         server = HttpServer.create(address, 32);
         server.createContext("/", this::handle);
@@ -261,13 +267,16 @@ public final class ControlHttpServer implements AutoCloseable {
             PasswordRequest request = read(exchange, PasswordRequest.class);
             requireRequest(request);
             String client = passwordClient(exchange);
+            if (!passwordFailureLimiter.allowAttempt(client)) {
+                throw new AuthenticationException(true);
+            }
             if (!passwordAdmission.acquire(client)) {
                 throw new AuthenticationException(true);
             }
             try {
                 passwordExecutor.execute(() -> {
                     try {
-                        handlePasswordLogin(exchange, request);
+                        handlePasswordLogin(exchange, request, client);
                     } finally {
                         passwordAdmission.release(client);
                     }
@@ -399,12 +408,14 @@ public final class ControlHttpServer implements AutoCloseable {
         error(exchange, 404, "NOT_FOUND", "Endpoint not found", List.of());
     }
 
-    private void handlePasswordLogin(HttpExchange exchange, PasswordRequest request) {
+    private void handlePasswordLogin(HttpExchange exchange, PasswordRequest request, String client) {
         try {
             String credentialRevision = credentials.authenticateWebPassword(request.password());
             if (credentialRevision == null) {
+                passwordFailureLimiter.recordFailure(client);
                 authenticationFailed();
             }
+            passwordFailureLimiter.clear(client);
             webSessions.remove(cookie(exchange, SESSION_COOKIE));
             WebSessionStore.Session session = webSessions.create(credentialRevision);
             setSessionCookie(exchange, session.id(), false);
@@ -784,5 +795,59 @@ public final class ControlHttpServer implements AutoCloseable {
                 inFlight.put(client, current - 1);
             }
         }
+    }
+
+    static final class PasswordFailureLimiter {
+        private final java.util.function.LongSupplier nanoTime;
+        private final int maximumFailures;
+        private final long windowNanos;
+        private final int maximumClients;
+        private final LinkedHashMap<String, FailureWindow> failures = new LinkedHashMap<>(16, 0.75f, true);
+
+        PasswordFailureLimiter(java.util.function.LongSupplier nanoTime, int maximumFailures,
+                               long windowNanos, int maximumClients) {
+            this.nanoTime = nanoTime;
+            this.maximumFailures = maximumFailures;
+            this.windowNanos = windowNanos;
+            this.maximumClients = maximumClients;
+        }
+
+        synchronized boolean allowAttempt(String client) {
+            FailureWindow current = current(client);
+            return current == null || current.failures() < maximumFailures;
+        }
+
+        synchronized void recordFailure(String client) {
+            long now = nanoTime.getAsLong();
+            FailureWindow current = current(client);
+            if (current == null) {
+                while (failures.size() >= maximumClients) {
+                    var oldest = failures.entrySet().iterator();
+                    if (!oldest.hasNext()) break;
+                    oldest.next();
+                    oldest.remove();
+                }
+                failures.put(client, new FailureWindow(now, 1));
+            } else if (current.failures() < maximumFailures) {
+                failures.put(client, new FailureWindow(current.started(), current.failures() + 1));
+            }
+        }
+
+        synchronized void clear(String client) {
+            failures.remove(client);
+        }
+
+        private FailureWindow current(String client) {
+            FailureWindow current = failures.get(client);
+            if (current == null) return null;
+            long now = nanoTime.getAsLong();
+            if (now < current.started() || now - current.started() >= windowNanos) {
+                failures.remove(client);
+                return null;
+            }
+            return current;
+        }
+
+        private record FailureWindow(long started, int failures) { }
     }
 }

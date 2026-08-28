@@ -229,8 +229,22 @@ class ConfigurationOperationsTest {
         Files.write(directory.resolve("configuration-audit.checkpoint"),
                 new ObjectMapper().writeValueAsBytes(checkpoint));
 
-        try (ConfigurationAuditLog ignored = new ConfigurationAuditLog(directory,
-                Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC))) { }
+        try (ConfigurationAuditLog log = new ConfigurationAuditLog(directory,
+                Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC))) {
+            log.append("AFTER_BLANKS", UUID.randomUUID(), "proxy-a", "OK");
+        }
+    }
+
+    @Test void liveAuditAppendRejectsAChangedTail() throws Exception {
+        Path active = directory.resolve("configuration-audit.jsonl");
+        try (ConfigurationAuditLog log = new ConfigurationAuditLog(directory,
+                Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC))) {
+            log.append("FIRST", UUID.randomUUID(), "proxy-a", "OK");
+            Files.writeString(active, Files.readString(active).replaceFirst("FIRST", "OTHER"));
+
+            assertThrows(ConfigurationAuditLog.AuditException.class,
+                    () -> log.append("SECOND", UUID.randomUUID(), "proxy-a", "OK"));
+        }
     }
 
     @Test void auditPendingTransactionRestoresMissingRecordSeparator() throws Exception {

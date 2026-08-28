@@ -26,6 +26,7 @@ import java.util.UUID;
 /** Local append-only, hash-chained operation metadata. Values and approval tokens are never recorded. */
 public final class ConfigurationAuditLog implements AutoCloseable {
     private static final long MAX_BYTES = 5L * 1024 * 1024;
+    private static final int MAX_RECORD_BYTES = 16 * 1024;
     private final Path file;
     private final Path previousFile;
     private final Path checkpointFile;
@@ -39,6 +40,8 @@ public final class ConfigurationAuditLog implements AutoCloseable {
     private long activeRecords;
     private String retainedHash = "GENESIS";
     private long retainedRecords;
+    private long activeBytes;
+    private long retainedBytes;
 
     public ConfigurationAuditLog(Path dataDirectory, Clock clock) throws IOException {
         this(dataDirectory, clock, MAX_BYTES);
@@ -66,8 +69,10 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             SegmentState active = validateOptional(file, "Configuration audit log");
             retainedHash = retained.tailHash();
             retainedRecords = retained.records();
+            retainedBytes = retained.bytes();
             previousHash = active.tailHash();
             activeRecords = active.records();
+            activeBytes = active.bytes();
             boolean hasSegments = retained.present() || active.present();
             if (hasSegments) {
                 validateCheckpoint();
@@ -87,7 +92,11 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             // A prior append may have changed a segment before checkpoint publication failed.
             // Never replace its only durable recovery description with a new transaction.
             if (Files.exists(pendingFile, LinkOption.NOFOLLOW_LINKS)) recoverPending();
-            boolean rotate = Files.exists(file) && Files.size(file) >= maxBytes;
+            validateExpectedTail(previousFile, retainedHash, retainedRecords, retainedBytes,
+                    "Retained configuration audit log");
+            validateExpectedTail(file, previousHash, activeRecords, activeBytes,
+                    "Configuration audit log");
+            boolean rotate = activeBytes >= maxBytes;
             String recordPrevious = rotate ? "GENESIS" : previousHash;
             Map<String, Object> core = new LinkedHashMap<>();
             core.put("time", clock.instant().toString());
@@ -100,12 +109,11 @@ public final class ConfigurationAuditLog implements AutoCloseable {
             String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical));
             core.put("hash", hash);
             String line = json.writeValueAsString(core) + System.lineSeparator();
-            long preActiveBytes = Files.exists(file, LinkOption.NOFOLLOW_LINKS) ? Files.size(file) : 0;
             PendingAppend pending = new PendingAppend(line, rotate, previousHash, activeRecords, retainedHash,
-                    retainedRecords, preActiveBytes, hash, rotate ? 1 : activeRecords + 1,
+                    retainedRecords, activeBytes, hash, rotate ? 1 : activeRecords + 1,
                     rotate ? previousHash : retainedHash, rotate ? activeRecords : retainedRecords);
             writePending(pending);
-            completePending(pending);
+            completeFreshPending(pending);
         } catch (Exception e) {
             throw new AuditException(e);
         }
@@ -169,12 +177,27 @@ public final class ConfigurationAuditLog implements AutoCloseable {
         } else {
             throw new IOException("Configuration audit pending transaction does not match the audit chain");
         }
-        retainedHash = pending.postRetainedHash();
-        retainedRecords = pending.postRetainedRecords();
-        previousHash = pending.postActiveHash();
-        activeRecords = pending.postActiveRecords();
+        applyPendingState(pending);
         writeCheckpoint();
         deleteDurably(pendingFile);
+    }
+
+    private void completeFreshPending(PendingAppend pending) throws IOException {
+        if (pending.rotate()) moveReplacing(file, previousFile);
+        appendDurably(pending.line());
+        applyPendingState(pending);
+        writeCheckpoint();
+        deleteDurably(pendingFile);
+    }
+
+    private void applyPendingState(PendingAppend pending) {
+        int appendedBytes = pending.line().getBytes(StandardCharsets.UTF_8).length;
+        retainedHash = pending.postRetainedHash();
+        retainedRecords = pending.postRetainedRecords();
+        retainedBytes = pending.rotate() ? pending.preActiveBytes() : retainedBytes;
+        previousHash = pending.postActiveHash();
+        activeRecords = pending.postActiveRecords();
+        activeBytes = (pending.rotate() ? 0 : pending.preActiveBytes()) + appendedBytes;
     }
 
     private SegmentState repairTornActive(PendingAppend pending, SegmentState retained,
@@ -261,7 +284,7 @@ public final class ConfigurationAuditLog implements AutoCloseable {
     }
 
     private SegmentState validateOptional(Path selected, String label) throws IOException {
-        if (!Files.exists(selected, LinkOption.NOFOLLOW_LINKS)) return new SegmentState(false, "GENESIS", 0);
+        if (!Files.exists(selected, LinkOption.NOFOLLOW_LINKS)) return new SegmentState(false, "GENESIS", 0, 0);
         if (!Files.isRegularFile(selected, LinkOption.NOFOLLOW_LINKS))
             throw new IOException(label + " is not a regular file");
         long maximumSegmentBytes = Math.min(maxBytes, MAX_BYTES) + 64 * 1024;
@@ -293,47 +316,102 @@ public final class ConfigurationAuditLog implements AutoCloseable {
                     .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
                     .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
                     .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
-            return validateLines(content.lines().iterator());
+            return validateLines(content.lines().iterator(), bytes.length);
         } catch (java.nio.charset.CharacterCodingException e) {
             throw new IOException("Configuration audit chain is invalid", e);
         }
     }
 
-    private SegmentState validateLines(Iterator<String> lines) throws IOException {
+    private SegmentState validateLines(Iterator<String> lines, long bytes) throws IOException {
         String expectedPrevious = "GENESIS";
         long records = 0;
         while (lines.hasNext()) {
             String line = lines.next();
             if (line.isBlank()) continue;
-            try {
-                JsonNode stored = json.readTree(line);
-                if (stored == null || !stored.isObject() || stored.size() != 7
-                        || !stored.has("time") || !stored.has("action") || !stored.has("operationId")
-                        || !stored.has("nodeId") || !stored.has("outcome") || !stored.has("previousHash")
-                        || !stored.has("hash")) {
-                    throw new IOException("Configuration audit chain is invalid");
-                }
-                Map<String, Object> core = new LinkedHashMap<>();
-                core.put("time", stored.path("time").asText());
-                core.put("action", stored.path("action").asText());
-                core.put("operationId", stored.path("operationId").isNull() ? null : stored.path("operationId").asText());
-                core.put("nodeId", stored.path("nodeId").isNull() ? null : stored.path("nodeId").asText());
-                core.put("outcome", stored.path("outcome").isNull() ? null : stored.path("outcome").asText());
-                core.put("previousHash", stored.path("previousHash").asText());
-                String calculated = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                        .digest(json.writeValueAsBytes(core)));
-                if (!expectedPrevious.equals(core.get("previousHash")) || !calculated.equals(stored.path("hash").asText())) {
-                    throw new IOException("Configuration audit chain is invalid");
-                }
-                expectedPrevious = calculated;
-                records++;
-            } catch (IOException e) {
-                throw e;
-            } catch (Exception e) {
-                throw new IOException("Configuration audit chain is invalid", e);
+            AuditRecord record = validateRecord(line);
+            if (!expectedPrevious.equals(record.previousHash())) {
+                throw new IOException("Configuration audit chain is invalid");
+            }
+            expectedPrevious = record.hash();
+            records++;
+        }
+        return new SegmentState(true, expectedPrevious, records, bytes);
+    }
+
+    private AuditRecord validateRecord(String line) throws IOException {
+        try {
+            JsonNode stored = json.readTree(line);
+            if (stored == null || !stored.isObject() || stored.size() != 7
+                    || !stored.has("time") || !stored.has("action") || !stored.has("operationId")
+                    || !stored.has("nodeId") || !stored.has("outcome") || !stored.has("previousHash")
+                    || !stored.has("hash")) {
+                throw new IOException("Configuration audit chain is invalid");
+            }
+            Map<String, Object> core = new LinkedHashMap<>();
+            core.put("time", stored.path("time").asText());
+            core.put("action", stored.path("action").asText());
+            core.put("operationId", stored.path("operationId").isNull() ? null : stored.path("operationId").asText());
+            core.put("nodeId", stored.path("nodeId").isNull() ? null : stored.path("nodeId").asText());
+            core.put("outcome", stored.path("outcome").isNull() ? null : stored.path("outcome").asText());
+            core.put("previousHash", stored.path("previousHash").asText());
+            String calculated = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(json.writeValueAsBytes(core)));
+            if (!calculated.equals(stored.path("hash").asText())) {
+                throw new IOException("Configuration audit chain is invalid");
+            }
+            return new AuditRecord(stored.path("previousHash").asText(), calculated);
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("Configuration audit chain is invalid", e);
+        }
+    }
+
+    private void validateExpectedTail(Path selected, String expectedHash, long expectedRecords,
+                                      long expectedBytes, String label) throws IOException {
+        if (!Files.exists(selected, LinkOption.NOFOLLOW_LINKS)) {
+            if (expectedBytes == 0 && expectedRecords == 0 && "GENESIS".equals(expectedHash)) return;
+            throw new IOException(label + " no longer matches its validated state");
+        }
+        if (!Files.isRegularFile(selected, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException(label + " is not a regular file");
+        }
+        try (SeekableByteChannel channel = Files.newByteChannel(selected,
+                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            long size = channel.size();
+            if (size != expectedBytes || size > Math.min(maxBytes, MAX_BYTES) + 64 * 1024) {
+                throw new IOException(label + " no longer matches its validated state");
+            }
+            if (expectedRecords == 0) return;
+            int window = (int) Math.min(size, MAX_RECORD_BYTES + 2L);
+            ByteBuffer buffer = ByteBuffer.allocate(window);
+            channel.position(size - window);
+            while (buffer.hasRemaining() && channel.read(buffer) >= 0) { }
+            if (channel.size() != size || buffer.position() != window) {
+                throw new IOException(label + " changed during validation");
+            }
+            byte[] tail = buffer.array();
+            if (tail.length == 0 || tail[tail.length - 1] != '\n') {
+                throw new IOException(label + " is missing its terminal separator");
+            }
+            int previousSeparator = tail.length - 2;
+            while (previousSeparator >= 0 && tail[previousSeparator] != '\n') previousSeparator--;
+            if (previousSeparator < 0 && size > tail.length) {
+                throw new IOException(label + " has an oversized final record");
+            }
+            int start = previousSeparator + 1;
+            int length = tail.length - start - 1;
+            if (length <= 0 || length > MAX_RECORD_BYTES) {
+                throw new IOException(label + " has an invalid final record");
+            }
+            String line = StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(tail, start, length)).toString();
+            if (!expectedHash.equals(validateRecord(line).hash())) {
+                throw new IOException(label + " no longer matches its validated state");
             }
         }
-        return new SegmentState(true, expectedPrevious, records);
     }
 
     private void validateCheckpoint() throws IOException {
@@ -415,7 +493,8 @@ public final class ConfigurationAuditLog implements AutoCloseable {
         lockChannel.close();
     }
 
-    private record SegmentState(boolean present, String tailHash, long records) { }
+    private record SegmentState(boolean present, String tailHash, long records, long bytes) { }
+    private record AuditRecord(String previousHash, String hash) { }
     private record PendingAppend(String line, boolean rotate, String preActiveHash, long preActiveRecords,
                                  String preRetainedHash, long preRetainedRecords, long preActiveBytes,
                                  String postActiveHash,

@@ -250,6 +250,17 @@ class ControlHttpServerTest {
         }
     }
 
+    @Test void repeatedPasswordFailuresAreThrottledBeforeMoreDerivations() throws Exception {
+        credentials.setWebPassword("a-secure-web-password".toCharArray());
+        for (int attempt = 0; attempt < 5; attempt++) {
+            assertAuthFailure(send("POST", "/api/v1/auth/login",
+                    "{\"password\":\"invalid-password-" + attempt + "\"}", null));
+        }
+
+        assertError(send("POST", "/api/v1/auth/login",
+                "{\"password\":\"another-invalid-password\"}", null), 429, "AUTH_RATE_LIMITED");
+    }
+
     @Test void passwordAdmissionPreventsOneClientFromOccupyingAllVerificationCapacity() {
         ControlHttpServer.PasswordAdmission admission = new ControlHttpServer.PasswordAdmission(2);
         assertTrue(admission.acquire("attacker"));
@@ -259,6 +270,26 @@ class ControlHttpServerTest {
         admission.release("attacker");
         assertTrue(admission.acquire("attacker"));
         admission.release("owner");
+    }
+
+    @Test void passwordFailureLimiterExpiresClearsAndBoundsClients() {
+        java.util.concurrent.atomic.AtomicLong now = new java.util.concurrent.atomic.AtomicLong();
+        ControlHttpServer.PasswordFailureLimiter limiter =
+                new ControlHttpServer.PasswordFailureLimiter(now::get, 2, 10, 2);
+        assertTrue(limiter.allowAttempt("attacker"));
+        limiter.recordFailure("attacker");
+        assertTrue(limiter.allowAttempt("attacker"));
+        limiter.recordFailure("attacker");
+        assertFalse(limiter.allowAttempt("attacker"));
+        limiter.clear("attacker");
+        assertTrue(limiter.allowAttempt("attacker"));
+
+        limiter.recordFailure("attacker");
+        limiter.recordFailure("second");
+        limiter.recordFailure("third");
+        assertTrue(limiter.allowAttempt("attacker"));
+        now.set(10);
+        assertTrue(limiter.allowAttempt("second"));
     }
 
     @Test void trustedProxyUsesForwardedClientWhileDirectPeersCannotSpoofIt() {
