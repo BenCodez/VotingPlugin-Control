@@ -119,6 +119,16 @@ class InMemoryNodeRegistryTest {
         assertEquals(Set.of("Four"), bounded.find("proxy-b").detectedPlugins());
     }
 
+    @Test void staleEmptyRegistrationIsReclaimedWhenAnotherNodeRegisters() {
+        registry.register(registration("proxy-a", session, Set.of(), Set.of()));
+
+        clock.advance(Duration.ofSeconds(90));
+        registry.register(registration("proxy-b", UUID.randomUUID(), Set.of(), Set.of()));
+
+        assertNull(registry.find("proxy-a"));
+        assertNotNull(registry.find("proxy-b"));
+    }
+
     @Test void duplicateRegistrationIsAtomicUnderConcurrency() throws Exception {
         int count = 32;
         CountDownLatch ready = new CountDownLatch(count);

@@ -11,10 +11,13 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -28,6 +31,7 @@ import java.util.concurrent.CountDownLatch;
 
 public final class ControlApplication {
     private static final Object IDENTITY_LOCK = new Object();
+    private static final int MAX_IDENTITY_BYTES = 64;
 
     private ControlApplication() { }
 
@@ -202,7 +206,20 @@ public final class ControlApplication {
 
     private static UUID readIdentity(Path file) throws IOException {
         try {
-            return UUID.fromString(Files.readString(file).trim());
+            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file)
+                    || Files.size(file) > MAX_IDENTITY_BYTES) {
+                throw new IOException("Control identity is invalid");
+            }
+            ByteBuffer buffer = ByteBuffer.allocate(MAX_IDENTITY_BYTES + 1);
+            try (SeekableByteChannel channel = Files.newByteChannel(file,
+                    Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+                while (channel.read(buffer) >= 0 && buffer.hasRemaining()) { }
+            }
+            if (!buffer.hasRemaining()) throw new IOException("Control identity is invalid");
+            buffer.flip();
+            byte[] bytes = new byte[buffer.remaining()];
+            buffer.get(bytes);
+            return UUID.fromString(new String(bytes, StandardCharsets.UTF_8).trim());
         } catch (IllegalArgumentException e) {
             throw new IOException("Control identity is invalid");
         }

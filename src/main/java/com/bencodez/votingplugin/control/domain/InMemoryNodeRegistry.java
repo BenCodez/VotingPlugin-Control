@@ -214,8 +214,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         for (String candidate : List.copyOf(nodes.keySet())) {
             if (candidate.equals(excludedNodeId)) continue;
             nodes.computeIfPresent(candidate, (ignored, existing) -> {
-                if (now.isBefore(existing.lastSeen.plus(offlineTimeout))
-                        || (existing.detectedPlugins.isEmpty() && existing.backends.isEmpty())) return existing;
+                if (now.isBefore(existing.lastSeen.plus(offlineTimeout))) return existing;
                 retainedDetectedPlugins -= existing.detectedPlugins.size();
                 retainedBackends -= existing.backends.size();
                 return null;

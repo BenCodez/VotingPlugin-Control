@@ -54,6 +54,17 @@ class ControlApplicationTest {
         assertThrows(java.io.IOException.class, () -> ControlApplication.loadIdentity(directory));
     }
 
+    @Test void oversizedAndNonRegularIdentitiesFailClosedBeforeReading() throws Exception {
+        Path oversized = directory.resolve("oversized");
+        Files.createDirectories(oversized);
+        Files.writeString(oversized.resolve("instance-id"), "x".repeat(65));
+        assertThrows(java.io.IOException.class, () -> ControlApplication.loadIdentity(oversized));
+
+        Path nonRegular = directory.resolve("non-regular");
+        Files.createDirectories(nonRegular.resolve("instance-id"));
+        assertThrows(java.io.IOException.class, () -> ControlApplication.loadIdentity(nonRegular));
+    }
+
     @Test void directoryDurabilityRecognizesWindowsAsUnsupported() {
         assertFalse(DurableFiles.supportsDirectoryChannels("Windows Server 2025"));
         assertTrue(DurableFiles.supportsDirectoryChannels("Linux"));
