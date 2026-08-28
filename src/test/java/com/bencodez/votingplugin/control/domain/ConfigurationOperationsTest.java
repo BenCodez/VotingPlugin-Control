@@ -219,6 +219,20 @@ class ConfigurationOperationsTest {
                 Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC), 1));
     }
 
+    @Test void newlineHeavyAuditSegmentIsValidatedLazily() throws Exception {
+        Files.writeString(directory.resolve("configuration-audit.jsonl"), "\n".repeat(1024 * 1024));
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("activeHash", "GENESIS");
+        checkpoint.put("activeRecords", 0);
+        checkpoint.put("retainedHash", "GENESIS");
+        checkpoint.put("retainedRecords", 0);
+        Files.write(directory.resolve("configuration-audit.checkpoint"),
+                new ObjectMapper().writeValueAsBytes(checkpoint));
+
+        try (ConfigurationAuditLog ignored = new ConfigurationAuditLog(directory,
+                Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC))) { }
+    }
+
     @Test void auditPendingTransactionRestoresMissingRecordSeparator() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         Path active = directory.resolve("configuration-audit.jsonl");

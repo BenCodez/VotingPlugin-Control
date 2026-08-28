@@ -17,6 +17,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.util.HexFormat;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -292,16 +293,17 @@ public final class ConfigurationAuditLog implements AutoCloseable {
                     .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
                     .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
                     .decode(java.nio.ByteBuffer.wrap(bytes)).toString();
-            return validateLines(content.lines().toList());
+            return validateLines(content.lines().iterator());
         } catch (java.nio.charset.CharacterCodingException e) {
             throw new IOException("Configuration audit chain is invalid", e);
         }
     }
 
-    private SegmentState validateLines(Iterable<String> lines) throws IOException {
+    private SegmentState validateLines(Iterator<String> lines) throws IOException {
         String expectedPrevious = "GENESIS";
         long records = 0;
-        for (String line : lines) {
+        while (lines.hasNext()) {
+            String line = lines.next();
             if (line.isBlank()) continue;
             try {
                 JsonNode stored = json.readTree(line);
