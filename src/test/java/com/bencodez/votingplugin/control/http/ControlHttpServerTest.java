@@ -71,11 +71,16 @@ class ControlHttpServerTest {
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
         assertTrue(script.body().contains("offset=${pageOffset}&limit=${PAGE_SIZE}"));
+        assertTrue(script.body().contains("async function loadAllNodes()"));
+        assertTrue(script.body().contains("enrollmentIds.has(backend.backendId)"));
         assertTrue(script.body().contains("nextPage.addEventListener"));
         assertTrue(script.body().contains("result.configuration?.content != null"));
         assertTrue(script.body().contains("authenticationGeneration"));
         assertTrue(script.body().contains("if (loginInFlight) return"));
         assertTrue(script.body().contains("backendItemsTruncated"));
+        assertTrue(script.body().contains("topologyComplete: !backendTopologyTruncated"));
+        assertTrue(script.body().contains("option.value = backend.backendId"));
+        assertTrue(script.body().contains("return allNodeItems.filter(node => isProxy(node)"));
         assertTrue(web.body().contains("Easy vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
@@ -109,6 +114,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("'config.transport-test.v1': 'Communication test'"));
         assertTrue(script.body().contains("'config.proxy-method.v1': 'Proxy method'"));
         assertTrue(script.body().contains("preset: 'sync-vote-sites'"));
+        assertTrue(script.body().contains("return allNodeItems.filter(node => isBackend(node)"));
+        assertTrue(script.body().contains("A sync target became unavailable"));
         assertTrue(script.body().contains("sourceContent: source"));
         assertTrue(script.body().contains("preset: 'communication-test'"));
         assertTrue(script.body().contains("runTransportTest.addEventListener"));
