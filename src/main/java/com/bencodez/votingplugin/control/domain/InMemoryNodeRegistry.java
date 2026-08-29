@@ -26,8 +26,7 @@ import java.util.regex.Pattern;
 public final class InMemoryNodeRegistry implements NodeRegistry {
     public static final Set<String> SUPPORTED_CAPABILITIES = Set.of("discovery.read", "presence.snapshot",
             ConfigurationOperations.CAPABILITY, ConfigurationOperations.FILE_CAPABILITY,
-            ConfigurationOperations.QUICK_SETUP_CAPABILITY, ConfigurationOperations.VOTE_SITES_SYNC_CAPABILITY,
-            "config.file-comments.v1");
+            ConfigurationOperations.QUICK_SETUP_CAPABILITY, "config.file-comments.v1");
     private static final Pattern ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final Pattern CAPABILITY = Pattern.compile("[a-z][a-z0-9.-]{0,63}");
     private static final Set<String> PLATFORMS = Set.of("BUNGEECORD", "VELOCITY", "BUKKIT");

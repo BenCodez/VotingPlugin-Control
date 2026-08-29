@@ -104,19 +104,12 @@ p { line-height: 1.55; }
 .backend-state { display: flex; flex-wrap: wrap; gap: 5px; color: var(--muted); font-size: .84rem; }
 .backend-state span + span::before { margin-right: 5px; content: "·"; color: #53677f; }
 
-.roadmap-card { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0; margin-bottom: 18px; padding: 0; overflow: hidden; }
+.roadmap-card { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; margin-bottom: 18px; padding: 0; overflow: hidden; }
 .roadmap-card > div { display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; padding: 19px; border-right: 1px solid var(--border); }
 .roadmap-card > div:last-child { border: 0; }
 .roadmap-card small { grid-column: 1 / -1; color: var(--muted); }
 .step { align-self: center; padding: 3px 6px; border: 1px solid #785927; border-radius: 5px; color: var(--amber); font-size: .62rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 #configuration-card { margin-top: 0; }
-.sync-card { margin-bottom: 18px; }
-.sync-grid { display: grid; grid-template-columns: minmax(240px, .8fr) minmax(300px, 1.2fr); gap: 18px; margin: 20px 0; }
-.sync-grid fieldset { margin: 0; }
-.target-list { display: grid; max-height: 190px; gap: 7px; overflow: auto; }
-.target-list.empty { color: var(--muted); }
-.target-option { display: flex; align-items: center; gap: 9px; margin: 0; padding: 8px 9px; border: 1px solid var(--border); border-radius: 8px; color: #d6e5f7; font-size: .85rem; }
-.target-option input { flex: none; width: 17px; height: 17px; }
 
 .subtabs { display: flex; gap: 7px; padding: 5px; border: 1px solid var(--border); border-radius: 11px; background: #091421; }
 .subtabs button { flex: 1; border-color: transparent; background: transparent; color: var(--muted); }
@@ -156,7 +149,7 @@ select { width: 100%; margin-bottom: 16px; }
 .check-row { display: flex; align-items: center; gap: 10px; }
 label span { color: var(--muted); font-weight: 400; }
 .operation-actions { display: flex; flex-wrap: wrap; gap: 9px; }
-#operation-status, #file-operation-status, #quick-operation-status, #vote-sites-sync-status { min-height: 84px; margin: 18px 0 0; padding: 14px; overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: #050c16; color: #c6d5e8; white-space: pre-wrap; }
+#operation-status, #file-operation-status, #quick-operation-status { min-height: 84px; margin: 18px 0 0; padding: 14px; overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: #050c16; color: #c6d5e8; white-space: pre-wrap; }
 #file-operation-status { margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 16px 0; }
 .form-grid label { color: var(--muted); }
@@ -178,7 +171,6 @@ li span { color: var(--muted); font-size: .9rem; }
   .topbar-actions { flex-wrap: wrap; }
   .server-picker { order: 3; width: 100%; grid-template-columns: auto 1fr; }
   .metrics, .settings-grid { grid-template-columns: repeat(2, 1fr); }
-  .sync-grid { grid-template-columns: 1fr; }
   .roadmap-card { grid-template-columns: 1fr; }
   .roadmap-card > div { border-right: 0; border-bottom: 1px solid var(--border); }
   .topology-row { grid-template-columns: 1fr; }

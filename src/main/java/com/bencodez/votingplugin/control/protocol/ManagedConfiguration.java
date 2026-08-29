@@ -38,6 +38,10 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             if (preset == null || !preset.matches("[a-z][a-z0-9-]{0,39}")) {
                 throw new IllegalArgumentException("quick setup preset is invalid");
             }
+            if (VOTE_SITES_SYNC.equals(preset)
+                    && (options.size() != 1 || !options.containsKey("sourceContent"))) {
+                throw new IllegalArgumentException("VoteSites sync requires sourceContent");
+            }
             if (options.size() > 20 || options.entrySet().stream().anyMatch(entry -> entry.getKey() == null
                     || !entry.getKey().matches("[a-z][A-Za-z0-9]{0,39}") || entry.getValue() == null
                     || invalidOption(entry.getKey(), entry.getValue(), VOTE_SITES_SYNC.equals(preset)))) {

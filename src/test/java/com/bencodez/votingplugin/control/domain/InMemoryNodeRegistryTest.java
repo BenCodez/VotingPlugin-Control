@@ -36,8 +36,7 @@ class InMemoryNodeRegistryTest {
     }
 
     @Test void registrationNegotiatesOptionalCommentPreservingFileSupport() {
-        Set<String> capabilities = Set.of("config.files.v1", "config.file-comments.v1",
-                ConfigurationOperations.VOTE_SITES_SYNC_CAPABILITY);
+        Set<String> capabilities = Set.of("config.files.v1", "config.file-comments.v1");
 
         var result = registry.register(registration("backend-lobby", session, capabilities, Set.of("config.files.v1")));
 

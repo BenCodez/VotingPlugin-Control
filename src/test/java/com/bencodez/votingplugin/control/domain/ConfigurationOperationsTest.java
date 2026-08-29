@@ -458,6 +458,11 @@ class ConfigurationOperationsTest {
         assertEquals(ConfigurationOperations.VOTE_SITES_SYNC_CAPABILITY, sync.capability());
         assertFalse(sync.publicView().options().containsKey("sourceContent"));
         assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.VOTE_SITES_SYNC, Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.VOTE_SITES_SYNC,
+                Map.of("sourceContent", source, "label", "extra")));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
                 null, List.of(), null, null, ManagedConfiguration.VOTE_SITES_SYNC,
                 Map.of("sourceContent", "x".repeat(ManagedConfiguration.MAX_CONTENT + 1))));
 
