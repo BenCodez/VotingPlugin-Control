@@ -101,6 +101,7 @@ const enrollmentList = document.querySelector('#enrollment-list');
 const enrollmentMessage = document.querySelector('#enrollment-message');
 const refreshEnrollments = document.querySelector('#refresh-enrollments');
 const PAGE_SIZE = 100;
+const MAX_OPERATION_TARGETS = 100;
 let authenticated = false;
 let csrfToken = '';
 let pageOffset = 0;
@@ -110,6 +111,7 @@ let visibleNodeItems = [];
 let allNodeItems = [];
 let nodeIndex = new Map();
 let enrollmentIds = new Set();
+let backendTopologyTruncated = false;
 let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
@@ -120,7 +122,6 @@ let voteSitesTargetsInitialized = false;
 let transportTestProxyId = '';
 let transportTestBackendId = '';
 let proxyMethodProxyId = '';
-let backendTopologyTruncated = false;
 let nodeCapabilities = new Map();
 let nodePlugins = new Map();
 let inputGeneration = 0;
@@ -397,8 +398,10 @@ function renderSelectedServer() {
     `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion}.${relationshipText}`);
   text(configurationContext,
     `${selected.displayName} (${selected.nodeId}) · ${roleLabel(selected)} · ${selected.online ? 'Control connected' : 'Control disconnected'}`);
-  const preservesComments = selected.acceptedCapabilities.includes('config.file-comments.v1');
-  text(commentPreservationState, preservesComments ? 'Comments preserved' : 'Comments not guaranteed');
+  const fileTargets = targets('config.files.v1');
+  const preservesComments = fileTargets.length > 0 && fileTargets.every(nodeId =>
+    nodeCapabilities.get(nodeId)?.includes('config.file-comments.v1'));
+  text(commentPreservationState, preservesComments ? 'Comments preserved for every target' : 'Comments not guaranteed for every target');
   commentPreservationState.className = `pill ${preservesComments ? 'online' : 'warning'}`;
   const capabilities = managedCapabilities(selected);
   if (capabilities.length === 0) capabilities.push('Discovery only');
@@ -454,6 +457,11 @@ function renderTopology() {
     row.append(proxyIdentity, backendList);
     topology.append(row);
   });
+  if (backendTopologyTruncated) {
+    const warning = text(document.createElement('p'), 'Backend topology is truncated; some proxy relationships are not shown.');
+    warning.className = 'warning-text';
+    topology.prepend(warning);
+  }
 }
 
 function renderMetrics() {
@@ -462,8 +470,9 @@ function renderMetrics() {
   const unenrolledBackends = [...backendIds].filter(backendId => !enrollmentIds.has(backendId)).length;
   text(metricNodes, allNodeItems.length);
   text(metricOnline, allNodeItems.filter(node => node.online).length);
-  text(metricBackends, backendIds.size);
-  text(metricIssues, allNodeItems.filter(node => !node.online).length + unenrolledBackends);
+  text(metricBackends, backendTopologyTruncated ? `${backendIds.size}+` : backendIds.size);
+  const issueCount = allNodeItems.filter(node => !node.online).length + unenrolledBackends;
+  text(metricIssues, backendTopologyTruncated ? `${issueCount}+` : issueCount);
 }
 
 function syncSourceCandidates() {
@@ -587,16 +596,26 @@ function proxyMethodCandidates() {
     node.acceptedCapabilities.includes('config.proxy-method.v1'));
 }
 
-function proxyMethodNetwork() {
-  const proxy = nodeIndex.get(proxyMethodProxyId);
+function proxyMethodNetworkFor(items, topologyTruncated, proxyId) {
+  const index = new Map(items.map(node => [node.nodeId, node]));
+  const proxy = index.get(proxyId);
   const reported = Array.isArray(proxy?.backends) ? proxy.backends : [];
-  const backends = reported.map(backend => nodeIndex.get(backend.backendId)).filter(Boolean);
+  const backends = reported.map(backend => index.get(backend.backendId)).filter(Boolean);
   const unavailable = reported.filter(backend => {
-    const node = nodeIndex.get(backend.backendId);
+    const node = index.get(backend.backendId);
     return !node || !node.online || !node.acceptedCapabilities.includes('config.proxy-method.v1');
   });
-  return {proxy, reported, backends, unavailable, topologyComplete: !backendTopologyTruncated,
+  return {proxy, reported, backends, unavailable, topologyComplete: !topologyTruncated,
     nodeIds: proxy ? [proxy.nodeId, ...backends.map(node => node.nodeId)] : []};
+}
+
+function proxyMethodNetwork() {
+  return proxyMethodNetworkFor(allNodeItems, backendTopologyTruncated, proxyMethodProxyId);
+}
+
+function proxyMethodNetworkSignature(network) {
+  return JSON.stringify({topologyComplete: network.topologyComplete, nodeIds: [...network.nodeIds].sort(),
+    unavailable: network.unavailable.map(backend => backend.backendId).sort()});
 }
 
 function renderProxyMethod() {
@@ -613,9 +632,11 @@ function renderProxyMethod() {
   }));
   proxyMethodProxy.value = proxyMethodProxyId;
   const network = proxyMethodNetwork();
-  const ready = Boolean(network.proxy) && network.topologyComplete && network.reported.length > 0 && network.unavailable.length === 0;
+  const ready = Boolean(network.proxy) && network.topologyComplete && network.reported.length > 0 &&
+    network.nodeIds.length <= MAX_OPERATION_TARGETS && network.unavailable.length === 0;
   const description = !network.proxy ? 'Waiting for a capable proxy'
     : !network.topologyComplete ? 'Backend topology is truncated; switching disabled'
+    : network.nodeIds.length > MAX_OPERATION_TARGETS ? `Network exceeds the ${MAX_OPERATION_TARGETS}-node operation limit`
     : network.reported.length === 0 ? 'No backends reported'
     : network.unavailable.length > 0 ? `${network.unavailable.length} backends unavailable`
     : `${network.nodeIds.length} nodes ready`;
@@ -645,6 +666,11 @@ function selectPrimaryServer(nodeId) {
   serverPicker.value = nodeId;
   selectedNodes.clear();
   if (nodeId) selectedNodes.add(nodeId);
+  configurationForm.reset();
+  configurationContent.value = '';
+  text(operationStatus, 'Server changed. Read this server before previewing changes.');
+  text(fileOperationStatus, 'Server changed. Read this file before previewing changes.');
+  updateEditorPosition();
   clearApprovals();
   updatePluginSuggestions();
   renderNodeViews();
@@ -668,7 +694,7 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) 
   runTransportTest.disabled = !authenticated || !transportTestProxyId || !transportTestBackendId || busy;
   const methodNetwork = proxyMethodNetwork();
   const methodReady = authenticated && Boolean(methodNetwork.proxy) && methodNetwork.topologyComplete && methodNetwork.reported.length > 0 &&
-    methodNetwork.unavailable.length === 0 && !busy;
+    methodNetwork.nodeIds.length <= MAX_OPERATION_TARGETS && methodNetwork.unavailable.length === 0 && !busy;
   proxyMethodButtons.forEach(button => { button.disabled = !methodReady; });
 }
 
@@ -792,12 +818,12 @@ function discardAuthenticationState(reason) {
   voteSitesTargetsInitialized = false;
   transportTestProxyId = '';
   transportTestBackendId = '';
-  backendTopologyTruncated = false;
   proxyMethodProxyId = '';
   selectedServerId = '';
   visibleNodeItems = [];
   allNodeItems = [];
   enrollmentIds.clear();
+  backendTopologyTruncated = false;
   nodeIndex.clear();
   nodeCapabilities.clear();
   nodePlugins.clear();
@@ -1394,15 +1420,21 @@ proxyMethodProxy.addEventListener('change', () => {
 proxyMethodButtons.forEach(button => button.addEventListener('click', async () => {
   const method = button.dataset.proxyMethod;
   const network = proxyMethodNetwork();
-  if (!network.proxy || !network.topologyComplete || network.reported.length === 0 || network.unavailable.length > 0) return;
+  if (!network.proxy || !network.topologyComplete || network.reported.length === 0 ||
+      network.nodeIds.length > MAX_OPERATION_TARGETS || network.unavailable.length > 0) return;
   try {
     const preview = await startConfigurationOperation('/api/v1/configuration/preview', {
       nodeIds: network.nodeIds,
       configuration: {domain: 'quick-setup', preset: 'proxy-method', options: {method}}
     }, proxyMethodStatus);
     if (preview.state !== 'SUCCEEDED' || !preview.approvalToken) return;
-    if (proxyMethodProxyId !== network.proxy.nodeId) {
-      text(proxyMethodStatus, 'The selected proxy changed while preflighting. Choose the method again.');
+    const refreshedRegistry = await loadAllNodes();
+    const refreshedNetwork = proxyMethodNetworkFor(refreshedRegistry.items, refreshedRegistry.truncated,
+      proxyMethodProxyId);
+    if (proxyMethodProxyId !== network.proxy.nodeId ||
+        proxyMethodNetworkSignature(refreshedNetwork) !== proxyMethodNetworkSignature(network) ||
+        refreshedNetwork.nodeIds.length > MAX_OPERATION_TARGETS) {
+      text(proxyMethodStatus, 'The complete proxy topology changed while preflighting. Refresh and choose the method again.');
       return;
     }
     if (!window.confirm(`Switch ${network.nodeIds.length} VotingPlugin nodes to ${method}? ` +

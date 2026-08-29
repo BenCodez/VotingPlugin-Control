@@ -73,6 +73,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("offset=${pageOffset}&limit=${PAGE_SIZE}"));
         assertTrue(script.body().contains("async function loadAllNodes()"));
         assertTrue(script.body().contains("enrollmentIds.has(backend.backendId)"));
+        assertTrue(script.body().contains("Comments preserved for every target"));
+        assertTrue(script.body().contains("Backend topology is truncated"));
+        assertTrue(script.body().contains("Server changed. Read this file"));
         assertTrue(script.body().contains("nextPage.addEventListener"));
         assertTrue(script.body().contains("result.configuration?.content != null"));
         assertTrue(script.body().contains("authenticationGeneration"));
@@ -81,6 +84,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("topologyComplete: !backendTopologyTruncated"));
         assertTrue(script.body().contains("option.value = backend.backendId"));
         assertTrue(script.body().contains("return allNodeItems.filter(node => isProxy(node)"));
+        assertTrue(script.body().contains("MAX_OPERATION_TARGETS = 100"));
+        assertTrue(script.body().contains("proxyMethodNetworkSignature(refreshedNetwork)"));
         assertTrue(web.body().contains("Easy vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
