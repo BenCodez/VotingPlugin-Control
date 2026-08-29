@@ -447,6 +447,30 @@ class ConfigurationOperationsTest {
                 ManagedConfiguration.FILE, null, List.of("other"), "Config.yml", null, null, Map.of()));
     }
 
+    @Test void voteSitesSyncAllowsOneBoundedSourceDocumentAndHidesItFromOperationViews() throws Exception {
+        String source = "VoteSites:\n" + "# owner comment\n".repeat(100);
+        ManagedConfiguration sync = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.VOTE_SITES_SYNC, Map.of("sourceContent", source));
+
+        assertEquals(ConfigurationOperations.VOTE_SITES_SYNC_CAPABILITY, sync.capability());
+        assertFalse(sync.publicView().options().containsKey("sourceContent"));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.VOTE_SITES_SYNC,
+                Map.of("sourceContent", "x".repeat(ManagedConfiguration.MAX_CONTENT + 1))));
+
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.VOTE_SITES_SYNC_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-a"), sync);
+        assertFalse(preview.configuration().options().containsKey("sourceContent"));
+        assertEquals(source, operations.claim("backend-a", session).configuration().options().get("sourceContent"));
+    }
+
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
