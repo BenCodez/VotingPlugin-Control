@@ -114,6 +114,7 @@ let allNodeItems = [];
 let nodeIndex = new Map();
 let enrollmentIds = new Set();
 let backendTopologyTruncated = false;
+let backendTopologyTruncatedNodeIds = new Set();
 let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
@@ -480,11 +481,16 @@ function renderTopology() {
 function renderMetrics() {
   const backendIds = new Set(allNodeItems.filter(isProxy).flatMap(node =>
     (Array.isArray(node.backends) ? node.backends : []).map(backend => backend.backendId)));
-  const unenrolledBackends = [...backendIds].filter(backendId => !enrollmentIds.has(backendId)).length;
+  const issueIds = new Set(allNodeItems.filter(node => !node.online).map(node => node.nodeId));
+  backendIds.forEach(backendId => { if (!enrollmentIds.has(backendId)) issueIds.add(backendId); });
+  allNodeItems.filter(node => isProxy(node) && node.online).forEach(proxy =>
+    (Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {
+      if (backend.presenceKnown && !backend.available) issueIds.add(backend.backendId);
+    }));
   text(metricNodes, allNodeItems.length);
   text(metricOnline, allNodeItems.filter(node => node.online).length);
   text(metricBackends, backendTopologyTruncated ? `${backendIds.size}+` : backendIds.size);
-  const issueCount = allNodeItems.filter(node => !node.online).length + unenrolledBackends;
+  const issueCount = issueIds.size;
   text(metricIssues, backendTopologyTruncated ? `${issueCount}+` : issueCount);
 }
 
@@ -620,7 +626,7 @@ function proxyMethodCandidates() {
     node.acceptedCapabilities.includes('config.proxy-method.v1'));
 }
 
-function proxyMethodNetworkFor(items, topologyTruncated, proxyId) {
+function proxyMethodNetworkFor(items, truncatedNodeIds, proxyId) {
   const index = new Map(items.map(node => [node.nodeId, node]));
   const proxy = index.get(proxyId);
   const proxyReady = Boolean(proxy?.online && proxy.acceptedCapabilities.includes('config.proxy-method.v1'));
@@ -628,14 +634,14 @@ function proxyMethodNetworkFor(items, topologyTruncated, proxyId) {
   const backends = reported.map(backend => index.get(backend.backendId)).filter(Boolean);
   const unavailable = reported.filter(backend => {
     const node = index.get(backend.backendId);
-    return !node || !node.online || !node.acceptedCapabilities.includes('config.proxy-method.v1');
+    return !node || !isBackend(node) || !node.online || !node.acceptedCapabilities.includes('config.proxy-method.v1');
   });
-  return {proxy, proxyReady, reported, backends, unavailable, topologyComplete: !topologyTruncated,
+  return {proxy, proxyReady, reported, backends, unavailable, topologyComplete: !truncatedNodeIds.has(proxyId),
     nodeIds: proxy ? [proxy.nodeId, ...backends.map(node => node.nodeId)] : []};
 }
 
 function proxyMethodNetwork() {
-  return proxyMethodNetworkFor(allNodeItems, backendTopologyTruncated, proxyMethodProxyId);
+  return proxyMethodNetworkFor(allNodeItems, backendTopologyTruncatedNodeIds, proxyMethodProxyId);
 }
 
 function proxyMethodNetworkSignature(network) {
@@ -706,9 +712,13 @@ function selectPrimaryServer(nodeId) {
 }
 
 function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 || proxyMethodWorkflowInFlight) {
-  const routingReady = authenticated && targets('config.proxy-routing.v1').length > 0 && !busy;
-  const fileReady = authenticated && targets('config.files.v1').length > 0 && !busy;
-  const quickReady = authenticated && targets('config.quick-setup.v1').length > 0 && !busy;
+  const primaryCapabilities = nodeCapabilities.get(selectedServerId) || [];
+  const routingReady = authenticated && primaryCapabilities.includes('config.proxy-routing.v1') &&
+    targets('config.proxy-routing.v1').length > 0 && !busy;
+  const fileReady = authenticated && primaryCapabilities.includes('config.files.v1') &&
+    targets('config.files.v1').length > 0 && !busy;
+  const quickReady = authenticated && primaryCapabilities.includes('config.quick-setup.v1') &&
+    targets('config.quick-setup.v1').length > 0 && !busy;
   const voteSitesReady = authenticated && voteSitesSourceId && selectedVoteSitesTargets().length > 0 && !busy;
   readConfiguration.disabled = !routingReady;
   previewConfiguration.disabled = !routingReady;
@@ -853,6 +863,7 @@ function discardAuthenticationState(reason) {
   allNodeItems = [];
   enrollmentIds.clear();
   backendTopologyTruncated = false;
+  backendTopologyTruncatedNodeIds = new Set();
   nodeIndex.clear();
   nodeCapabilities.clear();
   nodePlugins.clear();
@@ -978,11 +989,13 @@ async function loadEnrollments() {
 async function loadAllNodes() {
   const items = [];
   let truncated = false;
+  const truncatedNodeIds = new Set();
   for (let offset = 0; ; offset += PAGE_SIZE) {
     const page = await authorized(`/api/v1/nodes?offset=${offset}&limit=${PAGE_SIZE}`);
     items.push(...page.items);
     truncated ||= Boolean(page.backendItemsTruncated);
-    if (page.items.length < PAGE_SIZE) return {items, truncated};
+    (page.backendItemsTruncatedNodeIds || []).forEach(nodeId => truncatedNodeIds.add(nodeId));
+    if (page.items.length < PAGE_SIZE) return {items, truncated, truncatedNodeIds};
   }
 }
 
@@ -1000,6 +1013,7 @@ async function loadNodes() {
     visibleNodeItems = body.items;
     allNodeItems = registry.items;
     backendTopologyTruncated = registry.truncated;
+    backendTopologyTruncatedNodeIds = registry.truncatedNodeIds;
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
     const needsDefaultTargets = !selectedServerId || !nodeIndex.has(selectedServerId);
     const previousCapabilities = nodeCapabilities;
@@ -1460,7 +1474,7 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
     }, proxyMethodStatus);
     if (preview.state !== 'SUCCEEDED' || !preview.approvalToken) return;
     const refreshedRegistry = await loadAllNodes();
-    const refreshedNetwork = proxyMethodNetworkFor(refreshedRegistry.items, refreshedRegistry.truncated,
+    const refreshedNetwork = proxyMethodNetworkFor(refreshedRegistry.items, refreshedRegistry.truncatedNodeIds,
       proxyMethodProxyId);
     if (proxyMethodProxyId !== network.proxy.nodeId ||
         proxyMethodNetworkSignature(refreshedNetwork) !== proxyMethodNetworkSignature(network) ||

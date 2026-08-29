@@ -163,6 +163,7 @@ class ControlHttpServerTest {
         assertTrue(page.backendItemsTruncated());
         assertTrue(page.backendItemsReturned() <= ControlHttpServer.MAX_BACKENDS_PER_NODE_PAGE);
         assertEquals(100, page.items().size());
+        assertEquals(100, page.backendItemsTruncatedNodeIds().size());
         assertTrue(page.items().stream().allMatch(node -> node.backends().size() == 40));
     }
 
