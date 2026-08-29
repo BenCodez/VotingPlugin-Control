@@ -53,13 +53,65 @@ jobs:
         run: |
           cp "target/votingplugin-control-$RELEASE_VERSION-all.jar" votingplugin-control.jar
           sha256sum votingplugin-control.jar > votingplugin-control.jar.sha256
-      - name: Create verified GitHub release
+      - name: Publish verified GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$RELEASE_TAG"
-          votingplugin-control.jar votingplugin-control.jar.sha256
-          --repo "$GITHUB_REPOSITORY"
-          --target "$GITHUB_SHA"
-          --title "$RELEASE_TAG"
-          --generate-notes
+        run: |
+          draft_id=""
+          tag_created=false
+          cleanup() {
+            exit_code=$?
+            trap - ERR
+            set +e
+            if [[ -n "$draft_id" ]]; then
+              release_is_draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id" --jq '.draft' 2>/dev/null)"
+              if [[ "$release_is_draft" == "true" ]]; then
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id" >/dev/null
+              elif [[ "$release_is_draft" == "false" ]]; then
+                tag_created=false
+              fi
+            fi
+            if [[ "$tag_created" == "true" ]]; then
+              current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+                --jq '.object.sha' 2>/dev/null)"
+              if [[ "$current_sha" == "$GITHUB_SHA" ]]; then
+                gh api --method DELETE \
+                  "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" >/dev/null
+              fi
+            fi
+            exit "$exit_code"
+          }
+          trap cleanup ERR
+
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$RELEASE_TAG" \
+            -f sha="$GITHUB_SHA" >/dev/null
+          tag_created=true
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --title "$RELEASE_TAG" \
+            --generate-notes
+          draft_id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and .draft == true) | .id" | head -n 1)"
+          if [[ -z "$draft_id" ]]; then
+            echo "::error::Created draft release could not be identified"
+            false
+          fi
+
+          gh release upload "$RELEASE_TAG" \
+            votingplugin-control.jar votingplugin-control.jar.sha256 \
+            --repo "$GITHUB_REPOSITORY"
+          current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')"
+          if [[ "$current_sha" != "$GITHUB_SHA" ]]; then
+            echo "::error::Release tag changed after the verified build"
+            false
+          fi
+
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$draft_id" \
+            -F draft=false >/dev/null
+          tag_created=false
+          draft_id=""
+          trap - ERR
