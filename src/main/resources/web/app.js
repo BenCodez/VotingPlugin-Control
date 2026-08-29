@@ -471,6 +471,7 @@ function renderMetrics() {
   const backendIds = new Set(allNodeItems.filter(isProxy).flatMap(node =>
     (Array.isArray(node.backends) ? node.backends : []).map(backend => backend.backendId)));
   const issueIds = new Set(allNodeItems.filter(node => !node.online).map(node => node.nodeId));
+  backendIds.forEach(backendId => { if (!nodeIndex.has(backendId)) issueIds.add(backendId); });
   if (enrollmentsLoaded) {
     backendIds.forEach(backendId => { if (!enrollmentIds.has(backendId)) issueIds.add(backendId); });
   }
