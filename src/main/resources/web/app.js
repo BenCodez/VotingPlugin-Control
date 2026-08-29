@@ -96,6 +96,7 @@ let visibleNodeItems = [];
 let allNodeItems = [];
 let nodeIndex = new Map();
 let enrollmentIds = new Set();
+let enrollmentsLoaded = false;
 let backendTopologyTruncated = false;
 let approvedPreview = null;
 let approvedFilePreview = null;
@@ -215,7 +216,9 @@ function backendCard(backend) {
   const details = document.createElement('div');
   details.className = 'backend-state';
   const registered = nodeIndex.get(backend.backendId);
-  details.append(text(document.createElement('span'), enrollmentIds.has(backend.backendId)
+  details.append(text(document.createElement('span'), !enrollmentsLoaded
+    ? 'Control enrollment unavailable'
+    : enrollmentIds.has(backend.backendId)
     ? `Enrolled in Control · ${registered ? (registered.online ? 'Control connected' : 'Control disconnected') : 'not registered'}`
     : 'Not enrolled in Control'));
   if (backend.presenceKnown) {
@@ -395,7 +398,9 @@ function topologyLink(backend) {
   const link = document.createElement('span');
   link.className = `topology-link ${registered?.online ? 'online' : 'warning'}`;
   link.append(text(document.createElement('strong'), backend.displayName));
-  link.append(text(document.createElement('small'), enrollmentIds.has(backend.backendId)
+  link.append(text(document.createElement('small'), !enrollmentsLoaded
+    ? 'Control enrollment unavailable'
+    : enrollmentIds.has(backend.backendId)
     ? `Enrolled · Control ${registered ? (registered.online ? 'connected' : 'disconnected') : 'not registered'}`
     : 'Not enrolled in Control'));
   if (backend.presenceKnown) {
@@ -446,7 +451,9 @@ function renderMetrics() {
   const backendIds = new Set(allNodeItems.filter(isProxy).flatMap(node =>
     (Array.isArray(node.backends) ? node.backends : []).map(backend => backend.backendId)));
   const issueIds = new Set(allNodeItems.filter(node => !node.online).map(node => node.nodeId));
-  backendIds.forEach(backendId => { if (!enrollmentIds.has(backendId)) issueIds.add(backendId); });
+  if (enrollmentsLoaded) {
+    backendIds.forEach(backendId => { if (!enrollmentIds.has(backendId)) issueIds.add(backendId); });
+  }
   allNodeItems.filter(node => isProxy(node) && node.online).forEach(proxy =>
     (Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {
       if (backend.presenceKnown && !backend.available) issueIds.add(backend.backendId);
@@ -625,6 +632,7 @@ function discardAuthenticationState(reason) {
   visibleNodeItems = [];
   allNodeItems = [];
   enrollmentIds.clear();
+  enrollmentsLoaded = false;
   backendTopologyTruncated = false;
   nodeIndex.clear();
   nodeCapabilities.clear();
@@ -702,6 +710,7 @@ async function loadEnrollments() {
   try {
     const body = await authorized('/api/v1/enrollments');
     enrollmentIds = new Set(Array.isArray(body.nodeIds) ? body.nodeIds : []);
+    enrollmentsLoaded = true;
     if (allNodeItems.length) renderNodeViews();
     enrollmentList.replaceChildren();
     if (!Array.isArray(body.nodeIds) || body.nodeIds.length === 0) {
@@ -735,6 +744,8 @@ async function loadEnrollments() {
       enrollmentList.append(item);
     });
   } catch (error) {
+    enrollmentsLoaded = false;
+    if (allNodeItems.length) renderNodeViews();
     text(enrollmentMessage, error.message || 'Enrollments could not be loaded.');
   } finally {
     enrollmentInFlight = false;
