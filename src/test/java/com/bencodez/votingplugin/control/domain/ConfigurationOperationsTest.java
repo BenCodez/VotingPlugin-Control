@@ -469,7 +469,12 @@ class ConfigurationOperationsTest {
 
         ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-a"), sync);
         assertFalse(preview.configuration().options().containsKey("sourceContent"));
-        assertEquals(source, operations.claim("backend-a", session).configuration().options().get("sourceContent"));
+        ConfigurationTask syncTask = operations.claim("backend-a", session);
+        assertEquals(source, syncTask.configuration().options().get("sourceContent"));
+        ConfigurationOperations.OperationView completed = operations.complete(preview.operationId(), "backend-a",
+                new ConfigurationTaskResult(session, true, "OK", "valid", "e".repeat(64), sync,
+                        List.of("changed VoteSites.Example"), false, false, syncTask.attemptId()));
+        assertFalse(completed.results().get("backend-a").configuration().options().containsKey("sourceContent"));
     }
 
     @Test void communicationTestUsesItsOwnReadOnlyCapability() throws Exception {
