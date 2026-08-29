@@ -479,15 +479,12 @@ public final class ControlHttpServer implements AutoCloseable {
     private void handleWebSetup(HttpExchange exchange, SetupRequest request, String client) {
         char[] password = request.password() == null ? null : request.password().toCharArray();
         try {
-            if (!credentials.completeWebSetup(request.setupCode(), password)) {
+            String revision = credentials.completeWebSetup(request.setupCode(), password);
+            if (revision == null) {
                 passwordFailureLimiter.recordFailure(client);
                 authenticationFailed();
             }
             passwordFailureLimiter.clear(client);
-            String revision = credentials.webPasswordRevision();
-            if (revision == null) {
-                throw new IOException("WebUI password verifier was not created");
-            }
             webSessions.remove(cookie(exchange, SESSION_COOKIE));
             WebSessionStore.Session session = webSessions.create(revision);
             setSessionCookie(exchange, session.id(), false);
