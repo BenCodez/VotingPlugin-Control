@@ -31,6 +31,7 @@ import javax.crypto.spec.PBEKeySpec;
 /** Persistent token verifiers and a salted PBKDF2 WebUI password verifier. */
 public final class CredentialStore {
     private static final Pattern NODE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
+    private static final Pattern SHA256_VERIFIER = Pattern.compile("[0-9a-f]{64}");
     private static final int MAX_ENROLLMENTS = 10_000;
     private static final int MAX_STORE_BYTES = 2 * 1024 * 1024;
     private static final int WEB_PASSWORD_ITERATIONS = 600_000;
@@ -72,6 +73,24 @@ public final class CredentialStore {
             data.nodeHashes.put(nodeId, hashHex(token));
         });
         return token;
+    }
+
+    /**
+     * Installs a caller-generated SHA-256 node verifier without transferring the
+     * raw 256-bit credential. Used by a supervising VotingPlugin to enroll
+     * authenticated backend-server identities.
+     */
+    public void installNodeVerifier(String nodeId, String verifier) throws IOException {
+        validateNodeId(nodeId);
+        if (verifier == null || !SHA256_VERIFIER.matcher(verifier).matches()) {
+            throw new IllegalArgumentException("verifier must be a lowercase SHA-256 digest");
+        }
+        mutate(data -> {
+            if (!data.nodeHashes.containsKey(nodeId) && data.nodeHashes.size() >= MAX_ENROLLMENTS) {
+                throw new IllegalStateException("Maximum enrollment count reached");
+            }
+            data.nodeHashes.put(nodeId, verifier);
+        });
     }
 
     public void revokeNode(String nodeId) throws IOException {
