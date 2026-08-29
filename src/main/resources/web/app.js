@@ -221,7 +221,7 @@ function managedCapabilities(node) {
 }
 
 function proxyReportsFor(backendId) {
-  return allNodeItems.filter(isProxy).filter(proxy =>
+  return allNodeItems.filter(node => isProxy(node) && node.online).filter(proxy =>
     (Array.isArray(proxy.backends) ? proxy.backends : []).some(backend => backend.backendId === backendId));
 }
 
