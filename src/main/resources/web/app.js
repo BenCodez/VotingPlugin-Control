@@ -305,8 +305,9 @@ function nodeCard(node) {
   checkbox.type = 'checkbox';
   const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.quick-setup.v1']
     .some(capability => node.acceptedCapabilities.includes(capability));
-  checkbox.disabled = !node.online || !controllable;
-  checkbox.checked = selectedNodes.has(node.nodeId) && !checkbox.disabled;
+  checkbox.disabled = !node.online || !controllable || node.nodeId === selectedServerId;
+  checkbox.checked = selectedNodes.has(node.nodeId);
+  if (node.nodeId === selectedServerId) selector.title = 'The primary server remains included in configuration changes.';
   checkbox.addEventListener('change', () => {
     if (checkbox.checked && selectedNodes.size >= MAX_CONFIGURATION_TARGETS) {
       checkbox.checked = false;
