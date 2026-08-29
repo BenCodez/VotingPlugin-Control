@@ -8,8 +8,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.bencodez.votingplugin.control.protocol.ConfigurationTask;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
+import com.bencodez.votingplugin.control.protocol.BackendServerIdentity;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
+import com.bencodez.votingplugin.control.protocol.PresenceSnapshot;
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
 import com.bencodez.votingplugin.control.protocol.Heartbeat;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -518,6 +520,8 @@ class ConfigurationOperationsTest {
         UUID backendSession = UUID.randomUUID();
         registry.register(new NodeRegistration("proxy-a", proxySession, "Proxy A", "VELOCITY", "test", 1,
                 Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+        registry.replacePresence("proxy-a", new PresenceSnapshot(proxySession, 1, 1,
+                List.of(new BackendServerIdentity("lobby", "Lobby", true, true, 0))));
         registry.register(new NodeRegistration("lobby", backendSession, "Lobby", "BUKKIT", "test", 1,
                 Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
         ConfigurationOperations operations = new ConfigurationOperations(registry,

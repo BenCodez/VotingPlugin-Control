@@ -69,6 +69,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     public synchronized OperationView createPreview(List<String> nodeIds, ManagedConfiguration configuration) {
         if (configuration == null) throw invalid("configuration is required");
         configuration.validateProposal();
+        validateProxyMethodTargets(nodeIds, configuration);
         byte[] token = new byte[32];
         random.nextBytes(token);
         return create("PREVIEW", validateTargets(nodeIds, configuration.capability()), configuration,
@@ -87,6 +88,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                 approvalToken.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
             throw new ValidationException("APPROVAL_REQUIRED", "A valid unused preview approval is required", List.of());
         }
+        validateProxyMethodTargets(new ArrayList<>(preview.states.keySet()), preview.configuration);
         Map<String, String> revisions = new LinkedHashMap<>();
         preview.results.forEach((node, result) -> revisions.put(node, result.revision()));
         StoredOperation apply = store("APPLY", new ArrayList<>(preview.states.keySet()), preview.configuration,
@@ -162,6 +164,19 @@ public final class ConfigurationOperations implements AutoCloseable {
             NodeStatus target = registry.find(id);
             return target != null && "BUKKIT".equalsIgnoreCase(target.platform());
         }).toList();
+        for (String backendId : backends) {
+            if ("COMPLETE".equals(operation.states.get(backendId))) continue;
+            NodeStatus backend = registry.find(backendId);
+            if (backend != null && backend.online()
+                    && backend.acceptedCapabilities().contains(operation.configuration.capability())) continue;
+            audit.append("TASK_CANCELLED", operation.id, backendId, "CAPABILITY_LOST");
+            operation.results.put(backendId, boundedResult(operation, new ConfigurationTaskResult(sessionId(backend), false,
+                    "CAPABILITY_LOST", "Backend became unavailable before proxy method apply", null,
+                    (ManagedConfiguration) null, List.of(), false, false, null)));
+            operation.states.put(backendId, "COMPLETE");
+            operation.leasedAt.remove(backendId);
+            operation.attemptIds.remove(backendId);
+        }
         if (backends.stream().anyMatch(id -> !"COMPLETE".equals(operation.states.get(id)))) return true;
         if (backends.stream().noneMatch(id -> operation.results.get(id) == null
                 || !operation.results.get(id).success())) return false;
@@ -173,6 +188,22 @@ public final class ConfigurationOperations implements AutoCloseable {
         operation.leasedAt.remove(node.nodeId());
         operation.attemptIds.remove(node.nodeId());
         return true;
+    }
+
+    private void validateProxyMethodTargets(List<String> nodeIds, ManagedConfiguration configuration) {
+        if (!ManagedConfiguration.QUICK_SETUP.equals(configuration.domain())
+                || !ManagedConfiguration.PROXY_METHOD.equals(configuration.preset())) return;
+        List<NodeStatus> proxies = nodeIds.stream().map(registry::find).filter(Objects::nonNull)
+                .filter(node -> !"BUKKIT".equalsIgnoreCase(node.platform())).toList();
+        if (proxies.size() != 1 || proxies.get(0).backends().isEmpty()) {
+            throw invalid("proxy method requires one proxy and its reported backends");
+        }
+        java.util.Set<String> expected = new java.util.LinkedHashSet<>();
+        expected.add(proxies.get(0).nodeId());
+        proxies.get(0).backends().forEach(backend -> expected.add(backend.backendId()));
+        if (!expected.equals(new java.util.LinkedHashSet<>(nodeIds))) {
+            throw invalid("proxy method targets must match the complete reported backend network");
+        }
     }
 
     public synchronized OperationView complete(UUID operationId, String nodeId, ConfigurationTaskResult result) {
