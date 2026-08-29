@@ -138,32 +138,36 @@ public final class CredentialStore {
         }
     }
 
-    /** Atomically consumes the first-run setup code and installs the WebUI password. */
-    public boolean completeWebSetup(String setupCode, char[] password) throws IOException {
+    /**
+     * Atomically consumes the first-run setup code and installs the WebUI password.
+     * Returns the exact verifier revision installed, or {@code null} when the code
+     * was invalid or setup had already completed.
+     */
+    public String completeWebSetup(String setupCode, char[] password) throws IOException {
         String boundedCode = setupCode != null && setupCode.length() <= MAX_SETUP_CODE_BYTES ? setupCode : null;
         StoreData current = read();
         if (passwordRevision(current) != null || !constantTimeMatches(current.webSetupHash, boundedCode)) {
-            return false;
+            return null;
         }
 
         validateWebPassword(password);
         byte[] salt = new byte[16];
         random.nextBytes(salt);
         byte[] verifier = derivePassword(password, salt, WEB_PASSWORD_ITERATIONS);
-        boolean[] completed = {false};
+        String[] installedRevision = {null};
         mutate(data -> {
             if (passwordRevision(data) == null && constantTimeMatches(data.webSetupHash, boundedCode)) {
                 data.webPasswordSalt = Base64.getEncoder().encodeToString(salt);
                 data.webPasswordHash = Base64.getEncoder().encodeToString(verifier);
                 data.webPasswordIterations = WEB_PASSWORD_ITERATIONS;
                 data.webSetupHash = null;
-                completed[0] = true;
+                installedRevision[0] = passwordRevision(data);
             }
         });
-        if (completed[0]) {
+        if (installedRevision[0] != null) {
             Files.deleteIfExists(setupCodeFile());
         }
-        return completed[0];
+        return installedRevision[0];
     }
 
     public java.util.List<String> enrolledNodeIds() throws IOException {
