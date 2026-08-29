@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -144,6 +146,10 @@ jobs:
           fi
           if [[ "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]]; then
             echo "::error::Unable to check out release commit $RELEASE_SHA"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
+            echo "::error::Release commit is not contained in the main branch"
             exit 1
           fi
           echo "RELEASE_OUTPUT_TIMESTAMP=$(git show -s --format=%cI "$RELEASE_SHA")" >> "$GITHUB_ENV"
