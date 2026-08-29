@@ -37,9 +37,26 @@ jobs:
           fi
 
           release_tag="v$RELEASE_VERSION"
-          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::Release $release_tag already exists"
-            exit 1
+          releases_json="$(
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100"
+          )"
+          release_count="$(
+            jq -r --arg tag "$release_tag" \
+              '[.[][] | select(.tag_name == $tag)] | length' <<< "$releases_json"
+          )"
+          release_draft_id=""
+          if [[ "$release_count" != "0" ]]; then
+            release_draft_id="$(
+              jq -r --arg tag "$release_tag" \
+                '[.[][] | select(.tag_name == $tag and .draft == true and ((.body // "") | test("<!-- workflow-run:[0-9]+:[0-9]+ -->")))] | first | .id // empty' \
+                <<< "$releases_json"
+            )"
+            if [[ "$release_count" != "1" || -z "$release_draft_id" ]]; then
+              echo "::error::Release $release_tag already exists and is not a recoverable workflow draft"
+              exit 1
+            fi
+            echo "::notice::Resuming workflow-owned draft release $release_draft_id"
           fi
 
           release_sha="$GITHUB_SHA"
@@ -57,6 +74,7 @@ jobs:
             echo "RELEASE_VERSION=$RELEASE_VERSION"
             echo "RELEASE_TAG=$release_tag"
             echo "RELEASE_SHA=$release_sha"
+            echo "RELEASE_DRAFT_ID=$release_draft_id"
           } >> "$GITHUB_ENV"
       - name: Check out release source
         run: |
@@ -80,7 +98,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          draft_id=""
+          draft_id="$RELEASE_DRAFT_ID"
           release_marker="<!-- workflow-run:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT -->"
 
           cleanup() {
@@ -137,22 +155,33 @@ jobs:
             fi
           fi
 
-          draft_id="$(
-            gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
-              -f tag_name="$RELEASE_TAG" \
-              -f name="$RELEASE_TAG" \
-              -f body="$release_marker" \
-              -F draft=true \
-              -F generate_release_notes=true \
-              --jq '.id'
-          )"
-          if [[ -z "$draft_id" ]]; then
-            echo "::error::Created draft release did not return an ID"
-            false
+          if [[ -n "$draft_id" ]]; then
+            release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id")"
+            release_is_draft="$(jq -r '.draft' <<< "$release_json")"
+            release_tag_name="$(jq -r '.tag_name' <<< "$release_json")"
+            if [[ "$release_is_draft" != "true" || "$release_tag_name" != "$RELEASE_TAG" ]]; then
+              echo "::error::Recoverable draft changed while the release was building"
+              false
+            fi
+          else
+            draft_id="$(
+              gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+                -f tag_name="$RELEASE_TAG" \
+                -f name="$RELEASE_TAG" \
+                -f body="$release_marker" \
+                -F draft=true \
+                -F generate_release_notes=true \
+                --jq '.id'
+            )"
+            if [[ -z "$draft_id" ]]; then
+              echo "::error::Created draft release did not return an ID"
+              false
+            fi
           fi
 
           gh release upload "$RELEASE_TAG" \
             votingplugin-control.jar votingplugin-control.jar.sha256 \
+            --clobber \
             --repo "$GITHUB_REPOSITORY"
           tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
           current_type="$(jq -r '.object.type' <<< "$tag_json")"
