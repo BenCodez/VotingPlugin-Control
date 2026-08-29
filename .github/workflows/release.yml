@@ -35,6 +35,11 @@ jobs:
             gh api --header "X-GitHub-Api-Version: 2026-03-10" "$@"
           }
 
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Releases must be dispatched from the main branch"
+            exit 1
+          fi
+
           if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
             echo "::error::Release version must be a valid version without the v prefix"
             exit 1
@@ -141,10 +146,23 @@ jobs:
             echo "::error::Unable to check out release commit $RELEASE_SHA"
             exit 1
           fi
+          echo "RELEASE_OUTPUT_TIMESTAMP=$(git show -s --format=%cI "$RELEASE_SHA")" >> "$GITHUB_ENV"
       - name: Set release version
-        run: mvn -B versions:set -DnewVersion="$RELEASE_VERSION" -DgenerateBackupPoms=false
-      - name: Build and verify
-        run: mvn -B clean verify
+        run: >-
+          mvn -B versions:set
+          -DnewVersion="$RELEASE_VERSION"
+          -DgenerateBackupPoms=false
+          -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
+      - name: Build and verify reproducibility
+        run: |
+          mvn -B clean verify -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
+          first_digest="$(sha256sum "target/votingplugin-control-$RELEASE_VERSION-all.jar" | cut -d ' ' -f 1)"
+          mvn -B clean verify -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
+          second_digest="$(sha256sum "target/votingplugin-control-$RELEASE_VERSION-all.jar" | cut -d ' ' -f 1)"
+          if [[ "$first_digest" != "$second_digest" ]]; then
+            echo "::error::Release JAR is not byte-reproducible"
+            exit 1
+          fi
       - name: Stage immutable release assets
         run: |
           cp "target/votingplugin-control-$RELEASE_VERSION-all.jar" votingplugin-control.jar
