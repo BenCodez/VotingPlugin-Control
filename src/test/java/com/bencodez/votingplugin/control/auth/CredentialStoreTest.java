@@ -76,6 +76,22 @@ class CredentialStoreTest {
         assertNull(store.ensureWebSetupCode());
     }
 
+    @Test void committedSetupSurvivesStaleCodeCleanupFailure() throws Exception {
+        CredentialStore store = new CredentialStore(directory);
+        Path setupFile = store.ensureWebSetupCode();
+        String code = Files.readString(setupFile).trim();
+        Files.delete(setupFile);
+        Files.createDirectory(setupFile);
+        Files.writeString(setupFile.resolve("locked"), "simulated open file");
+
+        String installedRevision = store.completeWebSetup(code, "a-secure-browser-password".toCharArray());
+
+        assertNotNull(installedRevision);
+        assertEquals(installedRevision, store.webPasswordRevision());
+        assertTrue(store.verifyWebPassword("a-secure-browser-password"));
+        assertNull(store.ensureWebSetupCode());
+    }
+
     @Test void enrolledNodeIdsAreStableAndSorted() throws Exception {
         CredentialStore store = new CredentialStore(directory);
         store.rotateNode("proxy-z");
