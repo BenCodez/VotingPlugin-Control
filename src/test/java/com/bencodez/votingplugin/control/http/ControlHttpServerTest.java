@@ -74,6 +74,8 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("Node enrollment"));
         assertTrue(script.body().contains("setupForm.addEventListener"));
         assertTrue(script.body().contains("loadEnrollments"));
+        assertTrue(script.body().contains("enrollmentMutationInFlight"));
+        assertTrue(script.body().contains("enrollmentSubmit.disabled = true"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
