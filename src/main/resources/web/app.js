@@ -101,6 +101,7 @@ const enrollmentList = document.querySelector('#enrollment-list');
 const enrollmentMessage = document.querySelector('#enrollment-message');
 const refreshEnrollments = document.querySelector('#refresh-enrollments');
 const PAGE_SIZE = 100;
+const MAX_CONFIGURATION_TARGETS = 100;
 const MAX_SYNC_TARGETS = 100;
 const MAX_OPERATION_TARGETS = 100;
 let authenticated = false;
@@ -306,6 +307,11 @@ function nodeCard(node) {
   checkbox.disabled = !node.online || !controllable;
   checkbox.checked = selectedNodes.has(node.nodeId) && !checkbox.disabled;
   checkbox.addEventListener('change', () => {
+    if (checkbox.checked && selectedNodes.size >= MAX_CONFIGURATION_TARGETS) {
+      checkbox.checked = false;
+      text(operationStatus, `At most ${MAX_CONFIGURATION_TARGETS} servers can be configured at once.`);
+      return;
+    }
     if (checkbox.checked) selectedNodes.add(node.nodeId); else selectedNodes.delete(node.nodeId);
     approvedPreview = null;
     approvedFilePreview = null;
@@ -373,7 +379,10 @@ function renderServerPicker() {
     option.value = node.nodeId;
     return option;
   }));
-  if (!nodeIndex.has(previousValue)) selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
+  if (!nodeIndex.has(previousValue)) {
+    selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
+    if (previousValue) resetServerConfigurationForms('The selected server is no longer available. Read the replacement server before previewing changes.');
+  }
   serverPicker.value = selectedServerId;
 }
 
@@ -612,13 +621,14 @@ function proxyMethodCandidates() {
 function proxyMethodNetworkFor(items, topologyTruncated, proxyId) {
   const index = new Map(items.map(node => [node.nodeId, node]));
   const proxy = index.get(proxyId);
+  const proxyReady = Boolean(proxy?.online && proxy.acceptedCapabilities.includes('config.proxy-method.v1'));
   const reported = Array.isArray(proxy?.backends) ? proxy.backends : [];
   const backends = reported.map(backend => index.get(backend.backendId)).filter(Boolean);
   const unavailable = reported.filter(backend => {
     const node = index.get(backend.backendId);
     return !node || !node.online || !node.acceptedCapabilities.includes('config.proxy-method.v1');
   });
-  return {proxy, reported, backends, unavailable, topologyComplete: !topologyTruncated,
+  return {proxy, proxyReady, reported, backends, unavailable, topologyComplete: !topologyTruncated,
     nodeIds: proxy ? [proxy.nodeId, ...backends.map(node => node.nodeId)] : []};
 }
 
@@ -627,7 +637,7 @@ function proxyMethodNetwork() {
 }
 
 function proxyMethodNetworkSignature(network) {
-  return JSON.stringify({topologyComplete: network.topologyComplete, nodeIds: [...network.nodeIds].sort(),
+  return JSON.stringify({proxyReady: network.proxyReady, topologyComplete: network.topologyComplete, nodeIds: [...network.nodeIds].sort(),
     unavailable: network.unavailable.map(backend => backend.backendId).sort()});
 }
 
@@ -645,9 +655,9 @@ function renderProxyMethod() {
   }));
   proxyMethodProxy.value = proxyMethodProxyId;
   const network = proxyMethodNetwork();
-  const ready = Boolean(network.proxy) && network.topologyComplete && network.reported.length > 0 &&
+  const ready = network.proxyReady && network.topologyComplete && network.reported.length > 0 &&
     network.nodeIds.length <= MAX_OPERATION_TARGETS && network.unavailable.length === 0;
-  const description = !network.proxy ? 'Waiting for a capable proxy'
+  const description = !network.proxyReady ? 'Waiting for a connected, capable proxy'
     : !network.topologyComplete ? 'Backend topology is truncated; switching disabled'
     : network.nodeIds.length > MAX_OPERATION_TARGETS ? `Network exceeds the ${MAX_OPERATION_TARGETS}-node operation limit`
     : network.reported.length === 0 ? 'No backends reported'
@@ -673,18 +683,22 @@ function renderNodeViews() {
   renderProxyMethod();
 }
 
+function resetServerConfigurationForms(status) {
+  configurationForm.reset();
+  configurationContent.value = '';
+  text(operationStatus, status);
+  text(fileOperationStatus, status);
+  updateEditorPosition();
+  clearApprovals();
+}
+
 function selectPrimaryServer(nodeId) {
   if (nodeId && !nodeIndex.has(nodeId)) return;
   selectedServerId = nodeId;
   serverPicker.value = nodeId;
   selectedNodes.clear();
   if (nodeId) selectedNodes.add(nodeId);
-  configurationForm.reset();
-  configurationContent.value = '';
-  text(operationStatus, 'Server changed. Read this server before previewing changes.');
-  text(fileOperationStatus, 'Server changed. Read this file before previewing changes.');
-  updateEditorPosition();
-  clearApprovals();
+  resetServerConfigurationForms('Server changed. Read this server before previewing changes.');
   updatePluginSuggestions();
   renderNodeViews();
 }
@@ -706,7 +720,7 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) 
   applyVoteSitesSync.disabled = !voteSitesReady || !approvedVoteSitesPreview;
   runTransportTest.disabled = !authenticated || !transportTestProxyId || !transportTestBackendId || busy;
   const methodNetwork = proxyMethodNetwork();
-  const methodReady = authenticated && Boolean(methodNetwork.proxy) && methodNetwork.topologyComplete && methodNetwork.reported.length > 0 &&
+  const methodReady = authenticated && methodNetwork.proxyReady && methodNetwork.topologyComplete && methodNetwork.reported.length > 0 &&
     methodNetwork.nodeIds.length <= MAX_OPERATION_TARGETS && methodNetwork.unavailable.length === 0 && !busy;
   proxyMethodButtons.forEach(button => { button.disabled = !methodReady; });
 }
@@ -1433,7 +1447,7 @@ proxyMethodProxy.addEventListener('change', () => {
 proxyMethodButtons.forEach(button => button.addEventListener('click', async () => {
   const method = button.dataset.proxyMethod;
   const network = proxyMethodNetwork();
-  if (!network.proxy || !network.topologyComplete || network.reported.length === 0 ||
+  if (!network.proxyReady || !network.topologyComplete || network.reported.length === 0 ||
       network.nodeIds.length > MAX_OPERATION_TARGETS || network.unavailable.length > 0) return;
   try {
     const preview = await startConfigurationOperation('/api/v1/configuration/preview', {
