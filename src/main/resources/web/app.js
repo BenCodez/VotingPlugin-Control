@@ -13,6 +13,24 @@ const passwordInput = document.querySelector('#password');
 const loginButton = form.querySelector('button[type="submit"]');
 const logout = document.querySelector('#logout');
 const message = document.querySelector('#message');
+const welcome = document.querySelector('#welcome');
+const appShell = document.querySelector('#app-shell');
+const serverPickerLabel = document.querySelector('#server-picker-label');
+const serverPicker = document.querySelector('#server-picker');
+const tabButtons = [...document.querySelectorAll('[data-tab]')];
+const tabPanels = [...document.querySelectorAll('[data-panel]')];
+const configViewButtons = [...document.querySelectorAll('[data-config-view]')];
+const configViewPanels = [...document.querySelectorAll('[data-config-panel]')];
+const metricNodes = document.querySelector('#metric-nodes');
+const metricOnline = document.querySelector('#metric-online');
+const metricBackends = document.querySelector('#metric-backends');
+const metricIssues = document.querySelector('#metric-issues');
+const selectedServerName = document.querySelector('#selected-server-name');
+const selectedServerState = document.querySelector('#selected-server-state');
+const selectedServerSummary = document.querySelector('#selected-server-summary');
+const selectedServerCapabilities = document.querySelector('#selected-server-capabilities');
+const configurationContext = document.querySelector('#configuration-context');
+const topology = document.querySelector('#topology');
 const nodes = document.querySelector('#nodes');
 const refresh = document.querySelector('#refresh');
 const previousPage = document.querySelector('#previous-page');
@@ -27,6 +45,7 @@ const operationStatus = document.querySelector('#operation-status');
 const configurationForm = document.querySelector('#configuration-form');
 const configurationFile = document.querySelector('#configuration-file');
 const configurationContent = document.querySelector('#configuration-content');
+const editorPosition = document.querySelector('#editor-position');
 const readFileConfiguration = document.querySelector('#read-file-configuration');
 const previewFileConfiguration = document.querySelector('#preview-file-configuration');
 const applyFileConfiguration = document.querySelector('#apply-file-configuration');
@@ -70,6 +89,9 @@ let authenticated = false;
 let csrfToken = '';
 let pageOffset = 0;
 let selectedNodes = new Set();
+let selectedServerId = '';
+let visibleNodeItems = [];
+let nodeIndex = new Map();
 let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
@@ -134,24 +156,108 @@ function applyAuthenticatedSession(body) {
   configurationContent.value = '';
   inputGeneration++;
   logout.hidden = false;
+  authCard.hidden = true;
+  welcome.hidden = true;
+  appShell.hidden = false;
+  serverPickerLabel.hidden = false;
   enrollmentCard.hidden = false;
   pageOffset = 0;
+  setActiveTab(tabFromHash());
+}
+
+function isProxy(node) {
+  return ['VELOCITY', 'BUNGEECORD'].includes(String(node.platform).toUpperCase()) ||
+    node.acceptedCapabilities.includes('config.proxy-routing.v1');
+}
+
+function isBackend(node) {
+  return !isProxy(node);
+}
+
+function roleLabel(node) {
+  return isProxy(node) ? 'Proxy' : 'Backend';
+}
+
+function platformLabel(platform) {
+  const normalized = String(platform || '').toUpperCase();
+  if (normalized === 'BUKKIT') return 'Bukkit';
+  if (normalized === 'BUNGEECORD') return 'BungeeCord';
+  if (normalized === 'VELOCITY') return 'Velocity';
+  return platform || 'Unspecified platform';
+}
+
+function friendlyCapability(capability) {
+  return ({
+    'config.files.v1': 'Full configuration',
+    'config.quick-setup.v1': 'Quick Setup',
+    'config.proxy-routing.v1': 'Proxy routing'
+  })[capability];
+}
+
+function managedCapabilities(node) {
+  return node.acceptedCapabilities.map(friendlyCapability).filter(Boolean);
+}
+
+function proxyReportsFor(backendId) {
+  return visibleNodeItems.filter(isProxy).filter(proxy =>
+    (Array.isArray(proxy.backends) ? proxy.backends : []).some(backend => backend.backendId === backendId));
 }
 
 function backendCard(backend) {
   const item = document.createElement('li');
-  const state = backend.presenceKnown ? (backend.available ? 'online' : 'offline') : 'unknown';
   const title = text(document.createElement('strong'), backend.displayName);
-  const details = text(document.createElement('span'),
-    `${state} · ${backend.presenceKnown ? backend.playerCount : '–'} players · ${backend.backendId}`);
+  const details = document.createElement('div');
+  details.className = 'backend-state';
+  const registered = nodeIndex.get(backend.backendId);
+  details.append(text(document.createElement('span'), registered
+    ? `Enrolled in Control · ${registered.online ? 'Control connected' : 'Control disconnected'}`
+    : 'Not enrolled in Control'));
+  if (backend.presenceKnown) {
+    details.append(text(document.createElement('span'), backend.available
+      ? `Minecraft reachable · ${backend.playerCount} ${backend.playerCount === 1 ? 'player' : 'players'}`
+      : 'Minecraft unavailable'));
+  } else {
+    details.append(text(document.createElement('span'), 'Presence not available'));
+  }
+  details.append(text(document.createElement('span'), backend.backendId));
   item.append(title, details);
   return item;
 }
 
 function nodeCard(node) {
   const article = document.createElement('article');
-  article.className = 'node';
+  article.className = `node${selectedServerId === node.nodeId ? ' selected' : ''}`;
+  article.dataset.nodeId = node.nodeId;
+  const header = document.createElement('div');
+  header.className = 'node-header';
+  const identity = document.createElement('div');
   const title = text(document.createElement('h3'), node.displayName);
+  identity.append(title, text(document.createElement('span'), node.nodeId));
+  identity.lastElementChild.className = 'node-id';
+  const state = text(document.createElement('span'), node.online ? 'Control connected' : 'Control disconnected');
+  state.className = `pill ${node.online ? 'online' : 'offline'}`;
+  header.append(identity, state);
+
+  const meta = document.createElement('div');
+  meta.className = 'node-meta';
+  [roleLabel(node), platformLabel(node.platform), `VotingPlugin ${node.pluginVersion}`,
+    ...managedCapabilities(node)].forEach(value => {
+    const pill = text(document.createElement('span'), value);
+    pill.className = 'pill neutral';
+    meta.append(pill);
+  });
+
+  const plugins = Array.isArray(node.detectedPlugins) ? node.detectedPlugins : [];
+  let detail;
+  if (isBackend(node)) {
+    detail = text(document.createElement('p'), plugins.length
+      ? `Detected plugins: ${plugins.join(', ')}` : 'Plugin inventory is not available for this backend.');
+  } else {
+    const backends = Array.isArray(node.backends) ? node.backends : [];
+    detail = text(document.createElement('p'), `${backends.length} configured ${backends.length === 1 ? 'backend' : 'backends'} reported.`);
+  }
+  detail.className = 'node-detail';
+
   const selector = document.createElement('label');
   selector.className = 'node-select';
   const checkbox = document.createElement('input');
@@ -169,21 +275,177 @@ function nodeCard(node) {
     updatePluginSuggestions();
     updateConfigurationButtons();
   });
-  selector.append(checkbox, title);
-  const meta = text(document.createElement('p'),
-    `${node.platform} · VotingPlugin ${node.pluginVersion} · ${node.online ? 'online' : 'offline'} · ${node.acceptedCapabilities.filter(value => value.startsWith('config.')).join(', ') || 'discovery only'}`);
-  const plugins = Array.isArray(node.detectedPlugins) ? node.detectedPlugins : [];
-  const pluginMeta = text(document.createElement('p'), plugins.length
-    ? `Detected plugins: ${plugins.join(', ')}` : 'No Bukkit plugin inventory reported.');
+  selector.append(checkbox, document.createTextNode('Include in configuration changes'));
+
   const list = document.createElement('ul');
-  const backends = Array.isArray(node.backends) ? node.backends : [];
-  if (backends.length === 0) {
-    list.append(text(document.createElement('li'), 'No backends reported.'));
+  list.className = 'node-backends';
+  if (isProxy(node)) {
+    const backends = Array.isArray(node.backends) ? node.backends : [];
+    if (backends.length === 0) {
+      list.append(text(document.createElement('li'), 'No configured backends reported by this proxy.'));
+    } else {
+      backends.forEach(backend => list.append(backendCard(backend)));
+    }
   } else {
-    backends.forEach(backend => list.append(backendCard(backend)));
+    const proxies = proxyReportsFor(node.nodeId);
+    list.append(text(document.createElement('li'), proxies.length
+      ? `Reported by ${proxies.map(proxy => proxy.displayName).join(', ')}.`
+      : 'No connected proxy reports this backend ID.'));
   }
-  article.append(selector, meta, pluginMeta, list);
+  article.append(header, meta, detail, list, selector);
   return article;
+}
+
+function tabFromHash() {
+  const requested = window.location.hash.replace(/^#/, '');
+  return tabPanels.some(panel => panel.dataset.panel === requested) ? requested : 'overview';
+}
+
+function setActiveTab(tab, updateHash = false) {
+  if (!tabPanels.some(panel => panel.dataset.panel === tab)) tab = 'overview';
+  tabButtons.forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === tab)));
+  tabPanels.forEach(panel => { panel.hidden = panel.dataset.panel !== tab; });
+  if (updateHash && window.location.hash !== `#${tab}`) window.history.replaceState(null, '', `#${tab}`);
+}
+
+function setConfigView(view) {
+  if (!configViewPanels.some(panel => panel.dataset.configPanel === view)) view = 'easy';
+  configViewButtons.forEach(button => button.classList.toggle('active', button.dataset.configView === view));
+  configViewPanels.forEach(panel => { panel.hidden = panel.dataset.configPanel !== view; });
+}
+
+function chooseDefaultServer(items) {
+  return items.find(node => isBackend(node) && node.online) || items.find(node => isBackend(node)) ||
+    items.find(node => node.online) || items[0] || null;
+}
+
+function renderServerPicker() {
+  const previousValue = selectedServerId;
+  const ordered = [...visibleNodeItems].sort((left, right) => {
+    const roleOrder = Number(isProxy(left)) - Number(isProxy(right));
+    return roleOrder || left.displayName.localeCompare(right.displayName);
+  });
+  const placeholder = text(document.createElement('option'), ordered.length ? 'Choose a server' : 'No servers registered');
+  placeholder.value = '';
+  serverPicker.replaceChildren(placeholder, ...ordered.map(node => {
+    const option = text(document.createElement('option'),
+      `${node.displayName} · ${roleLabel(node)} · ${node.online ? 'connected' : 'disconnected'}`);
+    option.value = node.nodeId;
+    return option;
+  }));
+  if (!nodeIndex.has(previousValue)) selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
+  serverPicker.value = selectedServerId;
+}
+
+function renderSelectedServer() {
+  const selected = nodeIndex.get(selectedServerId);
+  selectedServerCapabilities.replaceChildren();
+  if (!selected) {
+    text(selectedServerName, 'Choose a VotingPlugin server');
+    text(selectedServerState, 'No selection');
+    selectedServerState.className = 'pill neutral';
+    text(selectedServerSummary, 'Use the server picker above to keep configuration and setup actions focused on one node.');
+    text(configurationContext, 'Choose a backend from the server picker to work with its VotingPlugin configuration.');
+    return;
+  }
+  text(selectedServerName, selected.displayName);
+  text(selectedServerState, selected.online ? 'Control connected' : 'Control disconnected');
+  selectedServerState.className = `pill ${selected.online ? 'online' : 'offline'}`;
+  const relationships = isBackend(selected) ? proxyReportsFor(selected.nodeId) : [];
+  const relationshipText = relationships.length
+    ? ` Reported by ${relationships.map(proxy => proxy.displayName).join(', ')}.` : '';
+  text(selectedServerSummary,
+    `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion}.${relationshipText}`);
+  text(configurationContext,
+    `${selected.displayName} (${selected.nodeId}) · ${roleLabel(selected)} · ${selected.online ? 'Control connected' : 'Control disconnected'}`);
+  const capabilities = managedCapabilities(selected);
+  if (capabilities.length === 0) capabilities.push('Discovery only');
+  capabilities.forEach(value => {
+    const pill = text(document.createElement('span'), value);
+    pill.className = 'pill';
+    selectedServerCapabilities.append(pill);
+  });
+}
+
+function topologyLink(backend) {
+  const registered = nodeIndex.get(backend.backendId);
+  const link = document.createElement('span');
+  link.className = `topology-link ${registered?.online ? 'online' : 'warning'}`;
+  link.append(text(document.createElement('strong'), backend.displayName));
+  link.append(text(document.createElement('small'), registered
+    ? `Enrolled · Control ${registered.online ? 'connected' : 'disconnected'}`
+    : 'Not enrolled in Control'));
+  if (backend.presenceKnown) {
+    link.append(text(document.createElement('small'), backend.available
+      ? `Minecraft reachable · ${backend.playerCount} ${backend.playerCount === 1 ? 'player' : 'players'}`
+      : 'Minecraft unavailable'));
+  } else {
+    link.append(text(document.createElement('small'), 'Presence not available'));
+  }
+  return link;
+}
+
+function renderTopology() {
+  const proxies = visibleNodeItems.filter(isProxy);
+  topology.replaceChildren();
+  topology.classList.toggle('empty', proxies.length === 0);
+  if (proxies.length === 0) {
+    text(topology, 'No proxy nodes have registered with Control.');
+    return;
+  }
+  proxies.forEach(proxy => {
+    const row = document.createElement('article');
+    row.className = 'topology-row';
+    const proxyIdentity = document.createElement('div');
+    proxyIdentity.className = 'topology-proxy';
+    proxyIdentity.append(text(document.createElement('strong'), proxy.displayName));
+    proxyIdentity.append(text(document.createElement('small'),
+      `${platformLabel(proxy.platform)} proxy · Control ${proxy.online ? 'connected' : 'disconnected'}`));
+    const backendList = document.createElement('div');
+    backendList.className = 'topology-backends';
+    const backends = Array.isArray(proxy.backends) ? proxy.backends : [];
+    if (backends.length === 0) {
+      backendList.append(text(document.createElement('small'), 'No configured backends reported by this proxy.'));
+    } else {
+      backends.forEach(backend => backendList.append(topologyLink(backend)));
+    }
+    row.append(proxyIdentity, backendList);
+    topology.append(row);
+  });
+}
+
+function renderMetrics() {
+  const backendIds = new Set(visibleNodeItems.filter(isProxy).flatMap(node =>
+    (Array.isArray(node.backends) ? node.backends : []).map(backend => backend.backendId)));
+  const unenrolledBackends = [...backendIds].filter(backendId => !nodeIndex.has(backendId)).length;
+  text(metricNodes, visibleNodeItems.length);
+  text(metricOnline, visibleNodeItems.filter(node => node.online).length);
+  text(metricBackends, backendIds.size);
+  text(metricIssues, visibleNodeItems.filter(node => !node.online).length + unenrolledBackends);
+}
+
+function renderNodeViews() {
+  nodes.replaceChildren();
+  nodes.classList.toggle('empty', visibleNodeItems.length === 0);
+  if (visibleNodeItems.length === 0) {
+    text(nodes, pageOffset === 0 ? 'No VotingPlugin nodes have registered yet.' : 'No nodes on this page.');
+  } else {
+    visibleNodeItems.forEach(node => nodes.append(nodeCard(node)));
+  }
+  renderMetrics();
+  renderTopology();
+  renderSelectedServer();
+}
+
+function selectPrimaryServer(nodeId) {
+  if (nodeId && !nodeIndex.has(nodeId)) return;
+  selectedServerId = nodeId;
+  serverPicker.value = nodeId;
+  selectedNodes.clear();
+  if (nodeId) selectedNodes.add(nodeId);
+  clearApprovals();
+  updatePluginSuggestions();
+  renderNodeViews();
 }
 
 function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) {
@@ -210,6 +472,36 @@ function clearApprovals() {
   approvedQuickPreview = null;
   inputGeneration++;
   updateConfigurationButtons();
+}
+
+function updateEditorPosition() {
+  const beforeCursor = configurationContent.value.slice(0, configurationContent.selectionStart);
+  const lines = beforeCursor.split('\n');
+  text(editorPosition, `Line ${lines.length}, Column ${lines.at(-1).length + 1}`);
+}
+
+function handleEditorKeydown(event) {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault();
+    if (!previewFileConfiguration.disabled) previewFileConfiguration.click();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  event.preventDefault();
+  const start = configurationContent.selectionStart;
+  const end = configurationContent.selectionEnd;
+  if (event.shiftKey) {
+    const lineStart = configurationContent.value.lastIndexOf('\n', start - 1) + 1;
+    const removable = configurationContent.value.slice(lineStart, lineStart + 2).match(/^ {1,2}/)?.[0].length || 0;
+    if (removable > 0) {
+      configurationContent.setRangeText('', lineStart, lineStart + removable, 'preserve');
+      configurationContent.setSelectionRange(Math.max(lineStart, start - removable), Math.max(lineStart, end - removable));
+    }
+  } else {
+    configurationContent.setRangeText('  ', start, end, 'end');
+  }
+  configurationContent.dispatchEvent(new Event('input', {bubbles: true}));
+  updateEditorPosition();
 }
 
 function updateQuickFields() {
@@ -273,11 +565,18 @@ function discardAuthenticationState(reason) {
   approvedQuickPreview = null;
   inputGeneration++;
   logout.hidden = true;
+  appShell.hidden = true;
+  serverPickerLabel.hidden = true;
+  welcome.hidden = false;
+  authCard.hidden = setupRequired;
   enrollmentCard.hidden = true;
   enrollmentCredential.value = '';
   enrollmentList.replaceChildren(text(document.createElement('li'), 'Authenticate to manage enrollments.'));
   text(enrollmentMessage, '');
   selectedNodes.clear();
+  selectedServerId = '';
+  visibleNodeItems = [];
+  nodeIndex.clear();
   nodeCapabilities.clear();
   nodePlugins.clear();
   configurationForm.reset();
@@ -292,6 +591,11 @@ function discardAuthenticationState(reason) {
   nodes.replaceChildren();
   nodes.classList.add('empty');
   text(nodes, 'Authenticate to view the network.');
+  serverPicker.replaceChildren(text(document.createElement('option'), 'Choose a server'));
+  serverPicker.firstElementChild.value = '';
+  renderMetrics();
+  renderTopology();
+  renderSelectedServer();
   text(message, reason);
   updateConfigurationButtons();
 }
@@ -397,13 +701,9 @@ async function loadNodes() {
   text(message, 'Loading…');
   try {
     const body = await authorized(`/api/v1/nodes?offset=${pageOffset}&limit=${PAGE_SIZE}`);
-    nodes.replaceChildren();
-    nodes.classList.toggle('empty', body.items.length === 0);
-    if (body.items.length === 0) {
-      text(nodes, pageOffset === 0 ? 'No proxies have registered yet.' : 'No proxies on this page.');
-    } else {
-      body.items.forEach(node => nodes.append(nodeCard(node)));
-    }
+    visibleNodeItems = body.items;
+    nodeIndex = new Map(body.items.map(node => [node.nodeId, node]));
+    const needsDefaultTargets = !selectedServerId || !nodeIndex.has(selectedServerId);
     const previousCapabilities = nodeCapabilities;
     nodeCapabilities = new Map(body.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
     nodePlugins = new Map(body.items.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
@@ -440,17 +740,23 @@ async function loadNodes() {
       approvedFilePreview = null;
       approvedQuickPreview = null;
       inputGeneration++;
-      text(operationStatus, 'The selected proxies changed during refresh. Preview again before apply.');
+      text(operationStatus, 'The selected nodes changed during refresh. Preview again before apply.');
     }
     selectedNodes = filteredSelection;
+    renderServerPicker();
+    if (needsDefaultTargets && selectedServerId &&
+        nodeCapabilities.get(selectedServerId)?.some(value => value.startsWith('config.'))) {
+      selectedNodes.add(selectedServerId);
+    }
+    renderNodeViews();
     updatePluginSuggestions();
     updateConfigurationButtons();
     const first = body.items.length === 0 ? 0 : pageOffset + 1;
     const last = pageOffset + body.items.length;
     const backendLimit = body.backendItemsTruncated
       ? ` Backend summaries are limited to ${body.backendItemsReturned} entries on this page.` : '';
-    text(message, body.items.length === 0 ? 'No proxies on this page.'
-      : `Showing proxies ${first}–${last}.${backendLimit}`);
+    text(message, body.items.length === 0 ? 'No nodes on this page.'
+      : `Showing nodes ${first}–${last}.${backendLimit}`);
     text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);
     previousPage.disabled = pageOffset === 0;
     nextPage.disabled = body.items.length < PAGE_SIZE;
@@ -651,6 +957,7 @@ readFileConfiguration.addEventListener('click', async () => {
     if (contentResult && authenticated && readAuthenticationGeneration === authenticationGeneration
         && readInputGeneration === inputGeneration && selectedFile === configurationFile.value) {
       configurationContent.value = contentResult.configuration.content;
+      updateEditorPosition();
       text(fileOperationStatus, operationSummary(operation));
       inputGeneration++;
       updateConfigurationButtons();
@@ -746,12 +1053,32 @@ applyQuickSetup.addEventListener('click', async () => {
   quickCommand, quickMessage, quickProcessRewards, quickAutoSites, quickExtraCheck, quickCountFake,
   quickHideSiteWarning, quickDisableUpdates, quickPartyVotes, quickPartyCommand, quickPartyBroadcast,
   quickPartyAll, quickPartyOnline].forEach(field => field.addEventListener('input', clearApprovals));
+configurationContent.addEventListener('input', updateEditorPosition);
+configurationContent.addEventListener('click', updateEditorPosition);
+configurationContent.addEventListener('keyup', updateEditorPosition);
+configurationContent.addEventListener('keydown', handleEditorKeydown);
 configurationFile.addEventListener('input', () => {
   configurationContent.value = '';
+  updateEditorPosition();
   text(fileOperationStatus, 'Read the selected file before previewing changes.');
   clearApprovals();
 });
 quickPreset.addEventListener('input', () => { updateQuickFields(); clearApprovals(); });
+serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
+tabButtons.forEach(button => button.addEventListener('click', () => setActiveTab(button.dataset.tab, true)));
+configViewButtons.forEach(button => button.addEventListener('click', () => setConfigView(button.dataset.configView)));
+document.querySelectorAll('[data-open-tab]').forEach(button => button.addEventListener('click', () => {
+  setActiveTab(button.dataset.openTab, true);
+}));
+document.querySelectorAll('[data-open-config-view]').forEach(button => button.addEventListener('click', () => {
+  setActiveTab('configurations', true);
+  setConfigView(button.dataset.openConfigView);
+  if (button.dataset.file && configurationFile.value !== button.dataset.file) {
+    configurationFile.value = button.dataset.file;
+    configurationFile.dispatchEvent(new Event('input'));
+  }
+}));
+window.addEventListener('hashchange', () => setActiveTab(tabFromHash()));
 refresh.addEventListener('click', loadNodes);
 previousPage.addEventListener('click', () => {
   pageOffset = Math.max(0, pageOffset - PAGE_SIZE);
@@ -763,6 +1090,8 @@ nextPage.addEventListener('click', () => {
 });
 async function initialize() {
   await loadHealth();
+  setActiveTab(tabFromHash());
+  setConfigView('easy');
   updateQuickFields();
   updatePluginSuggestions();
   if (!await loadSetupState()) {
