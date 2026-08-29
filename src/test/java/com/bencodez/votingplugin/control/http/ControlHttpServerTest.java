@@ -64,7 +64,7 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("data-tab=\"network\""));
         assertTrue(web.body().contains("id=\"server-picker\""));
         assertTrue(web.body().contains("Full YAML"));
-        assertTrue(web.body().contains("Comments not yet preserved"));
+        assertTrue(web.body().contains("Comment support unknown"));
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
@@ -102,6 +102,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Presence not available"));
         assertTrue(script.body().contains("No connected proxy reports this backend ID"));
         assertTrue(script.body().contains("'config.files.v1': 'Full configuration'"));
+        assertTrue(script.body().contains("'config.file-comments.v1': 'Comments preserved'"));
         assertTrue(script.body().contains("handleEditorKeydown"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
