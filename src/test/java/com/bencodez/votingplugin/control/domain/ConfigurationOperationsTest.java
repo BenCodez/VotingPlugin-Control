@@ -503,6 +503,8 @@ class ConfigurationOperationsTest {
         assertEquals("communication-test", task.configuration().preset());
         assertEquals("survival", task.configuration().options().get("server"));
         assertEquals(read.operationId(), task.operationId());
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.COMMUNICATION_TEST, Map.of()).validateProposal());
     }
 
     @Test void proxyMethodUsesItsOwnCoordinatedCapability() throws Exception {
@@ -525,6 +527,9 @@ class ConfigurationOperationsTest {
         assertEquals("proxy-method", operations.claim("proxy-a", proxySession).configuration().preset());
         assertEquals("proxy-method", operations.claim("lobby", backendSession).configuration().preset());
         assertEquals(2, preview.nodeStates().size());
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.PROXY_METHOD,
+                Map.of("method", "UNKNOWN")).validateProposal());
     }
 
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {

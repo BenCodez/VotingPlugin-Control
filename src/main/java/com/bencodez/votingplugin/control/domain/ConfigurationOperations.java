@@ -62,6 +62,7 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     public synchronized OperationView createRead(List<String> nodeIds, ManagedConfiguration selector) {
         if (selector == null) selector = ManagedConfiguration.proxy(new ProxyRoutingConfiguration(false, List.of()));
+        selector.validateProposal();
         return create("READ", validateTargets(nodeIds, selector.capability()), selector, null);
     }
 
@@ -120,6 +121,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             Instant leased = operation.leasedAt.get(nodeId);
             if ("QUEUED".equals(state) || ("IN_PROGRESS".equals(state) && leased != null
                     && !now.isBefore(leased.plus(LEASE)))) {
+                if (deferProxyMethodApply(operation, node)) continue;
                 if (!node.online() || !node.acceptedCapabilities().contains(operation.configuration.capability())) {
                     audit.append("TASK_CANCELLED", operation.id, nodeId, "CAPABILITY_LOST");
                     operation.results.put(nodeId, boundedResult(operation, new ConfigurationTaskResult(sessionId(node), false,
@@ -149,6 +151,28 @@ public final class ConfigurationOperations implements AutoCloseable {
             }
         }
         return null;
+    }
+
+    private boolean deferProxyMethodApply(StoredOperation operation, NodeStatus node) {
+        if (!"APPLY".equals(operation.type)
+                || !ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                || !ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset())
+                || "BUKKIT".equalsIgnoreCase(node.platform())) return false;
+        List<String> backends = operation.states.keySet().stream().filter(id -> {
+            NodeStatus target = registry.find(id);
+            return target != null && "BUKKIT".equalsIgnoreCase(target.platform());
+        }).toList();
+        if (backends.stream().anyMatch(id -> !"COMPLETE".equals(operation.states.get(id)))) return true;
+        if (backends.stream().noneMatch(id -> operation.results.get(id) == null
+                || !operation.results.get(id).success())) return false;
+        audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "BACKEND_APPLY_FAILED");
+        operation.results.put(node.nodeId(), boundedResult(operation, new ConfigurationTaskResult(sessionId(node), false,
+                "DEPENDENCY_FAILED", "A backend failed the proxy method apply", null,
+                (ManagedConfiguration) null, List.of(), false, false, null)));
+        operation.states.put(node.nodeId(), "COMPLETE");
+        operation.leasedAt.remove(node.nodeId());
+        operation.attemptIds.remove(node.nodeId());
+        return true;
     }
 
     public synchronized OperationView complete(UUID operationId, String nodeId, ConfigurationTaskResult result) {

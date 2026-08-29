@@ -62,6 +62,16 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
                 && (options.size() != 1 || !options.containsKey("sourceContent"))) {
             throw new IllegalArgumentException("VoteSites sync requires sourceContent");
         }
+        if (QUICK_SETUP.equals(domain) && COMMUNICATION_TEST.equals(preset)
+                && (options.size() != 1 || options.get("server") == null
+                || !options.get("server").matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}"))) {
+            throw new IllegalArgumentException("communication test requires one valid server");
+        }
+        if (QUICK_SETUP.equals(domain) && PROXY_METHOD.equals(preset)
+                && (options.size() != 1 || !List.of("PLUGINMESSAGING", "REDIS", "MQTT", "SOCKETS", "MYSQL")
+                .contains(options.get("method")))) {
+            throw new IllegalArgumentException("proxy method requires one supported method");
+        }
     }
 
     public String capability() {
