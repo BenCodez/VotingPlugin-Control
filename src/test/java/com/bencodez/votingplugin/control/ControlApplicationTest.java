@@ -83,6 +83,22 @@ class ControlApplicationTest {
         assertTrue(output.toString().trim().startsWith("vpctl_admin_"));
     }
 
+    @Test void verifierEnrollmentCommandInstallsOnlyTheCallerGeneratedHash() throws Exception {
+        String credential = "vpctl_node_backend_generated_credential";
+        String verifier = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(credential.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        ControlApplication.runOwnerCommand(
+                new String[]{"enroll-verifier", "backend-lobby", verifier, directory.toString()},
+                java.util.Map.of(), new PrintStream(output));
+
+        assertTrue(new com.bencodez.votingplugin.control.auth.CredentialStore(directory)
+                .verifyNode("backend-lobby", credential));
+        assertEquals("Enrollment verifier installed.", output.toString().trim());
+        assertFalse(Files.readString(directory.resolve("credentials.json")).contains(credential));
+    }
+
     @Test void webPasswordCommandReadsSecretOutOfBand() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         char[] supplied = "command-password-value".toCharArray();
