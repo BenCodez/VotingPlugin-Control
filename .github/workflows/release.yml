@@ -154,16 +154,42 @@ jobs:
           fi
           echo "RELEASE_OUTPUT_TIMESTAMP=$(git show -s --format=%cI "$RELEASE_SHA")" >> "$GITHUB_ENV"
       - name: Set release version
-        run: >-
-          mvn -B versions:set
-          -DnewVersion="$RELEASE_VERSION"
-          -DgenerateBackupPoms=false
-          -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
+        run: |
+          maven_retry() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              if mvn -B -U "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" == "4" ]]; then
+                return 1
+              fi
+              echo "::warning::Maven attempt $attempt failed; retrying transient repository access"
+              sleep $((attempt * 15))
+            done
+          }
+          maven_retry versions:set \
+            -DnewVersion="$RELEASE_VERSION" \
+            -DgenerateBackupPoms=false \
+            -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
       - name: Build and verify reproducibility
         run: |
-          mvn -B clean verify -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
+          maven_retry() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              if mvn -B -U "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" == "4" ]]; then
+                return 1
+              fi
+              echo "::warning::Maven attempt $attempt failed; retrying transient repository access"
+              sleep $((attempt * 15))
+            done
+          }
+          maven_retry clean verify -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
           first_digest="$(sha256sum "target/votingplugin-control-$RELEASE_VERSION-all.jar" | cut -d ' ' -f 1)"
-          mvn -B clean verify -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
+          maven_retry clean verify -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
           second_digest="$(sha256sum "target/votingplugin-control-$RELEASE_VERSION-all.jar" | cut -d ' ' -f 1)"
           if [[ "$first_digest" != "$second_digest" ]]; then
             echo "::error::Release JAR is not byte-reproducible"

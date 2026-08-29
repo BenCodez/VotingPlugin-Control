@@ -26,6 +26,20 @@ class CredentialStoreTest {
         assertFalse(store.verifyNode("proxy-a", rotated));
     }
 
+    @Test void callerGeneratedVerifierEnrollsWithoutPersistingTheRawCredential() throws Exception {
+        CredentialStore store = new CredentialStore(directory);
+        String credential = "vpctl_node_locally_generated_credential";
+        String verifier = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(credential.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+
+        store.installNodeVerifier("backend-lobby", verifier);
+
+        assertTrue(store.verifyNode("backend-lobby", credential));
+        assertFalse(Files.readString(directory.resolve("credentials.json")).contains(credential));
+        assertThrows(IllegalArgumentException.class,
+                () -> store.installNodeVerifier("backend-lobby", "not-a-verifier"));
+    }
+
     @Test void adminCredentialRotatesAndRawSecretIsNeverPersisted() throws Exception {
         CredentialStore store = new CredentialStore(directory);
         assertFalse(store.hasAdmin());

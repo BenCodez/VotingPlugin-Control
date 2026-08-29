@@ -72,6 +72,15 @@ public final class ControlApplication {
                 Path selected = ownerDataDirectory(args.length == 3 ? args[2] : null, environment);
                 output.println(new CredentialStore(selected).rotateNode(args[1]));
             }
+            case "enroll-verifier" -> {
+                if (args.length < 3 || args.length > 4) {
+                    throw new IllegalArgumentException(
+                            "Usage: enroll-verifier <nodeId> <sha256Verifier> [dataDirectory]");
+                }
+                Path selected = ownerDataDirectory(args.length == 4 ? args[3] : null, environment);
+                new CredentialStore(selected).installNodeVerifier(args[1], args[2]);
+                output.println("Enrollment verifier installed.");
+            }
             case "revoke" -> {
                 if (args.length < 2 || args.length > 3) {
                     throw new IllegalArgumentException("Usage: revoke <nodeId> [dataDirectory]");
