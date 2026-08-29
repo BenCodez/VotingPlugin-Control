@@ -98,7 +98,9 @@ let pageOffset = 0;
 let selectedNodes = new Set();
 let selectedServerId = '';
 let visibleNodeItems = [];
+let allNodeItems = [];
 let nodeIndex = new Map();
+let enrollmentIds = new Set();
 let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
@@ -216,7 +218,7 @@ function managedCapabilities(node) {
 }
 
 function proxyReportsFor(backendId) {
-  return visibleNodeItems.filter(isProxy).filter(proxy =>
+  return allNodeItems.filter(isProxy).filter(proxy =>
     (Array.isArray(proxy.backends) ? proxy.backends : []).some(backend => backend.backendId === backendId));
 }
 
@@ -226,8 +228,8 @@ function backendCard(backend) {
   const details = document.createElement('div');
   details.className = 'backend-state';
   const registered = nodeIndex.get(backend.backendId);
-  details.append(text(document.createElement('span'), registered
-    ? `Enrolled in Control · ${registered.online ? 'Control connected' : 'Control disconnected'}`
+  details.append(text(document.createElement('span'), enrollmentIds.has(backend.backendId)
+    ? `Enrolled in Control · ${registered ? (registered.online ? 'Control connected' : 'Control disconnected') : 'not registered'}`
     : 'Not enrolled in Control'));
   if (backend.presenceKnown) {
     details.append(text(document.createElement('span'), backend.available
@@ -338,7 +340,7 @@ function chooseDefaultServer(items) {
 
 function renderServerPicker() {
   const previousValue = selectedServerId;
-  const ordered = [...visibleNodeItems].sort((left, right) => {
+  const ordered = [...allNodeItems].sort((left, right) => {
     const roleOrder = Number(isProxy(left)) - Number(isProxy(right));
     return roleOrder || left.displayName.localeCompare(right.displayName);
   });
@@ -394,8 +396,8 @@ function topologyLink(backend) {
   const link = document.createElement('span');
   link.className = `topology-link ${registered?.online ? 'online' : 'warning'}`;
   link.append(text(document.createElement('strong'), backend.displayName));
-  link.append(text(document.createElement('small'), registered
-    ? `Enrolled · Control ${registered.online ? 'connected' : 'disconnected'}`
+  link.append(text(document.createElement('small'), enrollmentIds.has(backend.backendId)
+    ? `Enrolled · Control ${registered ? (registered.online ? 'connected' : 'disconnected') : 'not registered'}`
     : 'Not enrolled in Control'));
   if (backend.presenceKnown) {
     link.append(text(document.createElement('small'), backend.available
@@ -408,7 +410,7 @@ function topologyLink(backend) {
 }
 
 function renderTopology() {
-  const proxies = visibleNodeItems.filter(isProxy);
+  const proxies = allNodeItems.filter(isProxy);
   topology.replaceChildren();
   topology.classList.toggle('empty', proxies.length === 0);
   if (proxies.length === 0) {
@@ -437,23 +439,23 @@ function renderTopology() {
 }
 
 function renderMetrics() {
-  const backendIds = new Set(visibleNodeItems.filter(isProxy).flatMap(node =>
+  const backendIds = new Set(allNodeItems.filter(isProxy).flatMap(node =>
     (Array.isArray(node.backends) ? node.backends : []).map(backend => backend.backendId)));
-  const unenrolledBackends = [...backendIds].filter(backendId => !nodeIndex.has(backendId)).length;
-  text(metricNodes, visibleNodeItems.length);
-  text(metricOnline, visibleNodeItems.filter(node => node.online).length);
+  const unenrolledBackends = [...backendIds].filter(backendId => !enrollmentIds.has(backendId)).length;
+  text(metricNodes, allNodeItems.length);
+  text(metricOnline, allNodeItems.filter(node => node.online).length);
   text(metricBackends, backendIds.size);
-  text(metricIssues, visibleNodeItems.filter(node => !node.online).length + unenrolledBackends);
+  text(metricIssues, allNodeItems.filter(node => !node.online).length + unenrolledBackends);
 }
 
 function syncSourceCandidates() {
-  return visibleNodeItems.filter(node => isBackend(node) && node.online &&
+  return allNodeItems.filter(node => isBackend(node) && node.online &&
     node.acceptedCapabilities.includes('config.files.v1') &&
     node.acceptedCapabilities.includes('config.file-comments.v1'));
 }
 
 function syncTargetCandidates() {
-  return visibleNodeItems.filter(node => isBackend(node) && node.online &&
+  return allNodeItems.filter(node => isBackend(node) && node.online &&
     node.acceptedCapabilities.includes('config.vote-sites-sync.v1'));
 }
 
@@ -469,8 +471,14 @@ function renderVoteSitesSync() {
     voteSitesSourceId = sources.find(node => node.nodeId === selectedServerId)?.nodeId || sources[0]?.nodeId || '';
   }
   const targetIds = new Set(targetsAvailable.map(node => node.nodeId));
-  voteSitesTargetIds = new Set([...voteSitesTargetIds].filter(nodeId =>
+  const retainedTargets = new Set([...voteSitesTargetIds].filter(nodeId =>
     targetIds.has(nodeId) && nodeId !== voteSitesSourceId));
+  if (retainedTargets.size !== voteSitesTargetIds.size) {
+    approvedVoteSitesPreview = null;
+    inputGeneration++;
+    text(voteSitesSyncStatus, 'A sync target became unavailable. Preview again before syncing.');
+  }
+  voteSitesTargetIds = retainedTargets;
   if (!voteSitesTargetsInitialized && sources.length > 0) {
     voteSitesTargetIds = new Set(targetsAvailable.map(node => node.nodeId)
       .filter(nodeId => nodeId !== voteSitesSourceId));
@@ -678,6 +686,8 @@ function discardAuthenticationState(reason) {
   voteSitesTargetsInitialized = false;
   selectedServerId = '';
   visibleNodeItems = [];
+  allNodeItems = [];
+  enrollmentIds.clear();
   nodeIndex.clear();
   nodeCapabilities.clear();
   nodePlugins.clear();
@@ -754,6 +764,8 @@ async function loadEnrollments() {
   refreshEnrollments.disabled = true;
   try {
     const body = await authorized('/api/v1/enrollments');
+    enrollmentIds = new Set(Array.isArray(body.nodeIds) ? body.nodeIds : []);
+    if (allNodeItems.length) renderNodeViews();
     enrollmentList.replaceChildren();
     if (!Array.isArray(body.nodeIds) || body.nodeIds.length === 0) {
       enrollmentList.append(text(document.createElement('li'), 'No nodes are enrolled yet.'));
@@ -796,6 +808,15 @@ async function loadEnrollments() {
   }
 }
 
+async function loadAllNodes() {
+  const items = [];
+  for (let offset = 0; ; offset += PAGE_SIZE) {
+    const page = await authorized(`/api/v1/nodes?offset=${offset}&limit=${PAGE_SIZE}`);
+    items.push(...page.items);
+    if (page.items.length < PAGE_SIZE) return items;
+  }
+}
+
 async function loadNodes() {
   if (!authenticated) return;
   refresh.disabled = true;
@@ -803,13 +824,17 @@ async function loadNodes() {
   nextPage.disabled = true;
   text(message, 'Loading…');
   try {
-    const body = await authorized(`/api/v1/nodes?offset=${pageOffset}&limit=${PAGE_SIZE}`);
+    const [body, registry] = await Promise.all([
+      authorized(`/api/v1/nodes?offset=${pageOffset}&limit=${PAGE_SIZE}`),
+      loadAllNodes()
+    ]);
     visibleNodeItems = body.items;
-    nodeIndex = new Map(body.items.map(node => [node.nodeId, node]));
+    allNodeItems = registry;
+    nodeIndex = new Map(registry.map(node => [node.nodeId, node]));
     const needsDefaultTargets = !selectedServerId || !nodeIndex.has(selectedServerId);
     const previousCapabilities = nodeCapabilities;
-    nodeCapabilities = new Map(body.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
-    nodePlugins = new Map(body.items.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
+    nodeCapabilities = new Map(registry.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
+    nodePlugins = new Map(registry.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
       ? node.detectedPlugins : []]));
     const selectedCapabilitiesChanged = [...selectedNodes].some(node =>
       ['config.proxy-routing.v1', 'config.files.v1', 'config.quick-setup.v1'].some(capability =>
@@ -840,7 +865,7 @@ async function loadNodes() {
       inputGeneration++;
       text(operationStatus, 'A preview target went offline or lost the required capability. Preview again before apply.');
     }
-    const visibleIds = new Set(body.items.filter(node => node.online && node.acceptedCapabilities.some(value => value.startsWith('config.')))
+    const visibleIds = new Set(registry.filter(node => node.online && node.acceptedCapabilities.some(value => value.startsWith('config.')))
       .map(node => node.nodeId));
     const filteredSelection = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
     if (filteredSelection.size !== selectedNodes.size) {

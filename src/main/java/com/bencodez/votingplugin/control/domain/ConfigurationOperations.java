@@ -232,7 +232,9 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     private ConfigurationTaskResult boundedResult(StoredOperation operation, ConfigurationTaskResult result) {
         ManagedConfiguration configuration = result.success() ? result.configuration() : null;
-        if (configuration != null && ManagedConfiguration.FILE.equals(configuration.domain())) {
+        if (configuration != null && ManagedConfiguration.VOTE_SITES_SYNC.equals(configuration.preset())) {
+            configuration = configuration.publicView();
+        } else if (configuration != null && ManagedConfiguration.FILE.equals(configuration.domain())) {
             boolean keepContent = result.success() && "READ".equals(operation.type)
                     && operation.results.values().stream().filter(ConfigurationTaskResult::success)
                     .map(ConfigurationTaskResult::configuration).filter(Objects::nonNull)

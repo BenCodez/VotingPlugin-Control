@@ -71,6 +71,8 @@ class ControlHttpServerTest {
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
         assertTrue(script.body().contains("offset=${pageOffset}&limit=${PAGE_SIZE}"));
+        assertTrue(script.body().contains("async function loadAllNodes()"));
+        assertTrue(script.body().contains("enrollmentIds.has(backend.backendId)"));
         assertTrue(script.body().contains("nextPage.addEventListener"));
         assertTrue(script.body().contains("result.configuration?.content != null"));
         assertTrue(script.body().contains("authenticationGeneration"));
@@ -107,6 +109,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("'config.file-comments.v1': 'Comments preserved'"));
         assertTrue(script.body().contains("'config.vote-sites-sync.v1': 'VoteSites sync'"));
         assertTrue(script.body().contains("preset: 'sync-vote-sites'"));
+        assertTrue(script.body().contains("return allNodeItems.filter(node => isBackend(node)"));
+        assertTrue(script.body().contains("A sync target became unavailable"));
         assertTrue(script.body().contains("sourceContent: source"));
         assertTrue(script.body().contains("handleEditorKeydown"));
         assertFalse(script.body().contains("'No backends reported.'"));
