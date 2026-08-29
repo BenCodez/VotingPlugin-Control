@@ -27,6 +27,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     public static final String CAPABILITY = "config.proxy-routing.v1";
     public static final String FILE_CAPABILITY = "config.files.v1";
     public static final String QUICK_SETUP_CAPABILITY = "config.quick-setup.v1";
+    public static final String VOTE_SITES_SYNC_CAPABILITY = "config.vote-sites-sync.v1";
     private static final int MAX_OPERATIONS = 1000;
     private static final int MAX_FILE_OPERATIONS = 16;
     static final int MAX_RETAINED_CHANGE_BYTES = 256 * 1024;
@@ -207,7 +208,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private void ensureFileCapacity(ManagedConfiguration config, UUID protectedOperation) {
-        if (config == null || !ManagedConfiguration.FILE.equals(config.domain())) return;
+        if (config == null || !largeContentOperation(config)) return;
         long retained = operations.values().stream().filter(StoredOperation::fileOperation).count();
         Iterator<Map.Entry<UUID, StoredOperation>> iterator = operations.entrySet().iterator();
         while (retained >= MAX_FILE_OPERATIONS && iterator.hasNext()) {
@@ -222,6 +223,11 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (retained >= MAX_FILE_OPERATIONS) {
             throw new ValidationException("OPERATION_LIMIT", "Too many active file operations", List.of());
         }
+    }
+
+    private static boolean largeContentOperation(ManagedConfiguration config) {
+        return ManagedConfiguration.FILE.equals(config.domain()) ||
+                ManagedConfiguration.VOTE_SITES_SYNC.equals(config.preset());
     }
 
     private ConfigurationTaskResult boundedResult(StoredOperation operation, ConfigurationTaskResult result) {
@@ -404,7 +410,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
         private boolean complete() { return states.values().stream().allMatch("COMPLETE"::equals); }
         private boolean fileOperation() {
-            return configuration != null && ManagedConfiguration.FILE.equals(configuration.domain());
+            return configuration != null && largeContentOperation(configuration);
         }
     }
 }
