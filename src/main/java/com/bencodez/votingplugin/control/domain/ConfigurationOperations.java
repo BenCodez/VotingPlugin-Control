@@ -67,6 +67,7 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     public synchronized OperationView createPreview(List<String> nodeIds, ManagedConfiguration configuration) {
         if (configuration == null) throw invalid("configuration is required");
+        configuration.validateProposal();
         byte[] token = new byte[32];
         random.nextBytes(token);
         return create("PREVIEW", validateTargets(nodeIds, configuration.capability()), configuration,
