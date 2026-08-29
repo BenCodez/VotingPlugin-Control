@@ -78,9 +78,10 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
     }
 
     private static boolean invalidOption(String name, String value, boolean voteSitesSync) {
-        int maximum = voteSitesSync && "sourceContent".equals(name) ? MAX_CONTENT : 500;
+        boolean sourceContent = voteSitesSync && "sourceContent".equals(name);
+        int maximum = sourceContent ? MAX_CONTENT : 500;
         return value.indexOf('\0') >= 0 || value.length() > maximum
-                || value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > maximum;
+                || sourceContent && value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > maximum;
     }
 
     private static void validateFileName(String value) {

@@ -92,6 +92,7 @@ const enrollmentList = document.querySelector('#enrollment-list');
 const enrollmentMessage = document.querySelector('#enrollment-message');
 const refreshEnrollments = document.querySelector('#refresh-enrollments');
 const PAGE_SIZE = 100;
+const MAX_CONFIGURATION_TARGETS = 100;
 const MAX_SYNC_TARGETS = 100;
 let authenticated = false;
 let csrfToken = '';
@@ -288,6 +289,11 @@ function nodeCard(node) {
   checkbox.disabled = !node.online || !controllable;
   checkbox.checked = selectedNodes.has(node.nodeId) && !checkbox.disabled;
   checkbox.addEventListener('change', () => {
+    if (checkbox.checked && selectedNodes.size >= MAX_CONFIGURATION_TARGETS) {
+      checkbox.checked = false;
+      text(operationStatus, `At most ${MAX_CONFIGURATION_TARGETS} servers can be configured at once.`);
+      return;
+    }
     if (checkbox.checked) selectedNodes.add(node.nodeId); else selectedNodes.delete(node.nodeId);
     approvedPreview = null;
     approvedFilePreview = null;
@@ -355,7 +361,10 @@ function renderServerPicker() {
     option.value = node.nodeId;
     return option;
   }));
-  if (!nodeIndex.has(previousValue)) selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
+  if (!nodeIndex.has(previousValue)) {
+    selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
+    if (previousValue) resetServerConfigurationForms('The selected server is no longer available. Read the replacement server before previewing changes.');
+  }
   serverPicker.value = selectedServerId;
 }
 
@@ -560,18 +569,22 @@ function renderNodeViews() {
   renderVoteSitesSync();
 }
 
+function resetServerConfigurationForms(status) {
+  configurationForm.reset();
+  configurationContent.value = '';
+  text(operationStatus, status);
+  text(fileOperationStatus, status);
+  updateEditorPosition();
+  clearApprovals();
+}
+
 function selectPrimaryServer(nodeId) {
   if (nodeId && !nodeIndex.has(nodeId)) return;
   selectedServerId = nodeId;
   serverPicker.value = nodeId;
   selectedNodes.clear();
   if (nodeId) selectedNodes.add(nodeId);
-  configurationForm.reset();
-  configurationContent.value = '';
-  text(operationStatus, 'Server changed. Read this server before previewing changes.');
-  text(fileOperationStatus, 'Server changed. Read this file before previewing changes.');
-  updateEditorPosition();
-  clearApprovals();
+  resetServerConfigurationForms('Server changed. Read this server before previewing changes.');
   updatePluginSuggestions();
   renderNodeViews();
 }
