@@ -81,7 +81,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("authenticationGeneration"));
         assertTrue(script.body().contains("if (loginInFlight) return"));
         assertTrue(script.body().contains("backendItemsTruncated"));
-        assertTrue(script.body().contains("topologyComplete: !topologyTruncated"));
+        assertTrue(script.body().contains("topologyComplete: !truncatedNodeIds.has(proxyId)"));
         assertTrue(script.body().contains("proxyReady: network.proxyReady"));
         assertTrue(script.body().contains("option.value = backend.backendId"));
         assertTrue(script.body().contains("return allNodeItems.filter(node => isProxy(node)"));
