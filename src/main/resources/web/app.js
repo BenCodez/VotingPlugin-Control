@@ -210,7 +210,7 @@ function proxyReportsFor(backendId) {
     (Array.isArray(proxy.backends) ? proxy.backends : []).some(backend => backend.backendId === backendId));
 }
 
-function backendCard(backend) {
+function backendCard(backend, reporterOnline) {
   const item = document.createElement('li');
   const title = text(document.createElement('strong'), backend.displayName);
   const details = document.createElement('div');
@@ -221,7 +221,9 @@ function backendCard(backend) {
     : enrollmentIds.has(backend.backendId)
     ? `Enrolled in Control · ${registered ? (registered.online ? 'Control connected' : 'Control disconnected') : 'not registered'}`
     : 'Not enrolled in Control'));
-  if (backend.presenceKnown) {
+  if (!reporterOnline) {
+    details.append(text(document.createElement('span'), 'Presence stale · reporting proxy disconnected'));
+  } else if (backend.presenceKnown) {
     details.append(text(document.createElement('span'), backend.available
       ? `Minecraft reachable · ${backend.playerCount} ${backend.playerCount === 1 ? 'player' : 'players'}`
       : 'Minecraft unavailable'));
@@ -300,7 +302,7 @@ function nodeCard(node) {
     if (backends.length === 0) {
       list.append(text(document.createElement('li'), 'No configured backends reported by this proxy.'));
     } else {
-      backends.forEach(backend => list.append(backendCard(backend)));
+      backends.forEach(backend => list.append(backendCard(backend, node.online)));
     }
   } else {
     const proxies = proxyReportsFor(node.nodeId);
