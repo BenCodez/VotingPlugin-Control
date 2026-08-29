@@ -64,6 +64,8 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final String AUTH_LOGIN = "/api/v1/auth/login";
     private static final String AUTH_SESSION = "/api/v1/auth/session";
     private static final String AUTH_LOGOUT = "/api/v1/auth/logout";
+    private static final String AUTH_SETUP = "/api/v1/auth/setup";
+    private static final String ENROLLMENTS = "/api/v1/enrollments";
     private static final String SESSION_COOKIE = "vpctl_session";
     private static final Map<String, WebResource> WEB_RESOURCES = Map.of(
             "/", new WebResource("/web/index.html", "text/html; charset=utf-8"),
@@ -222,7 +224,7 @@ public final class ControlHttpServer implements AutoCloseable {
                 case "NODE_NOT_FOUND", "OPERATION_NOT_FOUND" -> 404;
                 case "UNSUPPORTED_PROTOCOL", "INCOMPATIBLE_CAPABILITIES", "SESSION_MISMATCH",
                         "PREVIEW_INCOMPLETE", "APPROVAL_REQUIRED", "NODE_UNAVAILABLE", "OPERATION_LIMIT",
-                        "REGISTRY_LIMIT", "TASK_NOT_CLAIMED", "TASK_LEASE_EXPIRED" -> 409;
+                        "REGISTRY_LIMIT", "TASK_NOT_CLAIMED", "TASK_LEASE_EXPIRED", "SETUP_COMPLETE" -> 409;
                 case "UNSUPPORTED_MEDIA_TYPE" -> 415;
                 default -> 400;
             };
@@ -261,6 +263,42 @@ public final class ControlHttpServer implements AutoCloseable {
             if (launchId != null) health.put("launchId", launchId);
             send(exchange, 200, health);
             return;
+        }
+        if (AUTH_SETUP.equals(path)) {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                send(exchange, 200, Map.of("required", !credentials.hasWebPassword(),
+                        "codeFile", "web-setup-code.txt"));
+                return;
+            }
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                exchange.getResponseHeaders().set("Allow", "GET, POST");
+                error(exchange, 405, "METHOD_NOT_ALLOWED", "Method is not allowed",
+                        List.of("allowed=GET", "allowed=POST"));
+                throw new ResponseCompleteException();
+            }
+            if (credentials.hasWebPassword()) {
+                throw new ValidationException("SETUP_COMPLETE", "First-run WebUI setup is already complete",
+                        List.of());
+            }
+            SetupRequest request = read(exchange, SetupRequest.class);
+            requireRequest(request);
+            String client = passwordClient(exchange);
+            if (!passwordFailureLimiter.allowAttempt(client) || !passwordAdmission.acquire(client)) {
+                throw new AuthenticationException(true);
+            }
+            try {
+                passwordExecutor.execute(() -> {
+                    try {
+                        handleWebSetup(exchange, request, client);
+                    } finally {
+                        passwordAdmission.release(client);
+                    }
+                });
+            } catch (RejectedExecutionException e) {
+                passwordAdmission.release(client);
+                throw new AuthenticationException(true);
+            }
+            throw new DeferredResponseException();
         }
         if (AUTH_LOGIN.equals(path)) {
             requireMethod(exchange, "POST");
@@ -305,6 +343,36 @@ public final class ControlHttpServer implements AutoCloseable {
             setSessionCookie(exchange, "", true);
             send(exchange, 200, Map.of("loggedOut", true));
             return;
+        }
+        if (ENROLLMENTS.equals(path)) {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                authenticateAdmin(exchange, false);
+                send(exchange, 200, Map.of("nodeIds", credentials.enrolledNodeIds()));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod())) {
+                authenticateAdmin(exchange, true);
+                EnrollmentRequest request = read(exchange, EnrollmentRequest.class);
+                requireRequest(request);
+                String credential = credentials.rotateNode(request.nodeId());
+                send(exchange, 201, Map.of("nodeId", request.nodeId(), "credential", credential));
+                return;
+            }
+            exchange.getResponseHeaders().set("Allow", "GET, POST");
+            error(exchange, 405, "METHOD_NOT_ALLOWED", "Method is not allowed",
+                    List.of("allowed=GET", "allowed=POST"));
+            throw new ResponseCompleteException();
+        }
+        if (path != null && path.startsWith(ENROLLMENTS + "/")) {
+            String remainder = path.substring((ENROLLMENTS + "/").length());
+            if (!remainder.contains("/")) {
+                requireMethod(exchange, "DELETE");
+                authenticateAdmin(exchange, true);
+                String nodeId = decodePathSegment(remainder);
+                credentials.revokeNode(nodeId);
+                send(exchange, 200, Map.of("nodeId", nodeId, "revoked", true));
+                return;
+            }
         }
         if (NODES.equals(path)) {
             requireMethod(exchange, "GET");
@@ -406,6 +474,46 @@ public final class ControlHttpServer implements AutoCloseable {
             }
         }
         error(exchange, 404, "NOT_FOUND", "Endpoint not found", List.of());
+    }
+
+    private void handleWebSetup(HttpExchange exchange, SetupRequest request, String client) {
+        char[] password = request.password() == null ? null : request.password().toCharArray();
+        try {
+            String revision = credentials.completeWebSetup(request.setupCode(), password);
+            if (revision == null) {
+                passwordFailureLimiter.recordFailure(client);
+                authenticationFailed();
+            }
+            passwordFailureLimiter.clear(client);
+            webSessions.remove(cookie(exchange, SESSION_COOKIE));
+            WebSessionStore.Session session = webSessions.create(revision);
+            setSessionCookie(exchange, session.id(), false);
+            send(exchange, 200, Map.of("csrfToken", session.csrfToken(), "setupComplete", true));
+        } catch (AuthenticationException e) {
+            exchange.getResponseHeaders().set("WWW-Authenticate", "Bearer");
+            try {
+                error(exchange, e.rateLimited ? 429 : 401,
+                        e.rateLimited ? "AUTH_RATE_LIMITED" : "UNAUTHORIZED",
+                        e.rateLimited ? "Too many authentication failures" : "Authentication failed", List.of());
+            } catch (IOException ignored) {
+                // The client disconnected while first-run setup was completing.
+            }
+        } catch (IllegalArgumentException e) {
+            try {
+                error(exchange, 400, "VALIDATION_ERROR", "Request validation failed", List.of());
+            } catch (IOException ignored) {
+                // The client disconnected while first-run setup was completing.
+            }
+        } catch (IOException | RuntimeException e) {
+            try {
+                error(exchange, 500, "INTERNAL_ERROR", "Request could not be completed", List.of());
+            } catch (IOException ignored) {
+                // The client disconnected while first-run setup was completing.
+            }
+        } finally {
+            if (password != null) java.util.Arrays.fill(password, '\0');
+            exchange.close();
+        }
     }
 
     private void handlePasswordLogin(HttpExchange exchange, PasswordRequest request, String client) {
@@ -735,6 +843,8 @@ public final class ControlHttpServer implements AutoCloseable {
 
     private record WebResource(String classpath, String contentType) { }
     private record PasswordRequest(String password) { }
+    private record SetupRequest(String setupCode, String password) { }
+    private record EnrollmentRequest(String nodeId) { }
     record BackendPage(List<NodeStatus> items, int backendItemsReturned, boolean backendItemsTruncated) { }
 
     static final class AuthFailureLimiter {

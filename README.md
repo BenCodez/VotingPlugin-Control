@@ -21,9 +21,12 @@ require a separate admin credential. Browser management uses a distinct owner-ch
 stored by Control: `data/credentials.json` contains SHA-256 verifiers for 256-bit random tokens and a salted,
 600,000-iteration PBKDF2-HMAC-SHA256 WebUI password verifier.
 
-Control binds to `127.0.0.1` by default. A non-loopback bind is refused until an admin token or WebUI password exists. Authentication
-does not encrypt traffic: use HTTPS or a trusted private tunnel/network when traffic can cross an untrusted network. Do
-not publish the HTTP service directly to the Internet.
+Control binds to `127.0.0.1` by default. On first start it creates a permission-restricted
+`data/web-setup-code.txt` containing a one-time 256-bit setup code; `credentials.json` stores only its SHA-256 verifier.
+The WebUI consumes that code when the owner creates the first password and immediately deletes the raw-code file.
+A non-loopback first-run listener exposes no management data without that code, but authentication does not encrypt
+traffic: use HTTPS or a trusted private tunnel/network whenever traffic can cross an untrusted network. Do not publish
+the HTTP service directly to the Internet.
 
 ## Requirements, build, and run
 
@@ -40,7 +43,7 @@ report `development` rather than maintaining a second version literal.
 
 | Variable | Default | Constraint |
 | --- | --- | --- |
-| `CONTROL_HOST` | `127.0.0.1` | Valid bind host; non-loopback requires an admin token or WebUI password |
+| `CONTROL_HOST` | `127.0.0.1` | Valid bind host; use `0.0.0.0` inside a container only behind an allocated port and trusted HTTPS/private proxy |
 | `CONTROL_PORT` | `8080` | `0`–`65535`; `0` selects a free port |
 | `CONTROL_DATA_DIR` | `data` | Writable directory for identity and credential verifiers |
 | `CONTROL_OFFLINE_TIMEOUT_SECONDS` | `90` | `1`–`3600` |
@@ -58,14 +61,14 @@ indefinitely.
 Claimed configuration tasks include an `attemptId`. Nodes must echo it in the result so an expired and reissued lease
 cannot be completed by a stale execution from the same node session.
 
-Set the WebUI password from an interactive console, then open `http://127.0.0.1:8080/`:
+Open the WebUI after the first start, read the one-time value from `data/web-setup-code.txt` with the server file
+manager, and create the WebUI password in the browser. No server command is required. The setup code is shown only in that
+permission-restricted file, is rate-limited at the HTTP boundary, becomes invalid as soon as setup completes, and is
+deleted after the password verifier is committed.
 
-```shell
-java -jar target/votingplugin-control-0.1.0-SNAPSHOT-all.jar web-password data
-```
-
-The password is read twice without echo and never accepted as a command-line argument. The static shell is public on the
-Control listener, but topology and configuration operations require either the admin bearer token (API automation) or a
+The legacy `web-password` owner command remains available for offline recovery and rotation. It reads the password twice
+without echo and never accepts it as a command-line argument. The static shell is public on the Control listener, but
+topology, enrollment, and configuration operations require either the admin bearer token (API automation) or a
 password-authenticated browser session. Browser sessions are bounded to 100, expire after 30 minutes idle or 8 hours
 absolute, use an HttpOnly/SameSite=Strict cookie, require a per-session CSRF token for writes, and are invalidated
 immediately by password rotation. Cookies gain the `Secure` flag when Control is served through HTTPS. Static assets use a
@@ -73,8 +76,12 @@ restrictive Content Security Policy and the browser calls the same `/api/v1` end
 
 ## Enrollment
 
-Owner commands modify the configured data directory and print a new secret once. Stop shell history capture or otherwise
-handle the output as a password.
+After signing in, use **Node enrollment** in the WebUI to create or rotate a credential for an exact node ID. Copy the
+one-time value into that node's configured `control-credential.txt` with the server file manager, then reload or restart
+the node. The same page lists enrolled IDs and can revoke them. This is the normal command-free setup path.
+
+Owner commands remain available for offline recovery and automation. They modify the configured data directory and print
+a new secret once. Stop shell history capture or otherwise handle the output as a password.
 
 ```shell
 # Create or rotate a credential bound to proxy-a
@@ -116,9 +123,14 @@ All errors have the stable form:
 | --- | --- | --- | --- |
 | `GET` | `/`, `/app.js`, `/app.css` | none | Minimal local WebUI static assets |
 | `GET` | `/api/v1/health` | none | Health plus Control identity/application/protocol version |
+| `GET` | `/api/v1/auth/setup` | none | Report whether one-time first-run password setup is required |
+| `POST` | `/api/v1/auth/setup` | one-time file-held setup code | Atomically create the first WebUI password, consume the code, and create a browser session |
 | `POST` | `/api/v1/auth/login` | WebUI password | Create a bounded browser session and return its CSRF token |
 | `GET` | `/api/v1/auth/session` | WebUI session | Restore the in-memory CSRF token after a page refresh; invalid/absent sessions return `204` |
 | `POST` | `/api/v1/auth/logout` | WebUI session + CSRF | Revoke the current browser session and expire its cookie |
+| `GET` | `/api/v1/enrollments` | admin or WebUI session | List enrolled node IDs without exposing verifiers |
+| `POST` | `/api/v1/enrollments` | admin or WebUI session + CSRF | Create/rotate a node-bound credential and return it once |
+| `DELETE` | `/api/v1/enrollments/{nodeId}` | admin or WebUI session + CSRF | Revoke the node credential |
 | `POST` | `/api/v1/nodes/register` | node | Idempotently create/replace one enrolled proxy or Bukkit session |
 | `PUT` | `/api/v1/nodes/{nodeId}/heartbeat` | matching node | Refresh liveness and replace capability advertisement |
 | `PUT` | `/api/v1/nodes/{nodeId}/presence` | matching node | Replace that session's backend snapshot |
@@ -180,7 +192,8 @@ They are not misleadingly used by these simple HTTP resource endpoints.
 - `409 UNSUPPORTED_PROTOCOL` / `INCOMPATIBLE_CAPABILITIES`: upgrade the older side before retrying.
 - Node stays offline: verify its connector is enabled, the node ID matches enrollment, and heartbeat timeouts permit
   the configured interval.
-- LAN startup is refused: create the admin token or WebUI password first and protect transport with HTTPS/private tunneling.
+- Container/LAN access: bind `0.0.0.0` inside the container rather than the VM's address, allocate the port, and place it
+  behind trusted HTTPS/private routing. Complete the one-time browser setup using the code file before normal sign-in.
 - Corrupt `instance-id` or credential data fails closed; restore a known backup or deliberately recreate the affected file
   and re-enroll nodes.
 

@@ -127,9 +127,15 @@ public final class ControlApplication {
     static void runServer(Map<String, String> environment) throws Exception {
         Configuration configuration = Configuration.from(environment);
         CredentialStore credentials = new CredentialStore(configuration.dataDirectory());
+        Path setupCodeFile = credentials.ensureWebSetupCode();
         if (!configuration.address().getAddress().isLoopbackAddress()
-                && !credentials.hasAdmin() && !credentials.hasWebPassword()) {
-            throw new IllegalArgumentException("An admin token or WebUI password is required for non-loopback binding");
+                && !credentials.hasAdmin() && !credentials.hasWebPassword() && setupCodeFile == null) {
+            throw new IllegalArgumentException("An admin token, WebUI password, or first-run setup code is required "
+                    + "for non-loopback binding");
+        }
+        if (setupCodeFile != null) {
+            System.out.println("First-run WebUI setup is required. Enter the code stored in "
+                    + setupCodeFile.toAbsolutePath().normalize());
         }
         // JDK HttpServer honors these bounds for stalled request and response bodies.
         System.setProperty("sun.net.httpserver.maxReqTime", Integer.toString(configuration.requestTimeoutSeconds()));

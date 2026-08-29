@@ -36,6 +36,8 @@ public final class CredentialStore {
     private static final int WEB_PASSWORD_ITERATIONS = 600_000;
     private static final int WEB_PASSWORD_BYTES = 32;
     private static final int WEB_PASSWORD_MINIMUM = 12;
+    private static final int MAX_SETUP_CODE_BYTES = 128;
+    private static final String WEB_SETUP_CODE_FILE = "web-setup-code.txt";
     private static final byte[] DUMMY_PASSWORD_SALT = new byte[16];
     private static final byte[] DUMMY_PASSWORD_HASH = new byte[WEB_PASSWORD_BYTES];
     private static final byte[] DUMMY_HASH = new byte[32];
@@ -99,11 +101,77 @@ public final class CredentialStore {
             data.webPasswordSalt = Base64.getEncoder().encodeToString(salt);
             data.webPasswordHash = Base64.getEncoder().encodeToString(verifier);
             data.webPasswordIterations = WEB_PASSWORD_ITERATIONS;
+            data.webSetupHash = null;
         });
+        deleteSetupCodeBestEffort();
     }
 
     public boolean hasWebPassword() throws IOException {
         return passwordRevision(read()) != null;
+    }
+
+    /**
+     * Creates a one-time first-run setup code when no WebUI password exists.
+     * The raw code is stored only in a permission-restricted file for the server
+     * owner; credentials.json retains only its SHA-256 verifier.
+     */
+    public synchronized Path ensureWebSetupCode() throws IOException {
+        Path setupFile = setupCodeFile();
+        try (FileChannel channel = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock ignored = channel.lock()) {
+            StoreData current = read();
+            if (passwordRevision(current) != null) {
+                deleteSetupCodeBestEffort();
+                return null;
+            }
+
+            String existing = readSetupCode(setupFile);
+            if (existing != null && constantTimeMatches(current.webSetupHash, existing)) {
+                return setupFile;
+            }
+
+            String code = token("vpctl_setup_");
+            current.webSetupHash = hashHex(code);
+            writeStore(current);
+            writeSetupCode(setupFile, code);
+            return setupFile;
+        }
+    }
+
+    /**
+     * Atomically consumes the first-run setup code and installs the WebUI password.
+     * Returns the exact verifier revision installed, or {@code null} when the code
+     * was invalid or setup had already completed.
+     */
+    public String completeWebSetup(String setupCode, char[] password) throws IOException {
+        String boundedCode = setupCode != null && setupCode.length() <= MAX_SETUP_CODE_BYTES ? setupCode : null;
+        StoreData current = read();
+        if (passwordRevision(current) != null || !constantTimeMatches(current.webSetupHash, boundedCode)) {
+            return null;
+        }
+
+        validateWebPassword(password);
+        byte[] salt = new byte[16];
+        random.nextBytes(salt);
+        byte[] verifier = derivePassword(password, salt, WEB_PASSWORD_ITERATIONS);
+        String[] installedRevision = {null};
+        mutate(data -> {
+            if (passwordRevision(data) == null && constantTimeMatches(data.webSetupHash, boundedCode)) {
+                data.webPasswordSalt = Base64.getEncoder().encodeToString(salt);
+                data.webPasswordHash = Base64.getEncoder().encodeToString(verifier);
+                data.webPasswordIterations = WEB_PASSWORD_ITERATIONS;
+                data.webSetupHash = null;
+                installedRevision[0] = passwordRevision(data);
+            }
+        });
+        if (installedRevision[0] != null) {
+            deleteSetupCodeBestEffort();
+        }
+        return installedRevision[0];
+    }
+
+    public java.util.List<String> enrolledNodeIds() throws IOException {
+        return read().nodeHashes.keySet().stream().sorted().toList();
     }
 
     /** Opaque verifier revision used to invalidate sessions immediately after password rotation. */
@@ -243,23 +311,88 @@ public final class CredentialStore {
              FileLock ignored = channel.lock()) {
             StoreData data = read();
             mutation.apply(data);
-            byte[] bytes = json.writerWithDefaultPrettyPrinter().writeValueAsBytes(data);
-            Path temporary = Files.createTempFile(directory, "credentials-", ".tmp");
-            try {
-                Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING);
-                try (FileChannel temporaryChannel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
-                    temporaryChannel.force(true);
-                }
-                try {
-                    Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE,
-                            StandardCopyOption.REPLACE_EXISTING);
-                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                    Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
-                }
-                DurableFiles.forceDirectory(directory);
-            } finally {
-                Files.deleteIfExists(temporary);
+            writeStore(data);
+        }
+    }
+
+    private void writeStore(StoreData data) throws IOException {
+        byte[] bytes = json.writerWithDefaultPrettyPrinter().writeValueAsBytes(data);
+        Path temporary = Files.createTempFile(directory, "credentials-", ".tmp");
+        try {
+            Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING);
+            try (FileChannel temporaryChannel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+                temporaryChannel.force(true);
             }
+            try {
+                Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+            DurableFiles.forceDirectory(directory);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private Path setupCodeFile() {
+        return directory.resolve(WEB_SETUP_CODE_FILE);
+    }
+
+    private void deleteSetupCodeBestEffort() {
+        try {
+            Files.deleteIfExists(setupCodeFile());
+        } catch (IOException ignored) {
+            // The code verifier is already invalid. A locked stale file must not
+            // turn a committed password change into a reported setup failure.
+        }
+    }
+
+    private String readSetupCode(Path setupFile) throws IOException {
+        if (!Files.exists(setupFile, LinkOption.NOFOLLOW_LINKS)) {
+            return null;
+        }
+        if (!Files.isRegularFile(setupFile, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(setupFile)
+                || Files.size(setupFile) > MAX_SETUP_CODE_BYTES) {
+            throw new IOException("Web setup code file is unsafe");
+        }
+        ByteBuffer buffer = ByteBuffer.allocate(MAX_SETUP_CODE_BYTES + 1);
+        try (SeekableByteChannel channel = Files.newByteChannel(setupFile,
+                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            while (channel.read(buffer) >= 0 && buffer.hasRemaining()) { }
+        }
+        if (!buffer.hasRemaining()) {
+            throw new IOException("Web setup code file changed while it was read");
+        }
+        buffer.flip();
+        String value = StandardCharsets.UTF_8.decode(buffer).toString().trim();
+        return value.isEmpty() ? null : value;
+    }
+
+    private void writeSetupCode(Path setupFile, String code) throws IOException {
+        Path temporary = Files.createTempFile(directory, "web-setup-", ".tmp");
+        try {
+            try {
+                Files.setPosixFilePermissions(temporary, Set.of(
+                        java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                        java.nio.file.attribute.PosixFilePermission.OWNER_WRITE));
+            } catch (UnsupportedOperationException ignored) {
+                // The platform does not expose POSIX permissions.
+            }
+            Files.writeString(temporary, code + System.lineSeparator(), StandardCharsets.UTF_8,
+                    StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+                channel.force(true);
+            }
+            try {
+                Files.move(temporary, setupFile, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(temporary, setupFile, StandardCopyOption.REPLACE_EXISTING);
+            }
+            DurableFiles.forceDirectory(directory);
+        } finally {
+            Files.deleteIfExists(temporary);
         }
     }
 
@@ -319,6 +452,7 @@ public final class CredentialStore {
         public String webPasswordSalt;
         public String webPasswordHash;
         public int webPasswordIterations;
+        public String webSetupHash;
         public Map<String, String> nodeHashes = new HashMap<>();
     }
 }

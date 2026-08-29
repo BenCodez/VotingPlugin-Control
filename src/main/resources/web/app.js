@@ -1,6 +1,13 @@
 'use strict';
 
 const health = document.querySelector('#health');
+const setupCard = document.querySelector('#setup-card');
+const setupForm = document.querySelector('#setup-form');
+const setupCode = document.querySelector('#setup-code');
+const setupPassword = document.querySelector('#setup-password');
+const setupConfirmPassword = document.querySelector('#setup-confirm-password');
+const setupMessage = document.querySelector('#setup-message');
+const authCard = document.querySelector('#auth-card');
 const form = document.querySelector('#auth-form');
 const passwordInput = document.querySelector('#password');
 const loginButton = form.querySelector('button[type="submit"]');
@@ -50,6 +57,14 @@ const quickPartyOnline = document.querySelector('#quick-party-online');
 const previewQuickSetup = document.querySelector('#preview-quick-setup');
 const applyQuickSetup = document.querySelector('#apply-quick-setup');
 const quickOperationStatus = document.querySelector('#quick-operation-status');
+const enrollmentCard = document.querySelector('#enrollment-card');
+const enrollmentForm = document.querySelector('#enrollment-form');
+const enrollmentSubmit = enrollmentForm.querySelector('button[type="submit"]');
+const enrollmentNodeId = document.querySelector('#enrollment-node-id');
+const enrollmentCredential = document.querySelector('#enrollment-credential');
+const enrollmentList = document.querySelector('#enrollment-list');
+const enrollmentMessage = document.querySelector('#enrollment-message');
+const refreshEnrollments = document.querySelector('#refresh-enrollments');
 const PAGE_SIZE = 100;
 let authenticated = false;
 let csrfToken = '';
@@ -63,6 +78,10 @@ let nodePlugins = new Map();
 let inputGeneration = 0;
 let authenticationGeneration = 0;
 let loginInFlight = false;
+let setupRequired = false;
+let enrollmentInFlight = false;
+let enrollmentRefreshRequested = false;
+let enrollmentMutationInFlight = false;
 let configurationOperationsInFlight = 0;
 
 function text(element, value) {
@@ -81,6 +100,42 @@ async function loadHealth() {
     text(health, 'Unavailable');
     health.classList.remove('online');
   }
+}
+
+async function loadSetupState() {
+  try {
+    const response = await fetch('/api/v1/auth/setup', {cache: 'no-store'});
+    if (!response.ok) throw new Error('First-run setup status is unavailable.');
+    const body = await response.json();
+    setupRequired = Boolean(body.required);
+    setupCard.hidden = !setupRequired;
+    authCard.hidden = setupRequired;
+    if (setupRequired) {
+      enrollmentCard.hidden = true;
+      text(setupMessage, `Enter the one-time code from ${body.codeFile} inside the configured hosted data directory.`);
+    }
+    return setupRequired;
+  } catch (error) {
+    setupRequired = false;
+    setupCard.hidden = true;
+    authCard.hidden = false;
+    text(message, error.message || 'First-run setup status is unavailable.');
+    return false;
+  }
+}
+
+function applyAuthenticatedSession(body) {
+  authenticated = true;
+  csrfToken = body.csrfToken;
+  approvedPreview = null;
+  approvedFilePreview = null;
+  approvedQuickPreview = null;
+  selectedNodes.clear();
+  configurationContent.value = '';
+  inputGeneration++;
+  logout.hidden = false;
+  enrollmentCard.hidden = false;
+  pageOffset = 0;
 }
 
 function backendCard(backend) {
@@ -218,6 +273,10 @@ function discardAuthenticationState(reason) {
   approvedQuickPreview = null;
   inputGeneration++;
   logout.hidden = true;
+  enrollmentCard.hidden = true;
+  enrollmentCredential.value = '';
+  enrollmentList.replaceChildren(text(document.createElement('li'), 'Authenticate to manage enrollments.'));
+  text(enrollmentMessage, '');
   selectedNodes.clear();
   nodeCapabilities.clear();
   nodePlugins.clear();
@@ -275,6 +334,58 @@ async function startConfigurationOperation(path, body, statusElement = operation
   } finally {
     configurationOperationsInFlight--;
     updateConfigurationButtons();
+  }
+}
+
+async function loadEnrollments() {
+  if (!authenticated) return;
+  if (enrollmentInFlight) {
+    enrollmentRefreshRequested = true;
+    return;
+  }
+  enrollmentInFlight = true;
+  refreshEnrollments.disabled = true;
+  try {
+    const body = await authorized('/api/v1/enrollments');
+    enrollmentList.replaceChildren();
+    if (!Array.isArray(body.nodeIds) || body.nodeIds.length === 0) {
+      enrollmentList.append(text(document.createElement('li'), 'No nodes are enrolled yet.'));
+      return;
+    }
+    body.nodeIds.forEach(nodeId => {
+      const item = document.createElement('li');
+      item.className = 'enrollment-item';
+      item.append(text(document.createElement('code'), nodeId));
+      const revoke = text(document.createElement('button'), 'Revoke');
+      revoke.type = 'button';
+      revoke.addEventListener('click', async () => {
+        if (enrollmentMutationInFlight || !window.confirm(`Revoke the credential for ${nodeId}?`)) return;
+        enrollmentMutationInFlight = true;
+        revoke.disabled = true;
+        enrollmentSubmit.disabled = true;
+        try {
+          await authorized(`/api/v1/enrollments/${encodeURIComponent(nodeId)}`, {method: 'DELETE'});
+          enrollmentCredential.value = '';
+          text(enrollmentMessage, `${nodeId} was revoked.`);
+          await loadEnrollments();
+        } catch (error) {
+          text(enrollmentMessage, error.message);
+        } finally {
+          enrollmentMutationInFlight = false;
+          enrollmentSubmit.disabled = false;
+        }
+      });
+      item.append(revoke);
+      enrollmentList.append(item);
+    });
+  } catch (error) {
+    text(enrollmentMessage, error.message || 'Enrollments could not be loaded.');
+  } finally {
+    enrollmentInFlight = false;
+    refreshEnrollments.disabled = false;
+    const refreshAgain = enrollmentRefreshRequested && authenticated;
+    enrollmentRefreshRequested = false;
+    if (refreshAgain) await loadEnrollments();
   }
 }
 
@@ -370,17 +481,8 @@ form.addEventListener('submit', async event => {
     const body = await response.json();
     if (!response.ok) throw new Error(body?.error?.message || 'Authentication failed.');
     if (loginGeneration !== authenticationGeneration) return;
-    authenticated = true;
-    csrfToken = body.csrfToken;
-    approvedPreview = null;
-    approvedFilePreview = null;
-    approvedQuickPreview = null;
-    selectedNodes.clear();
-    configurationContent.value = '';
-    inputGeneration++;
-    logout.hidden = false;
-    pageOffset = 0;
-    await loadNodes();
+    applyAuthenticatedSession(body);
+    await Promise.all([loadEnrollments(), loadNodes()]);
   } catch (error) {
     text(message, error.message || 'Authentication failed.');
   } finally {
@@ -417,12 +519,68 @@ async function restoreSession() {
     if (!response.ok || response.status === 204) return;
     const body = await response.json();
     if (restoreGeneration !== authenticationGeneration) return;
-    authenticated = true;
-    csrfToken = body.csrfToken;
-    logout.hidden = false;
-    await loadNodes();
+    applyAuthenticatedSession(body);
+    await Promise.all([loadEnrollments(), loadNodes()]);
   } catch (_) { /* The login form remains available. */ }
 }
+
+setupForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (loginInFlight) return;
+  if (setupPassword.value !== setupConfirmPassword.value) {
+    text(setupMessage, 'The new passwords do not match.');
+    return;
+  }
+  loginInFlight = true;
+  const setupGeneration = ++authenticationGeneration;
+  const request = {setupCode: setupCode.value, password: setupPassword.value};
+  setupCode.value = '';
+  setupPassword.value = '';
+  setupConfirmPassword.value = '';
+  try {
+    const response = await fetch('/api/v1/auth/setup', {
+      method: 'POST', cache: 'no-store', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)
+    });
+    const body = await response.json();
+    if (!response.ok) throw new Error(body?.error?.message || 'First-run setup failed.');
+    if (setupGeneration !== authenticationGeneration) return;
+    setupRequired = false;
+    setupCard.hidden = true;
+    authCard.hidden = false;
+    applyAuthenticatedSession(body);
+    text(message, 'First-run setup completed.');
+    await Promise.all([loadEnrollments(), loadNodes()]);
+  } catch (error) {
+    text(setupMessage, error.message || 'First-run setup failed.');
+  } finally {
+    loginInFlight = false;
+  }
+});
+
+enrollmentForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!authenticated || enrollmentMutationInFlight) return;
+  enrollmentMutationInFlight = true;
+  enrollmentSubmit.disabled = true;
+  const nodeId = enrollmentNodeId.value.trim();
+  enrollmentCredential.value = '';
+  try {
+    const body = await authorized('/api/v1/enrollments', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({nodeId})
+    });
+    enrollmentCredential.value = body.credential;
+    text(enrollmentMessage,
+      `Credential created for ${body.nodeId}. Copy it now; rotating again immediately invalidates this value.`);
+    await loadEnrollments();
+  } catch (error) {
+    text(enrollmentMessage, error.message || 'The credential could not be created.');
+  } finally {
+    enrollmentMutationInFlight = false;
+    enrollmentSubmit.disabled = false;
+  }
+});
+refreshEnrollments.addEventListener('click', loadEnrollments);
 
 readConfiguration.addEventListener('click', async () => {
   approvedPreview = null;
@@ -603,7 +761,12 @@ nextPage.addEventListener('click', () => {
   pageOffset += PAGE_SIZE;
   loadNodes();
 });
-loadHealth();
-updateQuickFields();
-updatePluginSuggestions();
-restoreSession();
+async function initialize() {
+  await loadHealth();
+  updateQuickFields();
+  updatePluginSuggestions();
+  if (!await loadSetupState()) {
+    await restoreSession();
+  }
+}
+initialize();

@@ -56,6 +56,51 @@ class CredentialStoreTest {
         assertThrows(IllegalArgumentException.class, () -> store.setWebPassword("too-short".toCharArray()));
     }
 
+    @Test void firstRunSetupCodeIsOneTimeHashedAndCreatesTheWebPassword() throws Exception {
+        CredentialStore store = new CredentialStore(directory);
+        Path setupFile = store.ensureWebSetupCode();
+        assertNotNull(setupFile);
+        String code = Files.readString(setupFile).trim();
+        assertTrue(code.startsWith("vpctl_setup_"));
+        assertFalse(Files.readString(directory.resolve("credentials.json")).contains(code));
+        assertEquals(setupFile, store.ensureWebSetupCode());
+        assertEquals(code, Files.readString(setupFile).trim());
+
+        assertNull(store.completeWebSetup("vpctl_setup_wrong", "a-secure-browser-password".toCharArray()));
+        String installedRevision = store.completeWebSetup(code, "a-secure-browser-password".toCharArray());
+        assertNotNull(installedRevision);
+        assertEquals(installedRevision, store.webPasswordRevision());
+        assertFalse(Files.exists(setupFile));
+        assertTrue(store.verifyWebPassword("a-secure-browser-password"));
+        assertNull(store.completeWebSetup(code, "a-different-browser-password".toCharArray()));
+        assertNull(store.ensureWebSetupCode());
+    }
+
+    @Test void committedSetupSurvivesStaleCodeCleanupFailure() throws Exception {
+        CredentialStore store = new CredentialStore(directory);
+        Path setupFile = store.ensureWebSetupCode();
+        String code = Files.readString(setupFile).trim();
+        Files.delete(setupFile);
+        Files.createDirectory(setupFile);
+        Files.writeString(setupFile.resolve("locked"), "simulated open file");
+
+        String installedRevision = store.completeWebSetup(code, "a-secure-browser-password".toCharArray());
+
+        assertNotNull(installedRevision);
+        assertEquals(installedRevision, store.webPasswordRevision());
+        assertTrue(store.verifyWebPassword("a-secure-browser-password"));
+        assertNull(store.ensureWebSetupCode());
+    }
+
+    @Test void enrolledNodeIdsAreStableAndSorted() throws Exception {
+        CredentialStore store = new CredentialStore(directory);
+        store.rotateNode("proxy-z");
+        store.rotateNode("backend-a");
+        assertEquals(java.util.List.of("backend-a", "proxy-z"), store.enrolledNodeIds());
+        store.revokeNode("backend-a");
+        assertEquals(java.util.List.of("proxy-z"), store.enrolledNodeIds());
+    }
+
     @Test void oversizedCredentialStoreFailsBeforeReadingItsContents() throws Exception {
         Files.write(directory.resolve("credentials.json"), new byte[2 * 1024 * 1024 + 1]);
         CredentialStore store = new CredentialStore(directory);
