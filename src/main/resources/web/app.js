@@ -782,7 +782,6 @@ async function loadNodes() {
     allNodeItems = registry.items;
     backendTopologyTruncated = registry.truncated;
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
-    const needsDefaultTargets = !selectedServerId || !nodeIndex.has(selectedServerId);
     const previousCapabilities = nodeCapabilities;
     nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
     nodePlugins = new Map(registry.items.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
@@ -814,7 +813,10 @@ async function loadNodes() {
     const visibleIds = new Set(registry.items.filter(node => node.online && node.acceptedCapabilities.some(value => value.startsWith('config.')))
       .map(node => node.nodeId));
     const filteredSelection = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
-    if (filteredSelection.size !== selectedNodes.size) {
+    renderServerPicker();
+    if (selectedServerId && visibleIds.has(selectedServerId)) filteredSelection.add(selectedServerId);
+    if (filteredSelection.size !== selectedNodes.size ||
+        [...filteredSelection].some(node => !selectedNodes.has(node))) {
       approvedPreview = null;
       approvedFilePreview = null;
       approvedQuickPreview = null;
@@ -822,11 +824,6 @@ async function loadNodes() {
       text(operationStatus, 'The selected nodes changed during refresh. Preview again before apply.');
     }
     selectedNodes = filteredSelection;
-    renderServerPicker();
-    if (needsDefaultTargets && selectedServerId &&
-        nodeCapabilities.get(selectedServerId)?.some(value => value.startsWith('config.'))) {
-      selectedNodes.add(selectedServerId);
-    }
     renderNodeViews();
     updatePluginSuggestions();
     updateConfigurationButtons();
