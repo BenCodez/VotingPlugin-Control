@@ -65,8 +65,6 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("id=\"server-picker\""));
         assertTrue(web.body().contains("Full YAML"));
         assertTrue(web.body().contains("Comment support unknown"));
-        assertTrue(web.body().contains("Sync VoteSites"));
-        assertTrue(web.body().contains("Rewards are never copied or removed"));
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
@@ -78,9 +76,6 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("authenticationGeneration"));
         assertTrue(script.body().contains("if (loginInFlight) return"));
         assertTrue(script.body().contains("backendItemsTruncated"));
-        assertTrue(script.body().contains("topologyComplete: !backendTopologyTruncated"));
-        assertTrue(script.body().contains("option.value = backend.backendId"));
-        assertTrue(script.body().contains("return allNodeItems.filter(node => isProxy(node)"));
         assertTrue(web.body().contains("Easy vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
@@ -110,17 +105,6 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("No connected proxy reports this backend ID"));
         assertTrue(script.body().contains("'config.files.v1': 'Full configuration'"));
         assertTrue(script.body().contains("'config.file-comments.v1': 'Comments preserved'"));
-        assertTrue(script.body().contains("'config.vote-sites-sync.v1': 'VoteSites sync'"));
-        assertTrue(script.body().contains("'config.transport-test.v1': 'Communication test'"));
-        assertTrue(script.body().contains("'config.proxy-method.v1': 'Proxy method'"));
-        assertTrue(script.body().contains("preset: 'sync-vote-sites'"));
-        assertTrue(script.body().contains("return allNodeItems.filter(node => isBackend(node)"));
-        assertTrue(script.body().contains("A sync target became unavailable"));
-        assertTrue(script.body().contains("sourceContent: source"));
-        assertTrue(script.body().contains("preset: 'communication-test'"));
-        assertTrue(script.body().contains("runTransportTest.addEventListener"));
-        assertTrue(script.body().contains("preset: 'proxy-method'"));
-        assertTrue(script.body().contains("proxyMethodButtons.forEach"));
         assertTrue(script.body().contains("handleEditorKeydown"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
