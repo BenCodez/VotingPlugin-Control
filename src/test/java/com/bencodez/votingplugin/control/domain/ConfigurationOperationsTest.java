@@ -446,8 +446,8 @@ class ConfigurationOperationsTest {
                 ManagedConfiguration.QUICK_SETUP, null, List.of(), null, "hidden", "standalone", Map.of()));
         assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(
                 ManagedConfiguration.FILE, null, List.of("other"), "Config.yml", null, null, Map.of()));
-        assertDoesNotThrow(() -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
-                null, null, "standalone", Map.of("label", "é".repeat(500))));
+        new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null,
+                "standalone", Map.of("label", "é".repeat(500)));
     }
 
     @Test void voteSitesSyncAllowsOneBoundedSourceDocumentAndHidesItFromOperationViews() throws Exception {
