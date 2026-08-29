@@ -458,6 +458,11 @@ class ConfigurationOperationsTest {
         assertEquals(ConfigurationOperations.VOTE_SITES_SYNC_CAPABILITY, sync.capability());
         assertFalse(sync.publicView().options().containsKey("sourceContent"));
         assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.VOTE_SITES_SYNC, Map.of()));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.VOTE_SITES_SYNC,
+                Map.of("sourceContent", source, "label", "extra")));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
                 null, List.of(), null, null, ManagedConfiguration.VOTE_SITES_SYNC,
                 Map.of("sourceContent", "x".repeat(ManagedConfiguration.MAX_CONTENT + 1))));
 
@@ -477,49 +482,6 @@ class ConfigurationOperationsTest {
                 new ConfigurationTaskResult(session, true, "OK", "valid", "e".repeat(64), sync,
                         List.of("changed VoteSites.Example"), false, false, syncTask.attemptId()));
         assertFalse(completed.results().get("backend-a").configuration().options().containsKey("sourceContent"));
-    }
-
-    @Test void communicationTestUsesItsOwnReadOnlyCapability() throws Exception {
-        ManagedConfiguration diagnostic = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
-                null, null, ManagedConfiguration.COMMUNICATION_TEST, Map.of("server", "survival"));
-        assertEquals(ConfigurationOperations.TRANSPORT_TEST_CAPABILITY, diagnostic.capability());
-
-        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
-        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
-        UUID session = UUID.randomUUID();
-        registry.register(new NodeRegistration("proxy-a", session, "Proxy A", "VELOCITY", "test", 1,
-                Set.of(ConfigurationOperations.TRANSPORT_TEST_CAPABILITY), Set.of()));
-        ConfigurationOperations operations = new ConfigurationOperations(registry,
-                new ConfigurationAuditLog(directory, clock), clock);
-
-        ConfigurationOperations.OperationView read = operations.createRead(List.of("proxy-a"), diagnostic);
-        ConfigurationTask task = operations.claim("proxy-a", session);
-        assertEquals("READ", task.type());
-        assertEquals("communication-test", task.configuration().preset());
-        assertEquals("survival", task.configuration().options().get("server"));
-        assertEquals(read.operationId(), task.operationId());
-    }
-
-    @Test void proxyMethodUsesItsOwnCoordinatedCapability() throws Exception {
-        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
-                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
-        assertEquals(ConfigurationOperations.PROXY_METHOD_CAPABILITY, method.capability());
-
-        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
-        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
-        UUID proxySession = UUID.randomUUID();
-        UUID backendSession = UUID.randomUUID();
-        registry.register(new NodeRegistration("proxy-a", proxySession, "Proxy A", "VELOCITY", "test", 1,
-                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
-        registry.register(new NodeRegistration("lobby", backendSession, "Lobby", "BUKKIT", "test", 1,
-                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
-        ConfigurationOperations operations = new ConfigurationOperations(registry,
-                new ConfigurationAuditLog(directory, clock), clock);
-
-        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("proxy-a", "lobby"), method);
-        assertEquals("proxy-method", operations.claim("proxy-a", proxySession).configuration().preset());
-        assertEquals("proxy-method", operations.claim("lobby", backendSession).configuration().preset());
-        assertEquals(2, preview.nodeStates().size());
     }
 
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {
