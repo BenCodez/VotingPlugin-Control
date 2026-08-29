@@ -10,6 +10,7 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
     public static final String PROXY_ROUTING = "proxy-routing";
     public static final String FILE = "file";
     public static final String QUICK_SETUP = "quick-setup";
+    public static final String VOTE_SITES_SYNC = "sync-vote-sites";
     public static final int MAX_CONTENT = 512 * 1024;
 
     public ManagedConfiguration {
@@ -39,7 +40,7 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             }
             if (options.size() > 20 || options.entrySet().stream().anyMatch(entry -> entry.getKey() == null
                     || !entry.getKey().matches("[a-z][A-Za-z0-9]{0,39}") || entry.getValue() == null
-                    || entry.getValue().length() > 500 || entry.getValue().indexOf('\0') >= 0)) {
+                    || invalidOption(entry.getKey(), entry.getValue(), VOTE_SITES_SYNC.equals(preset)))) {
                 throw new IllegalArgumentException("quick setup options are invalid");
             }
         }
@@ -58,14 +59,28 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
         return switch (domain) {
             case PROXY_ROUTING -> "config.proxy-routing.v1";
             case FILE -> "config.files.v1";
-            case QUICK_SETUP -> "config.quick-setup.v1";
+            case QUICK_SETUP -> VOTE_SITES_SYNC.equals(preset)
+                    ? "config.vote-sites-sync.v1" : "config.quick-setup.v1";
             default -> throw new IllegalStateException("unsupported configuration domain");
         };
     }
 
     /** Omits file contents so proposals, including newly entered secrets, are never echoed by operation APIs. */
     public ManagedConfiguration publicView() {
-        return FILE.equals(domain) ? file(fileName, null) : this;
+        if (FILE.equals(domain)) return file(fileName, null);
+        if (QUICK_SETUP.equals(domain) && VOTE_SITES_SYNC.equals(preset) && options.containsKey("sourceContent")) {
+            Map<String, String> visible = new LinkedHashMap<>(options);
+            visible.remove("sourceContent");
+            return new ManagedConfiguration(domain, sendVotesToAllServers, blockedServers, fileName, content,
+                    preset, visible);
+        }
+        return this;
+    }
+
+    private static boolean invalidOption(String name, String value, boolean voteSitesSync) {
+        int maximum = voteSitesSync && "sourceContent".equals(name) ? MAX_CONTENT : 500;
+        return value.indexOf('\0') >= 0 || value.length() > maximum
+                || value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > maximum;
     }
 
     private static void validateFileName(String value) {
