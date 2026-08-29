@@ -134,6 +134,7 @@ let enrollmentInFlight = false;
 let enrollmentRefreshRequested = false;
 let enrollmentMutationInFlight = false;
 let configurationOperationsInFlight = 0;
+let proxyMethodWorkflowInFlight = false;
 
 function text(element, value) {
   element.textContent = value;
@@ -239,7 +240,7 @@ function managedCapabilities(node) {
 }
 
 function proxyReportsFor(backendId) {
-  return allNodeItems.filter(isProxy).filter(proxy =>
+  return allNodeItems.filter(node => isProxy(node) && node.online).filter(proxy =>
     (Array.isArray(proxy.backends) ? proxy.backends : []).some(backend => backend.backendId === backendId));
 }
 
@@ -703,7 +704,7 @@ function selectPrimaryServer(nodeId) {
   renderNodeViews();
 }
 
-function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) {
+function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 || proxyMethodWorkflowInFlight) {
   const routingReady = authenticated && targets('config.proxy-routing.v1').length > 0 && !busy;
   const fileReady = authenticated && targets('config.files.v1').length > 0 && !busy;
   const quickReady = authenticated && targets('config.quick-setup.v1').length > 0 && !busy;
@@ -1448,7 +1449,9 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
   const method = button.dataset.proxyMethod;
   const network = proxyMethodNetwork();
   if (!network.proxyReady || !network.topologyComplete || network.reported.length === 0 ||
-      network.nodeIds.length > MAX_OPERATION_TARGETS || network.unavailable.length > 0) return;
+      network.nodeIds.length > MAX_OPERATION_TARGETS || network.unavailable.length > 0 || proxyMethodWorkflowInFlight) return;
+  proxyMethodWorkflowInFlight = true;
+  updateConfigurationButtons();
   try {
     const preview = await startConfigurationOperation('/api/v1/configuration/preview', {
       nodeIds: network.nodeIds,
@@ -1470,7 +1473,12 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
       previewOperationId: preview.operationId, approvalToken: preview.approvalToken
     }, proxyMethodStatus);
     text(proxyMethodStatus, `${operationSummary(applied)}\nReconnect the proxy if needed, then run the communication test.`);
-  } catch (error) { text(proxyMethodStatus, error.message); }
+  } catch (error) {
+    text(proxyMethodStatus, error.message);
+  } finally {
+    proxyMethodWorkflowInFlight = false;
+    updateConfigurationButtons();
+  }
 }));
 
 [configurationContent, quickName, quickService, quickUrl, quickDelay, quickRewardScope,
