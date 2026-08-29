@@ -278,6 +278,7 @@ function nodeCard(node) {
     approvedQuickPreview = null;
     inputGeneration++;
     updatePluginSuggestions();
+    renderSelectedServer();
     updateConfigurationButtons();
   });
   selector.append(checkbox, document.createTextNode('Include in configuration changes'));
