@@ -270,47 +270,35 @@ jobs:
             false
           fi
 
-          release_headers="release-response.headers"
-          release_document="release-response.json"
-          release_url="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/$draft_id"
-          curl --fail-with-body --silent --show-error \
-            --dump-header "$release_headers" \
-            --output "$release_document" \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer $GH_TOKEN" \
-            --header "X-GitHub-Api-Version: 2026-03-10" \
-            "$release_url"
-
-          release_etag="$(
-            awk 'tolower($1) == "etag:" { gsub(/\r/, "", $2); print $2 }' \
-              "$release_headers" | tail -n 1
-          )"
-          if [[ -z "$release_etag" ]]; then
-            echo "::error::GitHub did not return an ETag for conditional publication"
-            exit 1
-          fi
-
-          release_json="$(< "$release_document")"
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id")"
           release_is_draft="$(jq -r '.draft' <<< "$release_json")"
           release_tag_name="$(jq -r '.tag_name' <<< "$release_json")"
           release_is_owned="$(
             jq -r '((.body // "") | test("<!-- workflow-run:[0-9]+:[0-9]+ -->"))' \
               <<< "$release_json"
           )"
-          jar_digest="$(
-            jq -r '.assets[] | select(.name == "votingplugin-control.jar") | .digest // ""' \
-              <<< "$release_json"
-          )"
-          checksum_digest="$(
-            jq -r '.assets[] | select(.name == "votingplugin-control.jar.sha256") | .digest // ""' \
+          release_assets_valid="$(
+            jq -r \
+              --arg jar "$JAR_ASSET_DIGEST" \
+              --arg checksum "$CHECKSUM_ASSET_DIGEST" \
+              '(.assets | length == 2)
+               and ([.assets[] | select(
+                 .name == "votingplugin-control.jar"
+                 and .state == "uploaded"
+                 and .digest == $jar
+               )] | length == 1)
+               and ([.assets[] | select(
+                 .name == "votingplugin-control.jar.sha256"
+                 and .state == "uploaded"
+                 and .digest == $checksum
+               )] | length == 1)' \
               <<< "$release_json"
           )"
           if [[ "$release_is_draft" != "true" \
               || "$release_tag_name" != "$RELEASE_TAG" \
               || "$release_is_owned" != "true" \
-              || "$jar_digest" != "$JAR_ASSET_DIGEST" \
-              || "$checksum_digest" != "$CHECKSUM_ASSET_DIGEST" ]]; then
-            echo "::error::Draft ownership or assets changed before conditional publication"
+              || "$release_assets_valid" != "true" ]]; then
+            echo "::error::Draft ownership or exact asset set changed before publication"
             exit 1
           fi
 
@@ -331,17 +319,33 @@ jobs:
               '{tag_name: $tag, target_commitish: $target, name: $name, body: $body, draft: false}'
           )"
           published_json="$(
-            curl --fail-with-body --silent --show-error \
-              --request PATCH \
-              --header "Accept: application/vnd.github+json" \
-              --header "Authorization: Bearer $GH_TOKEN" \
-              --header "Content-Type: application/json" \
-              --header "If-Match: $release_etag" \
-              --header "X-GitHub-Api-Version: 2026-03-10" \
-              --data "$publish_payload" \
-              "$release_url"
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/releases/$draft_id" \
+              --input - <<< "$publish_payload"
           )"
-          if [[ "$(jq -r '.immutable' <<< "$published_json")" != "true" ]]; then
-            echo "::error::Published release is not immutable; enable release immutability in repository Settings"
+          published_assets_valid="$(
+            jq -r \
+              --arg jar "$JAR_ASSET_DIGEST" \
+              --arg checksum "$CHECKSUM_ASSET_DIGEST" \
+              '(.assets | length == 2)
+               and ([.assets[] | select(
+                 .name == "votingplugin-control.jar"
+                 and .state == "uploaded"
+                 and .digest == $jar
+               )] | length == 1)
+               and ([.assets[] | select(
+                 .name == "votingplugin-control.jar.sha256"
+                 and .state == "uploaded"
+                 and .digest == $checksum
+               )] | length == 1)' \
+              <<< "$published_json"
+          )"
+          if [[ "$(jq -r '.immutable' <<< "$published_json")" != "true" \
+              || "$(jq -r '.draft' <<< "$published_json")" != "false" \
+              || "$(jq -r '.tag_name' <<< "$published_json")" != "$RELEASE_TAG" \
+              || "$(jq -r '.name' <<< "$published_json")" != "$RELEASE_TAG" \
+              || "$(jq -r '.body // ""' <<< "$published_json")" != "$verified_body" \
+              || "$published_assets_valid" != "true" ]]; then
+            echo "::error::Published release is not the expected immutable release; verify repository settings and do not edit workflow-owned drafts during a run"
             exit 1
           fi
