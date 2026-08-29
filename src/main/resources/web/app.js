@@ -101,6 +101,7 @@ let visibleNodeItems = [];
 let allNodeItems = [];
 let nodeIndex = new Map();
 let enrollmentIds = new Set();
+let backendTopologyTruncated = false;
 let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
@@ -379,8 +380,10 @@ function renderSelectedServer() {
     `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion}.${relationshipText}`);
   text(configurationContext,
     `${selected.displayName} (${selected.nodeId}) · ${roleLabel(selected)} · ${selected.online ? 'Control connected' : 'Control disconnected'}`);
-  const preservesComments = selected.acceptedCapabilities.includes('config.file-comments.v1');
-  text(commentPreservationState, preservesComments ? 'Comments preserved' : 'Comments not guaranteed');
+  const fileTargets = targets('config.files.v1');
+  const preservesComments = fileTargets.length > 0 && fileTargets.every(nodeId =>
+    nodeCapabilities.get(nodeId)?.includes('config.file-comments.v1'));
+  text(commentPreservationState, preservesComments ? 'Comments preserved for every target' : 'Comments not guaranteed for every target');
   commentPreservationState.className = `pill ${preservesComments ? 'online' : 'warning'}`;
   const capabilities = managedCapabilities(selected);
   if (capabilities.length === 0) capabilities.push('Discovery only');
@@ -436,6 +439,11 @@ function renderTopology() {
     row.append(proxyIdentity, backendList);
     topology.append(row);
   });
+  if (backendTopologyTruncated) {
+    const warning = text(document.createElement('p'), 'Backend topology is truncated; some proxy relationships are not shown.');
+    warning.className = 'warning-text';
+    topology.prepend(warning);
+  }
 }
 
 function renderMetrics() {
@@ -444,8 +452,9 @@ function renderMetrics() {
   const unenrolledBackends = [...backendIds].filter(backendId => !enrollmentIds.has(backendId)).length;
   text(metricNodes, allNodeItems.length);
   text(metricOnline, allNodeItems.filter(node => node.online).length);
-  text(metricBackends, backendIds.size);
-  text(metricIssues, allNodeItems.filter(node => !node.online).length + unenrolledBackends);
+  text(metricBackends, backendTopologyTruncated ? `${backendIds.size}+` : backendIds.size);
+  const issueCount = allNodeItems.filter(node => !node.online).length + unenrolledBackends;
+  text(metricIssues, backendTopologyTruncated ? `${issueCount}+` : issueCount);
 }
 
 function syncSourceCandidates() {
@@ -544,6 +553,11 @@ function selectPrimaryServer(nodeId) {
   serverPicker.value = nodeId;
   selectedNodes.clear();
   if (nodeId) selectedNodes.add(nodeId);
+  configurationForm.reset();
+  configurationContent.value = '';
+  text(operationStatus, 'Server changed. Read this server before previewing changes.');
+  text(fileOperationStatus, 'Server changed. Read this file before previewing changes.');
+  updateEditorPosition();
   clearApprovals();
   updatePluginSuggestions();
   renderNodeViews();
@@ -688,6 +702,7 @@ function discardAuthenticationState(reason) {
   visibleNodeItems = [];
   allNodeItems = [];
   enrollmentIds.clear();
+  backendTopologyTruncated = false;
   nodeIndex.clear();
   nodeCapabilities.clear();
   nodePlugins.clear();
@@ -810,10 +825,12 @@ async function loadEnrollments() {
 
 async function loadAllNodes() {
   const items = [];
+  let truncated = false;
   for (let offset = 0; ; offset += PAGE_SIZE) {
     const page = await authorized(`/api/v1/nodes?offset=${offset}&limit=${PAGE_SIZE}`);
     items.push(...page.items);
-    if (page.items.length < PAGE_SIZE) return items;
+    truncated ||= Boolean(page.backendItemsTruncated);
+    if (page.items.length < PAGE_SIZE) return {items, truncated};
   }
 }
 
@@ -829,12 +846,13 @@ async function loadNodes() {
       loadAllNodes()
     ]);
     visibleNodeItems = body.items;
-    allNodeItems = registry;
-    nodeIndex = new Map(registry.map(node => [node.nodeId, node]));
+    allNodeItems = registry.items;
+    backendTopologyTruncated = registry.truncated;
+    nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
     const needsDefaultTargets = !selectedServerId || !nodeIndex.has(selectedServerId);
     const previousCapabilities = nodeCapabilities;
-    nodeCapabilities = new Map(registry.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
-    nodePlugins = new Map(registry.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
+    nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
+    nodePlugins = new Map(registry.items.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
       ? node.detectedPlugins : []]));
     const selectedCapabilitiesChanged = [...selectedNodes].some(node =>
       ['config.proxy-routing.v1', 'config.files.v1', 'config.quick-setup.v1'].some(capability =>
@@ -865,7 +883,7 @@ async function loadNodes() {
       inputGeneration++;
       text(operationStatus, 'A preview target went offline or lost the required capability. Preview again before apply.');
     }
-    const visibleIds = new Set(registry.filter(node => node.online && node.acceptedCapabilities.some(value => value.startsWith('config.')))
+    const visibleIds = new Set(registry.items.filter(node => node.online && node.acceptedCapabilities.some(value => value.startsWith('config.')))
       .map(node => node.nodeId));
     const filteredSelection = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
     if (filteredSelection.size !== selectedNodes.size) {
