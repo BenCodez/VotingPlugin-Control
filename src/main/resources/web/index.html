@@ -18,9 +18,9 @@
 
     <section class="card" id="setup-card" hidden>
       <h2>First-run setup</h2>
-      <p>Create the WebUI password without running a server command. Open
-        <code>plugins/VotingPlugin/control/data/web-setup-code.txt</code> in the server file manager and enter its
-        one-time code below.</p>
+      <p>Create the WebUI password without running a server command. Open <code>web-setup-code.txt</code> inside
+        the configured <code>Control.Hosted.DataDirectory</code> with the server file manager and enter its one-time
+        code below.</p>
       <form id="setup-form">
         <label for="setup-code">One-time setup code</label>
         <input id="setup-code" type="password" autocomplete="one-time-code" spellcheck="false" required>
