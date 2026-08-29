@@ -59,6 +59,7 @@ const applyQuickSetup = document.querySelector('#apply-quick-setup');
 const quickOperationStatus = document.querySelector('#quick-operation-status');
 const enrollmentCard = document.querySelector('#enrollment-card');
 const enrollmentForm = document.querySelector('#enrollment-form');
+const enrollmentSubmit = enrollmentForm.querySelector('button[type="submit"]');
 const enrollmentNodeId = document.querySelector('#enrollment-node-id');
 const enrollmentCredential = document.querySelector('#enrollment-credential');
 const enrollmentList = document.querySelector('#enrollment-list');
@@ -79,6 +80,7 @@ let authenticationGeneration = 0;
 let loginInFlight = false;
 let setupRequired = false;
 let enrollmentInFlight = false;
+let enrollmentMutationInFlight = false;
 let configurationOperationsInFlight = 0;
 
 function text(element, value) {
@@ -352,7 +354,10 @@ async function loadEnrollments() {
       const revoke = text(document.createElement('button'), 'Revoke');
       revoke.type = 'button';
       revoke.addEventListener('click', async () => {
-        if (!window.confirm(`Revoke the credential for ${nodeId}?`)) return;
+        if (enrollmentMutationInFlight || !window.confirm(`Revoke the credential for ${nodeId}?`)) return;
+        enrollmentMutationInFlight = true;
+        revoke.disabled = true;
+        enrollmentSubmit.disabled = true;
         try {
           await authorized(`/api/v1/enrollments/${encodeURIComponent(nodeId)}`, {method: 'DELETE'});
           enrollmentCredential.value = '';
@@ -360,6 +365,9 @@ async function loadEnrollments() {
           await loadEnrollments();
         } catch (error) {
           text(enrollmentMessage, error.message);
+        } finally {
+          enrollmentMutationInFlight = false;
+          enrollmentSubmit.disabled = false;
         }
       });
       item.append(revoke);
@@ -544,7 +552,9 @@ setupForm.addEventListener('submit', async event => {
 
 enrollmentForm.addEventListener('submit', async event => {
   event.preventDefault();
-  if (!authenticated) return;
+  if (!authenticated || enrollmentMutationInFlight) return;
+  enrollmentMutationInFlight = true;
+  enrollmentSubmit.disabled = true;
   const nodeId = enrollmentNodeId.value.trim();
   enrollmentCredential.value = '';
   try {
@@ -557,6 +567,9 @@ enrollmentForm.addEventListener('submit', async event => {
     await loadEnrollments();
   } catch (error) {
     text(enrollmentMessage, error.message || 'The credential could not be created.');
+  } finally {
+    enrollmentMutationInFlight = false;
+    enrollmentSubmit.disabled = false;
   }
 });
 refreshEnrollments.addEventListener('click', loadEnrollments);
