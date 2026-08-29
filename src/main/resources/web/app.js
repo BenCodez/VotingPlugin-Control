@@ -92,6 +92,7 @@ const enrollmentList = document.querySelector('#enrollment-list');
 const enrollmentMessage = document.querySelector('#enrollment-message');
 const refreshEnrollments = document.querySelector('#refresh-enrollments');
 const PAGE_SIZE = 100;
+const MAX_SYNC_TARGETS = 100;
 let authenticated = false;
 let csrfToken = '';
 let pageOffset = 0;
@@ -293,6 +294,7 @@ function nodeCard(node) {
     approvedQuickPreview = null;
     inputGeneration++;
     updatePluginSuggestions();
+    renderSelectedServer();
     updateConfigurationButtons();
   });
   selector.append(checkbox, document.createTextNode('Include in configuration changes'));
@@ -476,8 +478,14 @@ function selectedVoteSitesTargets() {
 function renderVoteSitesSync() {
   const sources = syncSourceCandidates();
   const targetsAvailable = syncTargetCandidates();
+  const previousSourceId = voteSitesSourceId;
   if (!sources.some(node => node.nodeId === voteSitesSourceId)) {
     voteSitesSourceId = sources.find(node => node.nodeId === selectedServerId)?.nodeId || sources[0]?.nodeId || '';
+  }
+  if (previousSourceId && previousSourceId !== voteSitesSourceId) {
+    approvedVoteSitesPreview = null;
+    inputGeneration++;
+    text(voteSitesSyncStatus, 'The sync source became unavailable. Read the replacement source and preview again.');
   }
   const targetIds = new Set(targetsAvailable.map(node => node.nodeId));
   const retainedTargets = new Set([...voteSitesTargetIds].filter(nodeId =>
@@ -490,7 +498,7 @@ function renderVoteSitesSync() {
   voteSitesTargetIds = retainedTargets;
   if (!voteSitesTargetsInitialized && sources.length > 0) {
     voteSitesTargetIds = new Set(targetsAvailable.map(node => node.nodeId)
-      .filter(nodeId => nodeId !== voteSitesSourceId));
+      .filter(nodeId => nodeId !== voteSitesSourceId).slice(0, MAX_SYNC_TARGETS));
     voteSitesTargetsInitialized = true;
   }
 
@@ -517,6 +525,11 @@ function renderVoteSitesSync() {
       checkbox.type = 'checkbox';
       checkbox.checked = voteSitesTargetIds.has(node.nodeId);
       checkbox.addEventListener('change', () => {
+        if (checkbox.checked && voteSitesTargetIds.size >= MAX_SYNC_TARGETS) {
+          checkbox.checked = false;
+          text(voteSitesSyncStatus, `A sync operation supports at most ${MAX_SYNC_TARGETS} targets.`);
+          return;
+        }
         if (checkbox.checked) voteSitesTargetIds.add(node.nodeId); else voteSitesTargetIds.delete(node.nodeId);
         approvedVoteSitesPreview = null;
         inputGeneration++;

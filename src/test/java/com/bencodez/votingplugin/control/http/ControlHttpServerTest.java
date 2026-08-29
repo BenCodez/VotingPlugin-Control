@@ -114,6 +114,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("preset: 'sync-vote-sites'"));
         assertTrue(script.body().contains("return allNodeItems.filter(node => isBackend(node)"));
         assertTrue(script.body().contains("A sync target became unavailable"));
+        assertTrue(script.body().contains("MAX_SYNC_TARGETS = 100"));
+        assertTrue(script.body().contains("The sync source became unavailable"));
         assertTrue(script.body().contains("sourceContent: source"));
         assertTrue(script.body().contains("handleEditorKeydown"));
         assertFalse(script.body().contains("'No backends reported.'"));
