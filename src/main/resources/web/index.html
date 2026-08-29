@@ -16,7 +16,28 @@
       <output id="health" class="status">Connecting…</output>
     </header>
 
-    <section class="card">
+    <section class="card" id="setup-card" hidden>
+      <h2>First-run setup</h2>
+      <p>Create the WebUI password without running a server command. Open
+        <code>plugins/VotingPlugin/control/data/web-setup-code.txt</code> in the server file manager and enter its
+        one-time code below.</p>
+      <form id="setup-form">
+        <label for="setup-code">One-time setup code</label>
+        <input id="setup-code" type="password" autocomplete="one-time-code" spellcheck="false" required>
+        <div class="form-grid">
+          <label>New WebUI password
+            <input id="setup-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required>
+          </label>
+          <label>Confirm WebUI password
+            <input id="setup-confirm-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required>
+          </label>
+        </div>
+        <button type="submit">Complete first-run setup</button>
+      </form>
+      <p id="setup-message" role="status"></p>
+    </section>
+
+    <section class="card" id="auth-card">
       <h2>Network discovery</h2>
       <p>Sign in with the WebUI password configured by the Control owner. Sessions use an HttpOnly cookie and expire automatically.</p>
       <form id="auth-form">
@@ -30,6 +51,33 @@
         </div>
       </form>
       <p id="message" role="status"></p>
+    </section>
+
+    <section class="card" id="enrollment-card" hidden>
+      <div class="section-title">
+        <div>
+          <h2>Node enrollment</h2>
+          <p>Create or rotate a credential without running a server command. Copy the displayed credential into that
+            node's configured <code>control-credential.txt</code>; it is shown only once.</p>
+        </div>
+      </div>
+      <form id="enrollment-form">
+        <label for="enrollment-node-id">Node ID</label>
+        <div class="auth-row">
+          <input id="enrollment-node-id" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+                 placeholder="velocity-proxy" spellcheck="false" required>
+          <button type="submit">Create or rotate credential</button>
+        </div>
+      </form>
+      <label for="enrollment-credential">New credential</label>
+      <textarea id="enrollment-credential" rows="3" readonly
+                placeholder="A newly generated credential will appear here once."></textarea>
+      <div class="section-title">
+        <h3>Enrolled node IDs</h3>
+        <button id="refresh-enrollments" type="button">Refresh</button>
+      </div>
+      <ul id="enrollment-list"><li>No enrolled nodes loaded.</li></ul>
+      <p id="enrollment-message" role="status"></p>
     </section>
 
     <section class="card">

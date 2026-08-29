@@ -20,7 +20,11 @@ label { display: block; margin-bottom: 8px; font-weight: 700; }
 input, textarea, select { flex: 1; min-width: 0; padding: 12px 14px; border: 1px solid #38506f; border-radius: 10px; background: #07101d; color: inherit; }
 button { padding: 12px 16px; border: 0; border-radius: 10px; background: #3187ee; color: white; font-weight: 700; cursor: pointer; }
 button:disabled { opacity: .5; cursor: not-allowed; }
-#message { min-height: 1.5em; margin: 14px 0 0; color: #aabbd0; }
+#message, #setup-message, #enrollment-message { min-height: 1.5em; margin: 14px 0 0; color: #aabbd0; }
+#setup-form > input { width: 100%; margin-bottom: 14px; }
+#enrollment-credential { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.enrollment-item { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+.enrollment-item button { padding: 8px 12px; background: #8f3550; }
 .nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; }
 .nodes.empty { display: block; padding: 28px; border: 1px dashed #38506f; border-radius: 12px; color: #aabbd0; text-align: center; }
 .node { padding: 18px; border: 1px solid #38506f; border-radius: 12px; background: #0b192b; }

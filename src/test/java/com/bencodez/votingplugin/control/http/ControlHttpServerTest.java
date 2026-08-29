@@ -70,6 +70,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (loginInFlight) return"));
         assertTrue(script.body().contains("backendItemsTruncated"));
         assertTrue(web.body().contains("Easy vote reward"));
+        assertTrue(web.body().contains("First-run setup"));
+        assertTrue(web.body().contains("Node enrollment"));
+        assertTrue(script.body().contains("setupForm.addEventListener"));
+        assertTrue(script.body().contains("loadEnrollments"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
@@ -231,6 +235,49 @@ class ControlHttpServerTest {
         credentials.setWebPassword("a-rotated-web-password".toCharArray());
         assertEquals(204, sendWithHeaders("GET", "/api/v1/auth/session", null,
                 Map.of("Cookie", secondCookie)).statusCode());
+    }
+
+    @Test void firstRunWebSetupConsumesOneTimeCodeAndCreatesSession() throws Exception {
+        Path setupFile = credentials.ensureWebSetupCode();
+        String setupCode = java.nio.file.Files.readString(setupFile).trim();
+        JsonNode setupState = json.readTree(get("/api/v1/auth/setup", null).body());
+        assertTrue(setupState.get("required").asBoolean());
+        assertEquals("web-setup-code.txt", setupState.get("codeFile").asText());
+
+        assertAuthFailure(send("POST", "/api/v1/auth/setup",
+                "{\"setupCode\":\"wrong\",\"password\":\"a-secure-web-password\"}", null));
+        HttpResponse<String> completed = send("POST", "/api/v1/auth/setup",
+                "{\"setupCode\":\"" + setupCode + "\",\"password\":\"a-secure-web-password\"}", null);
+        assertEquals(200, completed.statusCode());
+        assertTrue(completed.headers().firstValue("Set-Cookie").orElseThrow().contains("HttpOnly"));
+        assertTrue(credentials.verifyWebPassword("a-secure-web-password"));
+        assertFalse(java.nio.file.Files.exists(setupFile));
+        assertFalse(json.readTree(get("/api/v1/auth/setup", null).body()).get("required").asBoolean());
+        assertError(send("POST", "/api/v1/auth/setup",
+                "{\"setupCode\":\"" + setupCode + "\",\"password\":\"a-different-web-password\"}", null),
+                409, "SETUP_COMPLETE");
+    }
+
+    @Test void enrollmentApiCreatesListsRotatesAndRevokesNodeCredentials() throws Exception {
+        assertAuthFailure(get("/api/v1/enrollments", null));
+        JsonNode initial = json.readTree(get("/api/v1/enrollments", adminToken).body());
+        assertEquals(java.util.List.of("proxy-a"),
+                json.convertValue(initial.get("nodeIds"), new com.fasterxml.jackson.core.type.TypeReference<java.util.List<String>>() { }));
+
+        HttpResponse<String> created = send("POST", "/api/v1/enrollments",
+                "{\"nodeId\":\"backend-lobby\"}", adminToken);
+        assertEquals(201, created.statusCode());
+        String credential = json.readTree(created.body()).get("credential").asText();
+        assertTrue(credentials.verifyNode("backend-lobby", credential));
+        assertFalse(java.nio.file.Files.readString(directory.resolve("credentials.json")).contains(credential));
+
+        String rotated = json.readTree(send("POST", "/api/v1/enrollments",
+                "{\"nodeId\":\"backend-lobby\"}", adminToken).body()).get("credential").asText();
+        assertFalse(credentials.verifyNode("backend-lobby", credential));
+        assertTrue(credentials.verifyNode("backend-lobby", rotated));
+        assertEquals(200, send("DELETE", "/api/v1/enrollments/backend-lobby", null, adminToken).statusCode());
+        assertFalse(credentials.verifyNode("backend-lobby", rotated));
+        assertError(send("PUT", "/api/v1/enrollments", "{}", adminToken), 405, "METHOD_NOT_ALLOWED");
     }
 
     @Test void concurrentValidPasswordAttemptsQueueBehindVerificationLimit() throws Exception {
