@@ -101,11 +101,19 @@ jobs:
 
             if [[ "$tag_created" == "true" \
                 && ( "$release_state" == "missing" || "$release_state" == "removed" ) ]]; then
-              current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
-                --jq '.object.sha' 2>/dev/null)"
-              if [[ "$current_sha" == "$GITHUB_SHA" ]]; then
-                gh api --method DELETE \
-                  "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" >/dev/null
+              if releases_json="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" 2>/dev/null)"; then
+                releases_for_tag="$(
+                  jq -r --arg tag "$RELEASE_TAG" \
+                    '[.[] | select(.tag_name == $tag)] | length' <<< "$releases_json"
+                )"
+                if [[ "$releases_for_tag" == "0" ]]; then
+                  current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+                    --jq '.object.sha' 2>/dev/null)"
+                  if [[ "$current_sha" == "$GITHUB_SHA" ]]; then
+                    gh api --method DELETE \
+                      "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" >/dev/null
+                  fi
+                fi
               fi
             fi
             exit "$exit_code"
