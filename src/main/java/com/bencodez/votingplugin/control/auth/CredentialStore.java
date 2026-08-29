@@ -115,35 +115,27 @@ public final class CredentialStore {
      * The raw code is stored only in a permission-restricted file for the server
      * owner; credentials.json retains only its SHA-256 verifier.
      */
-    public Path ensureWebSetupCode() throws IOException {
+    public synchronized Path ensureWebSetupCode() throws IOException {
         Path setupFile = setupCodeFile();
-        if (hasWebPassword()) {
-            Files.deleteIfExists(setupFile);
-            return null;
-        }
+        try (FileChannel channel = FileChannel.open(lockFile, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+             FileLock ignored = channel.lock()) {
+            StoreData current = read();
+            if (passwordRevision(current) != null) {
+                Files.deleteIfExists(setupFile);
+                return null;
+            }
 
-        String existing = readSetupCode(setupFile);
-        StoreData current = read();
-        if (existing != null && constantTimeMatches(current.webSetupHash, existing)) {
+            String existing = readSetupCode(setupFile);
+            if (existing != null && constantTimeMatches(current.webSetupHash, existing)) {
+                return setupFile;
+            }
+
+            String code = token("vpctl_setup_");
+            current.webSetupHash = hashHex(code);
+            writeStore(current);
+            writeSetupCode(setupFile, code);
             return setupFile;
         }
-
-        String code = token("vpctl_setup_");
-        mutate(data -> {
-            if (passwordRevision(data) == null) {
-                data.webSetupHash = hashHex(code);
-            }
-        });
-        if (hasWebPassword()) {
-            Files.deleteIfExists(setupFile);
-            return null;
-        }
-        writeSetupCode(setupFile, code);
-        if (hasWebPassword()) {
-            Files.deleteIfExists(setupFile);
-            return null;
-        }
-        return setupFile;
     }
 
     /** Atomically consumes the first-run setup code and installs the WebUI password. */
@@ -315,23 +307,27 @@ public final class CredentialStore {
              FileLock ignored = channel.lock()) {
             StoreData data = read();
             mutation.apply(data);
-            byte[] bytes = json.writerWithDefaultPrettyPrinter().writeValueAsBytes(data);
-            Path temporary = Files.createTempFile(directory, "credentials-", ".tmp");
-            try {
-                Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING);
-                try (FileChannel temporaryChannel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
-                    temporaryChannel.force(true);
-                }
-                try {
-                    Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE,
-                            StandardCopyOption.REPLACE_EXISTING);
-                } catch (java.nio.file.AtomicMoveNotSupportedException e) {
-                    Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
-                }
-                DurableFiles.forceDirectory(directory);
-            } finally {
-                Files.deleteIfExists(temporary);
+            writeStore(data);
+        }
+    }
+
+    private void writeStore(StoreData data) throws IOException {
+        byte[] bytes = json.writerWithDefaultPrettyPrinter().writeValueAsBytes(data);
+        Path temporary = Files.createTempFile(directory, "credentials-", ".tmp");
+        try {
+            Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING);
+            try (FileChannel temporaryChannel = FileChannel.open(temporary, StandardOpenOption.WRITE)) {
+                temporaryChannel.force(true);
             }
+            try {
+                Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+            DurableFiles.forceDirectory(directory);
+        } finally {
+            Files.deleteIfExists(temporary);
         }
     }
 
