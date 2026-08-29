@@ -76,10 +76,27 @@ jobs:
             echo "RELEASE_SHA=$release_sha"
             echo "RELEASE_DRAFT_ID=$release_draft_id"
           } >> "$GITHUB_ENV"
-      - name: Require immutable release tag rules
+      - name: Require release safeguards
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SETTINGS_TOKEN: ${{ secrets.RELEASE_SETTINGS_TOKEN }}
         run: |
+          if [[ -z "$RELEASE_SETTINGS_TOKEN" ]]; then
+            echo "::error::Add the RELEASE_SETTINGS_TOKEN secret with Administration read permission"
+            exit 1
+          fi
+          if ! immutable_json="$(
+            GH_TOKEN="$RELEASE_SETTINGS_TOKEN" \
+              gh api "repos/$GITHUB_REPOSITORY/immutable-releases"
+          )"; then
+            echo "::error::Release immutability is disabled or RELEASE_SETTINGS_TOKEN cannot verify it"
+            exit 1
+          fi
+          if ! jq -e '.enabled == true' <<< "$immutable_json" >/dev/null; then
+            echo "::error::Enable release immutability in repository Settings"
+            exit 1
+          fi
+
           release_ruleset_id=""
           while IFS= read -r ruleset_id; do
             ruleset_json="$(gh api "repos/$GITHUB_REPOSITORY/rulesets/$ruleset_id")"
@@ -131,6 +148,7 @@ jobs:
       - name: Publish verified GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SETTINGS_TOKEN: ${{ secrets.RELEASE_SETTINGS_TOKEN }}
         run: |
           draft_id="$RELEASE_DRAFT_ID"
           release_marker="<!-- workflow-run:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT -->"
@@ -147,6 +165,24 @@ jobs:
               and (([.rules[].type] | index("deletion")) != null)
             ' <<< "$ruleset_json" >/dev/null; then
               echo "::error::Required release tag ruleset changed while the release was building"
+              return 1
+            fi
+          }
+
+          verify_release_immutability() {
+            if [[ -z "$RELEASE_SETTINGS_TOKEN" ]]; then
+              echo "::error::RELEASE_SETTINGS_TOKEN is unavailable"
+              return 1
+            fi
+            if ! immutable_json="$(
+              GH_TOKEN="$RELEASE_SETTINGS_TOKEN" \
+                gh api "repos/$GITHUB_REPOSITORY/immutable-releases"
+            )"; then
+              echo "::error::Release immutability was disabled or can no longer be verified"
+              return 1
+            fi
+            if ! jq -e '.enabled == true' <<< "$immutable_json" >/dev/null; then
+              echo "::error::Release immutability was disabled while the release was building"
               return 1
             fi
           }
@@ -221,6 +257,8 @@ jobs:
           }
 
 
+          verify_release_immutability
+
           if tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" 2>/dev/null)"; then
             current_type="$(jq -r '.object.type' <<< "$tag_json")"
             current_sha="$(jq -r '.object.sha' <<< "$tag_json")"
@@ -262,6 +300,7 @@ jobs:
           ensure_asset votingplugin-control.jar.sha256 "$CHECKSUM_ASSET_DIGEST"
           verify_release_assets
           verify_release_ruleset
+          verify_release_immutability
           tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
           current_type="$(jq -r '.object.type' <<< "$tag_json")"
           current_sha="$(jq -r '.object.sha' <<< "$tag_json")"
