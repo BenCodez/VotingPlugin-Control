@@ -461,11 +461,16 @@ function renderTopology() {
 function renderMetrics() {
   const backendIds = new Set(allNodeItems.filter(isProxy).flatMap(node =>
     (Array.isArray(node.backends) ? node.backends : []).map(backend => backend.backendId)));
-  const unenrolledBackends = [...backendIds].filter(backendId => !enrollmentIds.has(backendId)).length;
+  const issueIds = new Set(allNodeItems.filter(node => !node.online).map(node => node.nodeId));
+  backendIds.forEach(backendId => { if (!enrollmentIds.has(backendId)) issueIds.add(backendId); });
+  allNodeItems.filter(node => isProxy(node) && node.online).forEach(proxy =>
+    (Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {
+      if (backend.presenceKnown && !backend.available) issueIds.add(backend.backendId);
+    }));
   text(metricNodes, allNodeItems.length);
   text(metricOnline, allNodeItems.filter(node => node.online).length);
   text(metricBackends, backendTopologyTruncated ? `${backendIds.size}+` : backendIds.size);
-  const issueCount = allNodeItems.filter(node => !node.online).length + unenrolledBackends;
+  const issueCount = issueIds.size;
   text(metricIssues, backendTopologyTruncated ? `${issueCount}+` : issueCount);
 }
 
@@ -591,9 +596,13 @@ function selectPrimaryServer(nodeId) {
 }
 
 function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) {
-  const routingReady = authenticated && targets('config.proxy-routing.v1').length > 0 && !busy;
-  const fileReady = authenticated && targets('config.files.v1').length > 0 && !busy;
-  const quickReady = authenticated && targets('config.quick-setup.v1').length > 0 && !busy;
+  const primaryCapabilities = nodeCapabilities.get(selectedServerId) || [];
+  const routingReady = authenticated && primaryCapabilities.includes('config.proxy-routing.v1') &&
+    targets('config.proxy-routing.v1').length > 0 && !busy;
+  const fileReady = authenticated && primaryCapabilities.includes('config.files.v1') &&
+    targets('config.files.v1').length > 0 && !busy;
+  const quickReady = authenticated && primaryCapabilities.includes('config.quick-setup.v1') &&
+    targets('config.quick-setup.v1').length > 0 && !busy;
   const voteSitesReady = authenticated && voteSitesSourceId && selectedVoteSitesTargets().length > 0 && !busy;
   readConfiguration.disabled = !routingReady;
   previewConfiguration.disabled = !routingReady;
