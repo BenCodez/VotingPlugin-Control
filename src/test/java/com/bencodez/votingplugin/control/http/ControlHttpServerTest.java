@@ -73,7 +73,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("enrollmentIds.has(backend.backendId)"));
         assertTrue(script.body().contains("Comments preserved for every target"));
         assertTrue(script.body().contains("Backend topology is truncated"));
-        assertTrue(script.body().contains("Server changed. Read this file"));
+        assertTrue(script.body().contains("function resetServerConfigurationForms(status)"));
         assertTrue(script.body().contains("nextPage.addEventListener"));
         assertTrue(script.body().contains("result.configuration?.content != null"));
         assertTrue(script.body().contains("authenticationGeneration"));
