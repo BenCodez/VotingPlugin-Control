@@ -59,19 +59,48 @@ jobs:
         run: |
           draft_id=""
           tag_created=false
+          release_marker="<!-- workflow-run:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT -->"
+
           cleanup() {
             exit_code=$?
-            trap - ERR
+            trap - EXIT INT TERM
             set +e
-            if [[ -n "$draft_id" ]]; then
-              release_is_draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id" --jq '.draft' 2>/dev/null)"
-              if [[ "$release_is_draft" == "true" ]]; then
-                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$draft_id" >/dev/null
-              elif [[ "$release_is_draft" == "false" ]]; then
-                tag_created=false
+
+            release_state=missing
+            if [[ -z "$draft_id" ]]; then
+              draft_lookup="$(
+                gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                  --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and .draft == true and ((.body // \"\") | contains(\"$release_marker\"))) | .id" \
+                  2>/dev/null
+              )"
+              lookup_status=$?
+              if [[ "$lookup_status" -ne 0 ]]; then
+                release_state=unknown
+              else
+                draft_id="$(head -n 1 <<< "$draft_lookup")"
               fi
             fi
-            if [[ "$tag_created" == "true" ]]; then
+
+            if [[ -n "$draft_id" ]]; then
+              if release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id" 2>/dev/null)"; then
+                release_is_draft="$(jq -r '.draft' <<< "$release_json")"
+                if [[ "$release_is_draft" == "true" ]]; then
+                  if gh api --method DELETE \
+                      "repos/$GITHUB_REPOSITORY/releases/$draft_id" >/dev/null; then
+                    release_state=removed
+                  else
+                    release_state=unknown
+                  fi
+                else
+                  release_state=published
+                fi
+              else
+                release_state=unknown
+              fi
+            fi
+
+            if [[ "$tag_created" == "true" \
+                && ( "$release_state" == "missing" || "$release_state" == "removed" ) ]]; then
               current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
                 --jq '.object.sha' 2>/dev/null)"
               if [[ "$current_sha" == "$GITHUB_SHA" ]]; then
@@ -81,23 +110,26 @@ jobs:
             fi
             exit "$exit_code"
           }
-          trap cleanup ERR
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
 
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/$RELEASE_TAG" \
             -f sha="$GITHUB_SHA" >/dev/null
           tag_created=true
 
-          gh release create "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --draft \
-            --title "$RELEASE_TAG" \
-            --generate-notes
-          draft_id="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\" and .draft == true) | .id" | head -n 1)"
+          draft_id="$(
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$RELEASE_TAG" \
+              -f name="$RELEASE_TAG" \
+              -f body="$release_marker" \
+              -F draft=true \
+              -F generate_release_notes=true \
+              --jq '.id'
+          )"
           if [[ -z "$draft_id" ]]; then
-            echo "::error::Created draft release could not be identified"
+            echo "::error::Created draft release did not return an ID"
             false
           fi
 
@@ -114,4 +146,4 @@ jobs:
             -F draft=false >/dev/null
           tag_created=false
           draft_id=""
-          trap - ERR
+          trap - EXIT INT TERM
