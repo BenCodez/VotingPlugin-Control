@@ -80,6 +80,7 @@ let authenticationGeneration = 0;
 let loginInFlight = false;
 let setupRequired = false;
 let enrollmentInFlight = false;
+let enrollmentRefreshRequested = false;
 let enrollmentMutationInFlight = false;
 let configurationOperationsInFlight = 0;
 
@@ -337,7 +338,11 @@ async function startConfigurationOperation(path, body, statusElement = operation
 }
 
 async function loadEnrollments() {
-  if (!authenticated || enrollmentInFlight) return;
+  if (!authenticated) return;
+  if (enrollmentInFlight) {
+    enrollmentRefreshRequested = true;
+    return;
+  }
   enrollmentInFlight = true;
   refreshEnrollments.disabled = true;
   try {
@@ -378,6 +383,10 @@ async function loadEnrollments() {
   } finally {
     enrollmentInFlight = false;
     refreshEnrollments.disabled = false;
+    if (enrollmentRefreshRequested && authenticated) {
+      enrollmentRefreshRequested = false;
+      await loadEnrollments();
+    }
   }
 }
 
