@@ -109,7 +109,7 @@ async function loadSetupState() {
     authCard.hidden = setupRequired;
     if (setupRequired) {
       enrollmentCard.hidden = true;
-      text(setupMessage, `Enter the one-time code from control/data/${body.codeFile}.`);
+      text(setupMessage, `Enter the one-time code from ${body.codeFile} inside the configured hosted data directory.`);
     }
     return setupRequired;
   } catch (error) {
