@@ -66,11 +66,13 @@ class CredentialStoreTest {
         assertEquals(setupFile, store.ensureWebSetupCode());
         assertEquals(code, Files.readString(setupFile).trim());
 
-        assertFalse(store.completeWebSetup("vpctl_setup_wrong", "a-secure-browser-password".toCharArray()));
-        assertTrue(store.completeWebSetup(code, "a-secure-browser-password".toCharArray()));
+        assertNull(store.completeWebSetup("vpctl_setup_wrong", "a-secure-browser-password".toCharArray()));
+        String installedRevision = store.completeWebSetup(code, "a-secure-browser-password".toCharArray());
+        assertNotNull(installedRevision);
+        assertEquals(installedRevision, store.webPasswordRevision());
         assertFalse(Files.exists(setupFile));
         assertTrue(store.verifyWebPassword("a-secure-browser-password"));
-        assertFalse(store.completeWebSetup(code, "a-different-browser-password".toCharArray()));
+        assertNull(store.completeWebSetup(code, "a-different-browser-password".toCharArray()));
         assertNull(store.ensureWebSetupCode());
     }
 
