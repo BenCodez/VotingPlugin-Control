@@ -103,7 +103,7 @@ public final class CredentialStore {
             data.webPasswordIterations = WEB_PASSWORD_ITERATIONS;
             data.webSetupHash = null;
         });
-        Files.deleteIfExists(setupCodeFile());
+        deleteSetupCodeBestEffort();
     }
 
     public boolean hasWebPassword() throws IOException {
@@ -121,7 +121,7 @@ public final class CredentialStore {
              FileLock ignored = channel.lock()) {
             StoreData current = read();
             if (passwordRevision(current) != null) {
-                Files.deleteIfExists(setupFile);
+                deleteSetupCodeBestEffort();
                 return null;
             }
 
@@ -165,7 +165,7 @@ public final class CredentialStore {
             }
         });
         if (installedRevision[0] != null) {
-            Files.deleteIfExists(setupCodeFile());
+            deleteSetupCodeBestEffort();
         }
         return installedRevision[0];
     }
@@ -337,6 +337,15 @@ public final class CredentialStore {
 
     private Path setupCodeFile() {
         return directory.resolve(WEB_SETUP_CODE_FILE);
+    }
+
+    private void deleteSetupCodeBestEffort() {
+        try {
+            Files.deleteIfExists(setupCodeFile());
+        } catch (IOException ignored) {
+            // The code verifier is already invalid. A locked stale file must not
+            // turn a committed password change into a reported setup failure.
+        }
     }
 
     private String readSetupCode(Path setupFile) throws IOException {
