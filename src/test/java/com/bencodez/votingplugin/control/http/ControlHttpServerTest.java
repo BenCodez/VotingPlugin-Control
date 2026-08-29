@@ -106,8 +106,14 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("'config.files.v1': 'Full configuration'"));
         assertTrue(script.body().contains("'config.file-comments.v1': 'Comments preserved'"));
         assertTrue(script.body().contains("'config.vote-sites-sync.v1': 'VoteSites sync'"));
+        assertTrue(script.body().contains("'config.transport-test.v1': 'Communication test'"));
+        assertTrue(script.body().contains("'config.proxy-method.v1': 'Proxy method'"));
         assertTrue(script.body().contains("preset: 'sync-vote-sites'"));
         assertTrue(script.body().contains("sourceContent: source"));
+        assertTrue(script.body().contains("preset: 'communication-test'"));
+        assertTrue(script.body().contains("runTransportTest.addEventListener"));
+        assertTrue(script.body().contains("preset: 'proxy-method'"));
+        assertTrue(script.body().contains("proxyMethodButtons.forEach"));
         assertTrue(script.body().contains("handleEditorKeydown"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));

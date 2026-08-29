@@ -83,6 +83,15 @@ const voteSitesSyncCapability = document.querySelector('#vote-sites-sync-capabil
 const previewVoteSitesSync = document.querySelector('#preview-vote-sites-sync');
 const applyVoteSitesSync = document.querySelector('#apply-vote-sites-sync');
 const voteSitesSyncStatus = document.querySelector('#vote-sites-sync-status');
+const transportTestProxy = document.querySelector('#transport-test-proxy');
+const transportTestBackend = document.querySelector('#transport-test-backend');
+const transportTestCapability = document.querySelector('#transport-test-capability');
+const runTransportTest = document.querySelector('#run-transport-test');
+const transportTestStatus = document.querySelector('#transport-test-status');
+const proxyMethodProxy = document.querySelector('#proxy-method-proxy');
+const proxyMethodCapability = document.querySelector('#proxy-method-capability');
+const proxyMethodButtons = [...document.querySelectorAll('[data-proxy-method]')];
+const proxyMethodStatus = document.querySelector('#proxy-method-status');
 const enrollmentCard = document.querySelector('#enrollment-card');
 const enrollmentForm = document.querySelector('#enrollment-form');
 const enrollmentSubmit = enrollmentForm.querySelector('button[type="submit"]');
@@ -106,6 +115,9 @@ let approvedVoteSitesPreview = null;
 let voteSitesSourceId = '';
 let voteSitesTargetIds = new Set();
 let voteSitesTargetsInitialized = false;
+let transportTestProxyId = '';
+let transportTestBackendName = '';
+let proxyMethodProxyId = '';
 let nodeCapabilities = new Map();
 let nodePlugins = new Map();
 let inputGeneration = 0;
@@ -168,6 +180,9 @@ function applyAuthenticatedSession(body) {
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
   voteSitesTargetsInitialized = false;
+  transportTestProxyId = '';
+  transportTestBackendName = '';
+  proxyMethodProxyId = '';
   configurationContent.value = '';
   inputGeneration++;
   logout.hidden = false;
@@ -206,6 +221,8 @@ function friendlyCapability(capability) {
     'config.files.v1': 'Full configuration',
     'config.file-comments.v1': 'Comments preserved',
     'config.vote-sites-sync.v1': 'VoteSites sync',
+    'config.transport-test.v1': 'Communication test',
+    'config.proxy-method.v1': 'Proxy method',
     'config.quick-setup.v1': 'Quick Setup',
     'config.proxy-routing.v1': 'Proxy routing'
   })[capability];
@@ -516,6 +533,86 @@ function renderVoteSitesSync() {
   voteSitesSyncCapability.className = `pill ${readyCount > 0 ? 'online' : 'neutral'}`;
 }
 
+function transportTestProxies() {
+  return visibleNodeItems.filter(node => isProxy(node) && node.online &&
+    node.acceptedCapabilities.includes('config.transport-test.v1'));
+}
+
+function renderTransportTest() {
+  const proxies = transportTestProxies();
+  if (!proxies.some(node => node.nodeId === transportTestProxyId)) {
+    transportTestProxyId = proxies.find(node => node.nodeId === selectedServerId)?.nodeId || proxies[0]?.nodeId || '';
+    transportTestBackendName = '';
+  }
+  const proxy = proxies.find(node => node.nodeId === transportTestProxyId);
+  const backends = Array.isArray(proxy?.backends) ? proxy.backends : [];
+  if (!backends.some(backend => backend.displayName === transportTestBackendName)) {
+    transportTestBackendName = backends[0]?.displayName || '';
+  }
+
+  const proxyPlaceholder = text(document.createElement('option'), proxies.length ? 'Choose a proxy' : 'No capable proxies');
+  proxyPlaceholder.value = '';
+  transportTestProxy.replaceChildren(proxyPlaceholder, ...proxies.map(node => {
+    const option = text(document.createElement('option'), `${node.displayName} · ${node.nodeId}`);
+    option.value = node.nodeId;
+    return option;
+  }));
+  transportTestProxy.value = transportTestProxyId;
+
+  const backendPlaceholder = text(document.createElement('option'), backends.length ? 'Choose a backend' : 'No backends reported');
+  backendPlaceholder.value = '';
+  transportTestBackend.replaceChildren(backendPlaceholder, ...backends.map(backend => {
+    const option = text(document.createElement('option'), `${backend.displayName} · ${backend.backendId}`);
+    option.value = backend.displayName;
+    return option;
+  }));
+  transportTestBackend.value = transportTestBackendName;
+
+  text(transportTestCapability, proxies.length > 0
+    ? `${proxies.length} test-capable ${proxies.length === 1 ? 'proxy' : 'proxies'}` : 'Waiting for a capable proxy');
+  transportTestCapability.className = `pill ${proxies.length > 0 ? 'online' : 'neutral'}`;
+}
+
+function proxyMethodCandidates() {
+  return visibleNodeItems.filter(node => isProxy(node) && node.online &&
+    node.acceptedCapabilities.includes('config.proxy-method.v1'));
+}
+
+function proxyMethodNetwork() {
+  const proxy = nodeIndex.get(proxyMethodProxyId);
+  const reported = Array.isArray(proxy?.backends) ? proxy.backends : [];
+  const backends = reported.map(backend => nodeIndex.get(backend.backendId)).filter(Boolean);
+  const unavailable = reported.filter(backend => {
+    const node = nodeIndex.get(backend.backendId);
+    return !node || !node.online || !node.acceptedCapabilities.includes('config.proxy-method.v1');
+  });
+  return {proxy, reported, backends, unavailable,
+    nodeIds: proxy ? [proxy.nodeId, ...backends.map(node => node.nodeId)] : []};
+}
+
+function renderProxyMethod() {
+  const proxies = proxyMethodCandidates();
+  if (!proxies.some(node => node.nodeId === proxyMethodProxyId)) {
+    proxyMethodProxyId = proxies.find(node => node.nodeId === selectedServerId)?.nodeId || proxies[0]?.nodeId || '';
+  }
+  const placeholder = text(document.createElement('option'), proxies.length ? 'Choose a proxy' : 'No capable proxies');
+  placeholder.value = '';
+  proxyMethodProxy.replaceChildren(placeholder, ...proxies.map(node => {
+    const option = text(document.createElement('option'), `${node.displayName} · ${node.nodeId}`);
+    option.value = node.nodeId;
+    return option;
+  }));
+  proxyMethodProxy.value = proxyMethodProxyId;
+  const network = proxyMethodNetwork();
+  const ready = Boolean(network.proxy) && network.reported.length > 0 && network.unavailable.length === 0;
+  const description = !network.proxy ? 'Waiting for a capable proxy'
+    : network.reported.length === 0 ? 'No backends reported'
+    : network.unavailable.length > 0 ? `${network.unavailable.length} backends unavailable`
+    : `${network.nodeIds.length} nodes ready`;
+  text(proxyMethodCapability, description);
+  proxyMethodCapability.className = `pill ${ready ? 'online' : 'neutral'}`;
+}
+
 function renderNodeViews() {
   nodes.replaceChildren();
   nodes.classList.toggle('empty', visibleNodeItems.length === 0);
@@ -528,6 +625,8 @@ function renderNodeViews() {
   renderTopology();
   renderSelectedServer();
   renderVoteSitesSync();
+  renderTransportTest();
+  renderProxyMethod();
 }
 
 function selectPrimaryServer(nodeId) {
@@ -556,6 +655,11 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) 
   applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
   previewVoteSitesSync.disabled = !voteSitesReady;
   applyVoteSitesSync.disabled = !voteSitesReady || !approvedVoteSitesPreview;
+  runTransportTest.disabled = !authenticated || !transportTestProxyId || !transportTestBackendName || busy;
+  const methodNetwork = proxyMethodNetwork();
+  const methodReady = authenticated && methodNetwork.reported.length > 0 &&
+    methodNetwork.unavailable.length === 0 && !busy;
+  proxyMethodButtons.forEach(button => { button.disabled = !methodReady; });
 }
 
 function targets(capability) {
@@ -676,6 +780,9 @@ function discardAuthenticationState(reason) {
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
   voteSitesTargetsInitialized = false;
+  transportTestProxyId = '';
+  transportTestBackendName = '';
+  proxyMethodProxyId = '';
   selectedServerId = '';
   visibleNodeItems = [];
   nodeIndex.clear();
@@ -691,6 +798,8 @@ function discardAuthenticationState(reason) {
   text(fileOperationStatus, '');
   text(quickOperationStatus, '');
   text(voteSitesSyncStatus, '');
+  text(transportTestStatus, '');
+  text(proxyMethodStatus, '');
   nodes.replaceChildren();
   nodes.classList.add('empty');
   text(nodes, 'Authenticate to view the network.');
@@ -1210,6 +1319,69 @@ applyVoteSitesSync.addEventListener('click', async () => {
     }, voteSitesSyncStatus);
   } catch (error) { text(voteSitesSyncStatus, error.message); }
 });
+
+transportTestProxy.addEventListener('change', () => {
+  transportTestProxyId = transportTestProxy.value;
+  transportTestBackendName = '';
+  renderTransportTest();
+  text(transportTestStatus, 'Choose a backend, then run a live non-vote communication test.');
+  updateConfigurationButtons();
+});
+
+transportTestBackend.addEventListener('change', () => {
+  transportTestBackendName = transportTestBackend.value;
+  text(transportTestStatus, 'Ready to test the active VotingPlugin transport.');
+  updateConfigurationButtons();
+});
+
+runTransportTest.addEventListener('click', async () => {
+  const proxyId = transportTestProxyId;
+  const server = transportTestBackendName;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/read', {
+      nodeIds: [proxyId],
+      configuration: {domain: 'quick-setup', preset: 'communication-test', options: {server}}
+    }, transportTestStatus);
+    if (proxyId !== transportTestProxyId || server !== transportTestBackendName) {
+      text(transportTestStatus, 'The proxy or backend changed while testing. Run the test again.');
+      return;
+    }
+    text(transportTestStatus, operationSummary(operation));
+  } catch (error) { text(transportTestStatus, error.message); }
+});
+
+proxyMethodProxy.addEventListener('change', () => {
+  proxyMethodProxyId = proxyMethodProxy.value;
+  renderProxyMethod();
+  const network = proxyMethodNetwork();
+  text(proxyMethodStatus, network.unavailable.length > 0
+    ? `Cannot switch yet. Enroll, update, and connect: ${network.unavailable.map(backend => backend.displayName).join(', ')}.`
+    : 'Choose a method to preflight every node before applying.');
+  updateConfigurationButtons();
+});
+
+proxyMethodButtons.forEach(button => button.addEventListener('click', async () => {
+  const method = button.dataset.proxyMethod;
+  const network = proxyMethodNetwork();
+  if (!network.proxy || network.reported.length === 0 || network.unavailable.length > 0) return;
+  try {
+    const preview = await startConfigurationOperation('/api/v1/configuration/preview', {
+      nodeIds: network.nodeIds,
+      configuration: {domain: 'quick-setup', preset: 'proxy-method', options: {method}}
+    }, proxyMethodStatus);
+    if (preview.state !== 'SUCCEEDED' || !preview.approvalToken) return;
+    if (proxyMethodProxyId !== network.proxy.nodeId) {
+      text(proxyMethodStatus, 'The selected proxy changed while preflighting. Choose the method again.');
+      return;
+    }
+    if (!window.confirm(`Switch ${network.nodeIds.length} VotingPlugin nodes to ${method}? ` +
+        'The proxy runtime will restart after Control records the result.')) return;
+    const applied = await startConfigurationOperation('/api/v1/configuration/apply', {
+      previewOperationId: preview.operationId, approvalToken: preview.approvalToken
+    }, proxyMethodStatus);
+    text(proxyMethodStatus, `${operationSummary(applied)}\nReconnect the proxy if needed, then run the communication test.`);
+  } catch (error) { text(proxyMethodStatus, error.message); }
+}));
 
 [configurationContent, quickName, quickService, quickUrl, quickDelay, quickRewardScope,
   quickCommand, quickMessage, quickProcessRewards, quickAutoSites, quickExtraCheck, quickCountFake,

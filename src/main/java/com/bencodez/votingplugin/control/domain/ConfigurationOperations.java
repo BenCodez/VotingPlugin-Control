@@ -28,6 +28,8 @@ public final class ConfigurationOperations implements AutoCloseable {
     public static final String FILE_CAPABILITY = "config.files.v1";
     public static final String QUICK_SETUP_CAPABILITY = "config.quick-setup.v1";
     public static final String VOTE_SITES_SYNC_CAPABILITY = "config.vote-sites-sync.v1";
+    public static final String TRANSPORT_TEST_CAPABILITY = "config.transport-test.v1";
+    public static final String PROXY_METHOD_CAPABILITY = "config.proxy-method.v1";
     private static final int MAX_OPERATIONS = 1000;
     private static final int MAX_FILE_OPERATIONS = 16;
     static final int MAX_RETAINED_CHANGE_BYTES = 256 * 1024;

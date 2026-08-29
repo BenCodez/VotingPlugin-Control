@@ -472,6 +472,49 @@ class ConfigurationOperationsTest {
         assertEquals(source, operations.claim("backend-a", session).configuration().options().get("sourceContent"));
     }
 
+    @Test void communicationTestUsesItsOwnReadOnlyCapability() throws Exception {
+        ManagedConfiguration diagnostic = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.COMMUNICATION_TEST, Map.of("server", "survival"));
+        assertEquals(ConfigurationOperations.TRANSPORT_TEST_CAPABILITY, diagnostic.capability());
+
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("proxy-a", session, "Proxy A", "VELOCITY", "test", 1,
+                Set.of(ConfigurationOperations.TRANSPORT_TEST_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("proxy-a"), diagnostic);
+        ConfigurationTask task = operations.claim("proxy-a", session);
+        assertEquals("READ", task.type());
+        assertEquals("communication-test", task.configuration().preset());
+        assertEquals("survival", task.configuration().options().get("server"));
+        assertEquals(read.operationId(), task.operationId());
+    }
+
+    @Test void proxyMethodUsesItsOwnCoordinatedCapability() throws Exception {
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+        assertEquals(ConfigurationOperations.PROXY_METHOD_CAPABILITY, method.capability());
+
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID proxySession = UUID.randomUUID();
+        UUID backendSession = UUID.randomUUID();
+        registry.register(new NodeRegistration("proxy-a", proxySession, "Proxy A", "VELOCITY", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+        registry.register(new NodeRegistration("lobby", backendSession, "Lobby", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("proxy-a", "lobby"), method);
+        assertEquals("proxy-method", operations.claim("proxy-a", proxySession).configuration().preset());
+        assertEquals("proxy-method", operations.claim("lobby", backendSession).configuration().preset());
+        assertEquals(2, preview.nodeStates().size());
+    }
+
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
