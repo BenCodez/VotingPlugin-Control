@@ -393,7 +393,7 @@ function renderSelectedServer() {
   });
 }
 
-function topologyLink(backend) {
+function topologyLink(backend, reporterOnline) {
   const registered = nodeIndex.get(backend.backendId);
   const link = document.createElement('span');
   link.className = `topology-link ${registered?.online ? 'online' : 'warning'}`;
@@ -403,7 +403,9 @@ function topologyLink(backend) {
     : enrollmentIds.has(backend.backendId)
     ? `Enrolled · Control ${registered ? (registered.online ? 'connected' : 'disconnected') : 'not registered'}`
     : 'Not enrolled in Control'));
-  if (backend.presenceKnown) {
+  if (!reporterOnline) {
+    link.append(text(document.createElement('small'), 'Presence stale · reporting proxy disconnected'));
+  } else if (backend.presenceKnown) {
     link.append(text(document.createElement('small'), backend.available
       ? `Minecraft reachable · ${backend.playerCount} ${backend.playerCount === 1 ? 'player' : 'players'}`
       : 'Minecraft unavailable'));
@@ -435,7 +437,7 @@ function renderTopology() {
     if (backends.length === 0) {
       backendList.append(text(document.createElement('small'), 'No configured backends reported by this proxy.'));
     } else {
-      backends.forEach(backend => backendList.append(topologyLink(backend)));
+      backends.forEach(backend => backendList.append(topologyLink(backend, proxy.online)));
     }
     row.append(proxyIdentity, backendList);
     topology.append(row);
@@ -814,7 +816,14 @@ async function loadNodes() {
       .map(node => node.nodeId));
     const filteredSelection = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
     renderServerPicker();
-    if (selectedServerId && visibleIds.has(selectedServerId)) filteredSelection.add(selectedServerId);
+    if (selectedServerId && visibleIds.has(selectedServerId)) {
+      while (!filteredSelection.has(selectedServerId) && filteredSelection.size >= MAX_CONFIGURATION_TARGETS) {
+        const removable = [...filteredSelection].find(node => node !== selectedServerId);
+        if (!removable) break;
+        filteredSelection.delete(removable);
+      }
+      filteredSelection.add(selectedServerId);
+    }
     if (filteredSelection.size !== selectedNodes.size ||
         [...filteredSelection].some(node => !selectedNodes.has(node))) {
       approvedPreview = null;
