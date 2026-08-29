@@ -101,6 +101,22 @@ jobs:
           draft_id="$RELEASE_DRAFT_ID"
           release_marker="<!-- workflow-run:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT -->"
 
+          verify_owned_draft() {
+            release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id")"
+            release_is_draft="$(jq -r '.draft' <<< "$release_json")"
+            release_tag_name="$(jq -r '.tag_name' <<< "$release_json")"
+            release_is_owned="$(
+              jq -r '((.body // "") | test("<!-- workflow-run:[0-9]+:[0-9]+ -->"))' \
+                <<< "$release_json"
+            )"
+            if [[ "$release_is_draft" != "true" \
+                || "$release_tag_name" != "$RELEASE_TAG" \
+                || "$release_is_owned" != "true" ]]; then
+              echo "::error::Workflow-owned draft changed while the release was building"
+              return 1
+            fi
+          }
+
           cleanup() {
             exit_code=$?
             trap - EXIT INT TERM
@@ -122,7 +138,14 @@ jobs:
             if [[ -n "$draft_id" ]]; then
               if release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id" 2>/dev/null)"; then
                 release_is_draft="$(jq -r '.draft' <<< "$release_json")"
-                if [[ "$release_is_draft" == "true" ]]; then
+                release_tag_name="$(jq -r '.tag_name' <<< "$release_json")"
+                release_is_owned="$(
+                  jq -r '((.body // "") | test("<!-- workflow-run:[0-9]+:[0-9]+ -->"))' \
+                    <<< "$release_json"
+                )"
+                if [[ "$release_is_draft" == "true" \
+                    && "$release_tag_name" == "$RELEASE_TAG" \
+                    && "$release_is_owned" == "true" ]]; then
                   gh api --method DELETE \
                     "repos/$GITHUB_REPOSITORY/releases/$draft_id" >/dev/null
                 fi
@@ -155,15 +178,7 @@ jobs:
             fi
           fi
 
-          if [[ -n "$draft_id" ]]; then
-            release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$draft_id")"
-            release_is_draft="$(jq -r '.draft' <<< "$release_json")"
-            release_tag_name="$(jq -r '.tag_name' <<< "$release_json")"
-            if [[ "$release_is_draft" != "true" || "$release_tag_name" != "$RELEASE_TAG" ]]; then
-              echo "::error::Recoverable draft changed while the release was building"
-              false
-            fi
-          else
+          if [[ -z "$draft_id" ]]; then
             draft_id="$(
               gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
                 -f tag_name="$RELEASE_TAG" \
@@ -179,6 +194,7 @@ jobs:
             fi
           fi
 
+          verify_owned_draft
           gh release upload "$RELEASE_TAG" \
             votingplugin-control.jar votingplugin-control.jar.sha256 \
             --clobber \
@@ -191,7 +207,27 @@ jobs:
             false
           fi
 
+          verify_owned_draft
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$draft_id" \
             -F draft=false >/dev/null
           draft_id=""
           trap - EXIT INT TERM
+      - name: Clean up a recovered draft after an earlier failure
+        if: ${{ always() && env.RELEASE_DRAFT_ID != '' && (failure() || cancelled()) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_DRAFT_ID" 2>/dev/null)"; then
+            release_is_draft="$(jq -r '.draft' <<< "$release_json")"
+            release_tag_name="$(jq -r '.tag_name' <<< "$release_json")"
+            release_is_owned="$(
+              jq -r '((.body // "") | test("<!-- workflow-run:[0-9]+:[0-9]+ -->"))' \
+                <<< "$release_json"
+            )"
+            if [[ "$release_is_draft" == "true" \
+                && "$release_tag_name" == "$RELEASE_TAG" \
+                && "$release_is_owned" == "true" ]]; then
+              gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/releases/$RELEASE_DRAFT_ID" >/dev/null
+            fi
+          fi
