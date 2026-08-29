@@ -1,37 +1,426 @@
 name: Publish release
+run-name: Publish v${{ inputs.version }}
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix (for example, 0.1.1)
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-v${{ inputs.version }}
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
           cache: maven
-      - name: Set release version
-        run: mvn -B versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
-      - name: Build and verify
-        run: mvn -B clean verify
-      - name: Stage immutable release assets
-        run: |
-          cp "target/votingplugin-control-${GITHUB_REF_NAME#v}-all.jar" votingplugin-control.jar
-          sha256sum votingplugin-control.jar > votingplugin-control.jar.sha256
-      - name: Create GitHub release
+      - name: Validate release version
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          gh_api() {
+            gh api --header "X-GitHub-Api-Version: 2026-03-10" "$@"
+          }
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Releases must be dispatched from the main branch"
+            exit 1
+          fi
+
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Release version must be a valid version without the v prefix"
+            exit 1
+          fi
+
+          release_tag="v$RELEASE_VERSION"
+          releases_json="$(
+            gh_api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/releases?per_page=100"
+          )"
+          release_count="$(
+            jq -r --arg tag "$release_tag" \
+              '[.[][] | select(.tag_name == $tag)] | length' <<< "$releases_json"
+          )"
+          release_draft_id=""
+          if [[ "$release_count" != "0" ]]; then
+            release_draft_id="$(
+              jq -r --arg tag "$release_tag" \
+                '[.[][] | select(.tag_name == $tag and .draft == true and ((.body // "") | test("<!-- workflow-run:[0-9]+:[0-9]+ -->")))] | first | .id // empty' \
+                <<< "$releases_json"
+            )"
+            if [[ "$release_count" != "1" || -z "$release_draft_id" ]]; then
+              echo "::error::Release $release_tag already exists and is not a recoverable workflow draft"
+              exit 1
+            fi
+            echo "::notice::Resuming workflow-owned draft release $release_draft_id"
+          fi
+
+          release_sha="$GITHUB_SHA"
+          if tag_json="$(gh_api "repos/$GITHUB_REPOSITORY/git/ref/tags/$release_tag" 2>/dev/null)"; then
+            tag_type="$(jq -r '.object.type' <<< "$tag_json")"
+            if [[ "$tag_type" != "commit" ]]; then
+              echo "::error::Existing tag $release_tag is not a lightweight commit tag"
+              exit 1
+            fi
+            release_sha="$(jq -r '.object.sha' <<< "$tag_json")"
+            echo "::notice::Reusing existing tag $release_tag at $release_sha"
+          fi
+
+          {
+            echo "RELEASE_VERSION=$RELEASE_VERSION"
+            echo "RELEASE_TAG=$release_tag"
+            echo "RELEASE_SHA=$release_sha"
+            echo "RELEASE_DRAFT_ID=$release_draft_id"
+          } >> "$GITHUB_ENV"
+      - name: Require release safeguards
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SETTINGS_TOKEN: ${{ secrets.RELEASE_SETTINGS_TOKEN }}
+        run: |
+          gh_api() {
+            gh api --header "X-GitHub-Api-Version: 2026-03-10" "$@"
+          }
+
+          if [[ -z "$RELEASE_SETTINGS_TOKEN" ]]; then
+            echo "::error::Add the RELEASE_SETTINGS_TOKEN secret with Administration read permission"
+            exit 1
+          fi
+          if ! immutable_json="$(
+            GH_TOKEN="$RELEASE_SETTINGS_TOKEN" \
+              gh_api "repos/$GITHUB_REPOSITORY/immutable-releases"
+          )"; then
+            echo "::error::Release immutability is disabled or RELEASE_SETTINGS_TOKEN cannot verify it"
+            exit 1
+          fi
+          if ! jq -e '.enabled == true' <<< "$immutable_json" >/dev/null; then
+            echo "::error::Enable release immutability in repository Settings"
+            exit 1
+          fi
+
+          release_ruleset_id=""
+          while IFS= read -r ruleset_id; do
+            ruleset_json="$(gh_api "repos/$GITHUB_REPOSITORY/rulesets/$ruleset_id")"
+            if jq -e '
+              .target == "tag"
+              and .enforcement == "active"
+              and ((.bypass_actors // []) | length == 0)
+              and (.conditions.ref_name.include == ["refs/tags/v*"])
+              and ((.conditions.ref_name.exclude // []) | length == 0)
+              and (([.rules[].type] | index("update")) != null)
+              and (([.rules[].type] | index("deletion")) != null)
+            ' <<< "$ruleset_json" >/dev/null; then
+              release_ruleset_id="$ruleset_id"
+              break
+            fi
+          done < <(
+            gh_api --paginate \
+              "repos/$GITHUB_REPOSITORY/rulesets?targets=tag&per_page=100" \
+              --jq '.[] | select(.enforcement == "active") | .id'
+          )
+
+          if [[ -z "$release_ruleset_id" ]]; then
+            echo "::error::Create an active tag ruleset for refs/tags/v* with no bypass actors and Restrict updates/deletions enabled"
+            exit 1
+          fi
+          echo "RELEASE_RULESET_ID=$release_ruleset_id" >> "$GITHUB_ENV"
+      - name: Check out release source
+        run: |
+          if [[ "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]]; then
+            git fetch --no-tags origin "$RELEASE_SHA"
+            git checkout --detach "$RELEASE_SHA"
+          fi
+          if [[ "$(git rev-parse HEAD)" != "$RELEASE_SHA" ]]; then
+            echo "::error::Unable to check out release commit $RELEASE_SHA"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
+            echo "::error::Release commit is not contained in the main branch"
+            exit 1
+          fi
+          echo "RELEASE_OUTPUT_TIMESTAMP=$(git show -s --format=%cI "$RELEASE_SHA")" >> "$GITHUB_ENV"
+      - name: Set release version
         run: >-
-          gh release create "$GITHUB_REF_NAME"
-          votingplugin-control.jar votingplugin-control.jar.sha256
-          --repo "$GITHUB_REPOSITORY"
-          --verify-tag
-          --generate-notes
+          mvn -B versions:set
+          -DnewVersion="$RELEASE_VERSION"
+          -DgenerateBackupPoms=false
+          -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
+      - name: Build and verify reproducibility
+        run: |
+          mvn -B clean verify -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
+          first_digest="$(sha256sum "target/votingplugin-control-$RELEASE_VERSION-all.jar" | cut -d ' ' -f 1)"
+          mvn -B clean verify -Dproject.build.outputTimestamp="$RELEASE_OUTPUT_TIMESTAMP"
+          second_digest="$(sha256sum "target/votingplugin-control-$RELEASE_VERSION-all.jar" | cut -d ' ' -f 1)"
+          if [[ "$first_digest" != "$second_digest" ]]; then
+            echo "::error::Release JAR is not byte-reproducible"
+            exit 1
+          fi
+      - name: Stage immutable release assets
+        run: |
+          cp "target/votingplugin-control-$RELEASE_VERSION-all.jar" votingplugin-control.jar
+          sha256sum votingplugin-control.jar > votingplugin-control.jar.sha256
+          {
+            echo "JAR_ASSET_DIGEST=sha256:$(sha256sum votingplugin-control.jar | cut -d ' ' -f 1)"
+            echo "CHECKSUM_ASSET_DIGEST=sha256:$(sha256sum votingplugin-control.jar.sha256 | cut -d ' ' -f 1)"
+          } >> "$GITHUB_ENV"
+      - name: Publish verified GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SETTINGS_TOKEN: ${{ secrets.RELEASE_SETTINGS_TOKEN }}
+        run: |
+          gh_api() {
+            gh api --header "X-GitHub-Api-Version: 2026-03-10" "$@"
+          }
+
+          draft_id="$RELEASE_DRAFT_ID"
+          release_marker="<!-- workflow-run:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT -->"
+
+          verify_release_ruleset() {
+            ruleset_json="$(gh_api "repos/$GITHUB_REPOSITORY/rulesets/$RELEASE_RULESET_ID")"
+            if ! jq -e '
+              .target == "tag"
+              and .enforcement == "active"
+              and ((.bypass_actors // []) | length == 0)
+              and (.conditions.ref_name.include == ["refs/tags/v*"])
+              and ((.conditions.ref_name.exclude // []) | length == 0)
+              and (([.rules[].type] | index("update")) != null)
+              and (([.rules[].type] | index("deletion")) != null)
+            ' <<< "$ruleset_json" >/dev/null; then
+              echo "::error::Required release tag ruleset changed while the release was building"
+              return 1
+            fi
+          }
+
+          verify_release_immutability() {
+            if [[ -z "$RELEASE_SETTINGS_TOKEN" ]]; then
+              echo "::error::RELEASE_SETTINGS_TOKEN is unavailable"
+              return 1
+            fi
+            if ! immutable_json="$(
+              GH_TOKEN="$RELEASE_SETTINGS_TOKEN" \
+                gh_api "repos/$GITHUB_REPOSITORY/immutable-releases"
+            )"; then
+              echo "::error::Release immutability was disabled or can no longer be verified"
+              return 1
+            fi
+            if ! jq -e '.enabled == true' <<< "$immutable_json" >/dev/null; then
+              echo "::error::Release immutability was disabled while the release was building"
+              return 1
+            fi
+          }
+
+          verify_owned_draft() {
+            release_json="$(gh_api "repos/$GITHUB_REPOSITORY/releases/$draft_id")"
+            release_is_draft="$(jq -r '.draft' <<< "$release_json")"
+            release_tag_name="$(jq -r '.tag_name' <<< "$release_json")"
+            release_is_owned="$(
+              jq -r '((.body // "") | test("<!-- workflow-run:[0-9]+:[0-9]+ -->"))' \
+                <<< "$release_json"
+            )"
+            if [[ "$release_is_draft" != "true" \
+                || "$release_tag_name" != "$RELEASE_TAG" \
+                || "$release_is_owned" != "true" ]]; then
+              echo "::error::Workflow-owned draft changed while the release was building"
+              return 1
+            fi
+            release_body="$(jq -r '.body // ""' <<< "$release_json")"
+          }
+
+          ensure_asset() {
+            asset_path="$1"
+            expected_digest="$2"
+            asset_name="$(basename "$asset_path")"
+
+            verify_owned_draft
+            asset_count="$(
+              jq -r --arg name "$asset_name" \
+                '[.assets[] | select(.name == $name)] | length' <<< "$release_json"
+            )"
+            if [[ "$asset_count" == "0" ]]; then
+              gh release upload "$RELEASE_TAG" "$asset_path" \
+                --repo "$GITHUB_REPOSITORY"
+              return
+            fi
+            if [[ "$asset_count" != "1" ]]; then
+              echo "::error::Draft contains duplicate assets named $asset_name"
+              return 1
+            fi
+
+            asset_state="$(
+              jq -r --arg name "$asset_name" \
+                '.assets[] | select(.name == $name) | .state' <<< "$release_json"
+            )"
+            asset_digest="$(
+              jq -r --arg name "$asset_name" \
+                '.assets[] | select(.name == $name) | .digest // ""' <<< "$release_json"
+            )"
+            if [[ "$asset_state" != "uploaded" || "$asset_digest" != "$expected_digest" ]]; then
+              echo "::error::Existing $asset_name is not the verified asset from this build"
+              return 1
+            fi
+            echo "::notice::Reusing verified existing asset $asset_name"
+          }
+
+          verify_release_assets() {
+            verify_owned_draft
+            jar_digest="$(
+              jq -r '.assets[] | select(.name == "votingplugin-control.jar") | .digest // ""' \
+                <<< "$release_json"
+            )"
+            checksum_digest="$(
+              jq -r '.assets[] | select(.name == "votingplugin-control.jar.sha256") | .digest // ""' \
+                <<< "$release_json"
+            )"
+            if [[ "$jar_digest" != "$JAR_ASSET_DIGEST" \
+                || "$checksum_digest" != "$CHECKSUM_ASSET_DIGEST" ]]; then
+              echo "::error::Draft asset digests changed before publication"
+              return 1
+            fi
+          }
+
+
+          verify_release_immutability
+
+          if tag_json="$(gh_api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" 2>/dev/null)"; then
+            current_type="$(jq -r '.object.type' <<< "$tag_json")"
+            current_sha="$(jq -r '.object.sha' <<< "$tag_json")"
+            if [[ "$current_type" != "commit" || "$current_sha" != "$RELEASE_SHA" ]]; then
+              echo "::error::Release tag no longer points at the verified commit"
+              false
+            fi
+          else
+            if ! gh_api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f ref="refs/tags/$RELEASE_TAG" \
+                -f sha="$RELEASE_SHA" >/dev/null; then
+              tag_json="$(gh_api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
+              current_type="$(jq -r '.object.type' <<< "$tag_json")"
+              current_sha="$(jq -r '.object.sha' <<< "$tag_json")"
+              if [[ "$current_type" != "commit" || "$current_sha" != "$RELEASE_SHA" ]]; then
+                echo "::error::Release tag was concurrently created at another commit"
+                false
+              fi
+            fi
+          fi
+
+          if [[ -z "$draft_id" ]]; then
+            draft_id="$(
+              gh_api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+                -f tag_name="$RELEASE_TAG" \
+                -f name="$RELEASE_TAG" \
+                -f body="$release_marker" \
+                -F draft=true \
+                -F generate_release_notes=true \
+                --jq '.id'
+            )"
+            if [[ -z "$draft_id" ]]; then
+              echo "::error::Created draft release did not return an ID"
+              false
+            fi
+          fi
+
+          ensure_asset votingplugin-control.jar "$JAR_ASSET_DIGEST"
+          ensure_asset votingplugin-control.jar.sha256 "$CHECKSUM_ASSET_DIGEST"
+          verify_release_assets
+          verify_release_ruleset
+          verify_release_immutability
+          tag_json="$(gh_api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
+          current_type="$(jq -r '.object.type' <<< "$tag_json")"
+          current_sha="$(jq -r '.object.sha' <<< "$tag_json")"
+          if [[ "$current_type" != "commit" || "$current_sha" != "$RELEASE_SHA" ]]; then
+            echo "::error::Release tag changed after the verified build"
+            false
+          fi
+
+          release_json="$(gh_api "repos/$GITHUB_REPOSITORY/releases/$draft_id")"
+          release_is_draft="$(jq -r '.draft' <<< "$release_json")"
+          release_tag_name="$(jq -r '.tag_name' <<< "$release_json")"
+          release_is_owned="$(
+            jq -r '((.body // "") | test("<!-- workflow-run:[0-9]+:[0-9]+ -->"))' \
+              <<< "$release_json"
+          )"
+          release_assets_valid="$(
+            jq -r \
+              --arg jar "$JAR_ASSET_DIGEST" \
+              --arg checksum "$CHECKSUM_ASSET_DIGEST" \
+              '(.assets | length == 2)
+               and ([.assets[] | select(
+                 .name == "votingplugin-control.jar"
+                 and .state == "uploaded"
+                 and .digest == $jar
+               )] | length == 1)
+               and ([.assets[] | select(
+                 .name == "votingplugin-control.jar.sha256"
+                 and .state == "uploaded"
+                 and .digest == $checksum
+               )] | length == 1)' \
+              <<< "$release_json"
+          )"
+          if [[ "$release_is_draft" != "true" \
+              || "$release_tag_name" != "$RELEASE_TAG" \
+              || "$release_is_owned" != "true" \
+              || "$release_assets_valid" != "true" ]]; then
+            echo "::error::Draft ownership or exact asset set changed before publication"
+            exit 1
+          fi
+
+          release_body="$(jq -r '.body // ""' <<< "$release_json")"
+          clean_body="$(
+            sed '/<!-- verified-assets:start -->/,/<!-- verified-assets:end -->/d' \
+              <<< "$release_body"
+          )"
+          printf -v verified_body \
+            '%s\n\n<!-- verified-assets:start -->\nvotingplugin-control.jar: %s\nvotingplugin-control.jar.sha256: %s\n<!-- verified-assets:end -->' \
+            "$clean_body" "$JAR_ASSET_DIGEST" "$CHECKSUM_ASSET_DIGEST"
+          publish_payload="$(
+            jq -n \
+              --arg tag "$RELEASE_TAG" \
+              --arg target "$RELEASE_SHA" \
+              --arg name "$RELEASE_TAG" \
+              --arg body "$verified_body" \
+              '{tag_name: $tag, target_commitish: $target, name: $name, body: $body, draft: false}'
+          )"
+          published_json="$(
+            gh_api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/releases/$draft_id" \
+              --input - <<< "$publish_payload"
+          )"
+          published_assets_valid="$(
+            jq -r \
+              --arg jar "$JAR_ASSET_DIGEST" \
+              --arg checksum "$CHECKSUM_ASSET_DIGEST" \
+              '(.assets | length == 2)
+               and ([.assets[] | select(
+                 .name == "votingplugin-control.jar"
+                 and .state == "uploaded"
+                 and .digest == $jar
+               )] | length == 1)
+               and ([.assets[] | select(
+                 .name == "votingplugin-control.jar.sha256"
+                 and .state == "uploaded"
+                 and .digest == $checksum
+               )] | length == 1)' \
+              <<< "$published_json"
+          )"
+          if [[ "$(jq -r '.immutable' <<< "$published_json")" != "true" \
+              || "$(jq -r '.draft' <<< "$published_json")" != "false" \
+              || "$(jq -r '.tag_name' <<< "$published_json")" != "$RELEASE_TAG" \
+              || "$(jq -r '.name' <<< "$published_json")" != "$RELEASE_TAG" \
+              || "$(jq -r '.body // ""' <<< "$published_json")" != "$verified_body" \
+              || "$published_assets_valid" != "true" ]]; then
+            echo "::error::Published release is not the expected immutable release; verify repository settings and do not edit workflow-owned drafts during a run"
+            exit 1
+          fi
