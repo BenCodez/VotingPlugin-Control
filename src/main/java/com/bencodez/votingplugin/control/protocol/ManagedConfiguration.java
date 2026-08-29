@@ -11,6 +11,8 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
     public static final String FILE = "file";
     public static final String QUICK_SETUP = "quick-setup";
     public static final String VOTE_SITES_SYNC = "sync-vote-sites";
+    public static final String COMMUNICATION_TEST = "communication-test";
+    public static final String PROXY_METHOD = "proxy-method";
     public static final int MAX_CONTENT = 512 * 1024;
 
     public ManagedConfiguration {
@@ -64,7 +66,9 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             case PROXY_ROUTING -> "config.proxy-routing.v1";
             case FILE -> "config.files.v1";
             case QUICK_SETUP -> VOTE_SITES_SYNC.equals(preset)
-                    ? "config.vote-sites-sync.v1" : "config.quick-setup.v1";
+                    ? "config.vote-sites-sync.v1" : COMMUNICATION_TEST.equals(preset)
+                    ? "config.transport-test.v1" : PROXY_METHOD.equals(preset)
+                    ? "config.proxy-method.v1" : "config.quick-setup.v1";
             default -> throw new IllegalStateException("unsupported configuration domain");
         };
     }

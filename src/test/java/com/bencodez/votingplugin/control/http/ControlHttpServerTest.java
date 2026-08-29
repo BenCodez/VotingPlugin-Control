@@ -82,6 +82,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("authenticationGeneration"));
         assertTrue(script.body().contains("if (loginInFlight) return"));
         assertTrue(script.body().contains("backendItemsTruncated"));
+        assertTrue(script.body().contains("topologyComplete: !truncatedNodeIds.has(proxyId)"));
+        assertTrue(script.body().contains("proxyReady: network.proxyReady"));
+        assertTrue(script.body().contains("option.value = backend.backendId"));
+        assertTrue(script.body().contains("return allNodeItems.filter(node => isProxy(node)"));
+        assertTrue(script.body().contains("MAX_OPERATION_TARGETS = 100"));
+        assertTrue(script.body().contains("proxyMethodNetworkSignature(refreshedNetwork)"));
         assertTrue(web.body().contains("Easy vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
@@ -112,12 +118,18 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("'config.files.v1': 'Full configuration'"));
         assertTrue(script.body().contains("'config.file-comments.v1': 'Comments preserved'"));
         assertTrue(script.body().contains("'config.vote-sites-sync.v1': 'VoteSites sync'"));
+        assertTrue(script.body().contains("'config.transport-test.v1': 'Communication test'"));
+        assertTrue(script.body().contains("'config.proxy-method.v1': 'Proxy method'"));
         assertTrue(script.body().contains("preset: 'sync-vote-sites'"));
         assertTrue(script.body().contains("return allNodeItems.filter(node => isBackend(node)"));
         assertTrue(script.body().contains("A sync target became unavailable"));
         assertTrue(script.body().contains("MAX_SYNC_TARGETS = 100"));
         assertTrue(script.body().contains("The sync source became unavailable"));
         assertTrue(script.body().contains("sourceContent: source"));
+        assertTrue(script.body().contains("preset: 'communication-test'"));
+        assertTrue(script.body().contains("runTransportTest.addEventListener"));
+        assertTrue(script.body().contains("preset: 'proxy-method'"));
+        assertTrue(script.body().contains("proxyMethodButtons.forEach"));
         assertTrue(script.body().contains("handleEditorKeydown"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
@@ -152,6 +164,7 @@ class ControlHttpServerTest {
         assertTrue(page.backendItemsTruncated());
         assertTrue(page.backendItemsReturned() <= ControlHttpServer.MAX_BACKENDS_PER_NODE_PAGE);
         assertEquals(100, page.items().size());
+        assertEquals(100, page.backendItemsTruncatedNodeIds().size());
         assertTrue(page.items().stream().allMatch(node -> node.backends().size() == 40));
     }
 
