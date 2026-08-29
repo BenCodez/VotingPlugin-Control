@@ -383,10 +383,9 @@ async function loadEnrollments() {
   } finally {
     enrollmentInFlight = false;
     refreshEnrollments.disabled = false;
-    if (enrollmentRefreshRequested && authenticated) {
-      enrollmentRefreshRequested = false;
-      await loadEnrollments();
-    }
+    const refreshAgain = enrollmentRefreshRequested && authenticated;
+    enrollmentRefreshRequested = false;
+    if (refreshAgain) await loadEnrollments();
   }
 }
 
