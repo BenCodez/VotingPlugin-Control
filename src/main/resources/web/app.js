@@ -30,6 +30,7 @@ const selectedServerState = document.querySelector('#selected-server-state');
 const selectedServerSummary = document.querySelector('#selected-server-summary');
 const selectedServerCapabilities = document.querySelector('#selected-server-capabilities');
 const configurationContext = document.querySelector('#configuration-context');
+const commentPreservationState = document.querySelector('#comment-preservation-state');
 const topology = document.querySelector('#topology');
 const nodes = document.querySelector('#nodes');
 const refresh = document.querySelector('#refresh');
@@ -189,6 +190,7 @@ function platformLabel(platform) {
 function friendlyCapability(capability) {
   return ({
     'config.files.v1': 'Full configuration',
+    'config.file-comments.v1': 'Comments preserved',
     'config.quick-setup.v1': 'Quick Setup',
     'config.proxy-routing.v1': 'Proxy routing'
   })[capability];
@@ -346,6 +348,8 @@ function renderSelectedServer() {
     selectedServerState.className = 'pill neutral';
     text(selectedServerSummary, 'Use the server picker above to keep configuration and setup actions focused on one node.');
     text(configurationContext, 'Choose a backend from the server picker to work with its VotingPlugin configuration.');
+    text(commentPreservationState, 'Comment support unknown');
+    commentPreservationState.className = 'pill warning';
     return;
   }
   text(selectedServerName, selected.displayName);
@@ -358,6 +362,9 @@ function renderSelectedServer() {
     `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion}.${relationshipText}`);
   text(configurationContext,
     `${selected.displayName} (${selected.nodeId}) · ${roleLabel(selected)} · ${selected.online ? 'Control connected' : 'Control disconnected'}`);
+  const preservesComments = selected.acceptedCapabilities.includes('config.file-comments.v1');
+  text(commentPreservationState, preservesComments ? 'Comments preserved' : 'Comments not guaranteed');
+  commentPreservationState.className = `pill ${preservesComments ? 'online' : 'warning'}`;
   const capabilities = managedCapabilities(selected);
   if (capabilities.length === 0) capabilities.push('Discovery only');
   capabilities.forEach(value => {
