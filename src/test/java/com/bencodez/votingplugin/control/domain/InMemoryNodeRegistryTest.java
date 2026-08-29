@@ -35,6 +35,14 @@ class InMemoryNodeRegistryTest {
                 () -> result.node().advertisedCapabilities().add("changed"));
     }
 
+    @Test void registrationNegotiatesOptionalCommentPreservingFileSupport() {
+        Set<String> capabilities = Set.of("config.files.v1", "config.file-comments.v1");
+
+        var result = registry.register(registration("backend-lobby", session, capabilities, Set.of("config.files.v1")));
+
+        assertEquals(capabilities, result.node().acceptedCapabilities());
+    }
+
     @Test void heartbeatReplacesCapabilitiesAndRejectsUnavailableRequiredCapability() {
         registry.register(registration("proxy-a", session, Set.of("discovery.read"), Set.of()));
         var updated = registry.heartbeat("proxy-a", new Heartbeat(session, 1, Set.of("presence.snapshot"), Set.of()));
