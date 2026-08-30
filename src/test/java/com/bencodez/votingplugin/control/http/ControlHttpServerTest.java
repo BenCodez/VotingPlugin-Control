@@ -96,6 +96,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')"));
         assertTrue(script.body().contains("sessionId !== proxyMethodNetwork().proxy?.sessionId"));
         assertTrue(script.body().contains("refreshedNetwork.proxy?.sessionId !== network.proxy.sessionId"));
+        assertTrue(script.body().contains("if (approvedQuickPreview?.workflow === 'sync-vote-sites') approvedQuickPreview = null;"));
+        assertTrue(script.body().contains("if (quickPreset.value !== 'sync-vote-sites') return;"));
         assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));

@@ -538,6 +538,13 @@ function selectedVoteSitesTargets() {
   return [...voteSitesTargetIds].filter(nodeId => capable.has(nodeId) && nodeId !== voteSitesSourceId);
 }
 
+function invalidateVoteSitesSyncPreview(message) {
+  if (approvedQuickPreview?.workflow === 'sync-vote-sites') approvedQuickPreview = null;
+  if (quickPreset.value !== 'sync-vote-sites') return;
+  inputGeneration++;
+  text(quickOperationStatus, message);
+}
+
 function renderVoteSitesSync() {
   const sources = syncSourceCandidates();
   const targetsAvailable = syncTargetCandidates();
@@ -546,17 +553,13 @@ function renderVoteSitesSync() {
     voteSitesSourceId = sources.find(node => node.nodeId === selectedServerId)?.nodeId || sources[0]?.nodeId || '';
   }
   if (previousSourceId && previousSourceId !== voteSitesSourceId) {
-    approvedQuickPreview = null;
-    inputGeneration++;
-    text(quickOperationStatus, 'The sync source became unavailable. Read the replacement source and preview again.');
+    invalidateVoteSitesSyncPreview('The sync source became unavailable. Read the replacement source and preview again.');
   }
   const targetIds = new Set(targetsAvailable.map(node => node.nodeId));
   const retainedTargets = new Set([...voteSitesTargetIds].filter(nodeId =>
     targetIds.has(nodeId) && nodeId !== voteSitesSourceId));
   if (retainedTargets.size !== voteSitesTargetIds.size) {
-    approvedQuickPreview = null;
-    inputGeneration++;
-    text(quickOperationStatus, 'A sync target became unavailable. Preview again before syncing.');
+    invalidateVoteSitesSyncPreview('A sync target became unavailable. Preview again before syncing.');
   }
   voteSitesTargetIds = retainedTargets;
   if (!voteSitesTargetsInitialized && sources.length > 0) {
