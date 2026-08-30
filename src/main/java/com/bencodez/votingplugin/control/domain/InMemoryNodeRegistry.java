@@ -26,7 +26,7 @@ import java.util.regex.Pattern;
 public final class InMemoryNodeRegistry implements NodeRegistry {
     public static final Set<String> SUPPORTED_CAPABILITIES = Set.of("discovery.read", "presence.snapshot",
             ConfigurationOperations.CAPABILITY, ConfigurationOperations.FILE_CAPABILITY,
-            ConfigurationOperations.QUICK_SETUP_CAPABILITY);
+            ConfigurationOperations.QUICK_SETUP_CAPABILITY, "config.file-comments.v1");
     private static final Pattern ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final Pattern CAPABILITY = Pattern.compile("[a-z][a-z0-9.-]{0,63}");
     private static final Set<String> PLATFORMS = Set.of("BUNGEECORD", "VELOCITY", "BUKKIT");
@@ -43,6 +43,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
     private final int maxTotalDetectedPlugins;
     private int retainedBackends;
     private int retainedDetectedPlugins;
+    private long membershipRevision;
 
     public InMemoryNodeRegistry(Clock clock, Duration offlineTimeout) {
         this(clock, offlineTimeout, MAX_TOTAL_BACKENDS, MAX_TOTAL_DETECTED_PLUGINS);
@@ -69,7 +70,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
     public synchronized RegistrationResult register(NodeRegistration registration) {
         validate(registration);
         Instant now = clock.instant();
-        reclaimOfflineTopology(now, registration.nodeId());
+        if (reclaimOfflineTopology(now, registration.nodeId())) membershipRevision++;
         StoredNode current = nodes.get(registration.nodeId());
         int replacementPluginTotal = retainedDetectedPlugins
                 - (current == null ? 0 : current.detectedPlugins.size()) + registration.detectedPlugins().size();
@@ -94,6 +95,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
             return replacement;
         });
         retainedDetectedPlugins = replacementPluginTotal;
+        if (created.get()) membershipRevision++;
         return new RegistrationResult(view(result.get()), created.get());
     }
 
@@ -128,7 +130,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         validateId(nodeId, "nodeId");
         validateSnapshot(snapshot);
         Instant now = clock.instant();
-        reclaimOfflineTopology(now, nodeId);
+        if (reclaimOfflineTopology(now, nodeId)) membershipRevision++;
         AtomicBoolean applied = new AtomicBoolean();
         AtomicReference<StoredNode> result = new AtomicReference<>();
         nodes.computeIfPresent(nodeId, (ignored, existing) -> {
@@ -161,11 +163,21 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
 
     @Override
     public List<NodeStatus> list(int offset, int limit) {
+        return page(offset, limit, null).items();
+    }
+
+    @Override
+    public synchronized RegistryPage page(int offset, int limit, Long expectedRevision) {
         if (offset < 0 || limit < 1 || limit > 100) {
             throw invalid("offset must be >= 0 and limit must be between 1 and 100");
         }
-        return nodes.values().stream().sorted(Comparator.comparing(node -> node.nodeId))
+        if (expectedRevision != null && expectedRevision.longValue() != membershipRevision) {
+            throw new ValidationException("REGISTRY_CHANGED", "Node registry changed during pagination",
+                    List.of("expectedRevision=" + expectedRevision, "actualRevision=" + membershipRevision));
+        }
+        List<NodeStatus> items = nodes.values().stream().sorted(Comparator.comparing(node -> node.nodeId))
                 .skip(offset).limit(limit).map(this::view).toList();
+        return new RegistryPage(items, membershipRevision, nodes.size());
     }
 
     @Override
@@ -210,16 +222,19 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
                 node.backends, node.snapshotSequence, node.lastSeen, node.lastAuthenticatedUpdate, online);
     }
 
-    private void reclaimOfflineTopology(Instant now, String excludedNodeId) {
+    private boolean reclaimOfflineTopology(Instant now, String excludedNodeId) {
+        AtomicBoolean reclaimed = new AtomicBoolean();
         for (String candidate : List.copyOf(nodes.keySet())) {
             if (candidate.equals(excludedNodeId)) continue;
             nodes.computeIfPresent(candidate, (ignored, existing) -> {
                 if (now.isBefore(existing.lastSeen.plus(offlineTimeout))) return existing;
                 retainedDetectedPlugins -= existing.detectedPlugins.size();
                 retainedBackends -= existing.backends.size();
+                reclaimed.set(true);
                 return null;
             });
         }
+        return reclaimed.get();
     }
 
     private static void validate(NodeRegistration registration) {

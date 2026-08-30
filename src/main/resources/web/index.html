@@ -7,16 +7,31 @@
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-  <main>
-    <header>
-      <div>
-        <p class="eyebrow">Local network console</p>
-        <h1>VotingPlugin Control</h1>
-      </div>
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="VotingPlugin Control overview">
+      <span class="brand-mark" aria-hidden="true">V</span>
+      <span><strong>VotingPlugin</strong><small>Control</small></span>
+    </a>
+    <div class="topbar-actions">
+      <label class="server-picker" id="server-picker-label" for="server-picker" hidden>
+        <span>VotingPlugin server</span>
+        <select id="server-picker" aria-label="Selected VotingPlugin server">
+          <option value="">Choose a server</option>
+        </select>
+      </label>
       <output id="health" class="status">Connecting…</output>
-    </header>
+      <button id="logout" class="secondary compact" type="button" hidden>Sign out</button>
+    </div>
+  </header>
 
-    <section class="card" id="setup-card" hidden>
+  <main>
+    <section class="welcome" id="welcome">
+      <p class="eyebrow">Hosted network console</p>
+      <h1>Manage VotingPlugin without losing sight of the network.</h1>
+      <p>Choose a VotingPlugin node once, then move between its configuration, setup, and network context.</p>
+    </section>
+
+    <section class="card auth-card" id="setup-card" hidden>
       <h2>First-run setup</h2>
       <p>Create the WebUI password without running a server command. Open <code>web-setup-code.txt</code> inside
         the configured <code>Control.Hosted.DataDirectory</code> with the server file manager and enter its one-time
@@ -37,165 +52,283 @@
       <p id="setup-message" role="status"></p>
     </section>
 
-    <section class="card" id="auth-card">
-      <h2>Network discovery</h2>
-      <p>Sign in with the WebUI password configured by the Control owner. Sessions use an HttpOnly cookie and expire automatically.</p>
+    <section class="card auth-card" id="auth-card">
+      <p class="eyebrow">Owner access</p>
+      <h2>Sign in to your network</h2>
+      <p>Use the WebUI password configured by the Control owner. Sessions use an HttpOnly cookie and expire automatically.</p>
       <form id="auth-form">
         <label for="password">WebUI password</label>
         <div class="auth-row">
           <input id="password" type="password" autocomplete="current-password" spellcheck="false" required>
-          <div class="auth-actions">
-            <button type="submit">Sign in</button>
-            <button id="logout" type="button" hidden>Sign out</button>
+          <button type="submit">Sign in</button>
+        </div>
+      </form>
+    </section>
+
+    <p id="message" class="global-message" role="status"></p>
+
+    <div id="app-shell" hidden>
+      <nav class="tabs" aria-label="Control sections" role="tablist">
+        <button type="button" role="tab" aria-selected="true" aria-controls="overview-panel" data-tab="overview">Overview</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="servers-panel" data-tab="servers">Servers</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="network-panel" data-tab="network">Network</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="configurations-panel" data-tab="configurations">Configurations</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="quick-setup-panel" data-tab="quick-setup">Quick Setup</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="activity-panel" data-tab="activity">Activity</button>
+        <button type="button" role="tab" aria-selected="false" aria-controls="access-panel" data-tab="access">Access</button>
+      </nav>
+
+      <section class="tab-panel" id="overview-panel" role="tabpanel" data-panel="overview">
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Network overview</p>
+            <h2>Everything important, without the protocol noise</h2>
+          </div>
+          <button class="secondary" type="button" data-open-tab="servers">View all servers</button>
+        </div>
+        <div class="metrics" aria-label="Network summary">
+          <article><span>Registered nodes</span><strong id="metric-nodes">0</strong></article>
+          <article><span>Control connected</span><strong id="metric-online">0</strong></article>
+          <article><span>Configured backends</span><strong id="metric-backends">0</strong></article>
+          <article><span>Needs attention</span><strong id="metric-issues">0</strong></article>
+        </div>
+        <section class="card selected-summary-card">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Current context</p>
+              <h3 id="selected-server-name">Choose a VotingPlugin server</h3>
+            </div>
+            <span id="selected-server-state" class="pill neutral">No selection</span>
+          </div>
+          <p id="selected-server-summary">Use the server picker above to keep configuration and setup actions focused on one node.</p>
+          <div id="selected-server-capabilities" class="pills"></div>
+        </section>
+        <section class="card">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Topology</p>
+              <h3>Proxies and their VotingPlugin backends</h3>
+            </div>
+          </div>
+          <div id="topology" class="topology empty">No topology loaded.</div>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="servers-panel" role="tabpanel" data-panel="servers" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">VotingPlugin nodes</p>
+            <h2>Servers</h2>
+            <p>Control connectivity and Minecraft presence are shown separately so an unknown player count is never reported as an offline server.</p>
+          </div>
+          <button id="refresh" class="secondary" type="button" disabled>Refresh</button>
+        </div>
+        <div id="nodes" class="nodes empty">Authenticate to view the network.</div>
+        <nav class="pagination" aria-label="Server pages">
+          <button id="previous-page" class="secondary" type="button" disabled>Previous</button>
+          <output id="page-number">Page 1</output>
+          <button id="next-page" class="secondary" type="button" disabled>Next</button>
+        </nav>
+      </section>
+
+      <section class="tab-panel" id="network-panel" role="tabpanel" data-panel="network" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Global VotingPlugin settings</p>
+            <h2>Network</h2>
+            <p>Routing currently uses the existing proxy capability. Method checks, transport tests, and VoteSites sync will appear here as nodes advertise those capabilities.</p>
           </div>
         </div>
-      </form>
-      <p id="message" role="status"></p>
-    </section>
+        <section class="card roadmap-card" aria-label="Planned network controls">
+          <div><span class="step">Next</span><strong>Proxy method</strong><small>One-click selection with required-setting checks</small></div>
+          <div><span class="step">Next</span><strong>Communication test</strong><small>Non-vote connectivity checks without rewards</small></div>
+          <div><span class="step">Next</span><strong>Sync VoteSites</strong><small>Copy site definitions while preserving rewards</small></div>
+        </section>
+        <section class="card" id="configuration-card">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Available now</p>
+              <h3>Proxy routing configuration</h3>
+              <p>Select a capable proxy, read or preview it, then explicitly approve the exact preview.</p>
+            </div>
+          </div>
+          <form id="configuration-form">
+            <label class="check-row"><input id="send-all" type="checkbox"> Send votes to all backend servers</label>
+            <label for="blocked-servers">Blocked servers <span>(one configured backend name per line)</span></label>
+            <textarea id="blocked-servers" rows="5" spellcheck="false"></textarea>
+            <div class="operation-actions">
+              <button id="read-configuration" type="button" disabled>Read selected</button>
+              <button id="preview-configuration" type="button" disabled>Preview changes</button>
+              <button id="apply-configuration" type="button" disabled>Approve and apply</button>
+            </div>
+          </form>
+          <pre id="operation-status" aria-live="polite">Choose an online proxy with routing control.</pre>
+        </section>
+      </section>
 
-    <section class="card" id="enrollment-card" hidden>
-      <div class="section-title">
-        <div>
-          <h2>Node enrollment</h2>
+      <section class="tab-panel" id="configurations-panel" role="tabpanel" data-panel="configurations" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Selected VotingPlugin server</p>
+            <h2>Configurations</h2>
+            <p id="configuration-context">Choose a backend from the server picker to work with its VotingPlugin configuration.</p>
+          </div>
+        </div>
+        <nav class="subtabs" aria-label="Configuration views">
+          <button type="button" class="active" data-config-view="easy">Easy View</button>
+          <button type="button" data-config-view="yaml">Full YAML</button>
+          <button type="button" data-config-view="compare">Compare</button>
+        </nav>
+        <div class="config-view" data-config-panel="easy">
+          <div class="settings-grid">
+            <article class="card"><span class="setting-icon">⚙</span><h3>Common settings</h3><p>Use guided fields for frequently changed VotingPlugin options.</p><button type="button" class="secondary" data-open-tab="quick-setup">Open Quick Setup</button></article>
+            <article class="card"><span class="setting-icon">◇</span><h3>Vote sites</h3><p>Edit the selected server's complete VoteSites.yml today.</p><button type="button" class="secondary" data-open-config-view="yaml" data-file="VoteSites.yml">Open VoteSites.yml</button></article>
+            <article class="card"><span class="setting-icon">↗</span><h3>Proxy connection</h3><p>Inspect proxy relationships before changing backend routing.</p><button type="button" class="secondary" data-open-tab="network">Open Network</button></article>
+          </div>
+        </div>
+        <div class="config-view" data-config-panel="yaml" hidden>
+          <section class="card editor-card" id="file-configuration-card">
+            <div class="section-title">
+              <div>
+                <h3>Full VotingPlugin configuration</h3>
+                <p>Edit any managed Bukkit YAML file. Secret values use <code>__VOTINGPLUGIN_CONTROL_REDACTED__</code>; leave the marker unchanged to preserve the stored value.</p>
+              </div>
+              <span id="comment-preservation-state" class="pill warning">Comment support unknown</span>
+            </div>
+            <form id="file-configuration-form">
+              <div class="editor-toolbar">
+                <label for="configuration-file">Configuration file</label>
+                <select id="configuration-file">
+                  <option>Config.yml</option>
+                  <option>VoteSites.yml</option>
+                  <option>SpecialRewards.yml</option>
+                  <option>GUI.yml</option>
+                  <option>Shop.yml</option>
+                  <option>BungeeSettings.yml</option>
+                </select>
+                <span>YAML · 512 KiB maximum</span>
+              </div>
+              <label class="sr-only" for="configuration-content">YAML content</label>
+              <textarea id="configuration-content" class="yaml-editor" rows="26" spellcheck="false" placeholder="# Read the selected file to begin editing"></textarea>
+              <div class="editor-footer">
+                <span><output id="editor-position">Line 1, Column 1</output> · Tab inserts two spaces · Ctrl/⌘+S previews</span>
+                <div class="operation-actions">
+                  <button id="read-file-configuration" class="secondary" type="button" disabled>Read selected</button>
+                  <button id="preview-file-configuration" type="button" disabled>Preview file</button>
+                  <button id="apply-file-configuration" type="button" disabled>Approve and apply</button>
+                </div>
+              </div>
+            </form>
+            <pre id="file-operation-status" aria-live="polite">Choose an online Bukkit node with file control.</pre>
+          </section>
+        </div>
+        <div class="config-view" data-config-panel="compare" hidden>
+          <section class="card empty-state">
+            <span class="setting-icon">⇄</span>
+            <h3>Compare VotingPlugin configurations</h3>
+            <p>Multi-server comparison will use the explicit apply targets selected on the Servers tab. No comparison is run until comment-preserving file reads are available.</p>
+            <button type="button" class="secondary" data-open-tab="servers">Choose apply targets</button>
+          </section>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="quick-setup-panel" role="tabpanel" data-panel="quick-setup" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="eyebrow">Guided VotingPlugin changes</p>
+            <h2>Quick Setup</h2>
+            <p>Generate a safe preview for common backend and vote-site setups, then approve the exact result.</p>
+          </div>
+        </div>
+        <section class="card" id="quick-setup-card">
+          <form id="quick-setup-form">
+            <label for="quick-preset">Preset</label>
+            <select id="quick-preset">
+              <option value="standalone">Standalone backend</option>
+              <option value="proxy-backend">Proxy-connected backend</option>
+              <option value="vote-site">Add or update vote site</option>
+              <option value="easy-reward">Easy vote reward</option>
+              <option value="common-settings">Common settings</option>
+              <option value="vote-party">Vote party</option>
+            </select>
+            <p id="detected-plugins">Choose Bukkit nodes to see detected plugins and command suggestions.</p>
+            <div class="form-grid quick-fields" data-presets="proxy-backend vote-site easy-reward">
+              <label>Server / site key<input id="quick-name" maxlength="64" placeholder="lobby"></label>
+            </div>
+            <div class="form-grid quick-fields" data-presets="vote-site">
+              <label>Service site<input id="quick-service" maxlength="200" placeholder="PlanetMinecraft.com"></label>
+              <label>Vote URL<input id="quick-url" maxlength="500" placeholder="https://example.com/vote"></label>
+              <label>Vote delay<input id="quick-delay" maxlength="20" value="24h"></label>
+            </div>
+            <div class="form-grid quick-fields" data-presets="easy-reward">
+              <label>Reward scope<select id="quick-reward-scope"><option value="site">One vote site</option><option value="every-site">Every site</option></select></label>
+              <label>Console command<input id="quick-command" maxlength="500" list="quick-command-suggestions" placeholder="give %player% diamond 1"></label>
+              <datalist id="quick-command-suggestions"></datalist>
+              <label>Player message<input id="quick-message" maxlength="500" value="&aThanks for voting!"></label>
+            </div>
+            <fieldset class="quick-fields" data-presets="common-settings">
+              <legend>Common settings</legend>
+              <label class="check-row"><input id="quick-process-rewards" type="checkbox" checked> Process rewards on this server</label>
+              <label class="check-row"><input id="quick-auto-sites" type="checkbox" checked> Auto-create vote sites</label>
+              <label class="check-row"><input id="quick-extra-check" type="checkbox"> Prevent duplicate all-sites rewards</label>
+              <label class="check-row"><input id="quick-count-fake" type="checkbox" checked> Count fake/test votes</label>
+              <label class="check-row"><input id="quick-hide-site-warning" type="checkbox"> Hide unknown service-site warnings</label>
+              <label class="check-row"><input id="quick-disable-updates" type="checkbox"> Disable update checks</label>
+            </fieldset>
+            <div class="form-grid quick-fields" data-presets="vote-party">
+              <label>Votes required<input id="quick-party-votes" type="number" min="1" max="100000" value="20"></label>
+              <label>Reward command<input id="quick-party-command" maxlength="500" list="quick-command-suggestions" value="give %player% diamond 1"></label>
+              <label>Broadcast<input id="quick-party-broadcast" maxlength="500" value="&aVote party reached!"></label>
+              <label class="check-row"><input id="quick-party-all" type="checkbox"> Reward all players</label>
+              <label class="check-row"><input id="quick-party-online" type="checkbox" checked> Online players only</label>
+            </div>
+            <div class="operation-actions">
+              <button id="preview-quick-setup" type="button" disabled>Preview setup</button>
+              <button id="apply-quick-setup" type="button" disabled>Approve and apply</button>
+            </div>
+          </form>
+          <pre id="quick-operation-status" aria-live="polite">Choose an online Bukkit node with quick setup control.</pre>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="activity-panel" role="tabpanel" data-panel="activity" hidden>
+        <div class="page-heading">
+          <div><p class="eyebrow">Safe changes</p><h2>Activity</h2></div>
+        </div>
+        <section class="card empty-state">
+          <span class="setting-icon">✓</span>
+          <h3>Operation results stay with each workflow</h3>
+          <p>Read, preview, apply, reload, and rollback results remain visible beside the configuration that produced them. A network-wide audit timeline will land here with the next operation protocol.</p>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="access-panel" role="tabpanel" data-panel="access" hidden>
+        <div class="page-heading">
+          <div><p class="eyebrow">Control access</p><h2>Node enrollment</h2></div>
+        </div>
+        <section class="card" id="enrollment-card" hidden>
           <p>Create or rotate a credential without running a server command. Copy the displayed credential into that
             node's configured <code>control-credential.txt</code>; it is shown only once.</p>
-        </div>
-      </div>
-      <form id="enrollment-form">
-        <label for="enrollment-node-id">Node ID</label>
-        <div class="auth-row">
-          <input id="enrollment-node-id" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
-                 placeholder="velocity-proxy" spellcheck="false" required>
-          <button type="submit">Create or rotate credential</button>
-        </div>
-      </form>
-      <label for="enrollment-credential">New credential</label>
-      <textarea id="enrollment-credential" rows="3" readonly
-                placeholder="A newly generated credential will appear here once."></textarea>
-      <div class="section-title">
-        <h3>Enrolled node IDs</h3>
-        <button id="refresh-enrollments" type="button">Refresh</button>
-      </div>
-      <ul id="enrollment-list"><li>No enrolled nodes loaded.</li></ul>
-      <p id="enrollment-message" role="status"></p>
-    </section>
-
-    <section class="card">
-      <div class="section-title">
-        <h2>Proxies and backends</h2>
-        <button id="refresh" type="button" disabled>Refresh</button>
-      </div>
-      <div id="nodes" class="nodes empty">Authenticate to view the network.</div>
-      <nav class="pagination" aria-label="Proxy pages">
-        <button id="previous-page" type="button" disabled>Previous</button>
-        <output id="page-number">Page 1</output>
-        <button id="next-page" type="button" disabled>Next</button>
-      </nav>
-    </section>
-
-    <section class="card" id="configuration-card">
-      <div class="section-title">
-        <div>
-          <h2>Proxy routing configuration</h2>
-          <p>Select capable proxies above, read or preview them, then explicitly approve the exact preview.</p>
-        </div>
-      </div>
-      <form id="configuration-form">
-        <label class="check-row"><input id="send-all" type="checkbox"> Send votes to all backend servers</label>
-        <label for="blocked-servers">Blocked servers <span>(one configured backend name per line)</span></label>
-        <textarea id="blocked-servers" rows="5" spellcheck="false"></textarea>
-        <div class="operation-actions">
-          <button id="read-configuration" type="button" disabled>Read selected</button>
-          <button id="preview-configuration" type="button" disabled>Preview changes</button>
-          <button id="apply-configuration" type="button" disabled>Approve and apply</button>
-        </div>
-      </form>
-      <pre id="operation-status" aria-live="polite">Select at least one online, capable proxy.</pre>
-    </section>
-
-    <section class="card" id="file-configuration-card">
-      <div class="section-title">
-        <div>
-          <h2>Full VotingPlugin configuration</h2>
-          <p>Edit every managed Bukkit YAML file. Secret values are returned as <code>__VOTINGPLUGIN_CONTROL_REDACTED__</code>; leave that marker unchanged to preserve the stored value. Reads normalize YAML, so comments may not be retained.</p>
-        </div>
-      </div>
-      <form id="file-configuration-form">
-        <label for="configuration-file">Configuration file</label>
-        <select id="configuration-file">
-          <option>Config.yml</option>
-          <option>VoteSites.yml</option>
-          <option>SpecialRewards.yml</option>
-          <option>GUI.yml</option>
-          <option>Shop.yml</option>
-          <option>BungeeSettings.yml</option>
-        </select>
-        <label for="configuration-content">YAML content <span>(512 KiB maximum)</span></label>
-        <textarea id="configuration-content" class="yaml-editor" rows="22" spellcheck="false"></textarea>
-        <div class="operation-actions">
-          <button id="read-file-configuration" type="button" disabled>Read selected</button>
-          <button id="preview-file-configuration" type="button" disabled>Preview file</button>
-          <button id="apply-file-configuration" type="button" disabled>Approve and apply</button>
-        </div>
-      </form>
-      <pre id="file-operation-status" aria-live="polite">Select at least one online Bukkit node with file control.</pre>
-    </section>
-
-    <section class="card" id="quick-setup-card">
-      <div class="section-title">
-        <div>
-          <h2>Quick setups</h2>
-          <p>Generate a safe preview for common backend and vote-site setups, then approve the exact result.</p>
-        </div>
-      </div>
-      <form id="quick-setup-form">
-        <label for="quick-preset">Preset</label>
-        <select id="quick-preset">
-          <option value="standalone">Standalone backend</option>
-          <option value="proxy-backend">Proxy-connected backend</option>
-          <option value="vote-site">Add or update vote site</option>
-          <option value="easy-reward">Easy vote reward</option>
-          <option value="common-settings">Common settings</option>
-          <option value="vote-party">Vote party</option>
-        </select>
-        <p id="detected-plugins">Select Bukkit nodes to see detected plugins and command suggestions.</p>
-        <div class="form-grid quick-fields" data-presets="proxy-backend vote-site easy-reward">
-          <label>Server / site key<input id="quick-name" maxlength="64" placeholder="lobby"></label>
-        </div>
-        <div class="form-grid quick-fields" data-presets="vote-site">
-          <label>Service site<input id="quick-service" maxlength="200" placeholder="PlanetMinecraft.com"></label>
-          <label>Vote URL<input id="quick-url" maxlength="500" placeholder="https://example.com/vote"></label>
-          <label>Vote delay<input id="quick-delay" maxlength="20" value="24h"></label>
-        </div>
-        <div class="form-grid quick-fields" data-presets="easy-reward">
-          <label>Reward scope<select id="quick-reward-scope"><option value="site">One vote site</option><option value="every-site">Every site</option></select></label>
-          <label>Console command<input id="quick-command" maxlength="500" list="quick-command-suggestions" placeholder="give %player% diamond 1"></label>
-          <datalist id="quick-command-suggestions"></datalist>
-          <label>Player message<input id="quick-message" maxlength="500" value="&aThanks for voting!"></label>
-        </div>
-        <fieldset class="quick-fields" data-presets="common-settings">
-          <legend>Common settings</legend>
-          <label class="check-row"><input id="quick-process-rewards" type="checkbox" checked> Process rewards on this server</label>
-          <label class="check-row"><input id="quick-auto-sites" type="checkbox" checked> Auto-create vote sites</label>
-          <label class="check-row"><input id="quick-extra-check" type="checkbox"> Prevent duplicate all-sites rewards</label>
-          <label class="check-row"><input id="quick-count-fake" type="checkbox" checked> Count fake/test votes</label>
-          <label class="check-row"><input id="quick-hide-site-warning" type="checkbox"> Hide unknown service-site warnings</label>
-          <label class="check-row"><input id="quick-disable-updates" type="checkbox"> Disable update checks</label>
-        </fieldset>
-        <div class="form-grid quick-fields" data-presets="vote-party">
-          <label>Votes required<input id="quick-party-votes" type="number" min="1" max="100000" value="20"></label>
-          <label>Reward command<input id="quick-party-command" maxlength="500" list="quick-command-suggestions" value="give %player% diamond 1"></label>
-          <label>Broadcast<input id="quick-party-broadcast" maxlength="500" value="&aVote party reached!"></label>
-          <label class="check-row"><input id="quick-party-all" type="checkbox"> Reward all players</label>
-          <label class="check-row"><input id="quick-party-online" type="checkbox" checked> Online players only</label>
-        </div>
-        <div class="operation-actions">
-          <button id="preview-quick-setup" type="button" disabled>Preview setup</button>
-          <button id="apply-quick-setup" type="button" disabled>Approve and apply</button>
-        </div>
-      </form>
-      <pre id="quick-operation-status" aria-live="polite">Select at least one online Bukkit node with quick setup control.</pre>
-    </section>
+          <form id="enrollment-form">
+            <label for="enrollment-node-id">Node ID</label>
+            <div class="auth-row">
+              <input id="enrollment-node-id" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+                     placeholder="velocity-proxy" spellcheck="false" required>
+              <button type="submit">Create or rotate credential</button>
+            </div>
+          </form>
+          <label for="enrollment-credential">New credential</label>
+          <textarea id="enrollment-credential" rows="3" readonly
+                    placeholder="A newly generated credential will appear here once."></textarea>
+          <div class="section-title enrollment-title">
+            <h3>Enrolled node IDs</h3>
+            <button id="refresh-enrollments" class="secondary" type="button">Refresh</button>
+          </div>
+          <ul id="enrollment-list"><li>No enrolled nodes loaded.</li></ul>
+          <p id="enrollment-message" role="status"></p>
+        </section>
+      </section>
+    </div>
   </main>
   <script src="/app.js" defer></script>
 </body>

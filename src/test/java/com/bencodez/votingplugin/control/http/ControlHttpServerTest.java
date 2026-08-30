@@ -60,10 +60,25 @@ class ControlHttpServerTest {
         HttpResponse<String> web = get("/", null);
         assertEquals(200, web.statusCode());
         assertTrue(web.body().contains("VotingPlugin Control"));
+        assertTrue(web.body().contains("data-tab=\"overview\""));
+        assertTrue(web.body().contains("data-tab=\"network\""));
+        assertTrue(web.body().contains("id=\"server-picker\""));
+        assertTrue(web.body().contains("Full YAML"));
+        assertTrue(web.body().contains("Comment support unknown"));
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
-        assertTrue(script.body().contains("offset=${pageOffset}&limit=${PAGE_SIZE}"));
+		assertTrue(script.body().contains("offset=${offset}&limit=${PAGE_SIZE}"));
+        assertTrue(script.body().contains("async function loadAllNodes()"));
+        assertTrue(script.body().contains("MAX_REGISTRY_SCAN_ATTEMPTS"));
+        assertTrue(script.body().contains("&revision=${revision}"));
+        assertTrue(script.body().contains("enrollmentIds.has(backend.backendId)"));
+        assertTrue(script.body().contains("Control enrollment unavailable"));
+        assertTrue(script.body().contains("Comments preserved for every target"));
+        assertTrue(script.body().contains("Backend topology is truncated"));
+        assertTrue(script.body().contains("function resetServerConfigurationForms(status)"));
+        assertTrue(script.body().contains("Network data is unavailable. Refresh before editing."));
+        assertTrue(script.body().contains("backendTopologyTruncated = false;"));
         assertTrue(script.body().contains("nextPage.addEventListener"));
         assertTrue(script.body().contains("result.configuration?.content != null"));
         assertTrue(script.body().contains("authenticationGeneration"));
@@ -93,7 +108,17 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("quickCommandSuggestions.replaceChildren();"));
         assertTrue(script.body().contains("Sign out could not be confirmed"));
         assertTrue(script.body().contains("result.success && result.configuration"));
-        assertEquals(200, get("/app.css", null).statusCode());
+        assertTrue(script.body().contains("Not enrolled in Control"));
+        assertTrue(script.body().contains("Presence not available"));
+        assertTrue(script.body().contains("No connected proxy reports this backend ID"));
+        assertTrue(script.body().contains("'config.files.v1': 'Full configuration'"));
+        assertTrue(script.body().contains("'config.file-comments.v1': 'Comments preserved'"));
+        assertTrue(script.body().contains("handleEditorKeydown"));
+        assertFalse(script.body().contains("'No backends reported.'"));
+        assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
+        HttpResponse<String> stylesheet = get("/app.css", null);
+        assertEquals(200, stylesheet.statusCode());
+        assertTrue(stylesheet.body().contains(".tabs"));
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         HttpResponse<String> health = get("/api/v1/health", null);
         assertEquals(200, health.statusCode());
@@ -143,6 +168,23 @@ class ControlHttpServerTest {
         assertEquals("lobby", listed.at("/items/0/backends/0/backendId").asText());
         assertTrue(listed.at("/items/0/detectedPlugins").toString().contains("LuckPerms"));
         assertTrue(listed.at("/items/0/online").asBoolean());
+        assertEquals(1, listed.get("total").asInt());
+        assertTrue(listed.has("registryRevision"));
+    }
+
+    @Test void nodePaginationRejectsAStaleRegistryRevision() throws Exception {
+        assertEquals(201, send("POST", "/api/v1/nodes/register", registration(), nodeToken).statusCode());
+        JsonNode first = json.readTree(get("/api/v1/nodes?offset=0&limit=1", adminToken).body());
+        long revision = first.get("registryRevision").asLong();
+
+        String secondToken = credentials.rotateNode("proxy-b");
+        String secondRegistration = registration()
+                .replace("proxy-a", "proxy-b")
+                .replace(SESSION, "00000000-0000-0000-0000-000000000002");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", secondRegistration, secondToken).statusCode());
+
+        assertError(get("/api/v1/nodes?offset=1&limit=1&revision=" + revision, adminToken),
+                409, "REGISTRY_CHANGED");
     }
 
     @Test void configurationPreviewApprovalAndRevisionCheckedApplyAreEndToEnd() throws Exception {

@@ -35,6 +35,14 @@ class InMemoryNodeRegistryTest {
                 () -> result.node().advertisedCapabilities().add("changed"));
     }
 
+    @Test void registrationNegotiatesOptionalCommentPreservingFileSupport() {
+        Set<String> capabilities = Set.of("config.files.v1", "config.file-comments.v1");
+
+        var result = registry.register(registration("backend-lobby", session, capabilities, Set.of("config.files.v1")));
+
+        assertEquals(capabilities, result.node().acceptedCapabilities());
+    }
+
     @Test void heartbeatReplacesCapabilitiesAndRejectsUnavailableRequiredCapability() {
         registry.register(registration("proxy-a", session, Set.of("discovery.read"), Set.of()));
         var updated = registry.heartbeat("proxy-a", new Heartbeat(session, 1, Set.of("presence.snapshot"), Set.of()));
@@ -169,6 +177,21 @@ class InMemoryNodeRegistryTest {
         assertTrue(registry.list(0, 1).get(0).online());
         clock.advance(Duration.ofMillis(1));
         assertFalse(registry.list(0, 1).get(0).online());
+    }
+
+    @Test void paginatedRegistryRevisionRejectsMembershipChanges() {
+        registry.register(registration("proxy-a", session, Set.of(), Set.of()));
+        NodeRegistry.RegistryPage first = registry.page(0, 1, null);
+        assertEquals(1, first.total());
+
+        registry.register(registration("proxy-b", UUID.randomUUID(), Set.of(), Set.of()));
+
+        ValidationException changed = assertThrows(ValidationException.class,
+                () -> registry.page(1, 1, first.revision()));
+        assertEquals("REGISTRY_CHANGED", changed.code());
+        NodeRegistry.RegistryPage current = registry.page(1, 1, null);
+        assertEquals(2, current.total());
+        assertEquals("proxy-b", current.items().get(0).nodeId());
     }
 
     @Test void validatesNodeBackendProtocolCollectionAndStringBounds() {

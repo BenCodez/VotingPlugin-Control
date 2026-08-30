@@ -11,6 +11,7 @@ public interface NodeRegistry {
     NodeStatus heartbeat(String nodeId, Heartbeat heartbeat);
     SnapshotResult replacePresence(String nodeId, PresenceSnapshot snapshot);
     List<NodeStatus> list(int offset, int limit);
+    RegistryPage page(int offset, int limit, Long expectedRevision);
     NodeStatus find(String nodeId);
     void requireSession(String nodeId, java.util.UUID sessionId);
     <T> T withSession(String nodeId, java.util.UUID sessionId,
@@ -18,4 +19,5 @@ public interface NodeRegistry {
 
     record RegistrationResult(NodeStatus node, boolean created) { }
     record SnapshotResult(NodeStatus node, boolean applied) { }
+    record RegistryPage(List<NodeStatus> items, long revision, int total) { }
 }
