@@ -878,9 +878,7 @@ function renderServerPicker() {
   if (!nodeIndex.has(previousValue)) {
     selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
     if (previousValue) {
-      loadedQuickSetup = null;
-      resetDedicatedSetupValues();
-      resetServerConfigurationForms('The selected server is no longer available. Read the replacement server before previewing changes.');
+      resetServerContextValues('The selected server is no longer available. Load current values from its replacement.');
     }
   }
   serverPicker.value = selectedServerId;
@@ -1314,39 +1312,51 @@ function resetDedicatedSetupValues() {
   voteLoggingState.className = 'pill neutral';
 }
 
-function selectPrimaryServer(nodeId) {
-  if (nodeId && !nodeIndex.has(nodeId)) return;
-  selectedServerId = nodeId;
-  serverPicker.value = nodeId;
-  selectedNodes.clear();
-  if (nodeId) selectedNodes.add(nodeId);
+function resetServerContextValues(reason) {
   dedicatedSetupApprovals.clear();
   pendingDetectedVoteSite = null;
   lastFileReadOperation = null;
   lastDiagnostics = null;
   lastOverview = null;
   downloadNetworkDiagnostics.disabled = true;
-  text(networkDoctorResults, 'Server changed. Run Network Doctor again.');
-  text(dataOverview, 'Server changed. Refresh the overview.');
-  text(playerResult, 'No player queried on this server.');
-  text(siteHealthResult, 'No health query run on this server.');
-  text(voteLogSummaryResult, 'No vote-log summary loaded on this server.');
-  text(voteLogResult, 'No event search run on this server.');
-  text(voteTraceResult, 'No vote traced on this server.');
-  text(siteResolutionResult, 'No service tested on this server.');
-  text(rewardSimulationResult, 'Server changed. Simulate or preview the reward again.');
+  voteSitesSourceId = '';
+  voteSitesTargetIds.clear();
+  voteSitesTargetsInitialized = false;
+  transportTestProxyId = '';
+  transportTestBackendId = '';
+  proxyMethodProxyId = '';
+  proxyMethodCurrentFor = '';
+  proxyMethodCurrentSessionId = '';
+  proxyMethodCurrentValue = '';
+  fileReadCache.clear();
+  text(networkDoctorResults, reason);
+  text(dataOverview, reason);
+  text(playerResult, reason);
+  text(siteHealthResult, reason);
+  text(voteLogSummaryResult, reason);
+  text(voteLogResult, reason);
+  text(voteTraceResult, reason);
+  text(siteResolutionResult, reason);
+  text(rewardSimulationResult, reason);
   resetDedicatedSetupValues();
-  text(autoSitesStatus, 'Server changed. Load the current value.');
-  text(voteLoggingStatus, 'Server changed. Load the current values.');
+  text(autoSitesStatus, reason);
+  text(voteLoggingStatus, reason);
   loadedQuickSetup = null;
-  resetServerConfigurationForms('Server changed. Read this server before previewing changes.');
+  resetServerConfigurationForms(reason);
   const preset = quickPreset.value;
   quickSetupForm.reset();
   quickPreset.value = preset;
   updateQuickFields();
-  text(quickOperationStatus, preset === 'sync-vote-sites'
-    ? 'Server context changed. Confirm the VoteSites source and targets.'
-    : 'Server changed. Load its current values before editing an existing setup.');
+  text(quickOperationStatus, reason);
+}
+
+function selectPrimaryServer(nodeId) {
+  if (nodeId && !nodeIndex.has(nodeId)) return;
+  selectedServerId = nodeId;
+  serverPicker.value = nodeId;
+  selectedNodes.clear();
+  if (nodeId) selectedNodes.add(nodeId);
+  resetServerContextValues('Server changed. Load current values before continuing.');
   updatePluginSuggestions();
   renderNodeViews();
 }
@@ -1924,20 +1934,12 @@ async function loadNodes() {
     nodePlugins.clear();
     selectedNodes.clear();
     selectedServerId = '';
-    dedicatedSetupApprovals.clear();
-    lastOverview = null;
-    lastDiagnostics = null;
-    lastFileReadOperation = null;
-    fileReadCache.clear();
-    resetServerConfigurationForms('Network data is unavailable. Refresh before editing.');
-    text(quickOperationStatus, 'Network data is unavailable. Refresh before editing.');
+    resetServerContextValues('Network data is unavailable. Refresh and load current values before continuing.');
     renderServerPicker();
     renderNodeViews();
     updatePluginSuggestions();
     updateConfigurationButtons();
     text(nodes, 'Network data is unavailable.');
-    text(dataOverview, 'Network data is unavailable.');
-    text(networkDoctorResults, 'Network data is unavailable.');
     text(message, error.message || 'Control request failed.');
   } finally {
     refresh.disabled = false;

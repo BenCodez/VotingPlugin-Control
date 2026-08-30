@@ -279,6 +279,42 @@ class ConfigurationOperationsTest {
         assertEquals(Map.of("backend-new", newSession), journal.loadState().voteLoggingRestartSessions());
     }
 
+    @Test void voteLoggingRestartStatePreservesUnknownSessionsAtCapacity() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-new", session, "New Backend", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        LinkedHashMap<String, UUID> retained = new LinkedHashMap<>();
+        for (int index = 0; index < ConfigurationOperationJournal.MAX_RESTART_SESSIONS; index++) {
+            retained.put("retained-" + index, UUID.randomUUID());
+        }
+        Path journalDirectory = directory.resolve("restart-capacity-journal");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        journal.save(List.of(), retained);
+        ManagedConfiguration logging = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-logging",
+                Map.of("enabled", "true", "purgeDays", "30", "useMainMySQL", "true"));
+
+        try (ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory.resolve("restart-capacity-audit"), clock), clock, journal)) {
+            ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-new"), logging);
+            ConfigurationTask previewTask = operations.claim("backend-new", session);
+            preview = operations.complete(preview.operationId(), "backend-new", new ConfigurationTaskResult(session,
+                    true, "OK", "valid", "a".repeat(64), logging, List.of(), false, false,
+                    previewTask.attemptId()));
+            ConfigurationOperations.OperationView apply = operations.createApply(preview.operationId(),
+                    preview.approvalToken());
+            ConfigurationTask applyTask = operations.claim("backend-new", session);
+            assertThrows(IllegalStateException.class, () -> operations.complete(apply.operationId(), "backend-new",
+                    new ConfigurationTaskResult(session, true, "OK", "applied", "b".repeat(64), logging,
+                            List.of("VoteLogging.Enabled changed"), true, false, applyTask.attemptId())));
+            assertEquals("RUNNING", operations.get(apply.operationId()).state());
+            assertEquals(retained, operations.listView().voteLoggingRestartSessions());
+        }
+        assertEquals(retained, journal.loadState().voteLoggingRestartSessions());
+    }
+
     @Test void applyRequiresTheSameNodeSessionAndRoleThatPassedPreview() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

@@ -605,7 +605,6 @@ public final class ConfigurationOperations implements AutoCloseable {
         });
         if (voteLoggingRestartSessions.containsKey(incomingNodeId)
                 || voteLoggingRestartSessions.size() < ConfigurationOperationJournal.MAX_RESTART_SESSIONS) return;
-        voteLoggingRestartSessions.entrySet().removeIf(entry -> registry.find(entry.getKey()) == null);
         if (voteLoggingRestartSessions.size() >= ConfigurationOperationJournal.MAX_RESTART_SESSIONS) {
             throw new IllegalStateException("Vote logging restart state capacity is unavailable");
         }
