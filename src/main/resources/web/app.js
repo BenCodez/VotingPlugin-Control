@@ -1802,6 +1802,10 @@ async function loadNodes() {
       lastDiagnostics = null;
       lastFileReadOperation = null;
       fileReadCache.clear();
+      configurationContent.value = '';
+      configurationContentPresent = false;
+      approvedFilePreview = null;
+      inputGeneration++;
       text(dataOverview, 'A selected server reconnected. Refresh the overview.');
       text(networkDoctorResults, 'A selected server reconnected. Run Network Doctor again.');
       text(playerResult, 'A selected server reconnected. Run the lookup again.');

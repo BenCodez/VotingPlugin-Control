@@ -31,6 +31,8 @@ public final class ConfigurationSnapshots {
     private static final int MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
     private static final int MAX_STORED_BYTES = MAX_SNAPSHOT_BYTES + 256 * 1024;
     private static final long MAX_TOTAL_STORED_BYTES = 64L * 1024 * 1024;
+    private static final int MAX_TRANSACTION_DIRECTORIES = 16;
+    private static final long MAX_TRANSACTION_BYTES = 64L * 1024 * 1024;
     private final Path directory;
     private final Clock clock;
     private final ObjectMapper json = strictMapper();
@@ -113,6 +115,7 @@ public final class ConfigurationSnapshots {
     }
 
     private void publish(Snapshot snapshot, byte[] bytes) throws IOException {
+        enforceTransactionBounds();
         List<Path> current = new ArrayList<>(files());
         long retainedBytes = 0;
         for (Path path : current) retainedBytes += Files.size(path);
@@ -135,6 +138,7 @@ public final class ConfigurationSnapshots {
         Path target = path(snapshot.snapshotId());
         List<Path> backups = new ArrayList<>();
         boolean published = false;
+        boolean retentionDeleted = false;
         try {
             setPermissions(temporary, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
             Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
@@ -151,25 +155,34 @@ public final class ConfigurationSnapshots {
             DurableFiles.forceDirectory(directory);
             failureInjector.afterPublication();
             published = true;
-            boolean cleanupComplete = true;
             for (Path evicted : evictions) {
-                try { Files.delete(evicted); }
-                catch (IOException ignored) { cleanupComplete = false; }
+                Files.delete(evicted);
             }
-            if (cleanupComplete) {
-                try {
-                    DurableFiles.forceDirectory(directory);
-                    for (Path backup : backups) Files.deleteIfExists(backup);
-                    DurableFiles.forceDirectory(transaction);
-                    Files.deleteIfExists(transaction);
-                } catch (IOException ignored) {
-                    // The new snapshot is already durable. Retain the transaction copies for recovery/cleanup.
-                }
+            retentionDeleted = true;
+            try {
+                DurableFiles.forceDirectory(directory);
+                for (Path backup : backups) Files.deleteIfExists(backup);
+                DurableFiles.forceDirectory(transaction);
+                Files.deleteIfExists(transaction);
+            } catch (IOException ignored) {
+                // The new snapshot is already durable. Retain the transaction copies for recovery/cleanup.
             }
             return;
         } catch (Exception failure) {
+            boolean restored = true;
+            if (published && !retentionDeleted) {
+                for (Path backup : backups) {
+                    try { Files.copy(backup, directory.resolve(backup.getFileName().toString()),
+                            StandardCopyOption.REPLACE_EXISTING); }
+                    catch (Exception rollback) { failure.addSuppressed(rollback); restored = false; }
+                }
+                try { DurableFiles.forceDirectory(directory); } catch (Exception rollback) {
+                    failure.addSuppressed(rollback); restored = false;
+                }
+            }
             try { Files.deleteIfExists(target); } catch (Exception rollback) { failure.addSuppressed(rollback); }
             try { DurableFiles.forceDirectory(directory); } catch (Exception rollback) { failure.addSuppressed(rollback); }
+            if (restored) published = false;
             if (failure instanceof IOException io) throw io;
             throw new IOException("Configuration snapshot publication failed", failure);
         } finally {
@@ -180,6 +193,27 @@ public final class ConfigurationSnapshots {
                 } catch (IOException ignored) { }
                 try { Files.deleteIfExists(transaction); } catch (IOException ignored) { }
             }
+        }
+    }
+
+    private void enforceTransactionBounds() throws IOException {
+        List<Path> transactions;
+        try (var paths = Files.list(directory)) {
+            transactions = paths.filter(path -> path.getFileName().toString().startsWith("snapshot-transaction-"))
+                    .filter(path -> Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path))
+                    .toList();
+        }
+        long bytes = 0;
+        for (Path transaction : transactions) {
+            try (var paths = Files.walk(transaction, 1)) {
+                bytes += paths.filter(path -> !path.equals(transaction) && Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                        .mapToLong(path -> {
+                            try { return Files.size(path); } catch (IOException failure) { return MAX_TRANSACTION_BYTES; }
+                        }).sum();
+            }
+        }
+        if (transactions.size() >= MAX_TRANSACTION_DIRECTORIES || bytes >= MAX_TRANSACTION_BYTES) {
+            throw new IOException("Configuration snapshot transaction recovery is required");
         }
     }
 
