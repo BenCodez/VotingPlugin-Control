@@ -224,7 +224,8 @@ public final class ControlHttpServer implements AutoCloseable {
                 case "NODE_NOT_FOUND", "OPERATION_NOT_FOUND" -> 404;
                 case "UNSUPPORTED_PROTOCOL", "INCOMPATIBLE_CAPABILITIES", "SESSION_MISMATCH",
                         "PREVIEW_INCOMPLETE", "APPROVAL_REQUIRED", "NODE_UNAVAILABLE", "OPERATION_LIMIT",
-                        "REGISTRY_LIMIT", "TASK_NOT_CLAIMED", "TASK_LEASE_EXPIRED", "SETUP_COMPLETE" -> 409;
+                        "REGISTRY_LIMIT", "REGISTRY_CHANGED", "TASK_NOT_CLAIMED", "TASK_LEASE_EXPIRED",
+                        "SETUP_COMPLETE" -> 409;
                 case "UNSUPPORTED_MEDIA_TYPE" -> 415;
                 default -> 400;
             };
@@ -380,8 +381,12 @@ public final class ControlHttpServer implements AutoCloseable {
             Map<String, String> query = query(uri.getRawQuery());
             int offset = integer(query.getOrDefault("offset", "0"), "offset");
             int limit = integer(query.getOrDefault("limit", "50"), "limit");
-            BackendPage page = boundedNodePage(registry.list(offset, limit));
+            Long expectedRevision = query.containsKey("revision")
+                    ? longInteger(query.get("revision"), "revision") : null;
+            NodeRegistry.RegistryPage registryPage = registry.page(offset, limit, expectedRevision);
+            BackendPage page = boundedNodePage(registryPage.items());
             send(exchange, 200, Map.of("items", page.items(), "offset", offset, "limit", limit,
+                    "registryRevision", registryPage.revision(), "total", registryPage.total(),
                     "backendItemsReturned", page.backendItemsReturned(),
                     "backendItemsTruncated", page.backendItemsTruncated()));
             return;
@@ -785,6 +790,17 @@ public final class ControlHttpServer implements AutoCloseable {
             return Integer.parseInt(value);
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException(name + " must be an integer");
+        }
+    }
+
+    private static long longInteger(String value, String name) {
+        try {
+            long parsed = Long.parseLong(value);
+            if (parsed < 0) throw new NumberFormatException();
+            return parsed;
+        } catch (NumberFormatException e) {
+            throw new ValidationException("VALIDATION_ERROR", "Request validation failed",
+                    List.of(name + " must be a non-negative integer"));
         }
     }
 

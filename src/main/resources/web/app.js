@@ -94,6 +94,7 @@ const refreshEnrollments = document.querySelector('#refresh-enrollments');
 const PAGE_SIZE = 100;
 const MAX_CONFIGURATION_TARGETS = 100;
 const MAX_SYNC_TARGETS = 100;
+const MAX_REGISTRY_SCAN_ATTEMPTS = 3;
 let authenticated = false;
 let csrfToken = '';
 let pageOffset = 0;
@@ -720,7 +721,11 @@ async function authorized(path, options = {}) {
   if (requestGeneration !== authenticationGeneration) {
     throw new Error('Authentication changed while the request was running. Try again.');
   }
-  if (!response.ok) throw new Error(body?.error?.message || `Control request failed (${response.status}).`);
+  if (!response.ok) {
+    const error = new Error(body?.error?.message || `Control request failed (${response.status}).`);
+    error.code = body?.error?.code || '';
+    throw error;
+  }
   return body;
 }
 
@@ -876,14 +881,43 @@ async function loadEnrollments() {
 }
 
 async function loadAllNodes() {
-  const items = [];
-  let truncated = false;
-  for (let offset = 0; ; offset += PAGE_SIZE) {
-    const page = await authorized(`/api/v1/nodes?offset=${offset}&limit=${PAGE_SIZE}`);
-    items.push(...page.items);
-    truncated ||= Boolean(page.backendItemsTruncated);
-    if (page.items.length < PAGE_SIZE) return {items, truncated};
+  for (let attempt = 0; attempt < MAX_REGISTRY_SCAN_ATTEMPTS; attempt++) {
+    const items = [];
+    const pageMetadata = new Map();
+    const ids = new Set();
+    let revision = null;
+    let total = null;
+    let truncated = false;
+    try {
+      for (let offset = 0; ; offset += PAGE_SIZE) {
+        const expected = revision == null ? '' : `&revision=${revision}`;
+        const page = await authorized(`/api/v1/nodes?offset=${offset}&limit=${PAGE_SIZE}${expected}`);
+        if (revision == null) {
+          revision = page.registryRevision;
+          total = page.total;
+        } else if (page.registryRevision !== revision || page.total !== total) {
+          throw Object.assign(new Error('Node registry changed during pagination.'), {code: 'REGISTRY_CHANGED'});
+        }
+        if (page.items.some(node => ids.has(node.nodeId))) {
+          throw Object.assign(new Error('Node registry changed during pagination.'), {code: 'REGISTRY_CHANGED'});
+        }
+        page.items.forEach(node => ids.add(node.nodeId));
+        items.push(...page.items);
+        truncated ||= Boolean(page.backendItemsTruncated);
+        pageMetadata.set(offset, {
+          backendItemsReturned: page.backendItemsReturned,
+          backendItemsTruncated: Boolean(page.backendItemsTruncated)
+        });
+        if (items.length === total) return {items, truncated, pageMetadata};
+        if (page.items.length === 0 || items.length > total) {
+          throw Object.assign(new Error('Node registry changed during pagination.'), {code: 'REGISTRY_CHANGED'});
+        }
+      }
+    } catch (error) {
+      if (error.code !== 'REGISTRY_CHANGED' || attempt + 1 === MAX_REGISTRY_SCAN_ATTEMPTS) throw error;
+    }
   }
+  throw new Error('Node registry could not be loaded consistently. Try refreshing again.');
 }
 
 async function loadNodes() {
@@ -893,11 +927,8 @@ async function loadNodes() {
   nextPage.disabled = true;
   text(message, 'Loading…');
   try {
-    const [body, registry] = await Promise.all([
-      authorized(`/api/v1/nodes?offset=${pageOffset}&limit=${PAGE_SIZE}`),
-      loadAllNodes()
-    ]);
-    visibleNodeItems = body.items;
+    const registry = await loadAllNodes();
+    visibleNodeItems = registry.items.slice(pageOffset, pageOffset + PAGE_SIZE);
     allNodeItems = registry.items;
     backendTopologyTruncated = registry.truncated;
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
@@ -958,15 +989,16 @@ async function loadNodes() {
     renderNodeViews();
     updatePluginSuggestions();
     updateConfigurationButtons();
-    const first = body.items.length === 0 ? 0 : pageOffset + 1;
-    const last = pageOffset + body.items.length;
-    const backendLimit = body.backendItemsTruncated
-      ? ` Backend summaries are limited to ${body.backendItemsReturned} entries on this page.` : '';
-    text(message, body.items.length === 0 ? 'No nodes on this page.'
+    const first = visibleNodeItems.length === 0 ? 0 : pageOffset + 1;
+    const last = pageOffset + visibleNodeItems.length;
+    const pageMeta = registry.pageMetadata.get(pageOffset);
+    const backendLimit = pageMeta?.backendItemsTruncated
+      ? ` Backend summaries are limited to ${pageMeta.backendItemsReturned} entries on this page.` : '';
+    text(message, visibleNodeItems.length === 0 ? 'No nodes on this page.'
       : `Showing nodes ${first}–${last}.${backendLimit}`);
     text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);
     previousPage.disabled = pageOffset === 0;
-    nextPage.disabled = body.items.length < PAGE_SIZE;
+    nextPage.disabled = pageOffset + visibleNodeItems.length >= registry.items.length;
   } catch (error) {
     nodes.replaceChildren();
     nodes.classList.add('empty');
