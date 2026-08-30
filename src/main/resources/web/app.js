@@ -1544,6 +1544,10 @@ function discardAuthenticationState(reason) {
   fileConfigurationForm.reset();
   configurationContentPresent = false;
   quickSetupForm.reset();
+  autoSitesEnabled.checked = false;
+  voteLoggingEnabled.checked = false;
+  voteLoggingDays.value = '30';
+  voteLoggingMainMysql.checked = true;
   rewardSimulationForm.reset();
   playerLookupForm.reset();
   voteLogForm.reset();
@@ -2650,12 +2654,16 @@ runDriftCheck.addEventListener('click', async () => {
   const nodeIds = targets('config.files.v1');
   const selectedFile = driftFile.value;
   const requestAuthenticationGeneration = authenticationGeneration;
+  const requestSessions = new Map(nodeIds.map(nodeId => [nodeId, nodeIndex.get(nodeId)?.sessionId]));
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds, configuration: {domain: 'file', fileName: selectedFile}
     }, driftResults);
     if (requestAuthenticationGeneration !== authenticationGeneration) {
       throw new Error('Authentication changed while the drift check ran. Run it again.');
+    }
+    if (nodeIds.some(nodeId => requestSessions.get(nodeId) !== operation.results?.[nodeId]?.sessionId)) {
+      throw new Error('A selected server reconnected while the drift check ran. Run it again.');
     }
     const rows = nodeIds.map(nodeId => {
       const result = operation.results[nodeId];
