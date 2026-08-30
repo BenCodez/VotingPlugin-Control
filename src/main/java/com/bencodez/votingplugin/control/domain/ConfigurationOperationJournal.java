@@ -84,8 +84,12 @@ public final class ConfigurationOperationJournal {
         }
         Instant cutoff = clock.instant().minus(RETENTION);
         List<Entry> result = new ArrayList<>();
+        Set<UUID> operationIds = new java.util.HashSet<>();
         for (Entry entry : stored.operations()) {
             validate(entry);
+            if (!operationIds.add(entry.operationId())) {
+                throw new IOException("Configuration operation journal is invalid");
+            }
             if (!entry.createdAt().isBefore(cutoff)) result.add(entry);
         }
         result.sort(Comparator.comparing(Entry::createdAt));
@@ -99,7 +103,13 @@ public final class ConfigurationOperationJournal {
                 .sorted(Comparator.comparing(Entry::createdAt)).toList();
         List<Entry> retained = new ArrayList<>(filtered.stream()
                 .skip(Math.max(0, filtered.size() - MAX_OPERATIONS)).toList());
-        for (Entry entry : retained) validate(entry);
+        Set<UUID> operationIds = new java.util.HashSet<>();
+        for (Entry entry : retained) {
+            validate(entry);
+            if (!operationIds.add(entry.operationId())) {
+                throw new IOException("Configuration operation journal is invalid");
+            }
+        }
         byte[] bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained));
         while (bytes.length > MAX_BYTES && retained.size() > 1) {
             retained.remove(0);

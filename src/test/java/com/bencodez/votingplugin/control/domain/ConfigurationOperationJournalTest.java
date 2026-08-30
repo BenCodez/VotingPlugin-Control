@@ -68,6 +68,21 @@ class ConfigurationOperationJournalTest {
         Files.writeString(duplicateFile, "{\"schemaVersion\":1," + valid.substring(1));
         assertThrows(IOException.class, duplicate::load);
 
+        Path duplicateOperationDirectory = directory.resolve("duplicate-operation");
+        ConfigurationOperationJournal duplicateOperation = new ConfigurationOperationJournal(
+                duplicateOperationDirectory, clock);
+        ConfigurationOperationJournal.Entry entry = journalEntry(new ConfigurationOperationJournal.NodeResult(
+                "backend-a", UUID.randomUUID(), true, true, "OK", "a".repeat(64), false, false));
+        duplicateOperation.save(List.of(entry));
+        Path duplicateOperationFile = duplicateOperationDirectory.resolve("configuration-operations.json");
+        String oneOperation = Files.readString(duplicateOperationFile);
+        int arrayStart = oneOperation.indexOf('[') + 1;
+        int arrayEnd = oneOperation.lastIndexOf(']');
+        String serializedEntry = oneOperation.substring(arrayStart, arrayEnd);
+        Files.writeString(duplicateOperationFile, oneOperation.substring(0, arrayEnd) + ',' + serializedEntry
+                + oneOperation.substring(arrayEnd));
+        assertThrows(IOException.class, duplicateOperation::load);
+
         Path unsafeDirectory = directory.resolve("unsafe");
         Files.createDirectories(unsafeDirectory);
         Path target = directory.resolve("target.json");
