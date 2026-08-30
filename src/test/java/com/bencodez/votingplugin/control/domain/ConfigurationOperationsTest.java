@@ -35,6 +35,36 @@ import org.junit.jupiter.api.io.TempDir;
 class ConfigurationOperationsTest {
     @TempDir Path directory;
 
+    @Test void automaticCancellationRollsBackWhenJournalPersistenceFails() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        Path journalDirectory = directory.resolve("journal");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        ConfigurationAuditLog audit = new ConfigurationAuditLog(directory.resolve("audit"), clock);
+        ConfigurationOperations operations = new ConfigurationOperations(registry, audit, clock, journal);
+        operations.createRead(List.of("backend-a"), ManagedConfiguration.file("Config.yml", null));
+
+        Path moved = directory.resolve("journal-away");
+        Files.move(journalDirectory, moved);
+        Files.writeString(journalDirectory, "unwritable");
+        registry.heartbeat("backend-a", new Heartbeat(session, 1, Set.of(), Set.of()));
+        assertThrows(IllegalStateException.class, () -> operations.claim("backend-a", session));
+        assertEquals("RUNNING", operations.list().get(0).state());
+
+        Files.delete(journalDirectory);
+        Files.move(moved, journalDirectory);
+        assertNull(operations.claim("backend-a", session));
+        assertEquals("COMPLETED_WITH_ERRORS", operations.list().get(0).state());
+        operations.close();
+        audit = new ConfigurationAuditLog(directory.resolve("audit"), clock);
+        ConfigurationOperations recovered = new ConfigurationOperations(registry, audit, clock, journal);
+        assertEquals("CAPABILITY_LOST", recovered.list().get(0).results().get("backend-a").code());
+        recovered.close();
+    }
+
     @Test void previewApprovalCarriesEachNodesRevisionIntoApplyAndIsSingleUse() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

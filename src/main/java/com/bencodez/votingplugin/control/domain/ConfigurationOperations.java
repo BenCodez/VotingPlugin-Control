@@ -228,14 +228,8 @@ public final class ConfigurationOperations implements AutoCloseable {
                 if (cancelChangedProxyMethodRole(operation, node)) continue;
                 if (deferProxyMethodApply(operation, node)) continue;
                 if (!node.online() || !node.acceptedCapabilities().contains(operation.configuration.capability())) {
-                    audit.append("TASK_CANCELLED", operation.id, nodeId, "CAPABILITY_LOST");
-                    operation.results.put(nodeId, boundedResult(operation, new ConfigurationTaskResult(sessionId(node), false,
-                            "CAPABILITY_LOST", "Node no longer accepts this configuration capability", null,
-                            (ManagedConfiguration) null, List.of(), false, false, null)));
-                    operation.states.put(nodeId, "COMPLETE");
-                    operation.leasedAt.remove(nodeId);
-                    operation.attemptIds.remove(nodeId);
-                    persist();
+                    automaticCancellation(operation, nodeId, sessionId(node), "CAPABILITY_LOST",
+                            "Node no longer accepts this configuration capability", "CAPABILITY_LOST");
                     continue;
                 }
                 UUID previousAttempt = operation.attemptIds.get(nodeId);
@@ -274,13 +268,9 @@ public final class ConfigurationOperations implements AutoCloseable {
                 ConfigurationTaskResult result = operation.results.get(backendId);
                 if (result == null || !result.success() || completedBackendStillValid(operation, backendId, backend,
                         result)) continue;
-                audit.append("TASK_INVALIDATED", operation.id, backendId, "DEPENDENCY_CHANGED");
                 UUID backendSession = backend == null ? result.sessionId() : sessionId(backend);
-                releaseResultDetails(result);
-                operation.results.put(backendId, boundedResult(operation, new ConfigurationTaskResult(backendSession,
-                        false, "DEPENDENCY_CHANGED", "Backend identity changed after apply; preview again", null,
-                        (ManagedConfiguration) null, List.of(), false, false, null)));
-                persist();
+                automaticCancellation(operation, backendId, backendSession, "DEPENDENCY_CHANGED",
+                        "Backend identity changed after apply; preview again", "DEPENDENCY_CHANGED");
                 continue;
             }
             if ("IN_PROGRESS".equals(state)) {
@@ -299,15 +289,9 @@ public final class ConfigurationOperations implements AutoCloseable {
             }
             if (backend != null && backend.online()
                     && backend.acceptedCapabilities().contains(operation.configuration.capability())) continue;
-            audit.append("TASK_CANCELLED", operation.id, backendId, "CAPABILITY_LOST");
             UUID backendSession = backend == null ? operation.targetSessions.get(backendId) : sessionId(backend);
-            operation.results.put(backendId, boundedResult(operation, new ConfigurationTaskResult(backendSession, false,
-                    "CAPABILITY_LOST", "Backend became unavailable before proxy method apply", null,
-                    (ManagedConfiguration) null, List.of(), false, false, null)));
-            operation.states.put(backendId, "COMPLETE");
-            operation.leasedAt.remove(backendId);
-            operation.attemptIds.remove(backendId);
-            persist();
+            automaticCancellation(operation, backendId, backendSession, "CAPABILITY_LOST",
+                    "Backend became unavailable before proxy method apply", "CAPABILITY_LOST");
         }
         if (backends.stream().anyMatch(id -> !"COMPLETE".equals(operation.states.get(id)))) return true;
         if (backends.stream().noneMatch(id -> operation.results.get(id) == null
@@ -316,24 +300,12 @@ public final class ConfigurationOperations implements AutoCloseable {
             Set<String> currentBackends = new HashSet<>();
             node.backends().forEach(backend -> currentBackends.add(backend.backendId()));
             if (expectedBackends.equals(currentBackends)) return false;
-            audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "TOPOLOGY_CHANGED");
-            operation.results.put(node.nodeId(), boundedResult(operation, new ConfigurationTaskResult(sessionId(node),
-                    false, "DEPENDENCY_CHANGED", "Proxy topology changed after approval; preview again", null,
-                    (ManagedConfiguration) null, List.of(), false, false, null)));
-            operation.states.put(node.nodeId(), "COMPLETE");
-            operation.leasedAt.remove(node.nodeId());
-            operation.attemptIds.remove(node.nodeId());
-            persist();
+            automaticCancellation(operation, node.nodeId(), sessionId(node), "DEPENDENCY_CHANGED",
+                    "Proxy topology changed after approval; preview again", "TOPOLOGY_CHANGED");
             return true;
         }
-        audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "BACKEND_APPLY_FAILED");
-        operation.results.put(node.nodeId(), boundedResult(operation, new ConfigurationTaskResult(sessionId(node), false,
-                "DEPENDENCY_FAILED", "A backend failed the proxy method apply", null,
-                (ManagedConfiguration) null, List.of(), false, false, null)));
-        operation.states.put(node.nodeId(), "COMPLETE");
-        operation.leasedAt.remove(node.nodeId());
-        operation.attemptIds.remove(node.nodeId());
-        persist();
+        automaticCancellation(operation, node.nodeId(), sessionId(node), "DEPENDENCY_FAILED",
+                "A backend failed the proxy method apply", "BACKEND_APPLY_FAILED");
         return true;
     }
 
@@ -352,15 +324,58 @@ public final class ConfigurationOperations implements AutoCloseable {
                 || !ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset())) return false;
         String expectedPlatform = operation.targetPlatforms.get(node.nodeId());
         if (expectedPlatform == null || expectedPlatform.equalsIgnoreCase(node.platform())) return false;
-        audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "TARGET_ROLE_CHANGED");
-        operation.results.put(node.nodeId(), boundedResult(operation, new ConfigurationTaskResult(sessionId(node),
-                false, "TARGET_CHANGED", "Node platform changed after approval; preview again", null,
-                (ManagedConfiguration) null, List.of(), false, false, null)));
-        operation.states.put(node.nodeId(), "COMPLETE");
-        operation.leasedAt.remove(node.nodeId());
-        operation.attemptIds.remove(node.nodeId());
-        persist();
+        automaticCancellation(operation, node.nodeId(), sessionId(node), "TARGET_CHANGED",
+                "Node platform changed after approval; preview again", "TARGET_ROLE_CHANGED");
         return true;
+    }
+
+    /**
+     * Commits an automatic task completion only after the redacted journal is durable.  Both the
+     * operation maps and retention counters are restored if either durable step fails, leaving the
+     * task claimable again instead of manufacturing a completion that recovery cannot explain.
+     */
+    private void automaticCancellation(StoredOperation operation, String nodeId, UUID sessionId,
+                                       String code, String message, String auditOutcome) {
+        String priorState = operation.states.get(nodeId);
+        ConfigurationTaskResult priorResult = operation.results.get(nodeId);
+        Instant priorLease = operation.leasedAt.get(nodeId);
+        UUID priorAttempt = operation.attemptIds.get(nodeId);
+        long priorChanges = retainedChangeBytes;
+        long priorMessages = retainedMessageBytes;
+        long priorFiles = retainedFileBytes;
+        try {
+            if (priorResult != null) releaseResultDetails(priorResult);
+            operation.results.put(nodeId, boundedResult(operation, new ConfigurationTaskResult(sessionId, false,
+                    code, message, null, (ManagedConfiguration) null, List.of(), false, false, null)));
+            operation.states.put(nodeId, "COMPLETE");
+            operation.leasedAt.remove(nodeId);
+            operation.attemptIds.remove(nodeId);
+            persist();
+            audit.append("TASK_CANCELLED", operation.id, nodeId, auditOutcome);
+        } catch (RuntimeException failure) {
+            restoreCancellation(operation, nodeId, priorState, priorResult, priorLease, priorAttempt,
+                    priorChanges, priorMessages, priorFiles, failure);
+            throw failure;
+        }
+    }
+
+    private void restoreCancellation(StoredOperation operation, String nodeId, String priorState,
+                                     ConfigurationTaskResult priorResult, Instant priorLease, UUID priorAttempt,
+                                     long priorChanges, long priorMessages, long priorFiles, RuntimeException failure) {
+        ConfigurationTaskResult current = operation.results.get(nodeId);
+        if (current != null && current != priorResult) releaseResultDetails(current);
+        if (priorState == null) operation.states.remove(nodeId); else operation.states.put(nodeId, priorState);
+        if (priorResult == null) operation.results.remove(nodeId); else operation.results.put(nodeId, priorResult);
+        if (priorLease == null) operation.leasedAt.remove(nodeId); else operation.leasedAt.put(nodeId, priorLease);
+        if (priorAttempt == null) operation.attemptIds.remove(nodeId); else operation.attemptIds.put(nodeId, priorAttempt);
+        retainedChangeBytes = priorChanges;
+        retainedMessageBytes = priorMessages;
+        retainedFileBytes = priorFiles;
+        try {
+            persist();
+        } catch (RuntimeException rollbackFailure) {
+            failure.addSuppressed(rollbackFailure);
+        }
     }
 
     private void rejectOverlappingProxyMethodApply(ValidatedTargets targets, ManagedConfiguration configuration) {

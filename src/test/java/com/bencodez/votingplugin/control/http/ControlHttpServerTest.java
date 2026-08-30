@@ -15,6 +15,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.UUID;
@@ -561,6 +562,29 @@ class ControlHttpServerTest {
                 .header("Content-Type", "application/json").header("Authorization", "Bearer " + nodeToken)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(new byte[] {(byte) 0xc3, (byte) 0x28})).build();
         assertError(client.send(invalidUtf8, HttpResponse.BodyHandlers.ofString()), 400, "MALFORMED_JSON");
+    }
+
+    @Test void snapshotStoreFailuresReturnStructuredErrorsAndServerRemainsUsable() throws Exception {
+        var field = ControlHttpServer.class.getDeclaredField("configurationSnapshots");
+        field.setAccessible(true);
+        Object snapshots = field.get(server);
+        var directoryField = snapshots.getClass().getDeclaredField("directory");
+        directoryField.setAccessible(true);
+        Path snapshotDirectory = (Path) directoryField.get(snapshots);
+        UUID id = UUID.randomUUID();
+        Path corrupted = snapshotDirectory.resolve(id + ".json");
+        Files.writeString(corrupted, "{\"snapshotId\":\"" + id + "\",\"name\":\"x\"}");
+        HttpResponse<String> response = get("/api/v1/snapshots/" + id, adminToken);
+        assertError(response, 503, "SNAPSHOT_STORE_UNAVAILABLE");
+        assertFalse(response.body().contains(snapshotDirectory.toString()));
+        assertFalse(response.body().contains("Configuration snapshot is invalid"));
+        assertEquals(200, get("/api/v1/health", null).statusCode());
+        Files.deleteIfExists(corrupted);
+        Files.createDirectory(corrupted);
+        response = get("/api/v1/snapshots/" + id, adminToken);
+        assertError(response, 503, "SNAPSHOT_STORE_UNAVAILABLE");
+        assertFalse(response.body().contains(snapshotDirectory.toString()));
+        Files.deleteIfExists(corrupted);
     }
 
     @Test void unknownFieldsAreAdditivelyCompatibleButUnsupportedProtocolAndRequirementsAreExplicit() throws Exception {

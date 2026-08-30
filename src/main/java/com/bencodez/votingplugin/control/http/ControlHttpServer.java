@@ -290,6 +290,10 @@ public final class ControlHttpServer implements AutoCloseable {
         } catch (RequestTooLargeException e) {
             error(exchange, 413, "REQUEST_TOO_LARGE", "Request body exceeds " + MAX_REQUEST_BYTES + " bytes",
                     List.of());
+        } catch (SnapshotStoreException e) {
+            System.getLogger(ControlHttpServer.class.getName()).log(System.Logger.Level.WARNING,
+                    "Snapshot store request failed: " + e.getCause().getClass().getSimpleName());
+            error(exchange, 503, "SNAPSHOT_STORE_UNAVAILABLE", "Configuration snapshot storage is unavailable", List.of());
         } catch (IllegalArgumentException e) {
             error(exchange, 400, "VALIDATION_ERROR", "Request validation failed", List.of());
         } catch (ResponseCompleteException ignored) {
@@ -501,14 +505,13 @@ public final class ControlHttpServer implements AutoCloseable {
         if (SNAPSHOTS.equals(path)) {
             authenticateAdmin(exchange, "POST".equals(exchange.getRequestMethod()));
             if ("GET".equals(exchange.getRequestMethod())) {
-                send(exchange, 200, Map.of("items", configurationSnapshots.list()));
+                send(exchange, 200, Map.of("items", snapshotList()));
                 return;
             }
             if ("POST".equals(exchange.getRequestMethod())) {
                 SnapshotRequest request = read(exchange, SnapshotRequest.class);
                 requireRequest(request);
-                send(exchange, 201, configurationSnapshots.create(request.name(),
-                        configurationOperations.get(request.operationId())));
+                send(exchange, 201, snapshotCreate(request));
                 return;
             }
             exchange.getResponseHeaders().set("Allow", "GET, POST");
@@ -546,7 +549,7 @@ public final class ControlHttpServer implements AutoCloseable {
             if (!remainder.contains("/")) {
                 requireMethod(exchange, "GET");
                 authenticateAdmin(exchange, false);
-                send(exchange, 200, configurationSnapshots.get(UUID.fromString(remainder)));
+                send(exchange, 200, snapshotGet(UUID.fromString(remainder)));
                 return;
             }
         }
@@ -611,6 +614,30 @@ public final class ControlHttpServer implements AutoCloseable {
             }
         }
         error(exchange, 404, "NOT_FOUND", "Endpoint not found", List.of());
+    }
+
+    private List<ConfigurationSnapshots.SnapshotSummary> snapshotList() {
+        try {
+            return configurationSnapshots.list();
+        } catch (IOException failure) {
+            throw new SnapshotStoreException(failure);
+        }
+    }
+
+    private ConfigurationSnapshots.Snapshot snapshotCreate(SnapshotRequest request) {
+        try {
+            return configurationSnapshots.create(request.name(), configurationOperations.get(request.operationId()));
+        } catch (IOException failure) {
+            throw new SnapshotStoreException(failure);
+        }
+    }
+
+    private ConfigurationSnapshots.Snapshot snapshotGet(UUID id) {
+        try {
+            return configurationSnapshots.get(id);
+        } catch (IOException failure) {
+            throw new SnapshotStoreException(failure);
+        }
     }
 
     private void handleWebSetup(HttpExchange exchange, SetupRequest request, String client) {
@@ -990,6 +1017,11 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final class ResponseCompleteException extends RuntimeException { }
     @SuppressWarnings("serial")
     private static final class DeferredResponseException extends RuntimeException { }
+
+    /** Internal marker so durable snapshot failures receive the normal structured HTTP envelope. */
+    private static final class SnapshotStoreException extends RuntimeException {
+        private SnapshotStoreException(IOException cause) { super(cause); }
+    }
 
     private record WebResource(String classpath, String contentType) { }
     private record PasswordRequest(String password) { }
