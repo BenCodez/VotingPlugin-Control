@@ -257,6 +257,70 @@ class ControlHttpServerTest {
         assertEquals(applyId, applyTask.get("operationId").asText());
     }
 
+    @Test void inspectionRetryAndSnapshotRoutesAreEndToEnd() throws Exception {
+        String capableRegistration = registration().replace("\"presence.snapshot\"]",
+                "\"presence.snapshot\",\"data.inspect.v1\",\"config.files.v1\"]");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", capableRegistration, nodeToken).statusCode());
+
+        HttpResponse<String> inspectionQueued = send("POST", "/api/v1/inspections",
+                "{\"nodeId\":\"proxy-a\",\"query\":{\"kind\":\"overview\",\"filters\":{}}}", adminToken);
+        assertEquals(202, inspectionQueued.statusCode(), inspectionQueued.body());
+        String inspectionId = json.readTree(inspectionQueued.body()).get("inspectionId").asText();
+        JsonNode inspectionTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/inspections",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        assertEquals(inspectionId, inspectionTask.get("inspectionId").asText());
+        String inspectionResult = "{\"sessionId\":\"" + SESSION + "\",\"success\":true,"
+                + "\"code\":\"OK\",\"message\":\"current\",\"data\":{\"schemaVersion\":1,"
+                + "\"kind\":\"overview\",\"generatedAt\":\"2026-08-30T00:00:00Z\","
+                + "\"result\":{\"loggingEnabled\":true}},\"attemptId\":\""
+                + inspectionTask.get("attemptId").asText() + "\"}";
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/inspections/" + inspectionId + "/result",
+                inspectionResult, nodeToken).statusCode());
+        JsonNode completedInspection = json.readTree(get("/api/v1/inspections/" + inspectionId,
+                adminToken).body());
+        assertEquals("SUCCEEDED", completedInspection.get("state").asText());
+        assertTrue(completedInspection.at("/result/data/result/loggingEnabled").asBoolean());
+
+        String selector = "{\"domain\":\"file\",\"fileName\":\"Config.yml\"}";
+        HttpResponse<String> readQueued = send("POST", "/api/v1/configuration/read",
+                "{\"nodeIds\":[\"proxy-a\"],\"configuration\":" + selector + "}", adminToken);
+        assertEquals(202, readQueued.statusCode(), readQueued.body());
+        String readId = json.readTree(readQueued.body()).get("operationId").asText();
+        JsonNode failedTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        String failedResult = "{\"sessionId\":\"" + SESSION + "\",\"success\":false,"
+                + "\"code\":\"READ_FAILED\",\"message\":\"failed\",\"changes\":[],"
+                + "\"reloaded\":false,\"rolledBack\":false,\"attemptId\":\""
+                + failedTask.get("attemptId").asText() + "\"}";
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/operations/" + readId + "/result",
+                failedResult, nodeToken).statusCode());
+
+        HttpResponse<String> retryQueued = send("POST", "/api/v1/operations/" + readId + "/retry",
+                null, adminToken);
+        assertEquals(202, retryQueued.statusCode(), retryQueued.body());
+        String retryId = json.readTree(retryQueued.body()).get("operationId").asText();
+        assertNotEquals(readId, retryId);
+        JsonNode retryTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        assertEquals(retryId, retryTask.get("operationId").asText());
+        String successfulResult = "{\"sessionId\":\"" + SESSION + "\",\"success\":true,"
+                + "\"code\":\"OK\",\"message\":\"read\",\"revision\":\"" + "a".repeat(64) + "\","
+                + "\"configuration\":{\"domain\":\"file\",\"fileName\":\"Config.yml\","
+                + "\"content\":\"Feature: true\\n\"},\"changes\":[],\"reloaded\":false,"
+                + "\"rolledBack\":false,\"attemptId\":\"" + retryTask.get("attemptId").asText() + "\"}";
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/operations/" + retryId + "/result",
+                successfulResult, nodeToken).statusCode());
+
+        HttpResponse<String> snapshotCreated = send("POST", "/api/v1/snapshots",
+                "{\"name\":\"Known good\",\"operationId\":\"" + retryId + "\"}", adminToken);
+        assertEquals(201, snapshotCreated.statusCode(), snapshotCreated.body());
+        String snapshotId = json.readTree(snapshotCreated.body()).get("snapshotId").asText();
+        JsonNode snapshots = json.readTree(get("/api/v1/snapshots", adminToken).body());
+        assertEquals(snapshotId, snapshots.at("/items/0/snapshotId").asText());
+        JsonNode snapshot = json.readTree(get("/api/v1/snapshots/" + snapshotId, adminToken).body());
+        assertEquals("Feature: true\n", snapshot.at("/documents/0/content").asText());
+    }
+
     @Test void missingInvalidWrongNodeRevokedAndRotatedCredentialsFailWithoutDisclosure() throws Exception {
         assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), null));
         assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), "wrong"));
@@ -454,6 +518,8 @@ class ControlHttpServerTest {
         assertError(send("POST", "/api/v1/configuration/read", "null", adminToken), 400, "VALIDATION_ERROR");
         assertError(send("POST", "/api/v1/configuration/preview", "null", adminToken), 400, "VALIDATION_ERROR");
         assertError(send("POST", "/api/v1/configuration/apply", "null", adminToken), 400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/inspections", "null", adminToken), 400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/snapshots", "null", adminToken), 400, "VALIDATION_ERROR");
         assertError(send("POST", "/api/v1/nodes/proxy-a/operations", "null", nodeToken), 400,
                 "VALIDATION_ERROR");
         String duplicate = registration().replaceFirst("\\{", "{\"nodeId\":\"proxy-a\",");

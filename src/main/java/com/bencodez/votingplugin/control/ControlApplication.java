@@ -4,6 +4,9 @@ import com.bencodez.votingplugin.control.auth.CredentialStore;
 import com.bencodez.votingplugin.control.domain.InMemoryNodeRegistry;
 import com.bencodez.votingplugin.control.domain.ConfigurationAuditLog;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
+import com.bencodez.votingplugin.control.domain.ConfigurationOperationJournal;
+import com.bencodez.votingplugin.control.domain.ConfigurationSnapshots;
+import com.bencodez.votingplugin.control.domain.InspectionOperations;
 import com.bencodez.votingplugin.control.http.ControlHttpServer;
 import com.bencodez.votingplugin.control.protocol.ControlIdentity;
 import com.bencodez.votingplugin.control.protocol.Protocol;
@@ -153,10 +156,14 @@ public final class ControlApplication {
                 VersionInfo.applicationVersion(), Protocol.VERSION);
         Clock clock = Clock.systemUTC();
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, configuration.offlineTimeout());
-        ConfigurationOperations operations = new ConfigurationOperations(registry,
-                new ConfigurationAuditLog(configuration.dataDirectory(), clock), clock);
+        ConfigurationAuditLog audit = new ConfigurationAuditLog(configuration.dataDirectory(), clock);
+        ConfigurationOperationJournal operationJournal = new ConfigurationOperationJournal(
+                configuration.dataDirectory(), clock);
+        ConfigurationOperations operations = new ConfigurationOperations(registry, audit, clock, operationJournal);
+        InspectionOperations inspections = new InspectionOperations(registry, audit, clock);
+        ConfigurationSnapshots snapshots = new ConfigurationSnapshots(configuration.dataDirectory(), clock);
         ControlHttpServer server = new ControlHttpServer(configuration.address(), registry, identity, credentials,
-                operations, configuration.secureCookies(), configuration.trustedProxyAddresses(),
+                operations, inspections, snapshots, configuration.secureCookies(), configuration.trustedProxyAddresses(),
                 configuration.launchId());
         ProcessHandle parent = parentProcess(configuration.parentPid());
         CountDownLatch shutdown = new CountDownLatch(1);

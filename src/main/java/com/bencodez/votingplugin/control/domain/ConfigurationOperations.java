@@ -6,6 +6,7 @@ import com.bencodez.votingplugin.control.protocol.NodeStatus;
 import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
 import java.nio.charset.StandardCharsets;
+import java.io.IOException;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.time.Clock;
@@ -13,6 +14,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -31,9 +33,11 @@ public final class ConfigurationOperations implements AutoCloseable {
     public static final String TRANSPORT_TEST_CAPABILITY = "config.transport-test.v1";
     public static final String PROXY_METHOD_CAPABILITY = "config.proxy-method.v1";
     private static final int MAX_OPERATIONS = 1000;
+    private static final int MAX_LISTED_OPERATIONS = 100;
     private static final int MAX_FILE_OPERATIONS = 16;
     static final int MAX_RETAINED_CHANGE_BYTES = 256 * 1024;
     static final int MAX_RETAINED_MESSAGE_BYTES = 256 * 1024;
+    static final int MAX_RETAINED_FILE_BYTES = 8 * 1024 * 1024;
     private static final Duration LEASE = Duration.ofMinutes(2);
     private static final Duration ACTIVE_RETENTION = Duration.ofMinutes(15);
     private static final Duration RETENTION = Duration.ofHours(24);
@@ -41,15 +45,27 @@ public final class ConfigurationOperations implements AutoCloseable {
     private final NodeRegistry registry;
     private final ConfigurationAuditLog audit;
     private final Clock clock;
+    private final ConfigurationOperationJournal journal;
     private final SecureRandom random = new SecureRandom();
     private final LinkedHashMap<UUID, StoredOperation> operations = new LinkedHashMap<>();
     private long retainedChangeBytes;
     private long retainedMessageBytes;
+    private long retainedFileBytes;
 
     public ConfigurationOperations(NodeRegistry registry, ConfigurationAuditLog audit, Clock clock) {
         this.registry = Objects.requireNonNull(registry);
         this.audit = Objects.requireNonNull(audit);
         this.clock = Objects.requireNonNull(clock);
+        this.journal = null;
+    }
+
+    public ConfigurationOperations(NodeRegistry registry, ConfigurationAuditLog audit, Clock clock,
+                                   ConfigurationOperationJournal journal) throws IOException {
+        this.registry = Objects.requireNonNull(registry);
+        this.audit = Objects.requireNonNull(audit);
+        this.clock = Objects.requireNonNull(clock);
+        this.journal = Objects.requireNonNull(journal);
+        restore(journal.load());
     }
 
     public synchronized OperationView createRead(List<String> nodeIds) {
@@ -91,6 +107,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
         ValidatedTargets targets = validateTargets(new ArrayList<>(preview.states.keySet()),
                 preview.configuration.capability());
+        validateApprovedTargets(preview, targets);
         validateProxyMethodTargets(targets, preview.configuration);
         rejectOverlappingProxyMethodApply(targets, preview.configuration);
         Map<String, String> revisions = new LinkedHashMap<>();
@@ -100,6 +117,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         preview.approvalUsed = true;
         try {
             audit.append("APPLY_APPROVED", apply.id, null, "QUEUED");
+            persist();
         } catch (RuntimeException e) {
             operations.remove(apply.id);
             preview.approvalUsed = false;
@@ -113,6 +131,60 @@ public final class ConfigurationOperations implements AutoCloseable {
         StoredOperation operation = operations.get(id);
         if (operation == null) throw new ValidationException("OPERATION_NOT_FOUND", "Operation was not found", List.of());
         return view(operation);
+    }
+
+    public synchronized List<OperationView> list() {
+        prune();
+        List<OperationView> result = new ArrayList<>(operations.values().stream()
+                .skip(Math.max(0, operations.size() - MAX_LISTED_OPERATIONS)).map(this::summaryView).toList());
+        Collections.reverse(result);
+        return List.copyOf(result);
+    }
+
+    /** Reissues safe work without repeating nodes that already applied successfully. */
+    public synchronized OperationView retry(UUID id) {
+        prune();
+        StoredOperation original = operations.get(id);
+        if (original == null) throw new ValidationException("OPERATION_NOT_FOUND", "Operation was not found", List.of());
+        if (original.recovered) {
+            throw new ValidationException("RETRY_REQUIRES_INPUT",
+                    "Recovered operations are history only; start a fresh read or preview", List.of());
+        }
+        if (!original.complete()) {
+            throw new ValidationException("OPERATION_INCOMPLETE", "Wait for the operation to finish before retrying",
+                    List.of());
+        }
+        List<String> failed = original.results.entrySet().stream().filter(entry -> !entry.getValue().success())
+                .map(Map.Entry::getKey).toList();
+        if (failed.isEmpty()) throw invalid("operation has no failed nodes");
+        if ("APPLY".equals(original.type) && ManagedConfiguration.QUICK_SETUP.equals(original.configuration.domain())
+                && ManagedConfiguration.PROXY_METHOD.equals(original.configuration.preset())) {
+            throw new ValidationException("PREVIEW_REQUIRED", "Proxy method changes must be previewed again",
+                    List.of());
+        }
+        List<String> requested = "PREVIEW".equals(original.type)
+                ? new ArrayList<>(original.states.keySet()) : failed;
+        ValidatedTargets targets = validateTargets(requested, original.configuration.capability());
+        if ("APPLY".equals(original.type)) validateApprovedTargets(original, targets);
+        String token = null;
+        if ("PREVIEW".equals(original.type)) {
+            byte[] bytes = new byte[32];
+            random.nextBytes(bytes);
+            token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        }
+        Map<String, String> revisions = new LinkedHashMap<>();
+        if ("APPLY".equals(original.type)) {
+            requested.forEach(nodeId -> revisions.put(nodeId, original.expectedRevisions.get(nodeId)));
+        }
+        StoredOperation retry = store(original.type, targets, original.configuration, token, revisions, original.id);
+        try {
+            audit.append("OPERATION_RETRIED", retry.id, null, original.id.toString());
+            persist();
+        } catch (RuntimeException failure) {
+            operations.remove(retry.id);
+            throw failure;
+        }
+        return view(retry);
     }
 
     public synchronized ConfigurationTask claim(String nodeId, UUID sessionId) {
@@ -291,6 +363,16 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
     }
 
+    private static void validateApprovedTargets(StoredOperation preview, ValidatedTargets current) {
+        for (String nodeId : current.nodeIds()) {
+            if (!Objects.equals(preview.targetSessions.get(nodeId), current.sessions().get(nodeId))
+                    || !Objects.equals(preview.targetPlatforms.get(nodeId), current.platforms().get(nodeId))) {
+                throw new ValidationException("TARGET_CHANGED",
+                        "A preview target reconnected or changed role; preview again", List.of(nodeId));
+            }
+        }
+    }
+
     public synchronized OperationView complete(UUID operationId, String nodeId, ConfigurationTaskResult result) {
         validateResult(result);
         return registry.withSession(nodeId, result.sessionId(),
@@ -306,7 +388,10 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (operation == null || !operation.states.containsKey(nodeId)) {
             throw new ValidationException("OPERATION_NOT_FOUND", "Operation task was not found", List.of());
         }
-        if ("COMPLETE".equals(operation.states.get(nodeId))) return view(operation);
+        if ("COMPLETE".equals(operation.states.get(nodeId))) {
+            persist();
+            return view(operation);
+        }
         if (!"IN_PROGRESS".equals(operation.states.get(nodeId))) {
             throw new ValidationException("TASK_NOT_CLAIMED", "Operation task must be claimed before completion", List.of());
         }
@@ -321,6 +406,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         operation.states.put(nodeId, "COMPLETE");
         operation.leasedAt.remove(nodeId);
         operation.attemptIds.remove(nodeId);
+        persist();
         return view(operation);
     }
 
@@ -328,6 +414,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         StoredOperation operation = store(type, targets, config, token, Map.of(), null);
         try {
             audit.append("OPERATION_CREATED", operation.id, null, type);
+            persist();
         } catch (RuntimeException e) {
             operations.remove(operation.id);
             throw e;
@@ -346,7 +433,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         targets.nodeIds().forEach(node -> states.put(node, "QUEUED"));
         StoredOperation result = new StoredOperation(id, type, config, token, clock.instant(), states,
                 new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(revisions),
-                new LinkedHashMap<>(targets.platforms()), new LinkedHashMap<>(targets.sessions()));
+                new LinkedHashMap<>(targets.platforms()), new LinkedHashMap<>(targets.sessions()), protectedOperation,
+                false);
         operations.put(id, result);
         return result;
     }
@@ -376,14 +464,16 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     private ConfigurationTaskResult boundedResult(StoredOperation operation, ConfigurationTaskResult result) {
         ManagedConfiguration configuration = result.success() ? result.configuration() : null;
-        if (configuration != null && ManagedConfiguration.VOTE_SITES_SYNC.equals(configuration.preset())) {
+        if (configuration != null && (ManagedConfiguration.VOTE_SITES_SYNC.equals(configuration.preset())
+                || ManagedConfiguration.REWARD_BUILDER.equals(configuration.preset()))) {
             configuration = configuration.publicView();
         } else if (configuration != null && ManagedConfiguration.FILE.equals(configuration.domain())) {
+            int contentBytes = configuration.content() == null ? 0
+                    : configuration.content().getBytes(StandardCharsets.UTF_8).length;
             boolean keepContent = result.success() && "READ".equals(operation.type)
-                    && operation.results.values().stream().filter(ConfigurationTaskResult::success)
-                    .map(ConfigurationTaskResult::configuration).filter(Objects::nonNull)
-                    .noneMatch(value -> ManagedConfiguration.FILE.equals(value.domain()) && value.content() != null);
-            if (!keepContent) configuration = configuration.publicView();
+                    && contentBytes > 0 && retainedFileBytes + contentBytes <= MAX_RETAINED_FILE_BYTES;
+            if (keepContent) retainedFileBytes += contentBytes;
+            else configuration = configuration.publicView();
         } else if (configuration != null && operation.results.values().stream()
                 .filter(ConfigurationTaskResult::success)
                 .anyMatch(existing -> existing.configuration() != null)) {
@@ -457,8 +547,12 @@ public final class ConfigurationOperations implements AutoCloseable {
         for (String change : result.changes()) {
             retainedChangeBytes -= change.getBytes(StandardCharsets.UTF_8).length;
         }
+        if (result.configuration() != null && result.configuration().content() != null) {
+            retainedFileBytes -= result.configuration().content().getBytes(StandardCharsets.UTF_8).length;
+        }
         if (retainedChangeBytes < 0) retainedChangeBytes = 0;
         if (retainedMessageBytes < 0) retainedMessageBytes = 0;
+        if (retainedFileBytes < 0) retainedFileBytes = 0;
     }
 
     private ValidatedTargets validateTargets(List<String> nodeIds, String capability) {
@@ -481,14 +575,99 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private OperationView view(StoredOperation operation) {
+        return view(operation, true);
+    }
+
+    private OperationView summaryView(StoredOperation operation) {
+        return view(operation, false);
+    }
+
+    private OperationView view(StoredOperation operation, boolean includeRetainedContent) {
         String state = operation.complete() ? (operation.results.values().stream().allMatch(ConfigurationTaskResult::success)
                 ? "SUCCEEDED" : "COMPLETED_WITH_ERRORS") : "RUNNING";
         String approval = "PREVIEW".equals(operation.type) && operation.complete()
                 && operation.results.values().stream().allMatch(ConfigurationTaskResult::success)
                 && !operation.approvalUsed ? operation.approvalToken : null;
+        Map<String, ConfigurationTaskResult> results = operation.results;
+        if (!includeRetainedContent) {
+            LinkedHashMap<String, ConfigurationTaskResult> summaries = new LinkedHashMap<>();
+            operation.results.forEach((nodeId, result) -> summaries.put(nodeId,
+                    result.configuration() == null ? result : new ConfigurationTaskResult(result.sessionId(),
+                            result.success(), result.code(), result.message(), result.revision(),
+                            result.configuration().publicView(), result.changes(), result.reloaded(),
+                            result.rolledBack(), result.attemptId())));
+            results = summaries;
+        }
         return new OperationView(operation.id, operation.type, state, operation.createdAt,
                 operation.configuration == null ? null : operation.configuration.publicView(),
-                Map.copyOf(operation.states), Map.copyOf(operation.results), approval);
+                Map.copyOf(operation.states), Map.copyOf(results), approval, operation.sourceOperationId,
+                operation.recovered, retryable(operation));
+    }
+
+    private static boolean retryable(StoredOperation operation) {
+        if (operation.recovered || !operation.complete()
+                || operation.results.values().stream().allMatch(ConfigurationTaskResult::success)) return false;
+        return !("APPLY".equals(operation.type)
+                && ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                && ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset()));
+    }
+
+    private void restore(List<ConfigurationOperationJournal.Entry> entries) {
+        for (ConfigurationOperationJournal.Entry entry : entries) {
+            ManagedConfiguration configuration = switch (entry.domain()) {
+                case ManagedConfiguration.PROXY_ROUTING -> ManagedConfiguration.proxy(
+                        new ProxyRoutingConfiguration(false, List.of()));
+                case ManagedConfiguration.FILE -> ManagedConfiguration.file(entry.fileName(), null);
+                case ManagedConfiguration.QUICK_SETUP -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                        null, List.of(), null, null, entry.preset(), Map.of());
+                default -> throw new IllegalStateException("unsupported journal configuration domain");
+            };
+            LinkedHashMap<String, String> states = new LinkedHashMap<>();
+            LinkedHashMap<String, ConfigurationTaskResult> results = new LinkedHashMap<>();
+            for (ConfigurationOperationJournal.NodeResult node : entry.nodes()) {
+                states.put(node.nodeId(), "COMPLETE");
+                boolean completed = node.complete();
+                boolean success = completed && Boolean.TRUE.equals(node.success());
+                String code = completed ? node.code() : "CONTROL_RESTARTED";
+                String message = completed ? "Recovered from durable operation history"
+                        : "Control restarted before this node reported completion";
+                results.put(node.nodeId(), new ConfigurationTaskResult(new UUID(0, 0), success, code, message,
+                        completed ? node.revision() : null, (ManagedConfiguration) null, List.of(),
+                        completed && node.reloaded(),
+                        completed && node.rolledBack(), null));
+            }
+            StoredOperation restored = new StoredOperation(entry.operationId(), entry.type(), configuration, null,
+                    entry.createdAt(), states, results, new LinkedHashMap<>(), new LinkedHashMap<>(),
+                    new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), entry.sourceOperationId(),
+                    true);
+            restored.approvalUsed = true;
+            operations.put(restored.id, restored);
+        }
+    }
+
+    private void persist() {
+        if (journal == null) return;
+        List<ConfigurationOperationJournal.Entry> entries = new ArrayList<>();
+        for (StoredOperation operation : operations.values()) {
+            ManagedConfiguration configuration = operation.configuration;
+            List<ConfigurationOperationJournal.NodeResult> nodes = new ArrayList<>();
+            for (Map.Entry<String, String> node : operation.states.entrySet()) {
+                ConfigurationTaskResult result = operation.results.get(node.getKey());
+                boolean complete = "COMPLETE".equals(node.getValue()) && result != null;
+                nodes.add(new ConfigurationOperationJournal.NodeResult(node.getKey(), complete,
+                        complete ? result.success() : null, complete ? result.code() : null,
+                        complete ? result.revision() : null, complete && result.reloaded(),
+                        complete && result.rolledBack()));
+            }
+            entries.add(new ConfigurationOperationJournal.Entry(operation.id, operation.type, operation.createdAt,
+                    configuration.domain(), configuration.fileName(), configuration.preset(),
+                    operation.sourceOperationId, List.copyOf(nodes)));
+        }
+        try {
+            journal.save(entries);
+        } catch (IOException failure) {
+            throw new IllegalStateException("Could not persist redacted configuration operation history", failure);
+        }
     }
 
     private void prune() {
@@ -529,12 +708,25 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     @Override
     public void close() throws java.io.IOException {
-        audit.close();
+        IOException failure = null;
+        try {
+            persist();
+        } catch (IllegalStateException journalFailure) {
+            failure = new IOException("Could not persist configuration operation history", journalFailure);
+        }
+        try {
+            audit.close();
+        } catch (IOException auditFailure) {
+            if (failure == null) failure = auditFailure;
+            else failure.addSuppressed(auditFailure);
+        }
+        if (failure != null) throw failure;
     }
 
     public record OperationView(UUID operationId, String type, String state, Instant createdAt,
                                 ManagedConfiguration configuration, Map<String, String> nodeStates,
-                                Map<String, ConfigurationTaskResult> results, String approvalToken) { }
+                                Map<String, ConfigurationTaskResult> results, String approvalToken,
+                                UUID sourceOperationId, boolean recovered, boolean retryable) { }
 
     private record ValidatedTargets(List<String> nodeIds, Map<String, String> platforms,
                                     Map<String, UUID> sessions) { }
@@ -552,6 +744,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         private final LinkedHashMap<String, String> expectedRevisions;
         private final LinkedHashMap<String, String> targetPlatforms;
         private final LinkedHashMap<String, UUID> targetSessions;
+        private final UUID sourceOperationId;
+        private final boolean recovered;
         private boolean approvalUsed;
 
         private StoredOperation(UUID id, String type, ManagedConfiguration configuration, String approvalToken,
@@ -561,13 +755,16 @@ public final class ConfigurationOperations implements AutoCloseable {
                                 LinkedHashMap<String, UUID> attemptIds,
                                 LinkedHashMap<String, String> expectedRevisions,
                                 LinkedHashMap<String, String> targetPlatforms,
-                                LinkedHashMap<String, UUID> targetSessions) {
+                                LinkedHashMap<String, UUID> targetSessions, UUID sourceOperationId,
+                                boolean recovered) {
             this.id = id; this.type = type; this.configuration = configuration; this.approvalToken = approvalToken;
             this.createdAt = createdAt; this.states = states; this.results = results; this.leasedAt = leasedAt;
             this.attemptIds = attemptIds;
             this.expectedRevisions = expectedRevisions;
             this.targetPlatforms = targetPlatforms;
             this.targetSessions = targetSessions;
+            this.sourceOperationId = sourceOperationId;
+            this.recovered = recovered;
         }
         private boolean complete() { return states.values().stream().allMatch("COMPLETE"::equals); }
         private boolean fileOperation() {

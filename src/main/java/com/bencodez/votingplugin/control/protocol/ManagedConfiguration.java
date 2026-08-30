@@ -1,8 +1,10 @@
 package com.bencodez.votingplugin.control.protocol;
 
+import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** Versioned union of the configuration domains negotiated with VotingPlugin nodes. */
 public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers, List<String> blockedServers,
@@ -13,7 +15,25 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
     public static final String VOTE_SITES_SYNC = "sync-vote-sites";
     public static final String COMMUNICATION_TEST = "communication-test";
     public static final String PROXY_METHOD = "proxy-method";
+    public static final String REWARD_BUILDER = "reward-builder";
     public static final int MAX_CONTENT = 512 * 1024;
+    public static final int MAX_REWARD_PROPOSAL = 64 * 1024;
+    private static final Map<String, Set<String>> QUICK_SETUP_OPTIONS = Map.ofEntries(
+            Map.entry("standalone", Set.of("useBungeecord", "server", "method")),
+            Map.entry("proxy-backend", Set.of("useBungeecord", "server", "method")),
+            Map.entry("vote-site", Set.of("name", "exists", "enabled", "displayName", "priority", "hidden",
+                    "serviceSite", "voteUrl", "voteDelay", "material")),
+            Map.entry("easy-reward", Set.of("scope", "name", "command", "message")),
+            Map.entry("common-settings", Set.of("processRewards", "autoCreateVoteSites", "extraAllSitesCheck",
+                    "countFakeVotes", "disableNoServiceSiteMessage", "disableUpdateChecking")),
+            Map.entry("vote-party", Set.of("enabled", "votesRequired", "broadcast", "giveAllPlayers",
+                    "onlineOnly", "command", "rewardCommandCount")),
+            Map.entry("auto-create-vote-sites", Set.of("enabled")),
+            Map.entry("vote-logging", Set.of("enabled", "purgeDays", "useMainMySQL")),
+            Map.entry(VOTE_SITES_SYNC, Set.of("sourceContent")),
+            Map.entry(COMMUNICATION_TEST, Set.of("server")),
+            Map.entry(PROXY_METHOD, Set.of("method")),
+            Map.entry(REWARD_BUILDER, Set.of("proposal", "targetFile")));
 
     public ManagedConfiguration {
         domain = domain == null && sendVotesToAllServers != null ? PROXY_ROUTING : domain;
@@ -30,7 +50,7 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             if (sendVotesToAllServers != null || !blockedServers.isEmpty() || preset != null || !options.isEmpty())
                 throw new IllegalArgumentException("file configuration contains fields from another domain");
             validateFileName(fileName);
-            if (content != null && (content.length() > MAX_CONTENT || content.indexOf('\0') >= 0)) {
+            if (content != null && (utf8Bytes(content) > MAX_CONTENT || content.indexOf('\0') >= 0)) {
                 throw new IllegalArgumentException("configuration file content is invalid");
             }
         } else {
@@ -40,9 +60,14 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             if (preset == null || !preset.matches("[a-z][a-z0-9-]{0,39}")) {
                 throw new IllegalArgumentException("quick setup preset is invalid");
             }
+            Set<String> acceptedOptions = QUICK_SETUP_OPTIONS.get(preset);
+            if (acceptedOptions == null || !acceptedOptions.containsAll(options.keySet())) {
+                throw new IllegalArgumentException("quick setup preset or option is unsupported");
+            }
             if (options.size() > 20 || options.entrySet().stream().anyMatch(entry -> entry.getKey() == null
                     || !entry.getKey().matches("[a-z][A-Za-z0-9]{0,39}") || entry.getValue() == null
-                    || invalidOption(entry.getKey(), entry.getValue(), VOTE_SITES_SYNC.equals(preset)))) {
+                    || invalidOption(entry.getKey(), entry.getValue(), VOTE_SITES_SYNC.equals(preset),
+                    REWARD_BUILDER.equals(preset)))) {
                 throw new IllegalArgumentException("quick setup options are invalid");
             }
         }
@@ -72,6 +97,10 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
                 .contains(options.get("method")))) {
             throw new IllegalArgumentException("proxy method requires one supported method");
         }
+        if (QUICK_SETUP.equals(domain) && REWARD_BUILDER.equals(preset)
+                && (options.size() != 1 || !options.containsKey("proposal"))) {
+            throw new IllegalArgumentException("reward builder requires one typed proposal");
+        }
     }
 
     public String capability() {
@@ -89,19 +118,26 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
     /** Omits file contents so proposals, including newly entered secrets, are never echoed by operation APIs. */
     public ManagedConfiguration publicView() {
         if (FILE.equals(domain)) return file(fileName, null);
-        if (QUICK_SETUP.equals(domain) && VOTE_SITES_SYNC.equals(preset) && options.containsKey("sourceContent")) {
+        if (QUICK_SETUP.equals(domain) && (VOTE_SITES_SYNC.equals(preset) && options.containsKey("sourceContent")
+                || REWARD_BUILDER.equals(preset) && options.containsKey("proposal"))) {
             Map<String, String> visible = new LinkedHashMap<>(options);
             visible.remove("sourceContent");
+            visible.remove("proposal");
             return new ManagedConfiguration(domain, sendVotesToAllServers, blockedServers, fileName, content,
                     preset, visible);
         }
         return this;
     }
 
-    private static boolean invalidOption(String name, String value, boolean voteSitesSync) {
+    private static boolean invalidOption(String name, String value, boolean voteSitesSync, boolean rewardBuilder) {
         boolean sourceContent = voteSitesSync && "sourceContent".equals(name);
-        int maximum = sourceContent ? MAX_CONTENT : 500;
-        return value.indexOf('\0') >= 0 || value.length() > maximum;
+        boolean proposal = rewardBuilder && "proposal".equals(name);
+        int maximum = sourceContent ? MAX_CONTENT : proposal ? MAX_REWARD_PROPOSAL : 500;
+        return value.indexOf('\0') >= 0 || utf8Bytes(value) > maximum;
+    }
+
+    private static int utf8Bytes(String value) {
+        return value.getBytes(StandardCharsets.UTF_8).length;
     }
 
     private static void validateFileName(String value) {

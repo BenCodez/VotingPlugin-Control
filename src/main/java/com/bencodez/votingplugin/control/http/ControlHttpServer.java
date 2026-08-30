@@ -4,12 +4,17 @@ import com.bencodez.votingplugin.control.auth.CredentialStore;
 import com.bencodez.votingplugin.control.auth.WebSessionStore;
 import com.bencodez.votingplugin.control.domain.NodeRegistry;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
+import com.bencodez.votingplugin.control.domain.ConfigurationSnapshots;
+import com.bencodez.votingplugin.control.domain.InspectionOperations;
 import com.bencodez.votingplugin.control.domain.ValidationException;
 import com.bencodez.votingplugin.control.protocol.ConfigurationRequests;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTask;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import com.bencodez.votingplugin.control.protocol.ControlIdentity;
 import com.bencodez.votingplugin.control.protocol.Heartbeat;
+import com.bencodez.votingplugin.control.protocol.InspectionRequests;
+import com.bencodez.votingplugin.control.protocol.InspectionTask;
+import com.bencodez.votingplugin.control.protocol.InspectionTaskResult;
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.bencodez.votingplugin.control.protocol.NodeStatus;
@@ -35,6 +40,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
@@ -61,6 +67,8 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final String REGISTER = "/api/v1/nodes/register";
     private static final String CONFIGURATION = "/api/v1/configuration";
     private static final String OPERATIONS = "/api/v1/operations";
+    private static final String INSPECTIONS = "/api/v1/inspections";
+    private static final String SNAPSHOTS = "/api/v1/snapshots";
     private static final String AUTH_LOGIN = "/api/v1/auth/login";
     private static final String AUTH_SESSION = "/api/v1/auth/session";
     private static final String AUTH_LOGOUT = "/api/v1/auth/logout";
@@ -85,6 +93,8 @@ public final class ControlHttpServer implements AutoCloseable {
     private final ControlIdentity identity;
     private final CredentialStore credentials;
     private final ConfigurationOperations configurationOperations;
+    private final InspectionOperations inspectionOperations;
+    private final ConfigurationSnapshots configurationSnapshots;
     private final ThreadPoolExecutor executor;
     private final ThreadPoolExecutor passwordExecutor;
     private final PasswordAdmission passwordAdmission = new PasswordAdmission(MAX_PASSWORD_ATTEMPTS_PER_CLIENT);
@@ -137,14 +147,53 @@ public final class ControlHttpServer implements AutoCloseable {
                 secureCookies, trustedProxyAddresses, launchId);
     }
 
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, ConfigurationOperations configurationOperations,
+                             InspectionOperations inspectionOperations, boolean secureCookies,
+                             Set<String> trustedProxyAddresses, String launchId) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
+                temporarySnapshots(), Clock.systemUTC(), System::nanoTime, secureCookies,
+                trustedProxyAddresses, launchId);
+    }
+
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, ConfigurationOperations configurationOperations,
+                             InspectionOperations inspectionOperations, ConfigurationSnapshots configurationSnapshots,
+                             boolean secureCookies, Set<String> trustedProxyAddresses, String launchId) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
+                configurationSnapshots, Clock.systemUTC(), System::nanoTime, secureCookies,
+                trustedProxyAddresses, launchId);
+    }
+
     ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                       CredentialStore credentials, ConfigurationOperations configurationOperations, Clock clock,
                       java.util.function.LongSupplier nanoTime, boolean secureCookies,
+                      Set<String> trustedProxyAddresses, String launchId) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations,
+                new InspectionOperations(registry, clock), temporarySnapshots(), clock, nanoTime, secureCookies,
+                trustedProxyAddresses, launchId);
+    }
+
+    ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                      CredentialStore credentials, ConfigurationOperations configurationOperations,
+                      InspectionOperations inspectionOperations, Clock clock,
+                      java.util.function.LongSupplier nanoTime, boolean secureCookies,
+                      Set<String> trustedProxyAddresses, String launchId) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
+                temporarySnapshots(), clock, nanoTime, secureCookies, trustedProxyAddresses, launchId);
+    }
+
+    ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                      CredentialStore credentials, ConfigurationOperations configurationOperations,
+                      InspectionOperations inspectionOperations, ConfigurationSnapshots configurationSnapshots,
+                      Clock clock, java.util.function.LongSupplier nanoTime, boolean secureCookies,
                       Set<String> trustedProxyAddresses, String launchId) throws IOException {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.credentials = Objects.requireNonNull(credentials, "credentials");
         this.configurationOperations = Objects.requireNonNull(configurationOperations, "configurationOperations");
+        this.inspectionOperations = Objects.requireNonNull(inspectionOperations, "inspectionOperations");
+        this.configurationSnapshots = Objects.requireNonNull(configurationSnapshots, "configurationSnapshots");
         this.secureCookies = secureCookies;
         this.trustedProxyAddresses = Set.copyOf(Objects.requireNonNull(trustedProxyAddresses, "trustedProxyAddresses"));
         this.launchId = launchId;
@@ -189,6 +238,11 @@ public final class ControlHttpServer implements AutoCloseable {
         return server.getAddress().getPort();
     }
 
+    private static ConfigurationSnapshots temporarySnapshots() throws IOException {
+        return new ConfigurationSnapshots(Files.createTempDirectory("votingplugin-control-test-snapshots"),
+                Clock.systemUTC());
+    }
+
     @Override
     public void close() {
         server.stop(0);
@@ -221,11 +275,12 @@ public final class ControlHttpServer implements AutoCloseable {
             error(exchange, 403, "CSRF_REQUIRED", "A valid CSRF token is required", List.of());
         } catch (ValidationException e) {
             int status = switch (e.code()) {
-                case "NODE_NOT_FOUND", "OPERATION_NOT_FOUND" -> 404;
+                case "NODE_NOT_FOUND", "OPERATION_NOT_FOUND", "SNAPSHOT_NOT_FOUND" -> 404;
                 case "UNSUPPORTED_PROTOCOL", "INCOMPATIBLE_CAPABILITIES", "SESSION_MISMATCH",
                         "PREVIEW_INCOMPLETE", "APPROVAL_REQUIRED", "NODE_UNAVAILABLE", "OPERATION_LIMIT",
                         "REGISTRY_LIMIT", "REGISTRY_CHANGED", "TASK_NOT_CLAIMED", "TASK_LEASE_EXPIRED",
-                        "SETUP_COMPLETE" -> 409;
+                        "SETUP_COMPLETE", "OPERATION_INCOMPLETE", "PREVIEW_REQUIRED",
+                        "RETRY_REQUIRES_INPUT", "TARGET_CHANGED" -> 409;
                 case "UNSUPPORTED_MEDIA_TYPE" -> 415;
                 default -> 400;
             };
@@ -429,12 +484,69 @@ public final class ControlHttpServer implements AutoCloseable {
             send(exchange, 202, configurationOperations.createApply(request.previewOperationId(), request.approvalToken()));
             return;
         }
+        if (OPERATIONS.equals(path)) {
+            requireMethod(exchange, "GET");
+            authenticateAdmin(exchange, false);
+            send(exchange, 200, Map.of("items", configurationOperations.list()));
+            return;
+        }
+        if (INSPECTIONS.equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            InspectionRequests.Start request = read(exchange, InspectionRequests.Start.class);
+            requireRequest(request);
+            send(exchange, 202, inspectionOperations.create(request.nodeId(), request.query()));
+            return;
+        }
+        if (SNAPSHOTS.equals(path)) {
+            authenticateAdmin(exchange, "POST".equals(exchange.getRequestMethod()));
+            if ("GET".equals(exchange.getRequestMethod())) {
+                send(exchange, 200, Map.of("items", configurationSnapshots.list()));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod())) {
+                SnapshotRequest request = read(exchange, SnapshotRequest.class);
+                requireRequest(request);
+                send(exchange, 201, configurationSnapshots.create(request.name(),
+                        configurationOperations.get(request.operationId())));
+                return;
+            }
+            exchange.getResponseHeaders().set("Allow", "GET, POST");
+            error(exchange, 405, "METHOD_NOT_ALLOWED", "Method is not allowed",
+                    List.of("allowed=GET", "allowed=POST"));
+            throw new ResponseCompleteException();
+        }
         if (path != null && path.startsWith(OPERATIONS + "/")) {
             String remainder = path.substring((OPERATIONS + "/").length());
             if (!remainder.contains("/")) {
                 requireMethod(exchange, "GET");
                 authenticateAdmin(exchange, false);
                 send(exchange, 200, configurationOperations.get(UUID.fromString(remainder)));
+                return;
+            }
+            String[] segments = remainder.split("/", -1);
+            if (segments.length == 2 && "retry".equals(segments[1])) {
+                requireMethod(exchange, "POST");
+                authenticateAdmin(exchange, true);
+                send(exchange, 202, configurationOperations.retry(UUID.fromString(segments[0])));
+                return;
+            }
+        }
+        if (path != null && path.startsWith(INSPECTIONS + "/")) {
+            String remainder = path.substring((INSPECTIONS + "/").length());
+            if (!remainder.contains("/")) {
+                requireMethod(exchange, "GET");
+                authenticateAdmin(exchange, false);
+                send(exchange, 200, inspectionOperations.get(UUID.fromString(remainder)));
+                return;
+            }
+        }
+        if (path != null && path.startsWith(SNAPSHOTS + "/")) {
+            String remainder = path.substring((SNAPSHOTS + "/").length());
+            if (!remainder.contains("/")) {
+                requireMethod(exchange, "GET");
+                authenticateAdmin(exchange, false);
+                send(exchange, 200, configurationSnapshots.get(UUID.fromString(remainder)));
                 return;
             }
         }
@@ -444,7 +556,7 @@ public final class ControlHttpServer implements AutoCloseable {
             String remainder = path.substring(prefix.length());
             String[] segments = remainder.split("/", -1);
             if (segments.length == 2 && ("heartbeat".equals(segments[1]) || "presence".equals(segments[1])
-                    || "operations".equals(segments[1]))) {
+                    || "operations".equals(segments[1]) || "inspections".equals(segments[1]))) {
                 String nodeId = decodePathSegment(segments[0]);
                 if ("heartbeat".equals(segments[1])) {
                     requireMethod(exchange, "PUT");
@@ -456,12 +568,23 @@ public final class ControlHttpServer implements AutoCloseable {
                     NodeRegistry.SnapshotResult result = registry.replacePresence(nodeId,
                             read(exchange, PresenceSnapshot.class));
                     send(exchange, 200, Map.of("applied", result.applied(), "node", result.node()));
-                } else {
+                } else if ("operations".equals(segments[1])) {
                     requireMethod(exchange, "POST");
                     authenticateNode(exchange, nodeId);
                     ConfigurationRequests.Claim claim = read(exchange, ConfigurationRequests.Claim.class);
                     requireRequest(claim);
                     ConfigurationTask task = configurationOperations.claim(nodeId, claim.sessionId());
+                    if (task == null) {
+                        noContent(exchange);
+                    } else {
+                        send(exchange, 200, task);
+                    }
+                } else {
+                    requireMethod(exchange, "POST");
+                    authenticateNode(exchange, nodeId);
+                    InspectionRequests.Claim claim = read(exchange, InspectionRequests.Claim.class);
+                    requireRequest(claim);
+                    InspectionTask task = inspectionOperations.claim(nodeId, claim.sessionId());
                     if (task == null) {
                         noContent(exchange);
                     } else {
@@ -476,6 +599,14 @@ public final class ControlHttpServer implements AutoCloseable {
                 authenticateNode(exchange, nodeId);
                 ConfigurationTaskResult result = read(exchange, ConfigurationTaskResult.class);
                 send(exchange, 200, configurationOperations.complete(UUID.fromString(segments[2]), nodeId, result));
+                return;
+            }
+            if (segments.length == 4 && "inspections".equals(segments[1]) && "result".equals(segments[3])) {
+                String nodeId = decodePathSegment(segments[0]);
+                requireMethod(exchange, "POST");
+                authenticateNode(exchange, nodeId);
+                InspectionTaskResult result = read(exchange, InspectionTaskResult.class);
+                send(exchange, 200, inspectionOperations.complete(UUID.fromString(segments[2]), nodeId, result));
                 return;
             }
         }
@@ -864,6 +995,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private record PasswordRequest(String password) { }
     private record SetupRequest(String setupCode, String password) { }
     private record EnrollmentRequest(String nodeId) { }
+    private record SnapshotRequest(String name, UUID operationId) { }
     record BackendPage(List<NodeStatus> items, int backendItemsReturned, boolean backendItemsTruncated,
                        List<String> backendItemsTruncatedNodeIds) { }
 
