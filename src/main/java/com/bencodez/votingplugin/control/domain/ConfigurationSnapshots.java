@@ -86,10 +86,11 @@ public final class ConfigurationSnapshots {
                     .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).sorted(snapshotOrder()).toList();
         }
         long bytes = snapshots.stream().mapToLong(path -> { try { return Files.size(path); } catch (IOException e) { return Long.MAX_VALUE; } }).sum();
+        int remaining = snapshots.size();
         for (Path snapshot : snapshots) {
-            if (snapshots.size() <= MAX_SNAPSHOTS && bytes <= MAX_TOTAL_STORED_BYTES) break;
+            if (remaining <= MAX_SNAPSHOTS && bytes <= MAX_TOTAL_STORED_BYTES) break;
             try { bytes -= Files.size(snapshot); } catch (IOException ignored) { }
-            Files.deleteIfExists(snapshot);
+            if (Files.deleteIfExists(snapshot)) remaining--;
         }
     }
 
