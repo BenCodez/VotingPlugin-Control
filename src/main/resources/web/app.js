@@ -879,6 +879,7 @@ function renderServerPicker() {
     selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
     if (previousValue) {
       loadedQuickSetup = null;
+      resetDedicatedSetupValues();
       resetServerConfigurationForms('The selected server is no longer available. Read the replacement server before previewing changes.');
     }
   }
@@ -1302,6 +1303,17 @@ function resetServerConfigurationForms(status) {
   clearApprovals();
 }
 
+function resetDedicatedSetupValues() {
+  autoSitesEnabled.checked = false;
+  voteLoggingEnabled.checked = false;
+  voteLoggingDays.value = '30';
+  voteLoggingMainMysql.checked = true;
+  text(autoSitesState, 'Not loaded');
+  text(voteLoggingState, 'Not loaded');
+  autoSitesState.className = 'pill neutral';
+  voteLoggingState.className = 'pill neutral';
+}
+
 function selectPrimaryServer(nodeId) {
   if (nodeId && !nodeIndex.has(nodeId)) return;
   selectedServerId = nodeId;
@@ -1323,10 +1335,7 @@ function selectPrimaryServer(nodeId) {
   text(voteTraceResult, 'No vote traced on this server.');
   text(siteResolutionResult, 'No service tested on this server.');
   text(rewardSimulationResult, 'Server changed. Simulate or preview the reward again.');
-  text(autoSitesState, 'Not loaded');
-  autoSitesState.className = 'pill neutral';
-  text(voteLoggingState, 'Not loaded');
-  voteLoggingState.className = 'pill neutral';
+  resetDedicatedSetupValues();
   text(autoSitesStatus, 'Server changed. Load the current value.');
   text(voteLoggingStatus, 'Server changed. Load the current values.');
   loadedQuickSetup = null;
@@ -1544,10 +1553,7 @@ function discardAuthenticationState(reason) {
   fileConfigurationForm.reset();
   configurationContentPresent = false;
   quickSetupForm.reset();
-  autoSitesEnabled.checked = false;
-  voteLoggingEnabled.checked = false;
-  voteLoggingDays.value = '30';
-  voteLoggingMainMysql.checked = true;
+  resetDedicatedSetupValues();
   rewardSimulationForm.reset();
   playerLookupForm.reset();
   voteLogForm.reset();
@@ -1818,14 +1824,7 @@ async function loadNodes() {
       configurationContentPresent = false;
       approvedFilePreview = null;
       inputGeneration++;
-      autoSitesEnabled.checked = false;
-      voteLoggingEnabled.checked = false;
-      voteLoggingDays.value = '30';
-      voteLoggingMainMysql.checked = true;
-      text(autoSitesState, 'Not loaded');
-      text(voteLoggingState, 'Not loaded');
-      autoSitesState.className = 'pill neutral';
-      voteLoggingState.className = 'pill neutral';
+      resetDedicatedSetupValues();
       text(dataOverview, 'A selected server reconnected. Refresh the overview.');
       text(networkDoctorResults, 'A selected server reconnected. Run Network Doctor again.');
       text(playerResult, 'A selected server reconnected. Run the lookup again.');
