@@ -174,6 +174,8 @@ A snapshot is not a server backup and has no privileged restore endpoint. To res
 proposed content, preview it against the node's current revision, review the diff, and apply with the new one-time
 approval. Snapshot retrieval returns the stored redacted document. During preview/apply, an unchanged redaction marker is
 resolved against each target's current secret; a snapshot never recovers or overwrites an old credential.
+The WebUI tracks whether document content is loaded independently from its length, so an intentionally empty snapshot is
+still a valid restore proposal and can proceed through preview and approval.
 
 ## Read-only inspection protocol
 

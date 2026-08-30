@@ -247,7 +247,8 @@ rollback workflow still applies; redaction placeholders preserve each target's c
 - **Network Doctor** combines redacted node diagnostics with Control's current topology and can download that bounded JSON
   result; it never sends a vote or runs a reward.
 - **Configurations** uses a 30-second session-bound read cache, compares exact revisions plus bounded redacted line
-  differences across selected nodes, and saves named redacted snapshots for previewed restore.
+  differences across selected nodes, and saves named redacted snapshots for previewed restore, including intentionally
+  empty files.
 - **Activity** shows newest-first durable redacted progress/recovery history and offers safe same-process retries only where
   the API marks an operation retryable.
 

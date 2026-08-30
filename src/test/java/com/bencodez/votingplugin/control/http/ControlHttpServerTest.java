@@ -109,6 +109,13 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("enrollmentSubmit.disabled = true"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
+        assertTrue(script.body().contains("let configurationContentPresent = false;"));
+        assertTrue(script.body().contains(
+                "previewFileConfiguration.disabled = !fileReady || !configurationContentPresent;"));
+        assertTrue(script.body().contains(
+                "configurationContent.value = document.content;\n          configurationContentPresent = true;"));
+        assertTrue(script.body().contains(
+                "configurationContent.addEventListener('input', () => {\n  configurationContentPresent = true;"));
         assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));
         assertTrue(script.body().contains("loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId"));
         assertTrue(script.body().contains("previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId"));

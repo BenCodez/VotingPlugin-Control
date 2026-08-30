@@ -245,6 +245,7 @@ const MAX_OPERATION_HISTORY = 50;
 const SETUP_PROFILE_KEY = 'votingplugin-control.setup-profiles.v1';
 let fileReadCache = new Map();
 let lastFileReadOperation = null;
+let configurationContentPresent = false;
 let inspectionInFlight = false;
 let lastDiagnostics = null;
 let lastOverview = null;
@@ -670,6 +671,7 @@ function applyAuthenticatedSession(body) {
   voteLoggingRestartPending.clear();
   pendingDetectedVoteSite = null;
   configurationContent.value = '';
+  configurationContentPresent = false;
   inputGeneration++;
   logout.hidden = false;
   authCard.hidden = true;
@@ -1289,6 +1291,7 @@ function renderNodeViews() {
 function resetServerConfigurationForms(status) {
   configurationForm.reset();
   configurationContent.value = '';
+  configurationContentPresent = false;
   text(operationStatus, status);
   text(fileOperationStatus, status);
   updateEditorPosition();
@@ -1349,7 +1352,7 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   previewConfiguration.disabled = !routingReady;
   applyConfiguration.disabled = !routingReady || !approvedPreview;
   readFileConfiguration.disabled = !fileReady;
-  previewFileConfiguration.disabled = !fileReady || !configurationContent.value;
+  previewFileConfiguration.disabled = !fileReady || !configurationContentPresent;
   applyFileConfiguration.disabled = !fileReady || !approvedFilePreview;
   readQuickSetup.disabled = !quickReady || !quickPresetReadable();
   previewQuickSetup.disabled = !quickReady || (quickPresetNeedsRead() && !quickSetupValuesLoaded());
@@ -1535,6 +1538,7 @@ function discardAuthenticationState(reason) {
   nodePlugins.clear();
   configurationForm.reset();
   fileConfigurationForm.reset();
+  configurationContentPresent = false;
   quickSetupForm.reset();
   rewardSimulationForm.reset();
   playerLookupForm.reset();
@@ -2099,6 +2103,7 @@ readFileConfiguration.addEventListener('click', async () => {
   const cached = cachedFile(cacheKey);
   if (cached) {
     configurationContent.value = cached.content;
+    configurationContentPresent = true;
     lastFileReadOperation = {operationId: cached.operationId};
     updateEditorPosition();
     text(fileOperationStatus, `Cached read · ${selectedServerId} · ${selectedFile}\nLoaded instantly; cache expires after 30 seconds. Preview still checks the live revision.`);
@@ -2117,6 +2122,7 @@ readFileConfiguration.addEventListener('click', async () => {
     if (contentResult && authenticated && readAuthenticationGeneration === authenticationGeneration
         && readInputGeneration === inputGeneration && selectedFile === configurationFile.value) {
       configurationContent.value = contentResult.configuration.content;
+      configurationContentPresent = true;
       lastFileReadOperation = {operationId: operation.operationId};
       cacheFile(cacheKey, contentResult.configuration.content, operation.operationId);
       updateEditorPosition();
@@ -2705,6 +2711,7 @@ async function loadSnapshots() {
           }
           configurationFile.value = document.fileName;
           configurationContent.value = document.content;
+          configurationContentPresent = true;
           lastFileReadOperation = null;
           updateEditorPosition();
           approvedFilePreview = null;
@@ -2935,7 +2942,7 @@ deleteProfile.addEventListener('click', () => {
 
 clearOperationHistory.addEventListener('click', loadOperationHistory);
 
-[configurationContent, quickName, quickMethod, quickSiteDisplayName, quickService, quickUrl, quickDelay,
+[quickName, quickMethod, quickSiteDisplayName, quickService, quickUrl, quickDelay,
   quickSitePriority, quickSiteMaterial, quickSiteEnabled, quickSiteHidden, quickRewardScope,
   quickCommand, quickMessage, quickProcessRewards, quickAutoSites, quickExtraCheck, quickCountFake,
   quickHideSiteWarning, quickDisableUpdates, quickPartyVotes, quickPartyCommand, quickPartyBroadcast,
@@ -2945,12 +2952,17 @@ quickName.addEventListener('input', () => {
   if (pendingDetectedVoteSite && pendingDetectedVoteSite.key !== quickName.value.trim()) pendingDetectedVoteSite = null;
   updateQuickFields();
 });
-configurationContent.addEventListener('input', updateEditorPosition);
+configurationContent.addEventListener('input', () => {
+  configurationContentPresent = true;
+  clearApprovals();
+  updateEditorPosition();
+});
 configurationContent.addEventListener('click', updateEditorPosition);
 configurationContent.addEventListener('keyup', updateEditorPosition);
 configurationContent.addEventListener('keydown', handleEditorKeydown);
 configurationFile.addEventListener('input', () => {
   configurationContent.value = '';
+  configurationContentPresent = false;
   lastFileReadOperation = null;
   updateEditorPosition();
   text(fileOperationStatus, 'Read the selected file before previewing changes.');

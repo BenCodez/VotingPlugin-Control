@@ -51,6 +51,9 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
 - `protocol/` contains the wire DTOs and capability-to-domain mapping. Keep them immutable and validate at construction or
   at the HTTP boundary.
 - `src/main/resources/web/` is a dependency-free browser client over the same `/api/v1` API.
+  For managed-file editing, content presence is separate from string length: a successful read or snapshot restore can
+  intentionally load `""` and must still enable preview. Clear that presence state whenever authentication, server, or
+  file context changes, and set it for direct editor input as well as non-null API content.
 - `src/test/java/` mirrors the security and protocol boundaries. Add regression tests at the narrowest responsible layer.
 - `docs/control-management.md` is the human and AI reference for the management suite and inspection contract.
 
