@@ -77,6 +77,12 @@ public final class ConfigurationSnapshots {
                         || Files.size(backup) > MAX_STORED_BYTES) {
                     throw new IOException("Configuration snapshot transaction is unsafe");
                 }
+                Snapshot stored = read(backup);
+                if (!(stored.snapshotId() + ".json").equals(backup.getFileName().toString())) {
+                    throw new IOException("Configuration snapshot transaction identity is invalid");
+                }
+            }
+            for (Path backup : backups) {
                 restoreBackupDurably(backup);
             }
             DurableFiles.forceDirectory(directory);

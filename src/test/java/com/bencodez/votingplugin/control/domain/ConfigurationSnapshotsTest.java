@@ -181,6 +181,38 @@ class ConfigurationSnapshotsTest {
         assertFalse(Files.exists(transaction));
     }
 
+    @Test void recoveryRejectsTruncatedBackupsBeforeReplacingValidSnapshots() throws Exception {
+        ConfigurationSnapshots snapshots = new ConfigurationSnapshots(directory, clock);
+        ConfigurationSnapshots.Snapshot existing = snapshots.create("existing",
+                operation("READ", "SUCCEEDED", ManagedConfiguration.file("Config.yml", "Feature: true\n")));
+        Path transaction = directory.resolve("configuration-snapshots/snapshot-transaction-777777");
+        Files.createDirectory(transaction);
+        Path backup = transaction.resolve(existing.snapshotId() + ".json");
+        Files.writeString(backup, "{\"snapshotId\":\"" + existing.snapshotId() + "\"");
+
+        assertThrows(java.io.IOException.class, () -> new ConfigurationSnapshots(directory, clock));
+
+        assertEquals(existing, snapshots.get(existing.snapshotId()));
+        assertTrue(Files.exists(backup));
+        assertTrue(Files.exists(transaction));
+    }
+
+    @Test void recoveryRejectsBackupWhoseEmbeddedIdentityDoesNotMatchItsName() throws Exception {
+        ConfigurationSnapshots snapshots = new ConfigurationSnapshots(directory, clock);
+        ConfigurationSnapshots.Snapshot existing = snapshots.create("existing",
+                operation("READ", "SUCCEEDED", ManagedConfiguration.file("Config.yml", "Feature: true\n")));
+        Path store = directory.resolve("configuration-snapshots");
+        Path transaction = store.resolve("snapshot-transaction-888888");
+        Files.createDirectory(transaction);
+        Path mismatched = transaction.resolve(UUID.randomUUID() + ".json");
+        Files.copy(store.resolve(existing.snapshotId() + ".json"), mismatched);
+
+        assertThrows(java.io.IOException.class, () -> new ConfigurationSnapshots(directory, clock));
+
+        assertEquals(existing, snapshots.get(existing.snapshotId()));
+        assertTrue(Files.exists(mismatched));
+    }
+
     @Test void byteLimitEvictionIsDeterministicAndOccursAfterSuccessfulPublication() throws Exception {
         ConfigurationSnapshots snapshots = new ConfigurationSnapshots(directory, clock);
         String content = "Value: " + "x".repeat(400_000) + "\n";
