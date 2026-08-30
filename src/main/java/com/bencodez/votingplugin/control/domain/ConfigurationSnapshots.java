@@ -223,6 +223,13 @@ public final class ConfigurationSnapshots {
                     .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path))
                     .toList();
             if (result.size() > MAX_SNAPSHOTS) throw new IOException("Configuration snapshot retention is invalid");
+            long totalBytes = 0;
+            for (Path file : result) {
+                totalBytes = Math.addExact(totalBytes, Files.size(file));
+                if (totalBytes > MAX_TOTAL_STORED_BYTES) {
+                    throw new IOException("Configuration snapshot retention is invalid");
+                }
+            }
             return result;
         }
     }
