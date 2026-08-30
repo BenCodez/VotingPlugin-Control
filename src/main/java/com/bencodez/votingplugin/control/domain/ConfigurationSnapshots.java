@@ -34,6 +34,7 @@ public final class ConfigurationSnapshots {
     private final Path directory;
     private final Clock clock;
     private final ObjectMapper json = strictMapper();
+    private final FailureInjector failureInjector;
 
     private static ObjectMapper strictMapper() {
         ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
@@ -44,8 +45,13 @@ public final class ConfigurationSnapshots {
     }
 
     public ConfigurationSnapshots(Path dataDirectory, Clock clock) throws IOException {
+        this(dataDirectory, clock, () -> { });
+    }
+
+    ConfigurationSnapshots(Path dataDirectory, Clock clock, FailureInjector failureInjector) throws IOException {
         this.directory = dataDirectory.resolve("configuration-snapshots").toAbsolutePath().normalize();
         this.clock = clock;
+        this.failureInjector = failureInjector;
         boolean existed = Files.exists(directory, LinkOption.NOFOLLOW_LINKS);
         Files.createDirectories(directory);
         if (Files.isSymbolicLink(directory)) throw new IOException("Configuration snapshot directory is unsafe");
@@ -79,8 +85,7 @@ public final class ConfigurationSnapshots {
         Snapshot snapshot = new Snapshot(UUID.randomUUID(), name.trim(), clock.instant(), operation.operationId(),
                 List.copyOf(documents));
         byte[] encoded = encode(snapshot);
-        pruneForCapacity(encoded.length);
-        write(snapshot, encoded);
+        publish(snapshot, encoded);
         return snapshot;
     }
 
@@ -107,19 +112,74 @@ public final class ConfigurationSnapshots {
         return result;
     }
 
-    private void pruneForCapacity(int incomingBytes) throws IOException {
+    private void publish(Snapshot snapshot, byte[] bytes) throws IOException {
         List<Path> current = new ArrayList<>(files());
         long retainedBytes = 0;
         for (Path path : current) retainedBytes += Files.size(path);
-        while (current.size() >= MAX_SNAPSHOTS || retainedBytes + incomingBytes > MAX_TOTAL_STORED_BYTES) {
-            Path oldest = current.stream().min(Comparator.comparing(path -> {
-                try { return Files.getLastModifiedTime(path).toInstant(); }
-                catch (IOException failure) { return Instant.MIN; }
-            })).orElseThrow(() -> invalid("snapshot capacity is unavailable"));
+        List<Path> evictions = new ArrayList<>();
+        long incomingBytes = bytes.length;
+        while (current.size() + 1 > MAX_SNAPSHOTS || retainedBytes + incomingBytes > MAX_TOTAL_STORED_BYTES) {
+            Path oldest = current.stream().min(snapshotOrder()).orElseThrow(() -> invalid("snapshot capacity is unavailable"));
             retainedBytes -= Files.size(oldest);
-            Files.delete(oldest);
-            DurableFiles.forceDirectory(directory);
+            evictions.add(oldest);
             current.remove(oldest);
+        }
+        Path temporary = Files.createTempFile(directory, "snapshot-", ".temporary");
+        Path transaction;
+        try {
+            transaction = Files.createTempDirectory(directory, "snapshot-transaction-");
+        } catch (IOException failure) {
+            Files.deleteIfExists(temporary);
+            throw failure;
+        }
+        Path target = path(snapshot.snapshotId());
+        List<Path> backups = new ArrayList<>();
+        boolean published = false;
+        try {
+            setPermissions(temporary, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+            Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) { channel.force(true); }
+            failureInjector.afterStaging();
+            for (Path evicted : evictions) {
+                Path backup = transaction.resolve(evicted.getFileName().toString());
+                Files.copy(evicted, backup, StandardCopyOption.COPY_ATTRIBUTES);
+                try (FileChannel channel = FileChannel.open(backup, StandardOpenOption.WRITE)) { channel.force(true); }
+                backups.add(backup);
+            }
+            move(temporary, target);
+            setPermissions(target, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+            DurableFiles.forceDirectory(directory);
+            failureInjector.afterPublication();
+            published = true;
+            boolean cleanupComplete = true;
+            for (Path evicted : evictions) {
+                try { Files.delete(evicted); }
+                catch (IOException ignored) { cleanupComplete = false; }
+            }
+            if (cleanupComplete) {
+                try {
+                    DurableFiles.forceDirectory(directory);
+                    for (Path backup : backups) Files.deleteIfExists(backup);
+                    DurableFiles.forceDirectory(transaction);
+                    Files.deleteIfExists(transaction);
+                } catch (IOException ignored) {
+                    // The new snapshot is already durable. Retain the transaction copies for recovery/cleanup.
+                }
+            }
+            return;
+        } catch (Exception failure) {
+            try { Files.deleteIfExists(target); } catch (Exception rollback) { failure.addSuppressed(rollback); }
+            try { DurableFiles.forceDirectory(directory); } catch (Exception rollback) { failure.addSuppressed(rollback); }
+            if (failure instanceof IOException io) throw io;
+            throw new IOException("Configuration snapshot publication failed", failure);
+        } finally {
+            try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
+            if (!published) {
+                try (var leftovers = Files.list(transaction)) {
+                    leftovers.forEach(leftover -> { try { Files.deleteIfExists(leftover); } catch (IOException ignored) { } });
+                } catch (IOException ignored) { }
+                try { Files.deleteIfExists(transaction); } catch (IOException ignored) { }
+            }
         }
     }
 
@@ -128,6 +188,21 @@ public final class ConfigurationSnapshots {
             return paths.filter(path -> path.getFileName().toString().matches("[0-9a-f-]{36}\\.json"))
                     .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path))
                     .limit(MAX_SNAPSHOTS + 1L).toList();
+        }
+    }
+
+    private static Comparator<Path> snapshotOrder() {
+        return Comparator.comparing((Path path) -> {
+            try { return Files.getLastModifiedTime(path, LinkOption.NOFOLLOW_LINKS).toInstant(); }
+            catch (IOException failure) { return Instant.MIN; }
+        }).thenComparing(path -> path.getFileName().toString());
+    }
+
+    private static void move(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -145,25 +220,6 @@ public final class ConfigurationSnapshots {
             throw invalid("snapshot exceeds the bounded snapshot size");
         }
         return bytes;
-    }
-
-    private void write(Snapshot snapshot, byte[] bytes) throws IOException {
-        Path target = path(snapshot.snapshotId());
-        Path temporary = Files.createTempFile(directory, "snapshot-", ".temporary");
-        try {
-            setPermissions(temporary, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
-            Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-            try (FileChannel channel = FileChannel.open(temporary, StandardOpenOption.WRITE)) { channel.force(true); }
-            try {
-                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
-            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
-                Files.move(temporary, target);
-            }
-            setPermissions(target, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
-            DurableFiles.forceDirectory(directory);
-        } finally {
-            Files.deleteIfExists(temporary);
-        }
     }
 
     private Path path(UUID id) {
@@ -216,4 +272,10 @@ public final class ConfigurationSnapshots {
     public record SnapshotSummary(UUID snapshotId, String name, Instant createdAt, UUID sourceOperationId,
                                   List<SnapshotDocumentSummary> documents) { }
     public record SnapshotDocumentSummary(String nodeId, String fileName, String revision) { }
+
+    @FunctionalInterface
+    interface FailureInjector {
+        void afterStaging() throws IOException;
+        default void afterPublication() throws IOException { }
+    }
 }

@@ -113,6 +113,46 @@ class ConfigurationSnapshotsTest {
                 () -> snapshots.get(evicted)).code());
     }
 
+    @Test void failedPublicationDoesNotEvictCountLimitedSnapshots() throws Exception {
+        ConfigurationSnapshots snapshots = new ConfigurationSnapshots(directory, clock);
+        List<UUID> retainedBeforeFailure = new java.util.ArrayList<>();
+        for (int index = 0; index < 100; index++) {
+            retainedBeforeFailure.add(snapshots.create("snapshot-" + index,
+                    operation("READ", "SUCCEEDED", ManagedConfiguration.file("Config.yml",
+                            "Index: " + index + "\n"))).snapshotId());
+            clock.advance(Duration.ofSeconds(1));
+        }
+        ConfigurationSnapshots failing = new ConfigurationSnapshots(directory, clock,
+                () -> { throw new java.io.IOException("forced publication failure"); });
+        assertThrows(java.io.IOException.class, () -> failing.create("failed",
+                operation("READ", "SUCCEEDED", ManagedConfiguration.file("Config.yml", "failed\n"))));
+        for (UUID id : retainedBeforeFailure) assertEquals(id, snapshots.get(id).snapshotId());
+        try (var files = Files.list(directory.resolve("configuration-snapshots"))) {
+            assertTrue(files.noneMatch(path -> path.getFileName().toString().contains("temporary")
+                    || path.getFileName().toString().contains("transaction")));
+        }
+
+        ConfigurationSnapshots.Snapshot created = snapshots.create("retry",
+                operation("READ", "SUCCEEDED", ManagedConfiguration.file("Config.yml", "retry\n")));
+        assertEquals(100, snapshots.list().size());
+        assertThrows(ValidationException.class, () -> snapshots.get(retainedBeforeFailure.get(0)));
+        assertEquals(created, snapshots.get(created.snapshotId()));
+    }
+
+    @Test void byteLimitEvictionIsDeterministicAndOccursAfterSuccessfulPublication() throws Exception {
+        ConfigurationSnapshots snapshots = new ConfigurationSnapshots(directory, clock);
+        String content = "Value: " + "x".repeat(400_000) + "\n";
+        List<UUID> ids = new java.util.ArrayList<>();
+        for (int index = 0; index < 90; index++) {
+            ids.add(snapshots.create("large-" + index,
+                    operationWithFiles(content)).snapshotId());
+            clock.advance(Duration.ofSeconds(1));
+        }
+        assertTrue(snapshots.list().size() < 90);
+        assertThrows(ValidationException.class, () -> snapshots.get(ids.get(0)));
+        assertEquals(ids.get(89), snapshots.list().get(0).snapshotId());
+    }
+
     @Test void durableJsonRejectsUnknownDuplicateAndTrailingContent() throws Exception {
         assertSnapshotJsonRejected("unknown", json -> json.substring(0, json.lastIndexOf('}'))
                 + ",\"unexpected\":true}");
@@ -142,6 +182,16 @@ class ConfigurationSnapshotsTest {
     private ConfigurationTaskResult result(boolean success, String revision, ManagedConfiguration configuration) {
         return new ConfigurationTaskResult(UUID.randomUUID(), success, success ? "OK" : "READ_FAILED",
                 success ? "read" : "failed", revision, configuration, List.of(), false, false, UUID.randomUUID());
+    }
+
+    private ConfigurationOperations.OperationView operationWithFiles(String content) {
+        UUID source = UUID.randomUUID();
+        ManagedConfiguration first = ManagedConfiguration.file("Config.yml", content);
+        ManagedConfiguration second = ManagedConfiguration.file("VoteSites.yml", content);
+        return new ConfigurationOperations.OperationView(source, "READ", "SUCCEEDED", clock.instant(), first,
+                Map.of("backend-a", "COMPLETE", "backend-b", "COMPLETE"),
+                Map.of("backend-a", result(true, "a".repeat(64), first),
+                        "backend-b", result(true, "b".repeat(64), second)), null, null, false, false);
     }
 
     private static final class MutableClock extends Clock {
