@@ -280,7 +280,7 @@ public final class ControlHttpServer implements AutoCloseable {
                         "PREVIEW_INCOMPLETE", "APPROVAL_REQUIRED", "NODE_UNAVAILABLE", "OPERATION_LIMIT",
                         "REGISTRY_LIMIT", "REGISTRY_CHANGED", "TASK_NOT_CLAIMED", "TASK_LEASE_EXPIRED",
                         "SETUP_COMPLETE", "OPERATION_INCOMPLETE", "PREVIEW_REQUIRED",
-                        "RETRY_REQUIRES_INPUT", "TARGET_CHANGED" -> 409;
+                        "RETRY_REQUIRES_INPUT", "TARGET_CHANGED", "OPERATION_CONFLICT" -> 409;
                 case "UNSUPPORTED_MEDIA_TYPE" -> 415;
                 default -> 400;
             };

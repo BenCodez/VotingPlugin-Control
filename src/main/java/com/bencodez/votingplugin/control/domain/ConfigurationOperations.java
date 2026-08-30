@@ -233,10 +233,12 @@ public final class ConfigurationOperations implements AutoCloseable {
                     continue;
                 }
                 UUID previousAttempt = operation.attemptIds.get(nodeId);
+                UUID previousClaimSession = operation.claimSessions.get(nodeId);
                 UUID attemptId = UUID.randomUUID();
                 operation.states.put(nodeId, "IN_PROGRESS");
                 operation.leasedAt.put(nodeId, now);
                 operation.attemptIds.put(nodeId, attemptId);
+                operation.claimSessions.put(nodeId, node.sessionId());
                 try {
                     audit.append("TASK_CLAIMED", operation.id, nodeId, operation.type);
                 } catch (RuntimeException e) {
@@ -244,6 +246,8 @@ public final class ConfigurationOperations implements AutoCloseable {
                     if (leased == null) operation.leasedAt.remove(nodeId); else operation.leasedAt.put(nodeId, leased);
                     if (previousAttempt == null) operation.attemptIds.remove(nodeId);
                     else operation.attemptIds.put(nodeId, previousAttempt);
+                    if (previousClaimSession == null) operation.claimSessions.remove(nodeId);
+                    else operation.claimSessions.put(nodeId, previousClaimSession);
                     throw e;
                 }
                 return new ConfigurationTask(operation.id, operation.type, operation.configuration,
@@ -461,6 +465,9 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (!Objects.equals(operation.attemptIds.get(nodeId), result.attemptId()) || leasedAt == null
                 || !clock.instant().isBefore(leasedAt.plus(LEASE))) {
             throw new ValidationException("TASK_LEASE_EXPIRED", "Operation task lease is no longer active", List.of());
+        }
+        if (!Objects.equals(operation.claimSessions.get(nodeId), result.sessionId())) {
+            throw new ValidationException("SESSION_MISMATCH", "Operation task belongs to another node session", List.of());
         }
         validateResultConfiguration(operation, result);
         String priorState = operation.states.get(nodeId);
@@ -821,6 +828,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         private final LinkedHashMap<String, ConfigurationTaskResult> results;
         private final LinkedHashMap<String, Instant> leasedAt;
         private final LinkedHashMap<String, UUID> attemptIds;
+        private final LinkedHashMap<String, UUID> claimSessions = new LinkedHashMap<>();
         private final LinkedHashMap<String, String> expectedRevisions;
         private final LinkedHashMap<String, String> targetPlatforms;
         private final LinkedHashMap<String, UUID> targetSessions;

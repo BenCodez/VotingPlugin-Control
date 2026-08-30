@@ -1794,7 +1794,9 @@ async function loadNodes() {
     backendTopologyTruncated = registry.truncated;
     backendTopologyTruncatedNodeIds = registry.truncatedNodeIds;
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
-    const selectedSessionChanged = [...selectedNodes].some(node => previousNodeIndex.get(node)?.sessionId
+    const primarySessionChanged = selectedServerId && previousNodeIndex.get(selectedServerId)?.sessionId
+      && previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId;
+    const selectedSessionChanged = primarySessionChanged || [...selectedNodes].some(node => previousNodeIndex.get(node)?.sessionId
       && previousNodeIndex.get(node)?.sessionId !== nodeIndex.get(node)?.sessionId);
     if (selectedSessionChanged) {
       dedicatedSetupApprovals.clear();
