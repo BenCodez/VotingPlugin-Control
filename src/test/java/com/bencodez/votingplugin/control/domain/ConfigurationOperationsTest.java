@@ -634,6 +634,25 @@ class ConfigurationOperationsTest {
         assertEquals("TARGET_CHANGED", result.results().get("proxy-a").code());
     }
 
+    @Test void proxyMethodApplyRevalidatesCompletedBackendIdentityBeforeProxyRelease() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofMinutes(5));
+        ConfigurationTask backendApply = fixture.operations().claim("lobby", fixture.backendSession());
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+        fixture.operations().complete(fixture.applyId(), "lobby", new ConfigurationTaskResult(
+                fixture.backendSession(), true, "OK", "applied", "c".repeat(64), method, List.of(), false, false,
+                backendApply.attemptId()));
+        fixture.registry().register(new NodeRegistration("lobby", UUID.randomUUID(), "Lobby", "VELOCITY", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+
+        assertEquals(null, fixture.operations().claim("proxy-a", fixture.proxySession()));
+
+        ConfigurationOperations.OperationView result = fixture.operations().get(fixture.applyId());
+        assertEquals("COMPLETED_WITH_ERRORS", result.state());
+        assertEquals("DEPENDENCY_CHANGED", result.results().get("lobby").code());
+        assertEquals("DEPENDENCY_FAILED", result.results().get("proxy-a").code());
+    }
+
     @Test void overlappingProxyMethodAppliesAreSerialized() throws Exception {
         MutableClock clock = new MutableClock(Instant.parse("2026-08-25T00:00:00Z"));
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(5));

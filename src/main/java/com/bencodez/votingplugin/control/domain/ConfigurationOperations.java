@@ -170,8 +170,19 @@ public final class ConfigurationOperations implements AutoCloseable {
                 .map(Map.Entry::getKey).toList();
         for (String backendId : backends) {
             String state = operation.states.get(backendId);
-            if ("COMPLETE".equals(state)) continue;
             NodeStatus backend = registry.find(backendId);
+            if ("COMPLETE".equals(state)) {
+                ConfigurationTaskResult result = operation.results.get(backendId);
+                if (result == null || !result.success() || completedBackendStillValid(operation, backendId, backend,
+                        result)) continue;
+                audit.append("TASK_INVALIDATED", operation.id, backendId, "DEPENDENCY_CHANGED");
+                UUID backendSession = backend == null ? result.sessionId() : sessionId(backend);
+                releaseResultDetails(result);
+                operation.results.put(backendId, boundedResult(operation, new ConfigurationTaskResult(backendSession,
+                        false, "DEPENDENCY_CHANGED", "Backend identity changed after apply; preview again", null,
+                        (ManagedConfiguration) null, List.of(), false, false, null)));
+                continue;
+            }
             if ("IN_PROGRESS".equals(state)) {
                 Instant leased = operation.leasedAt.get(backendId);
                 if (leased != null && clock.instant().isBefore(leased.plus(LEASE))) continue;
@@ -221,6 +232,15 @@ public final class ConfigurationOperations implements AutoCloseable {
         operation.leasedAt.remove(node.nodeId());
         operation.attemptIds.remove(node.nodeId());
         return true;
+    }
+
+    private boolean completedBackendStillValid(StoredOperation operation, String backendId, NodeStatus backend,
+            ConfigurationTaskResult result) {
+        return backend != null && backend.online()
+                && "BUKKIT".equalsIgnoreCase(operation.targetPlatforms.get(backendId))
+                && "BUKKIT".equalsIgnoreCase(backend.platform())
+                && backend.acceptedCapabilities().contains(operation.configuration.capability())
+                && result.sessionId().equals(sessionId(backend));
     }
 
     private boolean cancelChangedProxyMethodRole(StoredOperation operation, NodeStatus node) {
@@ -429,11 +449,13 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private void releaseResultDetails(StoredOperation operation) {
-        for (ConfigurationTaskResult result : operation.results.values()) {
-            retainedMessageBytes -= result.message().getBytes(StandardCharsets.UTF_8).length;
-            for (String change : result.changes()) {
-                retainedChangeBytes -= change.getBytes(StandardCharsets.UTF_8).length;
-            }
+        operation.results.values().forEach(this::releaseResultDetails);
+    }
+
+    private void releaseResultDetails(ConfigurationTaskResult result) {
+        retainedMessageBytes -= result.message().getBytes(StandardCharsets.UTF_8).length;
+        for (String change : result.changes()) {
+            retainedChangeBytes -= change.getBytes(StandardCharsets.UTF_8).length;
         }
         if (retainedChangeBytes < 0) retainedChangeBytes = 0;
         if (retainedMessageBytes < 0) retainedMessageBytes = 0;
