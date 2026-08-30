@@ -512,18 +512,26 @@ async function loadOperationHistory() {
   if (!authenticated) return;
   try {
     const body = await authorized('/api/v1/operations');
-    operationHistoryItems = Array.isArray(body.items) ? body.items.slice(0, MAX_OPERATION_HISTORY).map(operation =>
+    const retainedOperations = Array.isArray(body.items) ? body.items : [];
+    operationHistoryItems = retainedOperations.slice(0, MAX_OPERATION_HISTORY).map(operation =>
       ({...operation, results: Object.fromEntries(Object.entries(operation.results || {}).map(([nodeId, result]) =>
-        [nodeId, result ? {...result, configuration: null} : result]))})) : [];
+        [nodeId, result ? {...result, configuration: null} : result]))}));
     const pendingRestarts = new Map();
-    operationHistoryItems.forEach(operation => {
-      if (operation.type !== 'APPLY' || operation.configuration?.preset !== 'vote-logging') return;
-      Object.entries(operation.results || {}).forEach(([nodeId, result]) => {
-        if (result?.success && !pendingRestarts.has(nodeId)) {
-          pendingRestarts.set(nodeId, result.sessionId || 'unknown');
-        }
+    const restartSessions = body.voteLoggingRestartSessions;
+    if (restartSessions && typeof restartSessions === 'object' && !Array.isArray(restartSessions)) {
+      Object.entries(restartSessions).slice(0, 10_000).forEach(([nodeId, sessionId]) => {
+        if (typeof sessionId === 'string') pendingRestarts.set(nodeId, sessionId);
       });
-    });
+    } else {
+      retainedOperations.forEach(operation => {
+        if (operation.type !== 'APPLY' || operation.configuration?.preset !== 'vote-logging') return;
+        Object.entries(operation.results || {}).forEach(([nodeId, result]) => {
+          if (result?.success && !pendingRestarts.has(nodeId)) {
+            pendingRestarts.set(nodeId, result.sessionId || 'unknown');
+          }
+        });
+      });
+    }
     voteLoggingRestartPending = pendingRestarts;
     renderOperationHistory();
     updateSetupChecklist();

@@ -17,7 +17,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -156,6 +158,32 @@ class ConfigurationOperationJournalTest {
             assertTrue(recovered.redacted());
             assertTrue(recovered.options().isEmpty());
             assertThrows(IllegalArgumentException.class, recovered::validateProposal);
+        }
+    }
+
+    @Test void voteLoggingRestartStateSurvivesBeyondTheListedHistoryWindow() throws Exception {
+        UUID session = UUID.fromString("00000000-0000-0000-0000-000000000003");
+        List<ConfigurationOperationJournal.Entry> entries = new ArrayList<>();
+        entries.add(new ConfigurationOperationJournal.Entry(UUID.randomUUID(), "APPLY",
+                clock.instant().minusSeconds(200), ManagedConfiguration.QUICK_SETUP, null, "vote-logging", null,
+                List.of(new ConfigurationOperationJournal.NodeResult("backend-a", session, true, true, "OK",
+                        "a".repeat(64), true, false))));
+        for (int index = 0; index < 101; index++) {
+            entries.add(new ConfigurationOperationJournal.Entry(UUID.randomUUID(), "READ",
+                    clock.instant().minusSeconds(199L - index), ManagedConfiguration.PROXY_ROUTING, null, null, null,
+                    List.of(new ConfigurationOperationJournal.NodeResult("backend-a", session, true, true, "OK",
+                            "b".repeat(64), false, false))));
+        }
+        Path journalDirectory = directory.resolve("journal-restart-window");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        journal.save(entries);
+
+        try (ConfigurationOperations restarted = new ConfigurationOperations(registry(),
+                new ConfigurationAuditLog(directory.resolve("audit-restart-window"), clock), clock, journal)) {
+            ConfigurationOperations.OperationListView view = restarted.listView();
+            assertEquals(100, view.items().size());
+            assertTrue(view.items().stream().noneMatch(item -> "vote-logging".equals(item.configuration().preset())));
+            assertEquals(Map.of("backend-a", session), view.voteLoggingRestartSessions());
         }
     }
 

@@ -123,7 +123,9 @@ current node session, preventing a stale execution from completing reissued work
 Operations are bounded to 1,000 retained entries, with at most 16 file/VoteSites-sync-source operations retained. An
 unleased active operation expires 15 minutes after creation; a completed operation is pruned 24 hours after creation.
 `GET /api/v1/operations` returns at most the newest 100, newest first; each view includes `sourceOperationId`, `recovered`,
-and `retryable`. List entries are summaries whose retained file bodies are omitted. Fetching
+and `retryable`. Its separate `voteLoggingRestartSessions` map is derived from every retained operation, so restart-required
+warnings are not lost when the WebUI renders only its newest 50 history rows. List entries are summaries whose retained file
+bodies are omitted. Fetching
 `GET /api/v1/operations/{operationId}` returns that operation's full bounded redacted result bodies. Both list and detail
 views may include an unused completed-preview approval token so an authenticated UI can resume after refresh; applying
 still requires the admin role/browser CSRF protection and consumes the token exactly once.

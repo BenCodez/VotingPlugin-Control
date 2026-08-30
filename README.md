@@ -226,7 +226,8 @@ creation and completed operations are pruned 24 hours after creation.
 
 `configuration-operations.json` atomically retains at most 24 hours/1,000 entries/2 MiB of redacted operation history. It
 excludes configuration/options values, file contents, approval tokens, result messages/changes, credentials, and task
-attempts. Completed-result session IDs are retained so restart-required setup warnings survive a Control restart; they
+attempts. Completed-result session IDs are retained so restart-required setup warnings survive a Control restart; the
+operations API derives that state from the full retained journal independently of its bounded rendered history. The IDs
 cannot authorize or resume work. After restart, unfinished targets appear failed with `CONTROL_RESTARTED`; recovered
 entries are history-only and require a fresh read or preview. Named snapshots under `configuration-snapshots/` retain bounded redacted file-read
 results. Loading one for restore merely fills the editor—the normal preview, revision check, approval, backup, reload, and

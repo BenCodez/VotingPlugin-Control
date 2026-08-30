@@ -138,11 +138,29 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     public synchronized List<OperationView> list() {
+        return listView().items();
+    }
+
+    /** Returns bounded rendered history plus restart state derived from every retained operation. */
+    public synchronized OperationListView listView() {
         prune();
         List<OperationView> result = new ArrayList<>(operations.values().stream()
                 .skip(Math.max(0, operations.size() - MAX_LISTED_OPERATIONS)).map(this::summaryView).toList());
         Collections.reverse(result);
-        return List.copyOf(result);
+        LinkedHashMap<String, UUID> voteLoggingRestartSessions = new LinkedHashMap<>();
+        List<StoredOperation> newestFirst = new ArrayList<>(operations.values());
+        Collections.reverse(newestFirst);
+        for (StoredOperation operation : newestFirst) {
+            if (!"APPLY".equals(operation.type)
+                    || !ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                    || !"vote-logging".equals(operation.configuration.preset())) continue;
+            operation.results.forEach((nodeId, nodeResult) -> {
+                if (nodeResult.success() && nodeResult.sessionId() != null) {
+                    voteLoggingRestartSessions.putIfAbsent(nodeId, nodeResult.sessionId());
+                }
+            });
+        }
+        return new OperationListView(List.copyOf(result), Map.copyOf(voteLoggingRestartSessions));
     }
 
     /** Reissues safe work without repeating nodes that already applied successfully. */
@@ -733,6 +751,8 @@ public final class ConfigurationOperations implements AutoCloseable {
                                 ManagedConfiguration configuration, Map<String, String> nodeStates,
                                 Map<String, ConfigurationTaskResult> results, String approvalToken,
                                 UUID sourceOperationId, boolean recovered, boolean retryable) { }
+
+    public record OperationListView(List<OperationView> items, Map<String, UUID> voteLoggingRestartSessions) { }
 
     private record ValidatedTargets(List<String> nodeIds, Map<String, String> platforms,
                                     Map<String, UUID> sessions) { }

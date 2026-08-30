@@ -130,6 +130,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("voteTraceForm.reset();"));
         assertTrue(script.body().contains("siteResolutionForm.reset();"));
         assertTrue(script.body().contains("voteLogFilter.disabled = true;"));
+        assertTrue(script.body().contains("body.voteLoggingRestartSessions"));
+        assertTrue(script.body().contains("retainedOperations.slice(0, MAX_OPERATION_HISTORY)"));
         assertTrue(script.body().contains("quickCommandSuggestions.replaceChildren();"));
         assertTrue(script.body().contains("Sign out could not be confirmed"));
         assertTrue(script.body().contains("result.success && result.configuration"));
@@ -162,6 +164,9 @@ class ControlHttpServerTest {
         assertEquals(200, health.statusCode());
         assertEquals("00000000-0000-0000-0000-000000000123",
                 json.readTree(health.body()).get("launchId").asText());
+        JsonNode operations = json.readTree(get("/api/v1/operations", adminToken).body());
+        assertTrue(operations.get("items").isArray());
+        assertTrue(operations.get("voteLoggingRestartSessions").isObject());
         assertError(get("/api/v1/health/anything", null), 404, "NOT_FOUND");
         assertError(get("/api/v1/nodes/register/anything", null), 404, "NOT_FOUND");
         HttpResponse<String> method = send("POST", "/api/v1/health", "{}", null);

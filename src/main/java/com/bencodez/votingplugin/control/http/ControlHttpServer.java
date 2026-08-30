@@ -487,7 +487,7 @@ public final class ControlHttpServer implements AutoCloseable {
         if (OPERATIONS.equals(path)) {
             requireMethod(exchange, "GET");
             authenticateAdmin(exchange, false);
-            send(exchange, 200, Map.of("items", configurationOperations.list()));
+            send(exchange, 200, configurationOperations.listView());
             return;
         }
         if (INSPECTIONS.equals(path)) {
