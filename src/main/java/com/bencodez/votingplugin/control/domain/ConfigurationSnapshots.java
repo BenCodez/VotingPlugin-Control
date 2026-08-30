@@ -213,6 +213,7 @@ public final class ConfigurationSnapshots {
         List<Path> backups = new ArrayList<>();
         boolean published = false;
         boolean retentionDeleted = false;
+        boolean keepTransaction = false;
         try {
             setPermissions(temporary, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
             Files.write(temporary, bytes, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
@@ -240,6 +241,7 @@ public final class ConfigurationSnapshots {
                 Files.deleteIfExists(transaction);
             } catch (IOException ignored) {
                 // The new snapshot is already durable. Retain the transaction copies for recovery/cleanup.
+                keepTransaction = true;
             }
             return;
         } catch (Exception failure) {
@@ -253,14 +255,26 @@ public final class ConfigurationSnapshots {
                     failure.addSuppressed(rollback); restored = false;
                 }
             }
-            try { Files.deleteIfExists(target); } catch (Exception rollback) { failure.addSuppressed(rollback); }
-            try { DurableFiles.forceDirectory(directory); } catch (Exception rollback) { failure.addSuppressed(rollback); }
-            if (restored) published = false;
+            boolean targetRemoved = false;
+            try {
+                Files.deleteIfExists(target);
+                targetRemoved = !Files.exists(target, LinkOption.NOFOLLOW_LINKS);
+            } catch (Exception rollback) {
+                failure.addSuppressed(rollback);
+            }
+            boolean directorySynced = false;
+            try {
+                DurableFiles.forceDirectory(directory);
+                directorySynced = true;
+            } catch (Exception rollback) {
+                failure.addSuppressed(rollback);
+            }
+            keepTransaction = !(restored && targetRemoved && directorySynced);
             if (failure instanceof IOException io) throw io;
             throw new IOException("Configuration snapshot publication failed", failure);
         } finally {
             try { Files.deleteIfExists(temporary); } catch (IOException ignored) { }
-            if (!published) {
+            if (!keepTransaction) {
                 try (var leftovers = Files.list(transaction)) {
                     leftovers.forEach(leftover -> { try { Files.deleteIfExists(leftover); } catch (IOException ignored) { } });
                 } catch (IOException ignored) { }

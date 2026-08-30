@@ -1639,12 +1639,21 @@ function voteLoggingRestartRequired(nodeId = selectedServerId) {
 
 function operationSummary(operation) {
   const lines = [`${operation.type} · ${operation.state} · ${operation.operationId}`];
-  const voteLoggingChange = operation.configuration?.preset === 'vote-logging';
+  const voteLoggingOperation = operation.configuration?.preset === 'vote-logging';
+  let voteLoggingRuntimeChange = false;
+  let voteLoggingRestartWarning = false;
   Object.entries(operation.nodeStates).forEach(([node, state]) => {
     const result = operation.results[node];
+    const runtimeChanged = Array.isArray(result?.changes) && result.changes.some(change =>
+      /VoteLogging runtime restart required|VoteLogging\.(Enabled|UseMainMySQL)\b/.test(change));
+    const retainedSession = voteLoggingRestartPending.get(node);
+    const restartRequired = voteLoggingOperation && result?.success && operation.type === 'APPLY'
+      && (runtimeChanged || retainedSession && (retainedSession === 'unknown' || retainedSession === result.sessionId));
+    voteLoggingRuntimeChange ||= runtimeChanged;
+    voteLoggingRestartWarning ||= Boolean(restartRequired);
     const successLabel = operation.type === 'READ' ? 'values read'
       : operation.type === 'PREVIEW' ? 'preview ready'
-      : voteLoggingChange ? 'configuration saved; backend restart required'
+      : restartRequired ? 'configuration saved; backend restart required'
       : result?.reloaded ? 'saved and reloaded' : 'applied';
     lines.push(`${result?.success ? '✓' : result ? '✗' : '…'} ${node}: ${result
       ? `${result.success ? successLabel : result.code} — ${result.message}` : state.toLowerCase()}`);
@@ -1657,7 +1666,8 @@ function operationSummary(operation) {
     lines.push(`${sites.size || 'No'} site ${sites.size === 1 ? 'definition' : 'definitions'} ${operation.type === 'PREVIEW' ? 'would change' : 'changed'}.`);
     lines.push('Rewards and target-only sites remain local to each backend.');
   }
-  if (voteLoggingChange && operation.type !== 'READ') {
+  if (voteLoggingOperation && (operation.type === 'PREVIEW' && voteLoggingRuntimeChange
+      || operation.type === 'APPLY' && voteLoggingRestartWarning)) {
     lines.push(operation.type === 'PREVIEW'
       ? 'Applying this preview requires restarting each changed backend; a plugin reload does not activate a new vote-log connection.'
       : 'Restart every successfully changed backend before treating the vote-logging runtime as live.');

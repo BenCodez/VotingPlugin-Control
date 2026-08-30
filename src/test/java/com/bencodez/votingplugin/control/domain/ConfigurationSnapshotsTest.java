@@ -16,6 +16,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
@@ -137,6 +138,49 @@ class ConfigurationSnapshotsTest {
         assertEquals(100, snapshots.list().size());
         assertThrows(ValidationException.class, () -> snapshots.get(retainedBeforeFailure.get(0)));
         assertEquals(created, snapshots.get(created.snapshotId()));
+    }
+
+    @Test void failedTargetRollbackRetainsTransactionRecoveryData() throws Exception {
+        ConfigurationSnapshots snapshots = new ConfigurationSnapshots(directory, clock);
+        Set<String> retainedNames = new java.util.HashSet<>();
+        for (int index = 0; index < 100; index++) {
+            ConfigurationSnapshots.Snapshot snapshot = snapshots.create("snapshot-" + index,
+                    operation("READ", "SUCCEEDED", ManagedConfiguration.file("Config.yml",
+                            "Index: " + index + "\n")));
+            retainedNames.add(snapshot.snapshotId() + ".json");
+            clock.advance(Duration.ofSeconds(1));
+        }
+        Path store = directory.resolve("configuration-snapshots");
+        ConfigurationSnapshots failing = new ConfigurationSnapshots(directory, clock,
+                new ConfigurationSnapshots.FailureInjector() {
+                    @Override public void afterStaging() { }
+                    @Override public void afterPublication() throws java.io.IOException {
+                        Path target;
+                        try (var files = Files.list(store)) {
+                            target = files.filter(path -> path.getFileName().toString()
+                                            .matches("[0-9a-f-]{36}\\.json"))
+                                    .filter(path -> !retainedNames.contains(path.getFileName().toString()))
+                                    .findFirst().orElseThrow();
+                        }
+                        Files.delete(target);
+                        Files.createDirectory(target);
+                        Files.writeString(target.resolve("prevents-delete"), "keep recovery transaction");
+                        throw new java.io.IOException("forced rollback failure");
+                    }
+                });
+
+        assertThrows(java.io.IOException.class, () -> failing.create("failed rollback",
+                operation("READ", "SUCCEEDED", ManagedConfiguration.file("Config.yml", "failed\n"))));
+
+        try (var files = Files.list(store)) {
+            List<Path> transactions = files.filter(path -> path.getFileName().toString()
+                    .startsWith("snapshot-transaction-")).toList();
+            assertEquals(1, transactions.size());
+            try (var backups = Files.list(transactions.get(0))) {
+                assertTrue(backups.findAny().isPresent());
+            }
+        }
+        assertEquals(100, snapshots.list().size());
     }
 
     @Test void startupRemovesOnlyRecognizedAbandonedStagingFiles() throws Exception {
