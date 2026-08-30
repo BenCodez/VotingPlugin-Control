@@ -68,7 +68,7 @@ class ControlHttpServerTest {
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
-        assertTrue(script.body().contains("offset=${pageOffset}&limit=${PAGE_SIZE}"));
+		assertTrue(script.body().contains("offset=${offset}&limit=${PAGE_SIZE}"));
         assertTrue(script.body().contains("async function loadAllNodes()"));
         assertTrue(script.body().contains("MAX_REGISTRY_SCAN_ATTEMPTS"));
         assertTrue(script.body().contains("&revision=${revision}"));
