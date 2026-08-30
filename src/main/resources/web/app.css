@@ -157,7 +157,8 @@ select { width: 100%; margin-bottom: 16px; }
 label span { color: var(--muted); font-weight: 400; }
 .operation-actions { display: flex; flex-wrap: wrap; gap: 9px; }
 .method-buttons { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 9px; }
-#operation-status, #file-operation-status, #quick-operation-status, #vote-sites-sync-status, #transport-test-status, #proxy-method-status { min-height: 84px; margin: 18px 0 0; padding: 14px; overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: #050c16; color: #c6d5e8; white-space: pre-wrap; }
+.method-buttons button.active { box-shadow: 0 0 0 3px rgba(42, 122, 226, .22); }
+#operation-status, #file-operation-status, #quick-operation-status, #transport-test-status, #proxy-method-status { min-height: 84px; margin: 18px 0 0; padding: 14px; overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: #050c16; color: #c6d5e8; white-space: pre-wrap; }
 #file-operation-status { margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 16px 0; }
 .form-grid label { color: var(--muted); }

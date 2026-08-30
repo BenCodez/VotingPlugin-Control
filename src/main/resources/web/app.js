@@ -55,9 +55,15 @@ const fileConfigurationForm = document.querySelector('#file-configuration-form')
 const quickSetupForm = document.querySelector('#quick-setup-form');
 const quickPreset = document.querySelector('#quick-preset');
 const quickName = document.querySelector('#quick-name');
+const quickMethod = document.querySelector('#quick-method');
+const quickSiteDisplayName = document.querySelector('#quick-site-display-name');
 const quickService = document.querySelector('#quick-service');
 const quickUrl = document.querySelector('#quick-url');
 const quickDelay = document.querySelector('#quick-delay');
+const quickSitePriority = document.querySelector('#quick-site-priority');
+const quickSiteMaterial = document.querySelector('#quick-site-material');
+const quickSiteEnabled = document.querySelector('#quick-site-enabled');
+const quickSiteHidden = document.querySelector('#quick-site-hidden');
 const detectedPlugins = document.querySelector('#detected-plugins');
 const quickRewardScope = document.querySelector('#quick-reward-scope');
 const quickCommand = document.querySelector('#quick-command');
@@ -74,15 +80,13 @@ const quickPartyCommand = document.querySelector('#quick-party-command');
 const quickPartyBroadcast = document.querySelector('#quick-party-broadcast');
 const quickPartyAll = document.querySelector('#quick-party-all');
 const quickPartyOnline = document.querySelector('#quick-party-online');
+const readQuickSetup = document.querySelector('#read-quick-setup');
 const previewQuickSetup = document.querySelector('#preview-quick-setup');
 const applyQuickSetup = document.querySelector('#apply-quick-setup');
 const quickOperationStatus = document.querySelector('#quick-operation-status');
 const voteSitesSource = document.querySelector('#vote-sites-source');
 const voteSitesTargets = document.querySelector('#vote-sites-targets');
 const voteSitesSyncCapability = document.querySelector('#vote-sites-sync-capability');
-const previewVoteSitesSync = document.querySelector('#preview-vote-sites-sync');
-const applyVoteSitesSync = document.querySelector('#apply-vote-sites-sync');
-const voteSitesSyncStatus = document.querySelector('#vote-sites-sync-status');
 const transportTestProxy = document.querySelector('#transport-test-proxy');
 const transportTestBackend = document.querySelector('#transport-test-backend');
 const transportTestCapability = document.querySelector('#transport-test-capability');
@@ -91,6 +95,8 @@ const transportTestStatus = document.querySelector('#transport-test-status');
 const proxyMethodProxy = document.querySelector('#proxy-method-proxy');
 const proxyMethodCapability = document.querySelector('#proxy-method-capability');
 const proxyMethodButtons = [...document.querySelectorAll('[data-proxy-method]')];
+const readProxyMethod = document.querySelector('#read-proxy-method');
+const proxyMethodCurrent = document.querySelector('#proxy-method-current');
 const proxyMethodStatus = document.querySelector('#proxy-method-status');
 const enrollmentCard = document.querySelector('#enrollment-card');
 const enrollmentForm = document.querySelector('#enrollment-form');
@@ -120,13 +126,16 @@ let backendTopologyTruncatedNodeIds = new Set();
 let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
-let approvedVoteSitesPreview = null;
+let loadedQuickSetup = null;
 let voteSitesSourceId = '';
 let voteSitesTargetIds = new Set();
 let voteSitesTargetsInitialized = false;
 let transportTestProxyId = '';
 let transportTestBackendId = '';
 let proxyMethodProxyId = '';
+let proxyMethodCurrentFor = '';
+let proxyMethodCurrentSessionId = '';
+let proxyMethodCurrentValue = '';
 let nodeCapabilities = new Map();
 let nodePlugins = new Map();
 let inputGeneration = 0;
@@ -185,7 +194,7 @@ function applyAuthenticatedSession(body) {
   approvedPreview = null;
   approvedFilePreview = null;
   approvedQuickPreview = null;
-  approvedVoteSitesPreview = null;
+  loadedQuickSetup = null;
   selectedNodes.clear();
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
@@ -193,6 +202,9 @@ function applyAuthenticatedSession(body) {
   transportTestProxyId = '';
   transportTestBackendId = '';
   proxyMethodProxyId = '';
+  proxyMethodCurrentFor = '';
+  proxyMethodCurrentSessionId = '';
+  proxyMethodCurrentValue = '';
   configurationContent.value = '';
   inputGeneration++;
   logout.hidden = false;
@@ -390,7 +402,10 @@ function renderServerPicker() {
   }));
   if (!nodeIndex.has(previousValue)) {
     selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
-    if (previousValue) resetServerConfigurationForms('The selected server is no longer available. Read the replacement server before previewing changes.');
+    if (previousValue) {
+      loadedQuickSetup = null;
+      resetServerConfigurationForms('The selected server is no longer available. Read the replacement server before previewing changes.');
+    }
   }
   serverPicker.value = selectedServerId;
 }
@@ -523,6 +538,13 @@ function selectedVoteSitesTargets() {
   return [...voteSitesTargetIds].filter(nodeId => capable.has(nodeId) && nodeId !== voteSitesSourceId);
 }
 
+function invalidateVoteSitesSyncPreview(message) {
+  if (approvedQuickPreview?.workflow === 'sync-vote-sites') approvedQuickPreview = null;
+  if (quickPreset.value !== 'sync-vote-sites') return;
+  inputGeneration++;
+  text(quickOperationStatus, message);
+}
+
 function renderVoteSitesSync() {
   const sources = syncSourceCandidates();
   const targetsAvailable = syncTargetCandidates();
@@ -531,17 +553,13 @@ function renderVoteSitesSync() {
     voteSitesSourceId = sources.find(node => node.nodeId === selectedServerId)?.nodeId || sources[0]?.nodeId || '';
   }
   if (previousSourceId && previousSourceId !== voteSitesSourceId) {
-    approvedVoteSitesPreview = null;
-    inputGeneration++;
-    text(voteSitesSyncStatus, 'The sync source became unavailable. Read the replacement source and preview again.');
+    invalidateVoteSitesSyncPreview('The sync source became unavailable. Read the replacement source and preview again.');
   }
   const targetIds = new Set(targetsAvailable.map(node => node.nodeId));
   const retainedTargets = new Set([...voteSitesTargetIds].filter(nodeId =>
     targetIds.has(nodeId) && nodeId !== voteSitesSourceId));
   if (retainedTargets.size !== voteSitesTargetIds.size) {
-    approvedVoteSitesPreview = null;
-    inputGeneration++;
-    text(voteSitesSyncStatus, 'A sync target became unavailable. Preview again before syncing.');
+    invalidateVoteSitesSyncPreview('A sync target became unavailable. Preview again before syncing.');
   }
   voteSitesTargetIds = retainedTargets;
   if (!voteSitesTargetsInitialized && sources.length > 0) {
@@ -575,13 +593,13 @@ function renderVoteSitesSync() {
       checkbox.addEventListener('change', () => {
         if (checkbox.checked && voteSitesTargetIds.size >= MAX_SYNC_TARGETS) {
           checkbox.checked = false;
-          text(voteSitesSyncStatus, `A sync operation supports at most ${MAX_SYNC_TARGETS} targets.`);
+          text(quickOperationStatus, `A sync operation supports at most ${MAX_SYNC_TARGETS} targets.`);
           return;
         }
         if (checkbox.checked) voteSitesTargetIds.add(node.nodeId); else voteSitesTargetIds.delete(node.nodeId);
-        approvedVoteSitesPreview = null;
+        approvedQuickPreview = null;
         inputGeneration++;
-        text(voteSitesSyncStatus, 'Targets changed. Read the source and preview again before syncing.');
+        text(quickOperationStatus, 'Targets changed. Read the source and preview again before syncing.');
         updateConfigurationButtons();
       });
       label.append(checkbox, document.createTextNode(`${node.displayName} · ${node.nodeId}`));
@@ -682,6 +700,12 @@ function renderProxyMethod() {
   }));
   proxyMethodProxy.value = proxyMethodProxyId;
   const network = proxyMethodNetwork();
+  if (proxyMethodCurrentFor !== proxyMethodProxyId
+      || proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')) {
+    proxyMethodCurrentFor = '';
+    proxyMethodCurrentSessionId = '';
+    proxyMethodCurrentValue = '';
+  }
   const ready = network.proxyReady && network.topologyComplete && network.reported.length > 0 &&
     network.nodeIds.length <= MAX_OPERATION_TARGETS && network.unavailable.length === 0;
   const description = !network.proxyReady ? 'Waiting for a connected, capable proxy'
@@ -692,6 +716,13 @@ function renderProxyMethod() {
     : `${network.nodeIds.length} nodes ready`;
   text(proxyMethodCapability, description);
   proxyMethodCapability.className = `pill ${ready ? 'online' : 'neutral'}`;
+  text(proxyMethodCurrent, proxyMethodCurrentValue ? `Active: ${proxyMethodCurrentValue}` : 'Active method unknown');
+  proxyMethodCurrent.className = `pill ${proxyMethodCurrentValue ? 'online' : 'neutral'}`;
+  proxyMethodButtons.forEach(button => {
+    const active = button.dataset.proxyMethod === proxyMethodCurrentValue;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
 }
 
 function renderNodeViews() {
@@ -725,7 +756,15 @@ function selectPrimaryServer(nodeId) {
   serverPicker.value = nodeId;
   selectedNodes.clear();
   if (nodeId) selectedNodes.add(nodeId);
+  loadedQuickSetup = null;
   resetServerConfigurationForms('Server changed. Read this server before previewing changes.');
+  const preset = quickPreset.value;
+  quickSetupForm.reset();
+  quickPreset.value = preset;
+  updateQuickFields();
+  text(quickOperationStatus, preset === 'sync-vote-sites'
+    ? 'Server context changed. Confirm the VoteSites source and targets.'
+    : 'Server changed. Load its current values before editing an existing setup.');
   updatePluginSuggestions();
   renderNodeViews();
 }
@@ -736,24 +775,25 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
     targets('config.proxy-routing.v1').length > 0 && !busy;
   const fileReady = authenticated && primaryCapabilities.includes('config.files.v1') &&
     targets('config.files.v1').length > 0 && !busy;
-  const quickReady = authenticated && primaryCapabilities.includes('config.quick-setup.v1') &&
-    targets('config.quick-setup.v1').length > 0 && !busy;
-  const voteSitesReady = authenticated && voteSitesSourceId && selectedVoteSitesTargets().length > 0 && !busy;
+  const syncSelected = quickPreset.value === 'sync-vote-sites';
+  const quickReady = authenticated && !busy && (syncSelected
+    ? Boolean(voteSitesSourceId && selectedVoteSitesTargets().length > 0)
+    : primaryCapabilities.includes('config.quick-setup.v1') && targets('config.quick-setup.v1').length > 0);
   readConfiguration.disabled = !routingReady;
   previewConfiguration.disabled = !routingReady;
   applyConfiguration.disabled = !routingReady || !approvedPreview;
   readFileConfiguration.disabled = !fileReady;
   previewFileConfiguration.disabled = !fileReady || !configurationContent.value;
   applyFileConfiguration.disabled = !fileReady || !approvedFilePreview;
-  previewQuickSetup.disabled = !quickReady;
+  readQuickSetup.disabled = !quickReady || !quickPresetReadable();
+  previewQuickSetup.disabled = !quickReady || (quickPresetNeedsRead() && !quickSetupValuesLoaded());
   applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
-  previewVoteSitesSync.disabled = !voteSitesReady;
-  applyVoteSitesSync.disabled = !voteSitesReady || !approvedVoteSitesPreview;
   runTransportTest.disabled = !authenticated || !transportTestProxyId || !transportTestBackendId || busy;
   const methodNetwork = proxyMethodNetwork();
   const methodReady = authenticated && methodNetwork.proxyReady && methodNetwork.topologyComplete && methodNetwork.reported.length > 0 &&
     methodNetwork.nodeIds.length <= MAX_OPERATION_TARGETS && methodNetwork.unavailable.length === 0 && !busy;
   proxyMethodButtons.forEach(button => { button.disabled = !methodReady; });
+  readProxyMethod.disabled = !authenticated || !methodNetwork.proxyReady || busy;
 }
 
 function targets(capability) {
@@ -764,8 +804,6 @@ function clearApprovals() {
   approvedPreview = null;
   approvedFilePreview = null;
   approvedQuickPreview = null;
-  approvedVoteSitesPreview = null;
-  approvedVoteSitesPreview = null;
   inputGeneration++;
   updateConfigurationButtons();
 }
@@ -805,6 +843,27 @@ function updateQuickFields() {
     group.hidden = !group.dataset.presets.split(' ').includes(quickPreset.value);
   });
   quickName.closest('.quick-fields').hidden = !['proxy-backend', 'vote-site', 'easy-reward'].includes(quickPreset.value);
+  const sync = quickPreset.value === 'sync-vote-sites';
+  readQuickSetup.hidden = !quickPresetReadable();
+  previewQuickSetup.textContent = sync ? 'Read source and preview sync' : 'Preview changes';
+  applyQuickSetup.textContent = sync ? 'Approve and sync' : 'Approve and apply';
+  updateConfigurationButtons();
+}
+
+function quickPresetReadable() {
+  return quickPresetNeedsRead()
+    && (quickPreset.value !== 'vote-site' || quickName.value.trim().length > 0);
+}
+
+function quickPresetNeedsRead() {
+  return ['proxy-backend', 'vote-site', 'common-settings', 'vote-party'].includes(quickPreset.value);
+}
+
+function quickSetupValuesLoaded() {
+  return loadedQuickSetup?.nodeId === selectedServerId
+    && loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId
+    && loadedQuickSetup.preset === quickPreset.value
+    && loadedQuickSetup.selector === JSON.stringify(quickReadOptions());
 }
 
 function updatePluginSuggestions() {
@@ -863,7 +922,7 @@ function discardAuthenticationState(reason) {
   approvedPreview = null;
   approvedFilePreview = null;
   approvedQuickPreview = null;
-  approvedVoteSitesPreview = null;
+  loadedQuickSetup = null;
   inputGeneration++;
   logout.hidden = true;
   appShell.hidden = true;
@@ -881,6 +940,9 @@ function discardAuthenticationState(reason) {
   transportTestProxyId = '';
   transportTestBackendId = '';
   proxyMethodProxyId = '';
+  proxyMethodCurrentFor = '';
+  proxyMethodCurrentSessionId = '';
+  proxyMethodCurrentValue = '';
   selectedServerId = '';
   visibleNodeItems = [];
   allNodeItems = [];
@@ -900,7 +962,6 @@ function discardAuthenticationState(reason) {
   text(operationStatus, '');
   text(fileOperationStatus, '');
   text(quickOperationStatus, '');
-  text(voteSitesSyncStatus, '');
   text(transportTestStatus, '');
   text(proxyMethodStatus, '');
   nodes.replaceChildren();
@@ -926,10 +987,20 @@ function operationSummary(operation) {
   const lines = [`${operation.type} · ${operation.state} · ${operation.operationId}`];
   Object.entries(operation.nodeStates).forEach(([node, state]) => {
     const result = operation.results[node];
-    lines.push(`${node}: ${result ? `${result.success ? 'success' : result.code} — ${result.message}` : state}`);
+    const successLabel = operation.type === 'READ' ? 'values read'
+      : operation.type === 'PREVIEW' ? 'preview ready'
+      : result?.reloaded ? 'saved and reloaded' : 'applied';
+    lines.push(`${result?.success ? '✓' : result ? '✗' : '…'} ${node}: ${result
+      ? `${result.success ? successLabel : result.code} — ${result.message}` : state.toLowerCase()}`);
     if (result?.changes?.length) result.changes.forEach(change => lines.push(`  ${change}`));
-    if (result?.rolledBack) lines.push('  previous file restored after reload failure');
+    if (result?.rolledBack) lines.push('  NOT SAVED — the previous file was restored because reload failed');
   });
+  if (operation.configuration?.preset === 'sync-vote-sites') {
+    const sites = new Set(Object.values(operation.results).flatMap(result => result.changes || [])
+      .map(change => change.match(/VoteSites\.([A-Za-z0-9_-]+)/)?.[1]).filter(Boolean));
+    lines.push(`${sites.size || 'No'} site ${sites.size === 1 ? 'definition' : 'definitions'} ${operation.type === 'PREVIEW' ? 'would change' : 'changed'}.`);
+    lines.push('Rewards and target-only sites remain local to each backend.');
+  }
   return lines.join('\n');
 }
 
@@ -1063,11 +1134,19 @@ async function loadNodes() {
   text(message, 'Loading…');
   try {
     const registry = await loadAllNodes();
+    const previousNodeIndex = nodeIndex;
     visibleNodeItems = registry.items.slice(pageOffset, pageOffset + PAGE_SIZE);
     allNodeItems = registry.items;
     backendTopologyTruncated = registry.truncated;
     backendTopologyTruncatedNodeIds = registry.truncatedNodeIds;
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
+    if (loadedQuickSetup?.nodeId === selectedServerId
+        && previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId) {
+      loadedQuickSetup = null;
+      approvedQuickPreview = null;
+      inputGeneration++;
+      text(quickOperationStatus, 'The selected server reconnected. Load its current values again before previewing changes.');
+    }
     const previousCapabilities = nodeCapabilities;
     nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
     nodePlugins = new Map(registry.items.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
@@ -1087,17 +1166,18 @@ async function loadNodes() {
       nodeCapabilities.get(node)?.includes('config.proxy-routing.v1'));
     const invalidFileApproval = approvedFilePreview && !approvedFilePreview.nodeIds.every(node =>
       nodeCapabilities.get(node)?.includes('config.files.v1'));
-    const invalidQuickApproval = approvedQuickPreview && !approvedQuickPreview.nodeIds.every(node =>
+    const invalidQuickApproval = approvedQuickPreview && approvedQuickPreview.workflow !== 'sync-vote-sites' &&
+      !approvedQuickPreview.nodeIds.every(node =>
       nodeCapabilities.get(node)?.includes('config.quick-setup.v1'));
-    const invalidVoteSitesApproval = approvedVoteSitesPreview &&
-      (!approvedVoteSitesPreview.nodeIds.every(node =>
+    const invalidVoteSitesApproval = approvedQuickPreview?.workflow === 'sync-vote-sites' &&
+      (!approvedQuickPreview.nodeIds.every(node =>
         nodeCapabilities.get(node)?.includes('config.vote-sites-sync.v1')) ||
-       !nodeCapabilities.get(approvedVoteSitesPreview.sourceId)?.includes('config.file-comments.v1'));
+       !nodeCapabilities.get(approvedQuickPreview.sourceId)?.includes('config.file-comments.v1'));
     if (invalidRoutingApproval || invalidFileApproval || invalidQuickApproval || invalidVoteSitesApproval) {
       if (invalidRoutingApproval) approvedPreview = null;
       if (invalidFileApproval) approvedFilePreview = null;
       if (invalidQuickApproval) approvedQuickPreview = null;
-      if (invalidVoteSitesApproval) approvedVoteSitesPreview = null;
+      if (invalidVoteSitesApproval) approvedQuickPreview = null;
       inputGeneration++;
       text(operationStatus, 'A preview target went offline or lost the required capability. Preview again before apply.');
     }
@@ -1280,7 +1360,7 @@ readConfiguration.addEventListener('click', async () => {
   const readAuthenticationGeneration = authenticationGeneration;
   const readInputGeneration = inputGeneration;
   try {
-    const operation = await startConfigurationOperation('/api/v1/configuration/read', {nodeIds: targets('config.proxy-routing.v1')});
+    const operation = await startConfigurationOperation('/api/v1/configuration/read', {nodeIds: [selectedServerId]});
     const retained = Object.values(operation.results).find(result => result.success && result.configuration);
     if (retained && authenticated && readAuthenticationGeneration === authenticationGeneration
         && readInputGeneration === inputGeneration) {
@@ -1336,7 +1416,7 @@ readFileConfiguration.addEventListener('click', async () => {
   const selectedFile = configurationFile.value;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
-      nodeIds: targets('config.files.v1'),
+      nodeIds: [selectedServerId],
       configuration: {domain: 'file', fileName: selectedFile}
     }, fileOperationStatus);
     const contentResult = Object.values(operation.results).find(result =>
@@ -1386,10 +1466,12 @@ applyFileConfiguration.addEventListener('click', async () => {
 
 function quickOptions() {
   if (quickPreset.value === 'standalone') return {};
-  if (quickPreset.value === 'proxy-backend') return {server: quickName.value.trim(), method: 'PLUGINMESSAGING'};
+  if (quickPreset.value === 'proxy-backend') return {server: quickName.value.trim(), method: quickMethod.value};
   if (quickPreset.value === 'vote-site') return {
-      name: quickName.value.trim(), displayName: quickName.value.trim(), serviceSite: quickService.value.trim(),
-      voteUrl: quickUrl.value.trim(), voteDelay: quickDelay.value.trim(), priority: '5', material: 'DIAMOND'
+      name: quickName.value.trim(), displayName: quickSiteDisplayName.value.trim() || quickName.value.trim(),
+      serviceSite: quickService.value.trim(), voteUrl: quickUrl.value.trim(), voteDelay: quickDelay.value.trim(),
+      priority: quickSitePriority.value, material: quickSiteMaterial.value.trim(),
+      enabled: String(quickSiteEnabled.checked), hidden: String(quickSiteHidden.checked)
     };
   if (quickPreset.value === 'easy-reward') return {scope: quickRewardScope.value,
     name: quickName.value.trim(), command: quickCommand.value.trim(), message: quickMessage.value.trim()};
@@ -1404,10 +1486,103 @@ function quickOptions() {
     onlineOnly: String(quickPartyOnline.checked)};
 }
 
+function quickReadOptions() {
+  return quickPreset.value === 'vote-site' ? {name: quickName.value.trim()} : {};
+}
+
+function populateQuickState(options) {
+  if (quickPreset.value === 'proxy-backend') {
+    quickName.value = options.server || '';
+    quickMethod.value = options.method || 'PLUGINMESSAGING';
+  } else if (quickPreset.value === 'vote-site') {
+    quickSiteDisplayName.value = options.displayName || quickName.value.trim();
+    quickService.value = options.serviceSite || '';
+    quickUrl.value = options.voteUrl || '';
+    quickDelay.value = options.voteDelay || '24h';
+    quickSitePriority.value = options.priority || '5';
+    quickSiteMaterial.value = options.material || 'DIAMOND';
+    quickSiteEnabled.checked = options.enabled !== 'false';
+    quickSiteHidden.checked = options.hidden === 'true';
+  } else if (quickPreset.value === 'common-settings') {
+    quickProcessRewards.checked = options.processRewards === 'true';
+    quickAutoSites.checked = options.autoCreateVoteSites === 'true';
+    quickExtraCheck.checked = options.extraAllSitesCheck === 'true';
+    quickCountFake.checked = options.countFakeVotes === 'true';
+    quickHideSiteWarning.checked = options.disableNoServiceSiteMessage === 'true';
+    quickDisableUpdates.checked = options.disableUpdateChecking === 'true';
+  } else if (quickPreset.value === 'vote-party') {
+    quickPartyVotes.value = options.votesRequired || '20';
+    quickPartyBroadcast.value = options.broadcast || '';
+    quickPartyAll.checked = options.giveAllPlayers === 'true';
+    quickPartyOnline.checked = options.onlineOnly !== 'false';
+    quickPartyCommand.value = '';
+  }
+}
+
+readQuickSetup.addEventListener('click', async () => {
+  if (!quickPresetReadable()) return;
+  approvedQuickPreview = null;
+  loadedQuickSetup = null;
+  const preset = quickPreset.value;
+  const nodeId = selectedServerId;
+  const sessionId = nodeIndex.get(nodeId)?.sessionId;
+  const selector = JSON.stringify(quickReadOptions());
+  const generation = inputGeneration;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/read', {
+      nodeIds: [selectedServerId],
+      configuration: {domain: 'quick-setup', preset, options: quickReadOptions()}
+    }, quickOperationStatus);
+    const result = Object.values(operation.results).find(item =>
+      item.success && item.configuration?.preset === preset && item.configuration?.options);
+    if (!result) throw new Error('The selected backend did not return guided settings. Update VotingPlugin on that node.');
+    if (generation !== inputGeneration || preset !== quickPreset.value || nodeId !== selectedServerId
+        || sessionId !== nodeIndex.get(nodeId)?.sessionId
+        || selector !== JSON.stringify(quickReadOptions())) {
+      text(quickOperationStatus, 'The server or setup changed while reading. Load the current values again.');
+      return;
+    }
+    populateQuickState(result.configuration.options);
+    loadedQuickSetup = {nodeId, sessionId, preset, selector};
+    inputGeneration++;
+    const suffix = preset === 'vote-site' && result.configuration.options.exists === 'false'
+      ? ' This site key does not exist yet; the form is ready to create it.'
+      : preset === 'vote-party' && Number(result.configuration.options.rewardCommandCount || 0) > 0
+      ? ` ${result.configuration.options.rewardCommandCount} existing reward command(s) will be preserved.` : '';
+    text(quickOperationStatus, `Current values loaded from ${Object.keys(operation.results).find(id => operation.results[id] === result)}.${suffix}`);
+    updateConfigurationButtons();
+  } catch (error) { text(quickOperationStatus, error.message); }
+});
+
 previewQuickSetup.addEventListener('click', async () => {
   approvedQuickPreview = null;
   const previewGeneration = inputGeneration;
   try {
+    if (quickPreset.value === 'sync-vote-sites') {
+      const sourceId = voteSitesSourceId;
+      const nodeIds = selectedVoteSitesTargets();
+      const read = await startConfigurationOperation('/api/v1/configuration/read', {
+        nodeIds: [sourceId], configuration: {domain: 'file', fileName: 'VoteSites.yml'}
+      }, quickOperationStatus);
+      const source = Object.values(read.results).find(result =>
+        result.success && result.configuration?.content != null)?.configuration?.content;
+      if (source == null) throw new Error('The source backend did not return VoteSites.yml.');
+      if (previewGeneration !== inputGeneration || sourceId !== voteSitesSourceId) {
+        text(quickOperationStatus, 'The source or targets changed while reading. Preview again.');
+        return;
+      }
+      const preview = await startConfigurationOperation('/api/v1/configuration/preview', {
+        nodeIds,
+        configuration: {domain: 'quick-setup', preset: 'sync-vote-sites', options: {sourceContent: source}}
+      }, quickOperationStatus);
+      text(quickOperationStatus, operationSummary(preview));
+      if (preview.state === 'SUCCEEDED' && preview.approvalToken && previewGeneration === inputGeneration) {
+        approvedQuickPreview = {workflow: 'sync-vote-sites', operationId: preview.operationId,
+          approvalToken: preview.approvalToken, nodeIds, sourceId};
+        updateConfigurationButtons();
+      }
+      return;
+    }
     const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
       nodeIds: targets('config.quick-setup.v1'),
       configuration: {domain: 'quick-setup', preset: quickPreset.value, options: quickOptions()}
@@ -1424,7 +1599,11 @@ previewQuickSetup.addEventListener('click', async () => {
 });
 
 applyQuickSetup.addEventListener('click', async () => {
-  if (!approvedQuickPreview || !window.confirm('Apply this exact quick setup to every selected Bukkit node?')) return;
+  const sync = approvedQuickPreview?.workflow === 'sync-vote-sites';
+  const confirmation = sync
+    ? 'Sync the previewed site definitions to every target? Rewards and target-only sites remain unchanged.'
+    : 'Apply this exact guided change to every selected Bukkit node?';
+  if (!approvedQuickPreview || !window.confirm(confirmation)) return;
   const approval = approvedQuickPreview;
   approvedQuickPreview = null;
   inputGeneration++;
@@ -1440,54 +1619,11 @@ voteSitesSource.addEventListener('change', () => {
   voteSitesSourceId = voteSitesSource.value;
   voteSitesTargetIds.delete(voteSitesSourceId);
   voteSitesTargetsInitialized = true;
-  approvedVoteSitesPreview = null;
+  approvedQuickPreview = null;
   inputGeneration++;
   renderVoteSitesSync();
-  text(voteSitesSyncStatus, 'Source changed. Read it and preview every target before syncing.');
+  text(quickOperationStatus, 'Source changed. Read it and preview every target before syncing.');
   updateConfigurationButtons();
-});
-
-previewVoteSitesSync.addEventListener('click', async () => {
-  approvedVoteSitesPreview = null;
-  const previewGeneration = inputGeneration;
-  const sourceId = voteSitesSourceId;
-  const nodeIds = selectedVoteSitesTargets();
-  try {
-    const read = await startConfigurationOperation('/api/v1/configuration/read', {
-      nodeIds: [sourceId], configuration: {domain: 'file', fileName: 'VoteSites.yml'}
-    }, voteSitesSyncStatus);
-    const source = Object.values(read.results).find(result =>
-      result.success && result.configuration?.content != null)?.configuration?.content;
-    if (source == null) throw new Error('The source backend did not return VoteSites.yml.');
-    if (previewGeneration !== inputGeneration || sourceId !== voteSitesSourceId) {
-      text(voteSitesSyncStatus, 'The source or targets changed while reading. Preview again.');
-      return;
-    }
-    const preview = await startConfigurationOperation('/api/v1/configuration/preview', {
-      nodeIds,
-      configuration: {domain: 'quick-setup', preset: 'sync-vote-sites', options: {sourceContent: source}}
-    }, voteSitesSyncStatus);
-    if (preview.state === 'SUCCEEDED' && preview.approvalToken && previewGeneration === inputGeneration) {
-      approvedVoteSitesPreview = {operationId: preview.operationId, approvalToken: preview.approvalToken,
-        nodeIds, sourceId};
-      updateConfigurationButtons();
-    } else if (previewGeneration !== inputGeneration) {
-      text(voteSitesSyncStatus, 'The source or targets changed while previewing. Preview again before syncing.');
-    }
-  } catch (error) { text(voteSitesSyncStatus, error.message); }
-});
-
-applyVoteSitesSync.addEventListener('click', async () => {
-  if (!approvedVoteSitesPreview || !window.confirm(
-      'Sync the previewed VoteSites definitions to every selected backend? Target rewards and target-only sites are preserved.')) return;
-  const approval = approvedVoteSitesPreview;
-  approvedVoteSitesPreview = null;
-  inputGeneration++;
-  try {
-    await startConfigurationOperation('/api/v1/configuration/apply', {
-      previewOperationId: approval.operationId, approvalToken: approval.approvalToken
-    }, voteSitesSyncStatus);
-  } catch (error) { text(voteSitesSyncStatus, error.message); }
 });
 
 transportTestProxy.addEventListener('change', () => {
@@ -1520,8 +1656,32 @@ runTransportTest.addEventListener('click', async () => {
   } catch (error) { text(transportTestStatus, error.message); }
 });
 
+readProxyMethod.addEventListener('click', async () => {
+  const proxyId = proxyMethodProxyId;
+  const sessionId = proxyMethodNetwork().proxy?.sessionId;
+  if (!proxyId) return;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/read', {
+      nodeIds: [proxyId],
+      configuration: {domain: 'quick-setup', preset: 'proxy-method', options: {method: 'PLUGINMESSAGING'}}
+    }, proxyMethodStatus);
+    const result = operation.results[proxyId];
+    const method = result?.success ? result.configuration?.options?.method : '';
+    if (!method) throw new Error('The proxy did not return its active communication method.');
+    if (proxyId !== proxyMethodProxyId || sessionId !== proxyMethodNetwork().proxy?.sessionId) return;
+    proxyMethodCurrentFor = proxyId;
+    proxyMethodCurrentSessionId = sessionId;
+    proxyMethodCurrentValue = method;
+    renderProxyMethod();
+    text(proxyMethodStatus, `Active method on ${proxyId}: ${method}`);
+  } catch (error) { text(proxyMethodStatus, error.message); }
+});
+
 proxyMethodProxy.addEventListener('change', () => {
   proxyMethodProxyId = proxyMethodProxy.value;
+  proxyMethodCurrentFor = '';
+  proxyMethodCurrentSessionId = '';
+  proxyMethodCurrentValue = '';
   renderProxyMethod();
   const network = proxyMethodNetwork();
   text(proxyMethodStatus, network.unavailable.length > 0
@@ -1549,6 +1709,7 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
     const refreshedNetwork = proxyMethodNetworkFor(refreshedRegistry.items, refreshedRegistry.truncatedNodeIds,
       proxyMethodProxyId);
     if (proxyMethodProxyId !== network.proxy.nodeId ||
+        refreshedNetwork.proxy?.sessionId !== network.proxy.sessionId ||
         proxyMethodNetworkSignature(refreshedNetwork) !== proxyMethodNetworkSignature(network) ||
         refreshedNetwork.nodeIds.length > MAX_OPERATION_TARGETS) {
       text(proxyMethodStatus, 'The complete proxy topology changed while preflighting. Refresh and choose the method again.');
@@ -1557,7 +1718,16 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
     const applied = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: preview.operationId, approvalToken: preview.approvalToken
     }, proxyMethodStatus);
-    text(proxyMethodStatus, `${operationSummary(applied)}\nReconnect the proxy if needed, then run the communication test.`);
+    if (applied.state === 'SUCCEEDED') {
+      proxyMethodCurrentFor = network.proxy.nodeId;
+      proxyMethodCurrentSessionId = network.proxy.sessionId;
+      proxyMethodCurrentValue = method;
+      renderProxyMethod();
+    }
+    const nextStep = applied.state === 'SUCCEEDED'
+      ? 'Reconnect the proxy if needed, then run the communication test.'
+      : 'No network-wide method change was committed. Fix the failed nodes, refresh the active method, and preview again.';
+    text(proxyMethodStatus, `${operationSummary(applied)}\n${nextStep}`);
   } catch (error) {
     text(proxyMethodStatus, error.message);
   } finally {
@@ -1566,10 +1736,12 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
   }
 }));
 
-[configurationContent, quickName, quickService, quickUrl, quickDelay, quickRewardScope,
+[configurationContent, quickName, quickMethod, quickSiteDisplayName, quickService, quickUrl, quickDelay,
+  quickSitePriority, quickSiteMaterial, quickSiteEnabled, quickSiteHidden, quickRewardScope,
   quickCommand, quickMessage, quickProcessRewards, quickAutoSites, quickExtraCheck, quickCountFake,
   quickHideSiteWarning, quickDisableUpdates, quickPartyVotes, quickPartyCommand, quickPartyBroadcast,
   quickPartyAll, quickPartyOnline].forEach(field => field.addEventListener('input', clearApprovals));
+quickName.addEventListener('input', updateQuickFields);
 configurationContent.addEventListener('input', updateEditorPosition);
 configurationContent.addEventListener('click', updateEditorPosition);
 configurationContent.addEventListener('keyup', updateEditorPosition);
@@ -1580,7 +1752,16 @@ configurationFile.addEventListener('input', () => {
   text(fileOperationStatus, 'Read the selected file before previewing changes.');
   clearApprovals();
 });
-quickPreset.addEventListener('input', () => { updateQuickFields(); clearApprovals(); });
+quickPreset.addEventListener('input', () => {
+  loadedQuickSetup = null;
+  updateQuickFields();
+  clearApprovals();
+  if (quickPresetNeedsRead()) {
+    text(quickOperationStatus, quickPreset.value === 'vote-site'
+      ? 'Enter the vote-site key, then load its current values before previewing.'
+      : 'Load the current values from the primary server before previewing changes.');
+  }
+});
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
 tabButtons.forEach(button => button.addEventListener('click', () => setActiveTab(button.dataset.tab, true)));
 configViewButtons.forEach(button => button.addEventListener('click', () => setConfigView(button.dataset.configView)));

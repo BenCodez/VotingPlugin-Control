@@ -65,8 +65,9 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("id=\"server-picker\""));
         assertTrue(web.body().contains("Full YAML"));
         assertTrue(web.body().contains("Comment support unknown"));
-        assertTrue(web.body().contains("Sync VoteSites"));
-        assertTrue(web.body().contains("Rewards are never copied or removed"));
+        assertTrue(web.body().contains("Sync site definitions across backends"));
+        assertTrue(web.body().contains("Target-only sites and every reward section stay local"));
+        assertTrue(web.body().contains("Load current values"));
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
@@ -92,7 +93,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("return allNodeItems.filter(node => isProxy(node)"));
         assertTrue(script.body().contains("MAX_OPERATION_TARGETS = 100"));
         assertTrue(script.body().contains("proxyMethodNetworkSignature(refreshedNetwork)"));
-        assertTrue(web.body().contains("Easy vote reward"));
+        assertTrue(script.body().contains("proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')"));
+        assertTrue(script.body().contains("sessionId !== proxyMethodNetwork().proxy?.sessionId"));
+        assertTrue(script.body().contains("refreshedNetwork.proxy?.sessionId !== network.proxy.sessionId"));
+        assertTrue(script.body().contains("if (approvedQuickPreview?.workflow === 'sync-vote-sites') approvedQuickPreview = null;"));
+        assertTrue(script.body().contains("if (quickPreset.value !== 'sync-vote-sites') return;"));
+        assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
         assertTrue(script.body().contains("setupForm.addEventListener"));
@@ -103,6 +109,11 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("enrollmentSubmit.disabled = true"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
+        assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));
+        assertTrue(script.body().contains("loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId"));
+        assertTrue(script.body().contains("previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId"));
+        assertTrue(script.body().contains("sessionId !== nodeIndex.get(nodeId)?.sessionId"));
+        assertTrue(script.body().contains("loadedQuickSetup = {nodeId, sessionId, preset, selector}"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
         assertTrue(script.body().contains("approvedPreview = null;\n      inputGeneration++;"));
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));

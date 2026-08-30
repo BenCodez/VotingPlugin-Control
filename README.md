@@ -161,17 +161,24 @@ Control records its own observation time; it does not trust remote wall-clock ti
 Configuration is split into independently negotiated capabilities. `config.proxy-routing.v1` exposes typed proxy routing.
 `config.files.v1` manages `Config.yml`, `VoteSites.yml`, `SpecialRewards.yml`, `GUI.yml`, `Shop.yml`, and
 `BungeeSettings.yml` on enrolled Bukkit nodes through a bounded YAML editor. `config.quick-setup.v1` supplies standalone,
-proxy-backend, vote-site, easy-reward, common-settings, and vote-party presets. Bukkit registration also reports a bounded
+proxy-backend, vote-site, easy-reward, common-settings, and vote-party presets. Readable presets load their installed
+values before editing, and reward presets append without replacing existing commands or messages. Reward-safe VoteSites
+synchronization is part of the same Quick Setup workflow: it copies site definitions while preserving rewards,
+credentials, reward files, and target-only sites on every destination. Bukkit registration also reports a bounded
 set of installed plugin names (at most 16384 entries across the registry) so the WebUI can offer editable Minecraft,
 Essentials, CMI, and LuckPerms command suggestions;
 these are suggestions, not executed commands, and follow the normal preview/approval path. Password, secret, token, API-key, authorization, and webhook-secret values are masked
 on every read; leaving the redaction marker in a proposal preserves the current value. A newly entered secret is accepted
 only in the authenticated proposal and is not returned in results or written to the audit log.
 
+Read actions load only the primary server shown in the configuration header. Preview and apply still cover every server
+explicitly included in configuration changes, so one slow secondary node does not delay opening the editor or guided form.
+
 Preview parses YAML and calculates path-level changes without writing. Apply consumes a
 single-use random approval token, carries each previewed revision to that node, and reports partial failures instead of a
 network-wide success. Proxies and Bukkit nodes create local backups, require atomic replacement, reload, and restore the
-backup if reload fails. Bukkit reads normalize YAML; administrators should expect comments and formatting to be normalized
+backup if reload fails. The WebUI labels a rolled-back node as not saved and displays the bounded reload cause returned by
+the plugin. Bukkit reads normalize YAML; administrators should expect comments and formatting to be normalized
 when applying through the full editor.
 
 `configuration-audit.jsonl` records bounded, append-only, hash-chained operation metadata and rotates once at 5 MiB. A
