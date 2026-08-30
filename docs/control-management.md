@@ -211,7 +211,9 @@ Content-Type: application/json
 
 The node posts the result to
 `/api/v1/nodes/{nodeId}/inspections/{inspectionId}/result` with its `sessionId`, the same `attemptId`, `success`, a bounded
-message, and either `data` or an error `code`. A successful result may omit/set `code` to `null` or send `"OK"` for
+message, and either `data` or an error `code`. The session must still be both the registry's current session and the exact
+session that claimed the lease; reconnecting cannot complete an earlier session's attempt. A successful result may omit/set
+`code` to `null` or send `"OK"` for
 connector compatibility. A failed result must omit `data` and use a code matching `[A-Z][A-Z0-9_]{0,63}`.
 
 The Bukkit connector runs these handlers on a dedicated single-thread daemon executor, separate from its

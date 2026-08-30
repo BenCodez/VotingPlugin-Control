@@ -65,9 +65,9 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
    exact versioned capability. Unknown advertised capabilities remain unaccepted.
 4. Configuration writes follow `READ`/`PREVIEW`/`APPLY`. Apply consumes the one-time approval from a completely successful
    preview and carries the node revisions that were previewed. Do not create a shortcut around this workflow.
-5. A claimed task has a two-minute lease and a unique `attemptId`. A result must echo the current node session and attempt;
-   stale attempts cannot complete reissued work. Claim, completion, and capability-loss state transitions must roll back
-   if their durable audit append fails.
+5. A claimed task has a two-minute lease and a unique `attemptId`. A result must echo the current node session, the exact
+   session that claimed the lease, and the attempt; stale attempts or post-claim reconnects cannot complete work. Claim,
+   completion, and capability-loss state transitions must roll back if their durable audit append fails.
 6. The inspection lane is read-only. Its allow-listed kind and bounded string filters are the whole request; results are a
    structured JSON envelope whose serialized size is at most 512 KiB, and are retained only briefly. Audit the kind, never
    player names or other filter values.

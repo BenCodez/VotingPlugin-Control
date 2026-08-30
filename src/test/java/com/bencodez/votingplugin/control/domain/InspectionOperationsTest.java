@@ -73,6 +73,13 @@ class InspectionOperationsTest {
                 () -> operations.complete(created.inspectionId(), "backend-a",
                         new InspectionTaskResult(session, true, null, "done", envelope("overview"), task.attemptId())));
         assertEquals("SESSION_MISMATCH", mismatch.code());
+
+        ValidationException postClaimSession = assertThrows(ValidationException.class,
+                () -> operations.complete(created.inspectionId(), "backend-a",
+                        new InspectionTaskResult(replacement, true, null, "done", envelope("overview"),
+                                task.attemptId())));
+        assertEquals("SESSION_MISMATCH", postClaimSession.code());
+        assertEquals("RUNNING", operations.get(created.inspectionId()).state());
     }
 
     @Test void capabilityLossCompletesQueuedInspectionWithoutLeasingIt() {

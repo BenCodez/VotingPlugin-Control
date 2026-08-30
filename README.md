@@ -60,8 +60,8 @@ JSON depth/string/number sizes, a two-worker password-verification executor with
 usable even while invalid traffic is throttled. Shutdown stops the server and its daemon request workers without waiting
 indefinitely.
 
-Claimed configuration tasks include an `attemptId`. Nodes must echo it in the result so an expired and reissued lease
-cannot be completed by a stale execution from the same node session.
+Claimed configuration and inspection tasks include an `attemptId`. Nodes must echo it and the exact session that claimed
+the lease in the result, so neither an expired/reissued attempt nor a post-claim reconnect can complete stale work.
 
 Open the WebUI after the first start, read the one-time value from `data/web-setup-code.txt` with the server file
 manager, and create the WebUI password in the browser. No server command is required. The setup code is shown only in that

@@ -131,6 +131,10 @@ public final class InspectionOperations {
         if (stored.leasedAt == null || !clock.instant().isBefore(stored.leasedAt.plus(LEASE))) {
             throw new ValidationException("TASK_LEASE_EXPIRED", "Inspection lease expired", List.of());
         }
+        if (!Objects.equals(stored.targetSession, result.sessionId())) {
+            throw new ValidationException("SESSION_MISMATCH",
+                    "Inspection was claimed by another node session", List.of());
+        }
         if (!Objects.equals(stored.attemptId, result.attemptId())) {
             throw new ValidationException("TASK_NOT_CLAIMED", "Inspection attempt does not match", List.of());
         }
