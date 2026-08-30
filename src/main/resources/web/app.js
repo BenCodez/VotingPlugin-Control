@@ -2649,10 +2649,14 @@ downloadNetworkDiagnostics.addEventListener('click', () => {
 runDriftCheck.addEventListener('click', async () => {
   const nodeIds = targets('config.files.v1');
   const selectedFile = driftFile.value;
+  const requestAuthenticationGeneration = authenticationGeneration;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds, configuration: {domain: 'file', fileName: selectedFile}
     }, driftResults);
+    if (requestAuthenticationGeneration !== authenticationGeneration) {
+      throw new Error('Authentication changed while the drift check ran. Run it again.');
+    }
     const rows = nodeIds.map(nodeId => {
       const result = operation.results[nodeId];
       return {nodeId, success: Boolean(result?.success), revision: result?.revision || null,

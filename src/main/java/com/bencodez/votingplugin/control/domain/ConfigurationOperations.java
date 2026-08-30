@@ -587,7 +587,12 @@ public final class ConfigurationOperations implements AutoCloseable {
                 .anyMatch(existing -> existing.configuration() != null)) {
             configuration = null;
         }
-        List<String> changes = retainChanges(result.changes());
+        List<String> changes = new ArrayList<>(retainChanges(result.changes()));
+        if ("APPLY".equals(operation.type) && ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                && "vote-logging".equals(operation.configuration.preset())) {
+            result.changes().stream().filter(change -> change.matches(".*VoteLogging\\.(Enabled|UseMainMySQL)\\b.*"))
+                    .forEach(change -> { if (!changes.contains(change)) changes.add(change); });
+        }
         return new ConfigurationTaskResult(result.sessionId(), result.success(), result.code(), retainMessage(result.message()),
                 result.revision(), configuration, changes, result.reloaded(), result.rolledBack(), result.attemptId());
     }
