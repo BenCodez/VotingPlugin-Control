@@ -137,7 +137,8 @@ operation identity/type/time, redacted domain selector (`fileName` or preset), r
 completion/success/code/revision/reload/rollback metadata. A completed result's backend session ID is also retained so the
 WebUI does not lose restart-required setup state when Control restarts. It deliberately excludes options/proposal values,
 file content, approval tokens, result messages/changes, credentials, and task attempt IDs.
-Journal reads reject unknown or duplicate JSON fields and trailing tokens rather than accepting ambiguous recovered state.
+Journal reads reject unknown or duplicate JSON fields, trailing tokens, completed nodes without a session ID, and
+incomplete nodes that claim one rather than accepting ambiguous recovered state.
 
 After a restart, journal entries are exposed as `recovered:true` history. Any node that had not completed is shown failed
 with `CONTROL_RESTARTED`; a recovered entry is never resumed or retried because its sensitive input, live session binding,

@@ -155,13 +155,13 @@ public final class ConfigurationOperationJournal {
                 throw new IOException("Configuration operation journal is invalid");
             }
             if (node.complete()) {
-                if (node.success() == null || node.code() == null
+                if (node.sessionId() == null || node.success() == null || node.code() == null
                         || !node.code().matches("[A-Z][A-Z0-9_]{0,63}")
                         || Boolean.TRUE.equals(node.success()) && node.revision() == null
                         || node.revision() != null && !node.revision().matches("[0-9a-f]{64}")) {
                     throw new IOException("Configuration operation journal is invalid");
                 }
-            } else if (node.success() != null || node.code() != null || node.revision() != null
+            } else if (node.sessionId() != null || node.success() != null || node.code() != null || node.revision() != null
                     || node.reloaded() || node.rolledBack()) {
                 throw new IOException("Configuration operation journal is invalid");
             }

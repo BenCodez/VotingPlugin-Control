@@ -80,6 +80,24 @@ class ConfigurationOperationJournalTest {
         }
     }
 
+    @Test void completedNodesRequireSessionsAndIncompleteNodesMustOmitThem() throws Exception {
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(
+                directory.resolve("invalid-node-sessions"), clock);
+        UUID session = UUID.randomUUID();
+        ConfigurationOperationJournal.NodeResult completed =
+                new ConfigurationOperationJournal.NodeResult("backend-a", session, true, true, "OK",
+                        "a".repeat(64), false, false);
+        ConfigurationOperationJournal.NodeResult incompleteWithSession =
+                new ConfigurationOperationJournal.NodeResult("backend-a", UUID.randomUUID(), false, null, null,
+                        null, false, false);
+
+        journal.save(List.of(journalEntry(completed)));
+        Path stored = directory.resolve("invalid-node-sessions/configuration-operations.json");
+        Files.writeString(stored, Files.readString(stored).replace('"' + session.toString() + '"', "null"));
+        assertThrows(IOException.class, journal::load);
+        assertThrows(IOException.class, () -> journal.save(List.of(journalEntry(incompleteWithSession))));
+    }
+
     @Test void restartClosesIncompleteWorkAndDoesNotReissueIt() throws Exception {
         InMemoryNodeRegistry registry = registry();
         Path auditDirectory = directory.resolve("audit");
@@ -193,5 +211,10 @@ class ConfigurationOperationJournalTest {
         registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
                 Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
         return registry;
+    }
+
+    private ConfigurationOperationJournal.Entry journalEntry(ConfigurationOperationJournal.NodeResult node) {
+        return new ConfigurationOperationJournal.Entry(UUID.randomUUID(), "APPLY", clock.instant(),
+                ManagedConfiguration.QUICK_SETUP, null, "vote-logging", null, List.of(node));
     }
 }

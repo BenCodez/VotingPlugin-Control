@@ -36,7 +36,8 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
 - `domain/ConfigurationOperationJournal` stores redacted operation history across restarts. It never stores proposal values,
   file contents, approval tokens, result messages/changes, credentials, or task attempts. Completed-result session IDs are
   retained only to preserve restart-required UI state; the operations list exposes that state separately from its rendered
-  history window. Recovered operations are history-only and cannot resume work.
+  history window. Completed nodes must have a session ID and incomplete nodes must omit it. Recovered operations are
+  history-only and cannot resume work.
   Quick-setup history uses an internal, non-serialized `redacted` marker, and proposal validation must reject that marker.
 - `domain/InspectionOperations` coordinates the separate, read-only `data.inspect.v1` lane.
 - `domain/ConfigurationSnapshots` stores bounded copies of the redacted content returned by completed managed-file reads.
