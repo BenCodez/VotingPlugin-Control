@@ -168,8 +168,22 @@ public final class ConfigurationOperations implements AutoCloseable {
                 .map(Map.Entry::getKey).toList();
         for (String backendId : backends) {
             String state = operation.states.get(backendId);
-            if ("COMPLETE".equals(state) || !"QUEUED".equals(state)) continue;
+            if ("COMPLETE".equals(state)) continue;
             NodeStatus backend = registry.find(backendId);
+            if ("IN_PROGRESS".equals(state)) {
+                Instant leased = operation.leasedAt.get(backendId);
+                if (leased != null && clock.instant().isBefore(leased.plus(LEASE))) continue;
+                if (backend != null && backend.online()
+                        && backend.acceptedCapabilities().contains(operation.configuration.capability())) {
+                    audit.append("TASK_REQUEUED", operation.id, backendId, "LEASE_EXPIRED");
+                    operation.states.put(backendId, "QUEUED");
+                    operation.leasedAt.remove(backendId);
+                    operation.attemptIds.remove(backendId);
+                    continue;
+                }
+            } else if (!"QUEUED".equals(state)) {
+                continue;
+            }
             if (backend != null && backend.online()
                     && backend.acceptedCapabilities().contains(operation.configuration.capability())) continue;
             audit.append("TASK_CANCELLED", operation.id, backendId, "CAPABILITY_LOST");
@@ -183,7 +197,20 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
         if (backends.stream().anyMatch(id -> !"COMPLETE".equals(operation.states.get(id)))) return true;
         if (backends.stream().noneMatch(id -> operation.results.get(id) == null
-                || !operation.results.get(id).success())) return false;
+                || !operation.results.get(id).success())) {
+            Set<String> expectedBackends = new HashSet<>(backends);
+            Set<String> currentBackends = new HashSet<>();
+            node.backends().forEach(backend -> currentBackends.add(backend.backendId()));
+            if (expectedBackends.equals(currentBackends)) return false;
+            audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "TOPOLOGY_CHANGED");
+            operation.results.put(node.nodeId(), boundedResult(operation, new ConfigurationTaskResult(sessionId(node),
+                    false, "DEPENDENCY_CHANGED", "Proxy topology changed after approval; preview again", null,
+                    (ManagedConfiguration) null, List.of(), false, false, null)));
+            operation.states.put(node.nodeId(), "COMPLETE");
+            operation.leasedAt.remove(node.nodeId());
+            operation.attemptIds.remove(node.nodeId());
+            return true;
+        }
         audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "BACKEND_APPLY_FAILED");
         operation.results.put(node.nodeId(), boundedResult(operation, new ConfigurationTaskResult(sessionId(node), false,
                 "DEPENDENCY_FAILED", "A backend failed the proxy method apply", null,
