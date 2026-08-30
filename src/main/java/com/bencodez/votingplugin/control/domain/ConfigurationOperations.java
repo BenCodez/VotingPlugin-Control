@@ -695,7 +695,8 @@ public final class ConfigurationOperations implements AutoCloseable {
             List<ConfigurationOperationJournal.NodeResult> nodes = new ArrayList<>();
             for (Map.Entry<String, String> node : operation.states.entrySet()) {
                 ConfigurationTaskResult result = operation.results.get(node.getKey());
-                boolean complete = "COMPLETE".equals(node.getValue()) && result != null;
+                boolean complete = "COMPLETE".equals(node.getValue()) && result != null
+                        && result.sessionId() != null;
                 nodes.add(new ConfigurationOperationJournal.NodeResult(node.getKey(),
                         complete ? result.sessionId() : null, complete,
                         complete ? result.success() : null, complete ? result.code() : null,

@@ -120,6 +120,15 @@ class ConfigurationOperationJournalTest {
             assertEquals("CONTROL_RESTARTED", recovered.results().get("backend-a").code());
             assertNull(restarted.claim("backend-a", registry.find("backend-a").sessionId()));
         }
+
+        try (ConfigurationOperations restartedAgain = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(auditDirectory, clock), clock,
+                new ConfigurationOperationJournal(journalDirectory, clock))) {
+            ConfigurationOperations.OperationView recovered = restartedAgain.get(operation);
+            assertTrue(recovered.recovered());
+            assertEquals("CONTROL_RESTARTED", recovered.results().get("backend-a").code());
+            assertNull(recovered.results().get("backend-a").sessionId());
+        }
     }
 
     @Test void completedHistorySurvivesRestartWithoutFileContentsOrMessages() throws Exception {
