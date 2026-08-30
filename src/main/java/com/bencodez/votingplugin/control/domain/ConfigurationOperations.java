@@ -202,12 +202,20 @@ public final class ConfigurationOperations implements AutoCloseable {
         if ("APPLY".equals(original.type)) {
             requested.forEach(nodeId -> revisions.put(nodeId, original.expectedRevisions.get(nodeId)));
         }
+        LinkedHashMap<UUID, StoredOperation> priorOperations = new LinkedHashMap<>(operations);
+        long priorChanges = retainedChangeBytes;
+        long priorMessages = retainedMessageBytes;
+        long priorFiles = retainedFileBytes;
         StoredOperation retry = store(original.type, targets, original.configuration, token, revisions, original.id);
         try {
             audit.append("OPERATION_RETRIED", retry.id, null, original.id.toString());
             persist();
         } catch (RuntimeException failure) {
-            operations.remove(retry.id);
+            operations.clear();
+            operations.putAll(priorOperations);
+            retainedChangeBytes = priorChanges;
+            retainedMessageBytes = priorMessages;
+            retainedFileBytes = priorFiles;
             throw failure;
         }
         return view(retry);
@@ -493,12 +501,20 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private OperationView create(String type, ValidatedTargets targets, ManagedConfiguration config, String token) {
+        LinkedHashMap<UUID, StoredOperation> priorOperations = new LinkedHashMap<>(operations);
+        long priorChanges = retainedChangeBytes;
+        long priorMessages = retainedMessageBytes;
+        long priorFiles = retainedFileBytes;
         StoredOperation operation = store(type, targets, config, token, Map.of(), null);
         try {
             audit.append("OPERATION_CREATED", operation.id, null, type);
             persist();
         } catch (RuntimeException e) {
-            operations.remove(operation.id);
+            operations.clear();
+            operations.putAll(priorOperations);
+            retainedChangeBytes = priorChanges;
+            retainedMessageBytes = priorMessages;
+            retainedFileBytes = priorFiles;
             throw e;
         }
         return view(operation);

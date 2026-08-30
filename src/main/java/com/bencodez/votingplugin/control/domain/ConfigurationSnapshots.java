@@ -94,8 +94,13 @@ public final class ConfigurationSnapshots {
 
     public synchronized List<SnapshotSummary> list() throws IOException {
         List<SnapshotSummary> result = new ArrayList<>();
+        Set<UUID> embeddedIds = new HashSet<>();
         for (Path file : files()) {
             Snapshot snapshot = read(file);
+            String expectedName = snapshot.snapshotId() + ".json";
+            if (!expectedName.equals(file.getFileName().toString()) || !embeddedIds.add(snapshot.snapshotId())) {
+                throw new IOException("Configuration snapshot identity is invalid");
+            }
             result.add(new SnapshotSummary(snapshot.snapshotId(), snapshot.name(), snapshot.createdAt(),
                     snapshot.sourceOperationId(), snapshot.documents().stream()
                     .map(document -> new SnapshotDocumentSummary(document.nodeId(), document.fileName(),
