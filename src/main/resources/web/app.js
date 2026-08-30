@@ -881,8 +881,20 @@ async function loadNodes() {
     previousPage.disabled = pageOffset === 0;
     nextPage.disabled = pageOffset + visibleNodeItems.length >= registry.items.length;
   } catch (error) {
-    nodes.replaceChildren();
-    nodes.classList.add('empty');
+    visibleNodeItems = [];
+    allNodeItems = [];
+    backendTopologyTruncated = false;
+    nodeIndex.clear();
+    nodeCapabilities.clear();
+    nodePlugins.clear();
+    selectedNodes.clear();
+    selectedServerId = '';
+    resetServerConfigurationForms('Network data is unavailable. Refresh before editing.');
+    text(quickOperationStatus, 'Network data is unavailable. Refresh before editing.');
+    renderServerPicker();
+    renderNodeViews();
+    updatePluginSuggestions();
+    updateConfigurationButtons();
     text(nodes, 'Network data is unavailable.');
     text(message, error.message || 'Control request failed.');
   } finally {
