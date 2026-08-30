@@ -615,6 +615,59 @@ class ConfigurationOperationsTest {
         assertEquals("DEPENDENCY_CHANGED", result.results().get("proxy-a").code());
     }
 
+    @Test void proxyMethodApplyRejectsAChangedTargetRole() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofMinutes(5));
+        ConfigurationTask backendApply = fixture.operations().claim("lobby", fixture.backendSession());
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+        fixture.operations().complete(fixture.applyId(), "lobby", new ConfigurationTaskResult(
+                fixture.backendSession(), true, "OK", "applied", "c".repeat(64), method, List.of(), false, false,
+                backendApply.attemptId()));
+        UUID replacementSession = UUID.randomUUID();
+        fixture.registry().register(new NodeRegistration("proxy-a", replacementSession, "Proxy A", "BUKKIT",
+                "test", 1, Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+
+        assertEquals(null, fixture.operations().claim("proxy-a", replacementSession));
+
+        ConfigurationOperations.OperationView result = fixture.operations().get(fixture.applyId());
+        assertEquals("COMPLETED_WITH_ERRORS", result.state());
+        assertEquals("TARGET_CHANGED", result.results().get("proxy-a").code());
+    }
+
+    @Test void overlappingProxyMethodAppliesAreSerialized() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-08-25T00:00:00Z"));
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(5));
+        UUID proxySession = UUID.randomUUID();
+        UUID backendSession = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY);
+        registry.register(new NodeRegistration("proxy-a", proxySession, "Proxy A", "VELOCITY", "test", 1,
+                capabilities, Set.of()));
+        registry.replacePresence("proxy-a", new PresenceSnapshot(proxySession, 1, 1,
+                List.of(new BackendServerIdentity("lobby", "Lobby", true, true, 0))));
+        registry.register(new NodeRegistration("lobby", backendSession, "Lobby", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+        ConfigurationOperations.OperationView firstPreview = operations.createPreview(
+                List.of("proxy-a", "lobby"), method);
+        ConfigurationOperations.OperationView secondPreview = operations.createPreview(
+                List.of("proxy-a", "lobby"), method);
+        firstPreview = completeProxyMethodPreview(operations, firstPreview, method, proxySession, backendSession,
+                "a", "b");
+        secondPreview = completeProxyMethodPreview(operations, secondPreview, method, proxySession, backendSession,
+                "c", "d");
+        UUID firstApply = operations.createApply(firstPreview.operationId(), firstPreview.approvalToken()).operationId();
+        ConfigurationTask backendApply = operations.claim("lobby", backendSession);
+        operations.complete(firstApply, "lobby", new ConfigurationTaskResult(backendSession, true, "OK", "applied",
+                "e".repeat(64), method, List.of(), false, false, backendApply.attemptId()));
+
+        ConfigurationOperations.OperationView approvedSecond = secondPreview;
+        assertEquals("OPERATION_CONFLICT", assertThrows(ValidationException.class,
+                () -> operations.createApply(approvedSecond.operationId(), approvedSecond.approvalToken())).code());
+    }
+
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
@@ -772,6 +825,18 @@ class ConfigurationOperationsTest {
         @Override public ZoneId getZone() { return ZoneOffset.UTC; }
         @Override public Clock withZone(ZoneId zone) { return this; }
         @Override public Instant instant() { return instant; }
+    }
+
+    private ConfigurationOperations.OperationView completeProxyMethodPreview(ConfigurationOperations operations,
+            ConfigurationOperations.OperationView preview, ManagedConfiguration method, UUID proxySession,
+            UUID backendSession, String proxyRevision, String backendRevision) {
+        ConfigurationTask proxyTask = operations.claim("proxy-a", proxySession);
+        ConfigurationTask backendTask = operations.claim("lobby", backendSession);
+        operations.complete(preview.operationId(), "proxy-a", new ConfigurationTaskResult(proxySession, true,
+                "OK", "valid", proxyRevision.repeat(64), method, List.of(), false, false, proxyTask.attemptId()));
+        return operations.complete(preview.operationId(), "lobby", new ConfigurationTaskResult(backendSession, true,
+                "OK", "valid", backendRevision.repeat(64), method, List.of(), false, false,
+                backendTask.attemptId()));
     }
 
     private ProxyMethodFixture proxyMethodApplyFixture(Duration offlineTimeout) throws Exception {

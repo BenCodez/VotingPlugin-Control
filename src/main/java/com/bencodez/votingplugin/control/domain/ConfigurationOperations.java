@@ -92,6 +92,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         ValidatedTargets targets = validateTargets(new ArrayList<>(preview.states.keySet()),
                 preview.configuration.capability());
         validateProxyMethodTargets(targets, preview.configuration);
+        rejectOverlappingProxyMethodApply(targets, preview.configuration);
         Map<String, String> revisions = new LinkedHashMap<>();
         preview.results.forEach((node, result) -> revisions.put(node, result.revision()));
         StoredOperation apply = store("APPLY", targets, preview.configuration,
@@ -126,6 +127,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             Instant leased = operation.leasedAt.get(nodeId);
             if ("QUEUED".equals(state) || ("IN_PROGRESS".equals(state) && leased != null
                     && !now.isBefore(leased.plus(LEASE)))) {
+                if (cancelChangedProxyMethodRole(operation, node)) continue;
                 if (deferProxyMethodApply(operation, node)) continue;
                 if (!node.online() || !node.acceptedCapabilities().contains(operation.configuration.capability())) {
                     audit.append("TASK_CANCELLED", operation.id, nodeId, "CAPABILITY_LOST");
@@ -162,7 +164,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (!"APPLY".equals(operation.type)
                 || !ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
                 || !ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset())
-                || "BUKKIT".equalsIgnoreCase(node.platform())) return false;
+                || "BUKKIT".equalsIgnoreCase(operation.targetPlatforms.get(node.nodeId()))) return false;
         List<String> backends = operation.targetPlatforms.entrySet().stream()
                 .filter(entry -> "BUKKIT".equalsIgnoreCase(entry.getValue()))
                 .map(Map.Entry::getKey).toList();
@@ -219,6 +221,37 @@ public final class ConfigurationOperations implements AutoCloseable {
         operation.leasedAt.remove(node.nodeId());
         operation.attemptIds.remove(node.nodeId());
         return true;
+    }
+
+    private boolean cancelChangedProxyMethodRole(StoredOperation operation, NodeStatus node) {
+        if (!"APPLY".equals(operation.type)
+                || !ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                || !ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset())) return false;
+        String expectedPlatform = operation.targetPlatforms.get(node.nodeId());
+        if (expectedPlatform == null || expectedPlatform.equalsIgnoreCase(node.platform())) return false;
+        audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "TARGET_ROLE_CHANGED");
+        operation.results.put(node.nodeId(), boundedResult(operation, new ConfigurationTaskResult(sessionId(node),
+                false, "TARGET_CHANGED", "Node platform changed after approval; preview again", null,
+                (ManagedConfiguration) null, List.of(), false, false, null)));
+        operation.states.put(node.nodeId(), "COMPLETE");
+        operation.leasedAt.remove(node.nodeId());
+        operation.attemptIds.remove(node.nodeId());
+        return true;
+    }
+
+    private void rejectOverlappingProxyMethodApply(ValidatedTargets targets, ManagedConfiguration configuration) {
+        if (!ManagedConfiguration.QUICK_SETUP.equals(configuration.domain())
+                || !ManagedConfiguration.PROXY_METHOD.equals(configuration.preset())) return;
+        Set<String> requested = new HashSet<>(targets.nodeIds());
+        boolean conflict = operations.values().stream().anyMatch(operation -> "APPLY".equals(operation.type)
+                && !operation.complete()
+                && ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                && ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset())
+                && operation.states.keySet().stream().anyMatch(requested::contains));
+        if (conflict) {
+            throw new ValidationException("OPERATION_CONFLICT",
+                    "Another proxy method apply is still running for this network", List.of());
+        }
     }
 
     private void validateProxyMethodTargets(ValidatedTargets targets, ManagedConfiguration configuration) {
