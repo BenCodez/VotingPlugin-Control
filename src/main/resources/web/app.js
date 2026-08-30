@@ -1528,6 +1528,16 @@ function discardAuthenticationState(reason) {
   configurationForm.reset();
   fileConfigurationForm.reset();
   quickSetupForm.reset();
+  rewardSimulationForm.reset();
+  playerLookupForm.reset();
+  voteLogForm.reset();
+  voteTraceForm.reset();
+  siteResolutionForm.reset();
+  rewardSiteLabel.hidden = false;
+  copyRewardToSetup.disabled = true;
+  voteLogFilter.disabled = true;
+  voteLogFilter.required = false;
+  voteLogFilter.placeholder = '';
   updateQuickFields();
   quickCommandSuggestions.replaceChildren();
   text(detectedPlugins, 'Authenticate to inspect detected plugins.');

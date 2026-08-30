@@ -14,12 +14,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /** Short-lived coordinator for typed read-only node inspections. */
 public final class InspectionOperations {
     public static final int MAX_DATA_BYTES = 512 * 1024;
     private static final int MAX_INSPECTIONS = 100;
     private static final int MAX_MESSAGE_BYTES = 4096;
+    private static final Pattern NODE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final Duration LEASE = Duration.ofMinutes(2);
     private static final Duration ACTIVE_RETENTION = Duration.ofMinutes(5);
     private static final Duration COMPLETE_RETENTION = Duration.ofMinutes(15);
@@ -42,6 +44,7 @@ public final class InspectionOperations {
     public synchronized InspectionView create(String nodeId, InspectionQuery query) {
         prune();
         if (query == null) throw invalid("inspection query is required");
+        if (nodeId == null || !NODE_ID.matcher(nodeId).matches()) throw invalid("nodeId is invalid");
         NodeStatus node = registry.find(nodeId);
         if (node == null) throw new ValidationException("NODE_NOT_FOUND", "Node was not found", List.of(nodeId));
         if (!node.online() || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)) {

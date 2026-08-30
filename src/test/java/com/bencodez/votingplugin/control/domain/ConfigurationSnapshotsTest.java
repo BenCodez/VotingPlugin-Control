@@ -17,6 +17,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -110,6 +111,24 @@ class ConfigurationSnapshotsTest {
         UUID evicted = first;
         assertEquals("SNAPSHOT_NOT_FOUND", assertThrows(ValidationException.class,
                 () -> snapshots.get(evicted)).code());
+    }
+
+    @Test void durableJsonRejectsUnknownDuplicateAndTrailingContent() throws Exception {
+        assertSnapshotJsonRejected("unknown", json -> json.substring(0, json.lastIndexOf('}'))
+                + ",\"unexpected\":true}");
+        assertSnapshotJsonRejected("duplicate", json -> "{\"name\":\"duplicate\"," + json.substring(1));
+        assertSnapshotJsonRejected("trailing", json -> json + "{}");
+    }
+
+    private void assertSnapshotJsonRejected(String directoryName, UnaryOperator<String> corrupt) throws Exception {
+        Path dataDirectory = directory.resolve(directoryName);
+        ConfigurationSnapshots snapshots = new ConfigurationSnapshots(dataDirectory, clock);
+        ConfigurationSnapshots.Snapshot created = snapshots.create("Strict JSON",
+                operation("READ", "SUCCEEDED", ManagedConfiguration.file("Config.yml", "Feature: true\n")));
+        Path stored = dataDirectory.resolve("configuration-snapshots").resolve(created.snapshotId() + ".json");
+        Files.writeString(stored, corrupt.apply(Files.readString(stored)));
+
+        assertThrows(java.io.IOException.class, () -> snapshots.get(created.snapshotId()));
     }
 
     private ConfigurationOperations.OperationView operation(String type, String state,

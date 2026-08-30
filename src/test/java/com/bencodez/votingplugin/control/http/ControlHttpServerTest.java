@@ -123,7 +123,13 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("text(fileOperationStatus, '');"));
         assertTrue(script.body().contains("text(quickOperationStatus, '');"));
         assertTrue(script.body().contains("configurationForm.reset();"));
-        assertTrue(script.body().contains("quickSetupForm.reset();\n  updateQuickFields();"));
+        assertTrue(script.body().contains("quickSetupForm.reset();"));
+        assertTrue(script.body().contains("rewardSimulationForm.reset();"));
+        assertTrue(script.body().contains("playerLookupForm.reset();"));
+        assertTrue(script.body().contains("voteLogForm.reset();"));
+        assertTrue(script.body().contains("voteTraceForm.reset();"));
+        assertTrue(script.body().contains("siteResolutionForm.reset();"));
+        assertTrue(script.body().contains("voteLogFilter.disabled = true;"));
         assertTrue(script.body().contains("quickCommandSuggestions.replaceChildren();"));
         assertTrue(script.body().contains("Sign out could not be confirmed"));
         assertTrue(script.body().contains("result.success && result.configuration"));
@@ -519,6 +525,9 @@ class ControlHttpServerTest {
         assertError(send("POST", "/api/v1/configuration/preview", "null", adminToken), 400, "VALIDATION_ERROR");
         assertError(send("POST", "/api/v1/configuration/apply", "null", adminToken), 400, "VALIDATION_ERROR");
         assertError(send("POST", "/api/v1/inspections", "null", adminToken), 400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/inspections",
+                "{\"query\":{\"kind\":\"overview\",\"filters\":{}}}", adminToken),
+                400, "VALIDATION_ERROR");
         assertError(send("POST", "/api/v1/snapshots", "null", adminToken), 400, "VALIDATION_ERROR");
         assertError(send("POST", "/api/v1/nodes/proxy-a/operations", "null", nodeToken), 400,
                 "VALIDATION_ERROR");

@@ -58,7 +58,7 @@ authenticated, CSRF-protected endpoint and node capability checks as an external
 | Vote-logging setup | Reads/previews/applies enabled state, retention, and main-connection choice | Never accepts credentials; dedicated connection details stay in the redacted editor |
 | Setup profiles | Stores up to 20 named guided-form profiles in browser `localStorage` | Browser-local, versioned, non-secret values only; no raw YAML or credentials; loading never applies |
 | Reward builder/simulator | Builds site/every-site/vote-party proposals with commands, player/broadcast messages, items, money, permissions, chance, and online-only behavior; simulates or previews/applies the exact proposal; can copy one command/message into simple Setup | Simulation has no side effects; persistence replaces only the selected Rewards subtree through normal preview/approval; editing invalidates approval |
-| Votes & Data | Shows overview, exact player lookup, vote-site health plus persisted unconfigured-service observations, a 30-day VoteLog summary, exact/bounded logged-event search, and correlation trace | Inspection-capable Bukkit node only; VoteLog reads require logging; results are cleared on logout; no player enumeration |
+| Votes & Data | Shows overview, exact player lookup, vote-site health plus persisted unconfigured-service observations, a 30-day VoteLog summary, exact/bounded logged-event search, and correlation trace | Inspection-capable Bukkit node only; VoteLog reads require logging; results and form inputs are cleared on logout; no player enumeration |
 | Safe service-site test | Dry-runs resolution, including optional disabled-site matching and whether auto-create would be considered | Sends no fake vote, creates no site, changes no total, and runs no reward |
 
 The Setup tab replaces the former “Quick Setup” framing but retains existing typed presets, VoteSites sync, detected-plugin
@@ -154,8 +154,8 @@ sensitive comment values contain `__VOTINGPLUGIN_CONTROL_REDACTED__` rather than
 A snapshot can contain at most 100 documents and 8 MiB of UTF-8 content. The store retains at most 100 snapshots and
 64 MiB of encoded files in aggregate; before creation it removes the oldest files by modification time until both the
 count and aggregate-byte bounds can fit the new snapshot. Files are validated, published atomically under
-`data/configuration-snapshots/<uuid>.json`, and rejected if they are symlinks, malformed, oversized, or contain an invalid
-managed document identity/revision.
+`data/configuration-snapshots/<uuid>.json`, and rejected if they are symlinks, malformed, oversized, contain unknown or
+duplicate JSON fields/trailing tokens, or contain an invalid managed document identity/revision.
 
 On POSIX-capable filesystems Control creates the snapshot directory owner-only and snapshot files owner read/write. POSIX
 modes are not available on every platform, so operators must protect the entire Control data directory and every backup
@@ -170,7 +170,8 @@ resolved against each target's current secret; a snapshot never recovers or over
 
 ### Request lifecycle
 
-An administrator starts exactly one node query:
+An administrator starts exactly one node query. `nodeId` is required and must match
+`[A-Za-z0-9][A-Za-z0-9._-]{0,63}` before Control performs a registry lookup:
 
 ```http
 POST /api/v1/inspections

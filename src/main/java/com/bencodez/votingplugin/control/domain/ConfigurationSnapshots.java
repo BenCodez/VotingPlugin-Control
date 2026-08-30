@@ -3,6 +3,8 @@ package com.bencodez.votingplugin.control.domain;
 import com.bencodez.votingplugin.control.DurableFiles;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
+import com.fasterxml.jackson.core.StreamReadFeature;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -31,7 +33,15 @@ public final class ConfigurationSnapshots {
     private static final long MAX_TOTAL_STORED_BYTES = 64L * 1024 * 1024;
     private final Path directory;
     private final Clock clock;
-    private final ObjectMapper json = new ObjectMapper().findAndRegisterModules();
+    private final ObjectMapper json = strictMapper();
+
+    private static ObjectMapper strictMapper() {
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
+                .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+        mapper.getFactory().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION.mappedFeature());
+        return mapper;
+    }
 
     public ConfigurationSnapshots(Path dataDirectory, Clock clock) throws IOException {
         this.directory = dataDirectory.resolve("configuration-snapshots").toAbsolutePath().normalize();

@@ -75,7 +75,8 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
 8. Browser writes require both an authenticated session and its CSRF token. API automation uses the separate admin bearer
    credential; node endpoints use a credential bound to the exact node ID.
 9. Treat all remote strings, collections, and bodies as hostile. Preserve limits, exact routes/methods, duplicate-field
-   rejection, symlink checks, atomic publication, and fail-closed durable-file validation.
+   rejection, required node-ID validation before registry lookup, symlink checks, atomic publication, and strict
+   fail-closed durable-file JSON validation (unknown/duplicate fields and trailing tokens are invalid).
 10. Keep the HTTP executor, password executor, operation stores, retained messages/content, topology, and inspection data
     bounded. Do not replace limits with unbounded queues, streams, maps, or full database scans.
 11. `reward-simulation` and `reward-builder` share one strict proposal schema, but only the latter can persist. Keep the
@@ -122,8 +123,8 @@ capability such as `data.inspect.v1`; do not bump the whole protocol for an opti
 - For inspection: prove the handler cannot write, enumerate users, accept SQL/commands/paths, or leak sensitive settings.
 - Add negative tests for wrong node/session/attempt, lease expiry, unknown fields/kinds, oversized input/result, and lost
   capability where relevant.
-- For WebUI changes, escape untrusted text through DOM text nodes, clear sensitive/cached state on logout, keep CSRF on
-  every write, and run `node --check`.
+- For WebUI changes, escape untrusted text through DOM text nodes, clear sensitive/cached state and form inputs on logout,
+  reset dependent control state, keep CSRF on every write, and run `node --check`.
 - Run the full Maven suite and inspect `git diff --check` before pushing.
 - Keep the PR scoped; never mix generated artifacts, credentials, runtime `data/`, or unrelated formatting changes.
 
