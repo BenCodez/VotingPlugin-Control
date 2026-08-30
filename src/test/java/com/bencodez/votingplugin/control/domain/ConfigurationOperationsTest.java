@@ -604,7 +604,7 @@ class ConfigurationOperationsTest {
         fixture.operations().complete(fixture.applyId(), "lobby", new ConfigurationTaskResult(
                 fixture.backendSession(), true, "OK", "applied", "c".repeat(64), method, List.of(), false, false,
                 backendApply.attemptId()));
-        fixture.registry().replacePresence("proxy-a", new PresenceSnapshot(fixture.proxySession(), 2, 2, List.of(
+        fixture.registry().replacePresence("proxy-a", new PresenceSnapshot(fixture.proxySession(), 1, 2, List.of(
                 new BackendServerIdentity("lobby", "Lobby", true, true, 0),
                 new BackendServerIdentity("new-backend", "New Backend", true, true, 0))));
 
