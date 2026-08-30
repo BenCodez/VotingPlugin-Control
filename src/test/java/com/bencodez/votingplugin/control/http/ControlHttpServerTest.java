@@ -105,7 +105,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
         assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));
-        assertTrue(script.body().contains("loadedQuickSetup = {nodeId, preset, selector}"));
+        assertTrue(script.body().contains("loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId"));
+        assertTrue(script.body().contains("previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId"));
+        assertTrue(script.body().contains("sessionId !== nodeIndex.get(nodeId)?.sessionId"));
+        assertTrue(script.body().contains("loadedQuickSetup = {nodeId, sessionId, preset, selector}"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
         assertTrue(script.body().contains("approvedPreview = null;\n      inputGeneration++;"));
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));

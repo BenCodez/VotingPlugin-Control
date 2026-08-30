@@ -854,6 +854,7 @@ function quickPresetNeedsRead() {
 
 function quickSetupValuesLoaded() {
   return loadedQuickSetup?.nodeId === selectedServerId
+    && loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId
     && loadedQuickSetup.preset === quickPreset.value
     && loadedQuickSetup.selector === JSON.stringify(quickReadOptions());
 }
@@ -1125,11 +1126,19 @@ async function loadNodes() {
   text(message, 'Loading…');
   try {
     const registry = await loadAllNodes();
+    const previousNodeIndex = nodeIndex;
     visibleNodeItems = registry.items.slice(pageOffset, pageOffset + PAGE_SIZE);
     allNodeItems = registry.items;
     backendTopologyTruncated = registry.truncated;
     backendTopologyTruncatedNodeIds = registry.truncatedNodeIds;
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
+    if (loadedQuickSetup?.nodeId === selectedServerId
+        && previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId) {
+      loadedQuickSetup = null;
+      approvedQuickPreview = null;
+      inputGeneration++;
+      text(quickOperationStatus, 'The selected server reconnected. Load its current values again before previewing changes.');
+    }
     const previousCapabilities = nodeCapabilities;
     nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
     nodePlugins = new Map(registry.items.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
@@ -1508,6 +1517,7 @@ readQuickSetup.addEventListener('click', async () => {
   loadedQuickSetup = null;
   const preset = quickPreset.value;
   const nodeId = selectedServerId;
+  const sessionId = nodeIndex.get(nodeId)?.sessionId;
   const selector = JSON.stringify(quickReadOptions());
   const generation = inputGeneration;
   try {
@@ -1519,12 +1529,13 @@ readQuickSetup.addEventListener('click', async () => {
       item.success && item.configuration?.preset === preset && item.configuration?.options);
     if (!result) throw new Error('The selected backend did not return guided settings. Update VotingPlugin on that node.');
     if (generation !== inputGeneration || preset !== quickPreset.value || nodeId !== selectedServerId
+        || sessionId !== nodeIndex.get(nodeId)?.sessionId
         || selector !== JSON.stringify(quickReadOptions())) {
       text(quickOperationStatus, 'The server or setup changed while reading. Load the current values again.');
       return;
     }
     populateQuickState(result.configuration.options);
-    loadedQuickSetup = {nodeId, preset, selector};
+    loadedQuickSetup = {nodeId, sessionId, preset, selector};
     inputGeneration++;
     const suffix = preset === 'vote-site' && result.configuration.options.exists === 'false'
       ? ' This site key does not exist yet; the form is ready to create it.'
