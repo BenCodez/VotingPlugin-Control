@@ -1599,7 +1599,9 @@ function proposal() {
 function rememberVoteLoggingRestart(operation) {
   if (operation.type !== 'APPLY' || operation.configuration?.preset !== 'vote-logging') return;
   Object.entries(operation.results || {}).forEach(([nodeId, result]) => {
-    if (result?.success) voteLoggingRestartPending.set(nodeId,
+    const runtimeChanged = Array.isArray(result?.changes) && result.changes.some(change =>
+      /VoteLogging\.(Enabled|UseMainMySQL)\b/.test(change));
+    if (result?.success && runtimeChanged) voteLoggingRestartPending.set(nodeId,
       result.sessionId || nodeIndex.get(nodeId)?.sessionId || 'unknown');
   });
 }

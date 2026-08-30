@@ -99,6 +99,10 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     public synchronized OperationView createApply(UUID previewId, String approvalToken) {
         prune();
+        LinkedHashMap<UUID, StoredOperation> priorOperations = new LinkedHashMap<>(operations);
+        long priorChanges = retainedChangeBytes;
+        long priorMessages = retainedMessageBytes;
+        long priorFiles = retainedFileBytes;
         StoredOperation preview = operations.get(previewId);
         if (preview == null || !"PREVIEW".equals(preview.type)) throw invalid("preview operation was not found");
         if (!preview.complete() || preview.results.values().stream().anyMatch(result -> !result.success())) {
@@ -117,6 +121,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         rejectOverlappingVoteLoggingApply(targets, preview.configuration);
         Map<String, String> revisions = new LinkedHashMap<>();
         preview.results.forEach((node, result) -> revisions.put(node, result.revision()));
+        boolean priorApprovalUsed = preview.approvalUsed;
         StoredOperation apply = store("APPLY", targets, preview.configuration,
                 null, revisions, preview.id);
         preview.approvalUsed = true;
@@ -124,8 +129,12 @@ public final class ConfigurationOperations implements AutoCloseable {
             audit.append("APPLY_APPROVED", apply.id, null, "QUEUED");
             persist();
         } catch (RuntimeException e) {
-            operations.remove(apply.id);
-            preview.approvalUsed = false;
+            operations.clear();
+            operations.putAll(priorOperations);
+            retainedChangeBytes = priorChanges;
+            retainedMessageBytes = priorMessages;
+            retainedFileBytes = priorFiles;
+            preview.approvalUsed = priorApprovalUsed;
             throw e;
         }
         return view(apply);
