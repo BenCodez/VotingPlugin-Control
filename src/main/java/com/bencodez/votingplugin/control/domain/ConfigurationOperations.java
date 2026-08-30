@@ -69,10 +69,11 @@ public final class ConfigurationOperations implements AutoCloseable {
     public synchronized OperationView createPreview(List<String> nodeIds, ManagedConfiguration configuration) {
         if (configuration == null) throw invalid("configuration is required");
         configuration.validateProposal();
-        validateProxyMethodTargets(nodeIds, configuration);
+        ValidatedTargets targets = validateTargets(nodeIds, configuration.capability());
+        validateProxyMethodTargets(targets, configuration);
         byte[] token = new byte[32];
         random.nextBytes(token);
-        return create("PREVIEW", validateTargets(nodeIds, configuration.capability()), configuration,
+        return create("PREVIEW", targets, configuration,
                 Base64.getUrlEncoder().withoutPadding().encodeToString(token));
     }
 
@@ -88,10 +89,12 @@ public final class ConfigurationOperations implements AutoCloseable {
                 approvalToken.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
             throw new ValidationException("APPROVAL_REQUIRED", "A valid unused preview approval is required", List.of());
         }
-        validateProxyMethodTargets(new ArrayList<>(preview.states.keySet()), preview.configuration);
+        ValidatedTargets targets = validateTargets(new ArrayList<>(preview.states.keySet()),
+                preview.configuration.capability());
+        validateProxyMethodTargets(targets, preview.configuration);
         Map<String, String> revisions = new LinkedHashMap<>();
         preview.results.forEach((node, result) -> revisions.put(node, result.revision()));
-        StoredOperation apply = store("APPLY", new ArrayList<>(preview.states.keySet()), preview.configuration,
+        StoredOperation apply = store("APPLY", targets, preview.configuration,
                 null, revisions, preview.id);
         preview.approvalUsed = true;
         try {
@@ -160,17 +163,18 @@ public final class ConfigurationOperations implements AutoCloseable {
                 || !ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
                 || !ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset())
                 || "BUKKIT".equalsIgnoreCase(node.platform())) return false;
-        List<String> backends = operation.states.keySet().stream().filter(id -> {
-            NodeStatus target = registry.find(id);
-            return target != null && "BUKKIT".equalsIgnoreCase(target.platform());
-        }).toList();
+        List<String> backends = operation.targetPlatforms.entrySet().stream()
+                .filter(entry -> "BUKKIT".equalsIgnoreCase(entry.getValue()))
+                .map(Map.Entry::getKey).toList();
         for (String backendId : backends) {
-            if ("COMPLETE".equals(operation.states.get(backendId))) continue;
+            String state = operation.states.get(backendId);
+            if ("COMPLETE".equals(state) || !"QUEUED".equals(state)) continue;
             NodeStatus backend = registry.find(backendId);
             if (backend != null && backend.online()
                     && backend.acceptedCapabilities().contains(operation.configuration.capability())) continue;
             audit.append("TASK_CANCELLED", operation.id, backendId, "CAPABILITY_LOST");
-            operation.results.put(backendId, boundedResult(operation, new ConfigurationTaskResult(sessionId(backend), false,
+            UUID backendSession = backend == null ? operation.targetSessions.get(backendId) : sessionId(backend);
+            operation.results.put(backendId, boundedResult(operation, new ConfigurationTaskResult(backendSession, false,
                     "CAPABILITY_LOST", "Backend became unavailable before proxy method apply", null,
                     (ManagedConfiguration) null, List.of(), false, false, null)));
             operation.states.put(backendId, "COMPLETE");
@@ -190,18 +194,19 @@ public final class ConfigurationOperations implements AutoCloseable {
         return true;
     }
 
-    private void validateProxyMethodTargets(List<String> nodeIds, ManagedConfiguration configuration) {
+    private void validateProxyMethodTargets(ValidatedTargets targets, ManagedConfiguration configuration) {
         if (!ManagedConfiguration.QUICK_SETUP.equals(configuration.domain())
                 || !ManagedConfiguration.PROXY_METHOD.equals(configuration.preset())) return;
-        List<NodeStatus> proxies = nodeIds.stream().map(registry::find).filter(Objects::nonNull)
-                .filter(node -> !"BUKKIT".equalsIgnoreCase(node.platform())).toList();
+        List<NodeStatus> proxies = targets.nodeIds().stream()
+                .filter(id -> !"BUKKIT".equalsIgnoreCase(targets.platforms().get(id)))
+                .map(registry::find).filter(Objects::nonNull).toList();
         if (proxies.size() != 1 || proxies.get(0).backends().isEmpty()) {
             throw invalid("proxy method requires one proxy and its reported backends");
         }
         java.util.Set<String> expected = new java.util.LinkedHashSet<>();
         expected.add(proxies.get(0).nodeId());
         proxies.get(0).backends().forEach(backend -> expected.add(backend.backendId()));
-        if (!expected.equals(new java.util.LinkedHashSet<>(nodeIds))) {
+        if (!expected.equals(new java.util.LinkedHashSet<>(targets.nodeIds()))) {
             throw invalid("proxy method targets must match the complete reported backend network");
         }
     }
@@ -239,7 +244,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         return view(operation);
     }
 
-    private OperationView create(String type, List<String> targets, ManagedConfiguration config, String token) {
+    private OperationView create(String type, ValidatedTargets targets, ManagedConfiguration config, String token) {
         StoredOperation operation = store(type, targets, config, token, Map.of(), null);
         try {
             audit.append("OPERATION_CREATED", operation.id, null, type);
@@ -250,7 +255,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         return view(operation);
     }
 
-    private StoredOperation store(String type, List<String> targets, ManagedConfiguration config,
+    private StoredOperation store(String type, ValidatedTargets targets, ManagedConfiguration config,
                                   String token, Map<String, String> revisions, UUID protectedOperation) {
         prune();
         ensureFileCapacity(config, protectedOperation);
@@ -258,9 +263,10 @@ public final class ConfigurationOperations implements AutoCloseable {
                 "Too many retained operations", List.of());
         UUID id = UUID.randomUUID();
         LinkedHashMap<String, String> states = new LinkedHashMap<>();
-        targets.forEach(node -> states.put(node, "QUEUED"));
+        targets.nodeIds().forEach(node -> states.put(node, "QUEUED"));
         StoredOperation result = new StoredOperation(id, type, config, token, clock.instant(), states,
-                new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(revisions));
+                new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(revisions),
+                new LinkedHashMap<>(targets.platforms()), new LinkedHashMap<>(targets.sessions()));
         operations.put(id, result);
         return result;
     }
@@ -373,10 +379,12 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (retainedMessageBytes < 0) retainedMessageBytes = 0;
     }
 
-    private List<String> validateTargets(List<String> nodeIds, String capability) {
+    private ValidatedTargets validateTargets(List<String> nodeIds, String capability) {
         if (nodeIds == null || nodeIds.isEmpty() || nodeIds.size() > 100) throw invalid("nodeIds must contain 1 to 100 entries");
         Set<String> unique = new HashSet<>();
         List<String> result = new ArrayList<>();
+        Map<String, String> platforms = new LinkedHashMap<>();
+        Map<String, UUID> sessions = new LinkedHashMap<>();
         for (String nodeId : nodeIds) {
             if (nodeId == null || !unique.add(nodeId)) throw invalid("nodeIds must be unique");
             NodeStatus node = registry.find(nodeId);
@@ -384,8 +392,10 @@ public final class ConfigurationOperations implements AutoCloseable {
                 throw new ValidationException("NODE_UNAVAILABLE", "Node cannot accept configuration operations", List.of(nodeId));
             }
             result.add(nodeId);
+            platforms.put(nodeId, node.platform());
+            sessions.put(nodeId, node.sessionId());
         }
-        return List.copyOf(result);
+        return new ValidatedTargets(List.copyOf(result), Map.copyOf(platforms), Map.copyOf(sessions));
     }
 
     private OperationView view(StoredOperation operation) {
@@ -444,6 +454,9 @@ public final class ConfigurationOperations implements AutoCloseable {
                                 ManagedConfiguration configuration, Map<String, String> nodeStates,
                                 Map<String, ConfigurationTaskResult> results, String approvalToken) { }
 
+    private record ValidatedTargets(List<String> nodeIds, Map<String, String> platforms,
+                                    Map<String, UUID> sessions) { }
+
     private static final class StoredOperation {
         private final UUID id;
         private final String type;
@@ -455,6 +468,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         private final LinkedHashMap<String, Instant> leasedAt;
         private final LinkedHashMap<String, UUID> attemptIds;
         private final LinkedHashMap<String, String> expectedRevisions;
+        private final LinkedHashMap<String, String> targetPlatforms;
+        private final LinkedHashMap<String, UUID> targetSessions;
         private boolean approvalUsed;
 
         private StoredOperation(UUID id, String type, ManagedConfiguration configuration, String approvalToken,
@@ -462,11 +477,15 @@ public final class ConfigurationOperations implements AutoCloseable {
                                 LinkedHashMap<String, ConfigurationTaskResult> results,
                                 LinkedHashMap<String, Instant> leasedAt,
                                 LinkedHashMap<String, UUID> attemptIds,
-                                LinkedHashMap<String, String> expectedRevisions) {
+                                LinkedHashMap<String, String> expectedRevisions,
+                                LinkedHashMap<String, String> targetPlatforms,
+                                LinkedHashMap<String, UUID> targetSessions) {
             this.id = id; this.type = type; this.configuration = configuration; this.approvalToken = approvalToken;
             this.createdAt = createdAt; this.states = states; this.results = results; this.leasedAt = leasedAt;
             this.attemptIds = attemptIds;
             this.expectedRevisions = expectedRevisions;
+            this.targetPlatforms = targetPlatforms;
+            this.targetSessions = targetSessions;
         }
         private boolean complete() { return states.values().stream().allMatch("COMPLETE"::equals); }
         private boolean fileOperation() {
