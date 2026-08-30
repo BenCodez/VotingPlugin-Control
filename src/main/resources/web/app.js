@@ -370,6 +370,7 @@ async function runInspection(kind, filters = {}, statusElement = null) {
   if (inspectionInFlight) throw new Error('Another read-only inspection is still running.');
   const nodeId = node.nodeId;
   const sessionId = node.sessionId;
+  const requestAuthenticationGeneration = authenticationGeneration;
   inspectionInFlight = true;
   updateExtendedButtons();
   if (statusElement) text(statusElement, `Queued ${kind} inspection…`);
@@ -393,7 +394,8 @@ async function runInspection(kind, filters = {}, statusElement = null) {
       await new Promise(resolve => window.setTimeout(resolve, 1000));
       inspection = await authorized(`/api/v1/inspections/${inspection.inspectionId}`);
     }
-    if (nodeId !== selectedServerId || sessionId !== nodeIndex.get(nodeId)?.sessionId) {
+    if (requestAuthenticationGeneration !== authenticationGeneration
+        || nodeId !== selectedServerId || sessionId !== nodeIndex.get(nodeId)?.sessionId) {
       throw new Error('The selected server changed or reconnected while the inspection ran. Run it again.');
     }
     if (inspection.state !== 'SUCCEEDED' || !inspection.result?.success) {

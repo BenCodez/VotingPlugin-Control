@@ -21,8 +21,9 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
+import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
 /** Durable, bounded copies of redacted managed-file reads for comparison and approved restore. */
 public final class ConfigurationSnapshots {
@@ -278,10 +279,12 @@ public final class ConfigurationSnapshots {
             }
             validateName(snapshot.name());
             int bytes = 0;
+            Set<String> nodeIds = new HashSet<>();
             for (SnapshotDocument document : snapshot.documents()) {
                 if (document.nodeId() == null || !document.nodeId().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
                         || document.fileName() == null || document.content() == null || document.revision() == null
                         || !document.revision().matches("[0-9a-f]{64}")) throw new IllegalArgumentException();
+                if (!nodeIds.add(document.nodeId())) throw new IllegalArgumentException();
                 new ManagedConfiguration(ManagedConfiguration.FILE, null, List.of(), document.fileName(),
                         document.content(), null, Map.of());
                 bytes += document.content().getBytes(StandardCharsets.UTF_8).length;
