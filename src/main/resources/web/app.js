@@ -134,6 +134,7 @@ let transportTestProxyId = '';
 let transportTestBackendId = '';
 let proxyMethodProxyId = '';
 let proxyMethodCurrentFor = '';
+let proxyMethodCurrentSessionId = '';
 let proxyMethodCurrentValue = '';
 let nodeCapabilities = new Map();
 let nodePlugins = new Map();
@@ -202,6 +203,7 @@ function applyAuthenticatedSession(body) {
   transportTestBackendId = '';
   proxyMethodProxyId = '';
   proxyMethodCurrentFor = '';
+  proxyMethodCurrentSessionId = '';
   proxyMethodCurrentValue = '';
   configurationContent.value = '';
   inputGeneration++;
@@ -694,11 +696,13 @@ function renderProxyMethod() {
     return option;
   }));
   proxyMethodProxy.value = proxyMethodProxyId;
-  if (proxyMethodCurrentFor !== proxyMethodProxyId) {
+  const network = proxyMethodNetwork();
+  if (proxyMethodCurrentFor !== proxyMethodProxyId
+      || proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')) {
     proxyMethodCurrentFor = '';
+    proxyMethodCurrentSessionId = '';
     proxyMethodCurrentValue = '';
   }
-  const network = proxyMethodNetwork();
   const ready = network.proxyReady && network.topologyComplete && network.reported.length > 0 &&
     network.nodeIds.length <= MAX_OPERATION_TARGETS && network.unavailable.length === 0;
   const description = !network.proxyReady ? 'Waiting for a connected, capable proxy'
@@ -934,6 +938,7 @@ function discardAuthenticationState(reason) {
   transportTestBackendId = '';
   proxyMethodProxyId = '';
   proxyMethodCurrentFor = '';
+  proxyMethodCurrentSessionId = '';
   proxyMethodCurrentValue = '';
   selectedServerId = '';
   visibleNodeItems = [];
@@ -1650,6 +1655,7 @@ runTransportTest.addEventListener('click', async () => {
 
 readProxyMethod.addEventListener('click', async () => {
   const proxyId = proxyMethodProxyId;
+  const sessionId = proxyMethodNetwork().proxy?.sessionId;
   if (!proxyId) return;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
@@ -1659,8 +1665,9 @@ readProxyMethod.addEventListener('click', async () => {
     const result = operation.results[proxyId];
     const method = result?.success ? result.configuration?.options?.method : '';
     if (!method) throw new Error('The proxy did not return its active communication method.');
-    if (proxyId !== proxyMethodProxyId) return;
+    if (proxyId !== proxyMethodProxyId || sessionId !== proxyMethodNetwork().proxy?.sessionId) return;
     proxyMethodCurrentFor = proxyId;
+    proxyMethodCurrentSessionId = sessionId;
     proxyMethodCurrentValue = method;
     renderProxyMethod();
     text(proxyMethodStatus, `Active method on ${proxyId}: ${method}`);
@@ -1670,6 +1677,7 @@ readProxyMethod.addEventListener('click', async () => {
 proxyMethodProxy.addEventListener('change', () => {
   proxyMethodProxyId = proxyMethodProxy.value;
   proxyMethodCurrentFor = '';
+  proxyMethodCurrentSessionId = '';
   proxyMethodCurrentValue = '';
   renderProxyMethod();
   const network = proxyMethodNetwork();
@@ -1698,6 +1706,7 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
     const refreshedNetwork = proxyMethodNetworkFor(refreshedRegistry.items, refreshedRegistry.truncatedNodeIds,
       proxyMethodProxyId);
     if (proxyMethodProxyId !== network.proxy.nodeId ||
+        refreshedNetwork.proxy?.sessionId !== network.proxy.sessionId ||
         proxyMethodNetworkSignature(refreshedNetwork) !== proxyMethodNetworkSignature(network) ||
         refreshedNetwork.nodeIds.length > MAX_OPERATION_TARGETS) {
       text(proxyMethodStatus, 'The complete proxy topology changed while preflighting. Refresh and choose the method again.');
@@ -1708,6 +1717,7 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
     }, proxyMethodStatus);
     if (applied.state === 'SUCCEEDED') {
       proxyMethodCurrentFor = network.proxy.nodeId;
+      proxyMethodCurrentSessionId = network.proxy.sessionId;
       proxyMethodCurrentValue = method;
       renderProxyMethod();
     }

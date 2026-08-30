@@ -93,6 +93,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("return allNodeItems.filter(node => isProxy(node)"));
         assertTrue(script.body().contains("MAX_OPERATION_TARGETS = 100"));
         assertTrue(script.body().contains("proxyMethodNetworkSignature(refreshedNetwork)"));
+        assertTrue(script.body().contains("proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')"));
+        assertTrue(script.body().contains("sessionId !== proxyMethodNetwork().proxy?.sessionId"));
+        assertTrue(script.body().contains("refreshedNetwork.proxy?.sessionId !== network.proxy.sessionId"));
         assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
