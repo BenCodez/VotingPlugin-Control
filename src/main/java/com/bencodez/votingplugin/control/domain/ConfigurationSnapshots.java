@@ -219,9 +219,11 @@ public final class ConfigurationSnapshots {
 
     private List<Path> files() throws IOException {
         try (var paths = Files.list(directory)) {
-            return paths.filter(path -> path.getFileName().toString().matches("[0-9a-f-]{36}\\.json"))
+            List<Path> result = paths.filter(path -> path.getFileName().toString().matches("[0-9a-f-]{36}\\.json"))
                     .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path))
-                    .limit(MAX_SNAPSHOTS + 1L).toList();
+                    .toList();
+            if (result.size() > MAX_SNAPSHOTS) throw new IOException("Configuration snapshot retention is invalid");
+            return result;
         }
     }
 

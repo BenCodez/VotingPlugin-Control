@@ -280,7 +280,9 @@ function inspectionCapableNode() {
 }
 
 function boundedLines(value, maximum = 20) {
-  return value.split(/\r?\n/).map(item => item.trim()).filter(Boolean).slice(0, maximum);
+  const lines = value.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+  if (lines.length > maximum) throw new Error(`At most ${maximum} reward lines are allowed.`);
+  return lines;
 }
 
 function pruneFileReadCache() {
