@@ -1818,6 +1818,14 @@ async function loadNodes() {
       configurationContentPresent = false;
       approvedFilePreview = null;
       inputGeneration++;
+      autoSitesEnabled.checked = false;
+      voteLoggingEnabled.checked = false;
+      voteLoggingDays.value = '30';
+      voteLoggingMainMysql.checked = true;
+      text(autoSitesState, 'Not loaded');
+      text(voteLoggingState, 'Not loaded');
+      autoSitesState.className = 'pill neutral';
+      voteLoggingState.className = 'pill neutral';
       text(dataOverview, 'A selected server reconnected. Refresh the overview.');
       text(networkDoctorResults, 'A selected server reconnected. Run Network Doctor again.');
       text(playerResult, 'A selected server reconnected. Run the lookup again.');
