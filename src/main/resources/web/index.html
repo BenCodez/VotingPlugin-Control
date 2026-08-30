@@ -158,6 +158,10 @@
             <button type="button" data-proxy-method="MYSQL">MySQL</button>
             <button type="button" data-proxy-method="SOCKETS">Sockets</button>
           </div>
+          <div class="operation-actions">
+            <button id="read-proxy-method" class="secondary" type="button" disabled>Refresh active method</button>
+            <span class="pill neutral" id="proxy-method-current">Active method unknown</span>
+          </div>
           <pre id="proxy-method-status" aria-live="polite">Choose a proxy. All of its reported backends must be online and method-capable.</pre>
         </section>
         <section class="card" id="transport-test-card">
@@ -181,30 +185,6 @@
             <button id="run-transport-test" type="button" disabled>Test communication</button>
           </div>
           <pre id="transport-test-status" aria-live="polite">Choose a proxy and one of its configured backends.</pre>
-        </section>
-        <section class="card sync-card" id="vote-sites-sync-card">
-          <div class="section-title">
-            <div>
-              <p class="eyebrow">Network action</p>
-              <h3>Sync VoteSites</h3>
-              <p>Copy site definitions from one backend. Target-only sites and every reward-named section are preserved.</p>
-            </div>
-            <span class="pill neutral" id="vote-sites-sync-capability">Waiting for capable backends</span>
-          </div>
-          <div class="sync-grid">
-            <label for="vote-sites-source">Source backend
-              <select id="vote-sites-source"><option value="">Choose a source</option></select>
-            </label>
-            <fieldset>
-              <legend>Target backends</legend>
-              <div id="vote-sites-targets" class="target-list">No sync-capable backends loaded.</div>
-            </fieldset>
-          </div>
-          <div class="operation-actions">
-            <button id="preview-vote-sites-sync" type="button" disabled>Read source and preview</button>
-            <button id="apply-vote-sites-sync" type="button" disabled>Approve and sync</button>
-          </div>
-          <pre id="vote-sites-sync-status" aria-live="polite">Choose a source and at least one target. Rewards are never copied or removed.</pre>
         </section>
         <section class="card" id="configuration-card">
           <div class="section-title">
@@ -306,27 +286,66 @@
           <form id="quick-setup-form">
             <label for="quick-preset">Preset</label>
             <select id="quick-preset">
-              <option value="standalone">Standalone backend</option>
-              <option value="proxy-backend">Proxy-connected backend</option>
-              <option value="vote-site">Add or update vote site</option>
-              <option value="easy-reward">Easy vote reward</option>
-              <option value="common-settings">Common settings</option>
-              <option value="vote-party">Vote party</option>
+              <optgroup label="Server connection">
+                <option value="standalone">Make this a standalone backend</option>
+                <option value="proxy-backend">Connect this backend to a proxy</option>
+              </optgroup>
+              <optgroup label="Vote sites">
+                <option value="vote-site">Add or update one vote site</option>
+                <option value="sync-vote-sites">Sync site definitions across backends</option>
+              </optgroup>
+              <optgroup label="Rewards">
+                <option value="easy-reward">Add a simple vote reward</option>
+                <option value="vote-party">Configure vote party</option>
+              </optgroup>
+              <optgroup label="Server behavior">
+                <option value="common-settings">Common settings</option>
+              </optgroup>
             </select>
             <p id="detected-plugins">Choose Bukkit nodes to see detected plugins and command suggestions.</p>
             <div class="form-grid quick-fields" data-presets="proxy-backend vote-site easy-reward">
               <label>Server / site key<input id="quick-name" maxlength="64" placeholder="lobby"></label>
             </div>
+            <div class="form-grid quick-fields" data-presets="proxy-backend">
+              <label>Communication method<select id="quick-method">
+                <option value="PLUGINMESSAGING">Plugin messaging</option>
+                <option value="REDIS">Redis</option>
+                <option value="MQTT">MQTT</option>
+                <option value="MYSQL">MySQL</option>
+                <option value="SOCKETS">Sockets</option>
+              </select></label>
+            </div>
             <div class="form-grid quick-fields" data-presets="vote-site">
+              <label>Display name<input id="quick-site-display-name" maxlength="200" placeholder="Planet Minecraft"></label>
               <label>Service site<input id="quick-service" maxlength="200" placeholder="PlanetMinecraft.com"></label>
               <label>Vote URL<input id="quick-url" maxlength="500" placeholder="https://example.com/vote"></label>
               <label>Vote delay<input id="quick-delay" maxlength="20" value="24h"></label>
+              <label>Priority<input id="quick-site-priority" type="number" min="0" max="100" value="5"></label>
+              <label>Display material<input id="quick-site-material" maxlength="100" value="DIAMOND"></label>
+              <label class="check-row"><input id="quick-site-enabled" type="checkbox" checked> Site enabled</label>
+              <label class="check-row"><input id="quick-site-hidden" type="checkbox"> Hide site from players</label>
             </div>
+            <fieldset class="quick-fields sync-card" data-presets="sync-vote-sites">
+              <legend>VoteSites synchronization</legend>
+              <p>Copy site definitions from one backend to the selected targets. Target-only sites and every reward section stay local.</p>
+              <span class="pill neutral" id="vote-sites-sync-capability">Waiting for capable backends</span>
+              <div class="sync-grid">
+                <label for="vote-sites-source">Source backend
+                  <select id="vote-sites-source"><option value="">Choose a source</option></select>
+                </label>
+                <fieldset>
+                  <legend>Target backends</legend>
+                  <div id="vote-sites-targets" class="target-list">No sync-capable backends loaded.</div>
+                </fieldset>
+              </div>
+              <p><strong>Never synchronized:</strong> rewards, reward files, credentials, and target-only sites.</p>
+            </fieldset>
             <div class="form-grid quick-fields" data-presets="easy-reward">
               <label>Reward scope<select id="quick-reward-scope"><option value="site">One vote site</option><option value="every-site">Every site</option></select></label>
               <label>Console command<input id="quick-command" maxlength="500" list="quick-command-suggestions" placeholder="give %player% diamond 1"></label>
               <datalist id="quick-command-suggestions"></datalist>
               <label>Player message<input id="quick-message" maxlength="500" value="&aThanks for voting!"></label>
+              <p>Existing rewards are preserved. The command is appended once; the message is only added when no player message exists.</p>
             </div>
             <fieldset class="quick-fields" data-presets="common-settings">
               <legend>Common settings</legend>
@@ -343,8 +362,10 @@
               <label>Broadcast<input id="quick-party-broadcast" maxlength="500" value="&aVote party reached!"></label>
               <label class="check-row"><input id="quick-party-all" type="checkbox"> Reward all players</label>
               <label class="check-row"><input id="quick-party-online" type="checkbox" checked> Online players only</label>
+              <p>Existing reward sections and commands are preserved. A new command is appended once.</p>
             </div>
             <div class="operation-actions">
+              <button id="read-quick-setup" class="secondary" type="button" disabled>Load current values</button>
               <button id="preview-quick-setup" type="button" disabled>Preview setup</button>
               <button id="apply-quick-setup" type="button" disabled>Approve and apply</button>
             </div>

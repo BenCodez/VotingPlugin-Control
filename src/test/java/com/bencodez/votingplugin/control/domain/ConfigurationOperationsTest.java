@@ -63,6 +63,28 @@ class ConfigurationOperationsTest {
         assertEquals(apply.operationId(), applyTask.operationId());
     }
 
+    @Test void quickSetupReadMayReturnInstalledValuesThatDifferFromItsSelector() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("lobby", session, "Lobby", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "common-settings", Map.of());
+
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("lobby"), selector);
+        ConfigurationTask task = operations.claim("lobby", session);
+        ManagedConfiguration installed = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "common-settings", Map.of("processRewards", "false"));
+        read = operations.complete(read.operationId(), "lobby", new ConfigurationTaskResult(session, true, "OK",
+                "Current values", "a".repeat(64), installed, List.of(), false, false, task.attemptId()));
+
+        assertEquals("SUCCEEDED", read.state());
+        assertEquals("false", read.results().get("lobby").configuration().options().get("processRewards"));
+    }
+
     @Test void auditChainSurvivesRestartAndTamperingFailsClosed() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         ConfigurationAuditLog first = new ConfigurationAuditLog(directory, clock);

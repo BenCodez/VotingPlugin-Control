@@ -65,8 +65,9 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("id=\"server-picker\""));
         assertTrue(web.body().contains("Full YAML"));
         assertTrue(web.body().contains("Comment support unknown"));
-        assertTrue(web.body().contains("Sync VoteSites"));
-        assertTrue(web.body().contains("Rewards are never copied or removed"));
+        assertTrue(web.body().contains("Sync site definitions across backends"));
+        assertTrue(web.body().contains("Target-only sites and every reward section stay local"));
+        assertTrue(web.body().contains("Load current values"));
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
@@ -92,7 +93,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("return allNodeItems.filter(node => isProxy(node)"));
         assertTrue(script.body().contains("MAX_OPERATION_TARGETS = 100"));
         assertTrue(script.body().contains("proxyMethodNetworkSignature(refreshedNetwork)"));
-        assertTrue(web.body().contains("Easy vote reward"));
+        assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
         assertTrue(script.body().contains("setupForm.addEventListener"));
