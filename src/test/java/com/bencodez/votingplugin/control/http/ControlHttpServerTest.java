@@ -116,7 +116,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(
                 "configurationContent.value = document.content;\n          configurationContentPresent = true;"));
         assertTrue(script.body().contains(
-                "configurationContent.value = '';\n      configurationContentPresent = false;\n      approvedFilePreview = null;"));
+                "resetServerContextValues('A selected server reconnected. Load current values before continuing.');"));
         assertTrue(script.body().contains(
                 "configurationContent.addEventListener('input', () => {\n  configurationContentPresent = true;"));
         assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));

@@ -1825,32 +1825,7 @@ async function loadNodes() {
     const selectedSessionChanged = primarySessionChanged || [...selectedNodes].some(node => previousNodeIndex.get(node)?.sessionId
       && previousNodeIndex.get(node)?.sessionId !== nodeIndex.get(node)?.sessionId);
     if (selectedSessionChanged) {
-      dedicatedSetupApprovals.clear();
-      lastOverview = null;
-      lastDiagnostics = null;
-      lastFileReadOperation = null;
-      fileReadCache.clear();
-      configurationContent.value = '';
-      configurationContentPresent = false;
-      approvedFilePreview = null;
-      inputGeneration++;
-      resetDedicatedSetupValues();
-      text(dataOverview, 'A selected server reconnected. Refresh the overview.');
-      text(networkDoctorResults, 'A selected server reconnected. Run Network Doctor again.');
-      text(playerResult, 'A selected server reconnected. Run the lookup again.');
-      text(siteHealthResult, 'A selected server reconnected. Load health again.');
-      text(voteLogSummaryResult, 'A selected server reconnected. Load the summary again.');
-      text(voteLogResult, 'A selected server reconnected. Run the search again.');
-      text(voteTraceResult, 'A selected server reconnected. Trace the vote again.');
-      text(siteResolutionResult, 'A selected server reconnected. Test the service again.');
-      text(rewardSimulationResult, 'A selected server reconnected. Simulate or preview the reward again.');
-    }
-    if (loadedQuickSetup?.nodeId === selectedServerId
-        && previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId) {
-      loadedQuickSetup = null;
-      approvedQuickPreview = null;
-      inputGeneration++;
-      text(quickOperationStatus, 'The selected server reconnected. Load its current values again before previewing changes.');
+      resetServerContextValues('A selected server reconnected. Load current values before continuing.');
     }
     const previousCapabilities = nodeCapabilities;
     nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
