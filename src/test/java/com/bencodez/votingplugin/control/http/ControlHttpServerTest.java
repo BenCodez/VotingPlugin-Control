@@ -72,6 +72,8 @@ class ControlHttpServerTest {
         assertEquals(200, script.statusCode());
         assertTrue(script.body().contains("offset=${pageOffset}&limit=${PAGE_SIZE}"));
         assertTrue(script.body().contains("async function loadAllNodes()"));
+        assertTrue(script.body().contains("MAX_REGISTRY_SCAN_ATTEMPTS"));
+        assertTrue(script.body().contains("&revision=${revision}"));
         assertTrue(script.body().contains("enrollmentIds.has(backend.backendId)"));
         assertTrue(script.body().contains("Control enrollment unavailable"));
         assertTrue(script.body().contains("Comments preserved for every target"));
@@ -186,6 +188,23 @@ class ControlHttpServerTest {
         assertEquals("lobby", listed.at("/items/0/backends/0/backendId").asText());
         assertTrue(listed.at("/items/0/detectedPlugins").toString().contains("LuckPerms"));
         assertTrue(listed.at("/items/0/online").asBoolean());
+        assertEquals(1, listed.get("total").asInt());
+        assertTrue(listed.has("registryRevision"));
+    }
+
+    @Test void nodePaginationRejectsAStaleRegistryRevision() throws Exception {
+        assertEquals(201, send("POST", "/api/v1/nodes/register", registration(), nodeToken).statusCode());
+        JsonNode first = json.readTree(get("/api/v1/nodes?offset=0&limit=1", adminToken).body());
+        long revision = first.get("registryRevision").asLong();
+
+        String secondToken = credentials.rotateNode("proxy-b");
+        String secondRegistration = registration()
+                .replace("proxy-a", "proxy-b")
+                .replace(SESSION, "00000000-0000-0000-0000-000000000002");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", secondRegistration, secondToken).statusCode());
+
+        assertError(get("/api/v1/nodes?offset=1&limit=1&revision=" + revision, adminToken),
+                409, "REGISTRY_CHANGED");
     }
 
     @Test void configurationPreviewApprovalAndRevisionCheckedApplyAreEndToEnd() throws Exception {
