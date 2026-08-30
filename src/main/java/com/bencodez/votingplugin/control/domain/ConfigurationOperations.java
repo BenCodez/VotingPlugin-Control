@@ -27,6 +27,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     public static final String CAPABILITY = "config.proxy-routing.v1";
     public static final String FILE_CAPABILITY = "config.files.v1";
     public static final String QUICK_SETUP_CAPABILITY = "config.quick-setup.v1";
+    public static final String VOTE_SITES_SYNC_CAPABILITY = "config.vote-sites-sync.v1";
     private static final int MAX_OPERATIONS = 1000;
     private static final int MAX_FILE_OPERATIONS = 16;
     static final int MAX_RETAINED_CHANGE_BYTES = 256 * 1024;
@@ -64,6 +65,7 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     public synchronized OperationView createPreview(List<String> nodeIds, ManagedConfiguration configuration) {
         if (configuration == null) throw invalid("configuration is required");
+        configuration.validateProposal();
         byte[] token = new byte[32];
         random.nextBytes(token);
         return create("PREVIEW", validateTargets(nodeIds, configuration.capability()), configuration,
@@ -207,7 +209,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private void ensureFileCapacity(ManagedConfiguration config, UUID protectedOperation) {
-        if (config == null || !ManagedConfiguration.FILE.equals(config.domain())) return;
+        if (config == null || !largeContentOperation(config)) return;
         long retained = operations.values().stream().filter(StoredOperation::fileOperation).count();
         Iterator<Map.Entry<UUID, StoredOperation>> iterator = operations.entrySet().iterator();
         while (retained >= MAX_FILE_OPERATIONS && iterator.hasNext()) {
@@ -224,9 +226,16 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
     }
 
+    private static boolean largeContentOperation(ManagedConfiguration config) {
+        return ManagedConfiguration.FILE.equals(config.domain()) ||
+                ManagedConfiguration.VOTE_SITES_SYNC.equals(config.preset());
+    }
+
     private ConfigurationTaskResult boundedResult(StoredOperation operation, ConfigurationTaskResult result) {
         ManagedConfiguration configuration = result.success() ? result.configuration() : null;
-        if (configuration != null && ManagedConfiguration.FILE.equals(configuration.domain())) {
+        if (configuration != null && ManagedConfiguration.VOTE_SITES_SYNC.equals(configuration.preset())) {
+            configuration = configuration.publicView();
+        } else if (configuration != null && ManagedConfiguration.FILE.equals(configuration.domain())) {
             boolean keepContent = result.success() && "READ".equals(operation.type)
                     && operation.results.values().stream().filter(ConfigurationTaskResult::success)
                     .map(ConfigurationTaskResult::configuration).filter(Objects::nonNull)
@@ -404,7 +413,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
         private boolean complete() { return states.values().stream().allMatch("COMPLETE"::equals); }
         private boolean fileOperation() {
-            return configuration != null && ManagedConfiguration.FILE.equals(configuration.domain());
+            return configuration != null && largeContentOperation(configuration);
         }
     }
 }

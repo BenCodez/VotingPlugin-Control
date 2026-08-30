@@ -77,6 +77,12 @@ const quickPartyOnline = document.querySelector('#quick-party-online');
 const previewQuickSetup = document.querySelector('#preview-quick-setup');
 const applyQuickSetup = document.querySelector('#apply-quick-setup');
 const quickOperationStatus = document.querySelector('#quick-operation-status');
+const voteSitesSource = document.querySelector('#vote-sites-source');
+const voteSitesTargets = document.querySelector('#vote-sites-targets');
+const voteSitesSyncCapability = document.querySelector('#vote-sites-sync-capability');
+const previewVoteSitesSync = document.querySelector('#preview-vote-sites-sync');
+const applyVoteSitesSync = document.querySelector('#apply-vote-sites-sync');
+const voteSitesSyncStatus = document.querySelector('#vote-sites-sync-status');
 const enrollmentCard = document.querySelector('#enrollment-card');
 const enrollmentForm = document.querySelector('#enrollment-form');
 const enrollmentSubmit = enrollmentForm.querySelector('button[type="submit"]');
@@ -87,6 +93,7 @@ const enrollmentMessage = document.querySelector('#enrollment-message');
 const refreshEnrollments = document.querySelector('#refresh-enrollments');
 const PAGE_SIZE = 100;
 const MAX_CONFIGURATION_TARGETS = 100;
+const MAX_SYNC_TARGETS = 100;
 const MAX_REGISTRY_SCAN_ATTEMPTS = 3;
 let authenticated = false;
 let csrfToken = '';
@@ -102,6 +109,10 @@ let backendTopologyTruncated = false;
 let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
+let approvedVoteSitesPreview = null;
+let voteSitesSourceId = '';
+let voteSitesTargetIds = new Set();
+let voteSitesTargetsInitialized = false;
 let nodeCapabilities = new Map();
 let nodePlugins = new Map();
 let inputGeneration = 0;
@@ -159,7 +170,11 @@ function applyAuthenticatedSession(body) {
   approvedPreview = null;
   approvedFilePreview = null;
   approvedQuickPreview = null;
+  approvedVoteSitesPreview = null;
   selectedNodes.clear();
+  voteSitesSourceId = '';
+  voteSitesTargetIds.clear();
+  voteSitesTargetsInitialized = false;
   configurationContent.value = '';
   inputGeneration++;
   logout.hidden = false;
@@ -197,6 +212,7 @@ function friendlyCapability(capability) {
   return ({
     'config.files.v1': 'Full configuration',
     'config.file-comments.v1': 'Comments preserved',
+    'config.vote-sites-sync.v1': 'VoteSites sync',
     'config.quick-setup.v1': 'Quick Setup',
     'config.proxy-routing.v1': 'Proxy routing'
   })[capability];
@@ -471,6 +487,93 @@ function renderMetrics() {
   text(metricIssues, backendTopologyTruncated ? `${issueCount}+` : issueCount);
 }
 
+function syncSourceCandidates() {
+  return allNodeItems.filter(node => isBackend(node) && node.online &&
+    node.acceptedCapabilities.includes('config.files.v1') &&
+    node.acceptedCapabilities.includes('config.file-comments.v1'));
+}
+
+function syncTargetCandidates() {
+  return allNodeItems.filter(node => isBackend(node) && node.online &&
+    node.acceptedCapabilities.includes('config.vote-sites-sync.v1'));
+}
+
+function selectedVoteSitesTargets() {
+  const capable = new Set(syncTargetCandidates().map(node => node.nodeId));
+  return [...voteSitesTargetIds].filter(nodeId => capable.has(nodeId) && nodeId !== voteSitesSourceId);
+}
+
+function renderVoteSitesSync() {
+  const sources = syncSourceCandidates();
+  const targetsAvailable = syncTargetCandidates();
+  const previousSourceId = voteSitesSourceId;
+  if (!sources.some(node => node.nodeId === voteSitesSourceId)) {
+    voteSitesSourceId = sources.find(node => node.nodeId === selectedServerId)?.nodeId || sources[0]?.nodeId || '';
+  }
+  if (previousSourceId && previousSourceId !== voteSitesSourceId) {
+    approvedVoteSitesPreview = null;
+    inputGeneration++;
+    text(voteSitesSyncStatus, 'The sync source became unavailable. Read the replacement source and preview again.');
+  }
+  const targetIds = new Set(targetsAvailable.map(node => node.nodeId));
+  const retainedTargets = new Set([...voteSitesTargetIds].filter(nodeId =>
+    targetIds.has(nodeId) && nodeId !== voteSitesSourceId));
+  if (retainedTargets.size !== voteSitesTargetIds.size) {
+    approvedVoteSitesPreview = null;
+    inputGeneration++;
+    text(voteSitesSyncStatus, 'A sync target became unavailable. Preview again before syncing.');
+  }
+  voteSitesTargetIds = retainedTargets;
+  if (!voteSitesTargetsInitialized && sources.length > 0) {
+    voteSitesTargetIds = new Set(targetsAvailable.map(node => node.nodeId)
+      .filter(nodeId => nodeId !== voteSitesSourceId).slice(0, MAX_SYNC_TARGETS));
+    voteSitesTargetsInitialized = true;
+  }
+
+  const placeholder = text(document.createElement('option'), sources.length ? 'Choose a source' : 'No readable backends');
+  placeholder.value = '';
+  voteSitesSource.replaceChildren(placeholder, ...sources.map(node => {
+    const option = text(document.createElement('option'), `${node.displayName} · ${node.nodeId}`);
+    option.value = node.nodeId;
+    return option;
+  }));
+  voteSitesSource.value = voteSitesSourceId;
+
+  voteSitesTargets.replaceChildren();
+  const choices = targetsAvailable.filter(node => node.nodeId !== voteSitesSourceId);
+  voteSitesTargets.classList.toggle('empty', choices.length === 0);
+  if (choices.length === 0) {
+    text(voteSitesTargets, targetsAvailable.length > 0
+      ? 'Choose a different source or enroll another backend.' : 'No sync-capable target backends are connected.');
+  } else {
+    choices.forEach(node => {
+      const label = document.createElement('label');
+      label.className = 'target-option';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = voteSitesTargetIds.has(node.nodeId);
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked && voteSitesTargetIds.size >= MAX_SYNC_TARGETS) {
+          checkbox.checked = false;
+          text(voteSitesSyncStatus, `A sync operation supports at most ${MAX_SYNC_TARGETS} targets.`);
+          return;
+        }
+        if (checkbox.checked) voteSitesTargetIds.add(node.nodeId); else voteSitesTargetIds.delete(node.nodeId);
+        approvedVoteSitesPreview = null;
+        inputGeneration++;
+        text(voteSitesSyncStatus, 'Targets changed. Read the source and preview again before syncing.');
+        updateConfigurationButtons();
+      });
+      label.append(checkbox, document.createTextNode(`${node.displayName} · ${node.nodeId}`));
+      voteSitesTargets.append(label);
+    });
+  }
+  const readyCount = targetsAvailable.length;
+  text(voteSitesSyncCapability, readyCount > 0
+    ? `${readyCount} sync-capable ${readyCount === 1 ? 'backend' : 'backends'}` : 'Waiting for capable backends');
+  voteSitesSyncCapability.className = `pill ${readyCount > 0 ? 'online' : 'neutral'}`;
+}
+
 function renderNodeViews() {
   nodes.replaceChildren();
   nodes.classList.toggle('empty', visibleNodeItems.length === 0);
@@ -482,6 +585,7 @@ function renderNodeViews() {
   renderMetrics();
   renderTopology();
   renderSelectedServer();
+  renderVoteSitesSync();
 }
 
 function resetServerConfigurationForms(status) {
@@ -512,6 +616,7 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) 
     targets('config.files.v1').length > 0 && !busy;
   const quickReady = authenticated && primaryCapabilities.includes('config.quick-setup.v1') &&
     targets('config.quick-setup.v1').length > 0 && !busy;
+  const voteSitesReady = authenticated && voteSitesSourceId && selectedVoteSitesTargets().length > 0 && !busy;
   readConfiguration.disabled = !routingReady;
   previewConfiguration.disabled = !routingReady;
   applyConfiguration.disabled = !routingReady || !approvedPreview;
@@ -520,6 +625,8 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) 
   applyFileConfiguration.disabled = !fileReady || !approvedFilePreview;
   previewQuickSetup.disabled = !quickReady;
   applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
+  previewVoteSitesSync.disabled = !voteSitesReady;
+  applyVoteSitesSync.disabled = !voteSitesReady || !approvedVoteSitesPreview;
 }
 
 function targets(capability) {
@@ -530,6 +637,8 @@ function clearApprovals() {
   approvedPreview = null;
   approvedFilePreview = null;
   approvedQuickPreview = null;
+  approvedVoteSitesPreview = null;
+  approvedVoteSitesPreview = null;
   inputGeneration++;
   updateConfigurationButtons();
 }
@@ -627,6 +736,7 @@ function discardAuthenticationState(reason) {
   approvedPreview = null;
   approvedFilePreview = null;
   approvedQuickPreview = null;
+  approvedVoteSitesPreview = null;
   inputGeneration++;
   logout.hidden = true;
   appShell.hidden = true;
@@ -638,6 +748,9 @@ function discardAuthenticationState(reason) {
   enrollmentList.replaceChildren(text(document.createElement('li'), 'Authenticate to manage enrollments.'));
   text(enrollmentMessage, '');
   selectedNodes.clear();
+  voteSitesSourceId = '';
+  voteSitesTargetIds.clear();
+  voteSitesTargetsInitialized = false;
   selectedServerId = '';
   visibleNodeItems = [];
   allNodeItems = [];
@@ -656,6 +769,7 @@ function discardAuthenticationState(reason) {
   text(operationStatus, '');
   text(fileOperationStatus, '');
   text(quickOperationStatus, '');
+  text(voteSitesSyncStatus, '');
   nodes.replaceChildren();
   nodes.classList.add('empty');
   text(nodes, 'Authenticate to view the network.');
@@ -839,10 +953,15 @@ async function loadNodes() {
       nodeCapabilities.get(node)?.includes('config.files.v1'));
     const invalidQuickApproval = approvedQuickPreview && !approvedQuickPreview.nodeIds.every(node =>
       nodeCapabilities.get(node)?.includes('config.quick-setup.v1'));
-    if (invalidRoutingApproval || invalidFileApproval || invalidQuickApproval) {
+    const invalidVoteSitesApproval = approvedVoteSitesPreview &&
+      (!approvedVoteSitesPreview.nodeIds.every(node =>
+        nodeCapabilities.get(node)?.includes('config.vote-sites-sync.v1')) ||
+       !nodeCapabilities.get(approvedVoteSitesPreview.sourceId)?.includes('config.file-comments.v1'));
+    if (invalidRoutingApproval || invalidFileApproval || invalidQuickApproval || invalidVoteSitesApproval) {
       if (invalidRoutingApproval) approvedPreview = null;
       if (invalidFileApproval) approvedFilePreview = null;
       if (invalidQuickApproval) approvedQuickPreview = null;
+      if (invalidVoteSitesApproval) approvedVoteSitesPreview = null;
       inputGeneration++;
       text(operationStatus, 'A preview target went offline or lost the required capability. Preview again before apply.');
     }
@@ -1179,6 +1298,60 @@ applyQuickSetup.addEventListener('click', async () => {
     }, quickOperationStatus);
     text(quickOperationStatus, operationSummary(operation));
   } catch (error) { text(quickOperationStatus, error.message); }
+});
+
+voteSitesSource.addEventListener('change', () => {
+  voteSitesSourceId = voteSitesSource.value;
+  voteSitesTargetIds.delete(voteSitesSourceId);
+  voteSitesTargetsInitialized = true;
+  approvedVoteSitesPreview = null;
+  inputGeneration++;
+  renderVoteSitesSync();
+  text(voteSitesSyncStatus, 'Source changed. Read it and preview every target before syncing.');
+  updateConfigurationButtons();
+});
+
+previewVoteSitesSync.addEventListener('click', async () => {
+  approvedVoteSitesPreview = null;
+  const previewGeneration = inputGeneration;
+  const sourceId = voteSitesSourceId;
+  const nodeIds = selectedVoteSitesTargets();
+  try {
+    const read = await startConfigurationOperation('/api/v1/configuration/read', {
+      nodeIds: [sourceId], configuration: {domain: 'file', fileName: 'VoteSites.yml'}
+    }, voteSitesSyncStatus);
+    const source = Object.values(read.results).find(result =>
+      result.success && result.configuration?.content != null)?.configuration?.content;
+    if (source == null) throw new Error('The source backend did not return VoteSites.yml.');
+    if (previewGeneration !== inputGeneration || sourceId !== voteSitesSourceId) {
+      text(voteSitesSyncStatus, 'The source or targets changed while reading. Preview again.');
+      return;
+    }
+    const preview = await startConfigurationOperation('/api/v1/configuration/preview', {
+      nodeIds,
+      configuration: {domain: 'quick-setup', preset: 'sync-vote-sites', options: {sourceContent: source}}
+    }, voteSitesSyncStatus);
+    if (preview.state === 'SUCCEEDED' && preview.approvalToken && previewGeneration === inputGeneration) {
+      approvedVoteSitesPreview = {operationId: preview.operationId, approvalToken: preview.approvalToken,
+        nodeIds, sourceId};
+      updateConfigurationButtons();
+    } else if (previewGeneration !== inputGeneration) {
+      text(voteSitesSyncStatus, 'The source or targets changed while previewing. Preview again before syncing.');
+    }
+  } catch (error) { text(voteSitesSyncStatus, error.message); }
+});
+
+applyVoteSitesSync.addEventListener('click', async () => {
+  if (!approvedVoteSitesPreview || !window.confirm(
+      'Sync the previewed VoteSites definitions to every selected backend? Target rewards and target-only sites are preserved.')) return;
+  const approval = approvedVoteSitesPreview;
+  approvedVoteSitesPreview = null;
+  inputGeneration++;
+  try {
+    await startConfigurationOperation('/api/v1/configuration/apply', {
+      previewOperationId: approval.operationId, approvalToken: approval.approvalToken
+    }, voteSitesSyncStatus);
+  } catch (error) { text(voteSitesSyncStatus, error.message); }
 });
 
 [configurationContent, quickName, quickService, quickUrl, quickDelay, quickRewardScope,

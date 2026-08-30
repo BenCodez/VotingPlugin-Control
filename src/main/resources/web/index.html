@@ -142,7 +142,30 @@
         <section class="card roadmap-card" aria-label="Planned network controls">
           <div><span class="step">Next</span><strong>Proxy method</strong><small>One-click selection with required-setting checks</small></div>
           <div><span class="step">Next</span><strong>Communication test</strong><small>Non-vote connectivity checks without rewards</small></div>
-          <div><span class="step">Next</span><strong>Sync VoteSites</strong><small>Copy site definitions while preserving rewards</small></div>
+        </section>
+        <section class="card sync-card" id="vote-sites-sync-card">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Network action</p>
+              <h3>Sync VoteSites</h3>
+              <p>Copy site definitions from one backend. Target-only sites and every reward-named section are preserved.</p>
+            </div>
+            <span class="pill neutral" id="vote-sites-sync-capability">Waiting for capable backends</span>
+          </div>
+          <div class="sync-grid">
+            <label for="vote-sites-source">Source backend
+              <select id="vote-sites-source"><option value="">Choose a source</option></select>
+            </label>
+            <fieldset>
+              <legend>Target backends</legend>
+              <div id="vote-sites-targets" class="target-list">No sync-capable backends loaded.</div>
+            </fieldset>
+          </div>
+          <div class="operation-actions">
+            <button id="preview-vote-sites-sync" type="button" disabled>Read source and preview</button>
+            <button id="apply-vote-sites-sync" type="button" disabled>Approve and sync</button>
+          </div>
+          <pre id="vote-sites-sync-status" aria-live="polite">Choose a source and at least one target. Rewards are never copied or removed.</pre>
         </section>
         <section class="card" id="configuration-card">
           <div class="section-title">

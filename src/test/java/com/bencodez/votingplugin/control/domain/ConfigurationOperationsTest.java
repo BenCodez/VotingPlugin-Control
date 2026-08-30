@@ -1,6 +1,7 @@
 package com.bencodez.votingplugin.control.domain;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -445,6 +446,42 @@ class ConfigurationOperationsTest {
                 ManagedConfiguration.QUICK_SETUP, null, List.of(), null, "hidden", "standalone", Map.of()));
         assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(
                 ManagedConfiguration.FILE, null, List.of("other"), "Config.yml", null, null, Map.of()));
+        new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null,
+                "standalone", Map.of("label", "é".repeat(500)));
+    }
+
+    @Test void voteSitesSyncAllowsOneBoundedSourceDocumentAndHidesItFromOperationViews() throws Exception {
+        String source = "VoteSites:\n" + "# owner comment\n".repeat(100);
+        ManagedConfiguration sync = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.VOTE_SITES_SYNC, Map.of("sourceContent", source));
+
+        assertEquals(ConfigurationOperations.VOTE_SITES_SYNC_CAPABILITY, sync.capability());
+        assertFalse(sync.publicView().options().containsKey("sourceContent"));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.VOTE_SITES_SYNC, Map.of()).validateProposal());
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.VOTE_SITES_SYNC,
+                Map.of("sourceContent", source, "label", "extra")).validateProposal());
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.VOTE_SITES_SYNC,
+                Map.of("sourceContent", "x".repeat(ManagedConfiguration.MAX_CONTENT + 1))));
+
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.VOTE_SITES_SYNC_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-a"), sync);
+        assertFalse(preview.configuration().options().containsKey("sourceContent"));
+        ConfigurationTask syncTask = operations.claim("backend-a", session);
+        assertEquals(source, syncTask.configuration().options().get("sourceContent"));
+        ConfigurationOperations.OperationView completed = operations.complete(preview.operationId(), "backend-a",
+                new ConfigurationTaskResult(session, true, "OK", "valid", "e".repeat(64), sync,
+                        List.of("changed VoteSites.Example"), false, false, syncTask.attemptId()));
+        assertFalse(completed.results().get("backend-a").configuration().options().containsKey("sourceContent"));
     }
 
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {

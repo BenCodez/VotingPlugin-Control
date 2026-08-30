@@ -65,6 +65,8 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("id=\"server-picker\""));
         assertTrue(web.body().contains("Full YAML"));
         assertTrue(web.body().contains("Comment support unknown"));
+        assertTrue(web.body().contains("Sync VoteSites"));
+        assertTrue(web.body().contains("Rewards are never copied or removed"));
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
@@ -113,6 +115,13 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("No connected proxy reports this backend ID"));
         assertTrue(script.body().contains("'config.files.v1': 'Full configuration'"));
         assertTrue(script.body().contains("'config.file-comments.v1': 'Comments preserved'"));
+        assertTrue(script.body().contains("'config.vote-sites-sync.v1': 'VoteSites sync'"));
+        assertTrue(script.body().contains("preset: 'sync-vote-sites'"));
+        assertTrue(script.body().contains("return allNodeItems.filter(node => isBackend(node)"));
+        assertTrue(script.body().contains("A sync target became unavailable"));
+        assertTrue(script.body().contains("MAX_SYNC_TARGETS = 100"));
+        assertTrue(script.body().contains("The sync source became unavailable"));
+        assertTrue(script.body().contains("sourceContent: source"));
         assertTrue(script.body().contains("handleEditorKeydown"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
