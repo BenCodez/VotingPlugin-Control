@@ -112,7 +112,11 @@ public final class ConfigurationOperationJournal {
         }
         byte[] bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained));
         while (bytes.length > MAX_BYTES && retained.size() > 1) {
-            retained.remove(0);
+            int removable = 0;
+            for (int index = 0; index < retained.size(); index++) {
+                if (!isVoteLogging(retained.get(index))) { removable = index; break; }
+            }
+            retained.remove(removable);
             bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained));
         }
         if (bytes.length > MAX_BYTES) throw new IOException("Configuration operation journal exceeds its bound");
@@ -134,6 +138,11 @@ public final class ConfigurationOperationJournal {
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
+
+    private static boolean isVoteLogging(Entry entry) {
+        return "APPLY".equals(entry.type()) && "quick-setup".equals(entry.domain())
+                && "vote-logging".equals(entry.preset());
     }
 
     private static void validate(Entry entry) throws IOException {

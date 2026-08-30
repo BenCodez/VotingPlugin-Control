@@ -60,6 +60,29 @@ public final class ConfigurationSnapshots {
         if (Files.isSymbolicLink(directory)) throw new IOException("Configuration snapshot directory is unsafe");
         if (!existed) setPermissions(directory, Set.of(PosixFilePermission.OWNER_READ,
                 PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
+        recoverTransactions();
+    }
+
+    private void recoverTransactions() throws IOException {
+        try (var dirs = Files.list(directory)) {
+            for (Path transaction : dirs.filter(path -> path.getFileName().toString().startsWith("snapshot-transaction-"))
+                    .filter(path -> Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)).toList()) {
+                try (var backups = Files.list(transaction)) {
+                    for (Path backup : backups.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).toList()) {
+                        Files.copy(backup, directory.resolve(backup.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
+                    }
+                }
+                try (var snapshots = Files.list(directory)) {
+                    snapshots.filter(path -> path.getFileName().toString().matches("[0-9a-f-]{36}\\.json"))
+                            .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                            .sorted(snapshotOrder().reversed()).skip(MAX_SNAPSHOTS).forEach(path -> {
+                                try { Files.deleteIfExists(path); } catch (IOException ignored) { }
+                            });
+                }
+                try { Files.deleteIfExists(transaction); } catch (IOException ignored) { }
+            }
+        }
+        DurableFiles.forceDirectory(directory);
     }
 
     public synchronized Snapshot create(String name, ConfigurationOperations.OperationView operation) throws IOException {
