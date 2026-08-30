@@ -243,6 +243,42 @@ class ConfigurationOperationsTest {
         operations.close();
     }
 
+    @Test void voteLoggingRestartStateReclaimsKnownReconnectedSessionsBeforeAddingMarkers() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID priorSession = UUID.randomUUID();
+        UUID currentOldSession = UUID.randomUUID();
+        UUID newSession = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-old", currentOldSession, "Old Backend", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        registry.register(new NodeRegistration("backend-new", newSession, "New Backend", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        Path journalDirectory = directory.resolve("restart-reclaim-journal");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        journal.save(List.of(), Map.of("backend-old", priorSession));
+        ManagedConfiguration logging = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-logging",
+                Map.of("enabled", "true", "purgeDays", "30", "useMainMySQL", "true"));
+
+        try (ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory.resolve("restart-reclaim-audit"), clock), clock, journal)) {
+            ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-new"), logging);
+            ConfigurationTask previewTask = operations.claim("backend-new", newSession);
+            preview = operations.complete(preview.operationId(), "backend-new", new ConfigurationTaskResult(newSession,
+                    true, "OK", "valid", "a".repeat(64), logging, List.of(), false, false,
+                    previewTask.attemptId()));
+            ConfigurationOperations.OperationView apply = operations.createApply(preview.operationId(),
+                    preview.approvalToken());
+            ConfigurationTask applyTask = operations.claim("backend-new", newSession);
+            operations.complete(apply.operationId(), "backend-new", new ConfigurationTaskResult(newSession, true,
+                    "OK", "applied", "b".repeat(64), logging, List.of("VoteLogging.Enabled changed"), true,
+                    false, applyTask.attemptId()));
+
+            assertEquals(Map.of("backend-new", newSession), operations.listView().voteLoggingRestartSessions());
+        }
+        assertEquals(Map.of("backend-new", newSession), journal.loadState().voteLoggingRestartSessions());
+    }
+
     @Test void applyRequiresTheSameNodeSessionAndRoleThatPassedPreview() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

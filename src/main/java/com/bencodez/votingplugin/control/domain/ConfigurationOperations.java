@@ -490,12 +490,9 @@ public final class ConfigurationOperations implements AutoCloseable {
         try {
             operation.results.put(nodeId, boundedResult(operation, result));
             if (requiresVoteLoggingRestart(operation, result)) {
+                reclaimStaleRestartSessions(nodeId);
                 voteLoggingRestartSessions.remove(nodeId);
                 voteLoggingRestartSessions.put(nodeId, result.sessionId());
-                while (voteLoggingRestartSessions.size()
-                        > ConfigurationOperationJournal.MAX_RESTART_SESSIONS) {
-                    voteLoggingRestartSessions.remove(voteLoggingRestartSessions.keySet().iterator().next());
-                }
             }
             operation.states.put(nodeId, "COMPLETE");
             operation.leasedAt.remove(nodeId);
@@ -599,6 +596,19 @@ public final class ConfigurationOperations implements AutoCloseable {
                 && "vote-logging".equals(operation.configuration.preset())
                 && result.changes().stream()
                 .anyMatch(change -> change.matches(".*VoteLogging\\.(Enabled|UseMainMySQL)\\b.*"));
+    }
+
+    private void reclaimStaleRestartSessions(String incomingNodeId) {
+        voteLoggingRestartSessions.entrySet().removeIf(entry -> {
+            NodeStatus current = registry.find(entry.getKey());
+            return current != null && !entry.getValue().equals(current.sessionId());
+        });
+        if (voteLoggingRestartSessions.containsKey(incomingNodeId)
+                || voteLoggingRestartSessions.size() < ConfigurationOperationJournal.MAX_RESTART_SESSIONS) return;
+        voteLoggingRestartSessions.entrySet().removeIf(entry -> registry.find(entry.getKey()) == null);
+        if (voteLoggingRestartSessions.size() >= ConfigurationOperationJournal.MAX_RESTART_SESSIONS) {
+            throw new IllegalStateException("Vote logging restart state capacity is unavailable");
+        }
     }
 
     private static void validateResultConfiguration(StoredOperation operation, ConfigurationTaskResult result) {

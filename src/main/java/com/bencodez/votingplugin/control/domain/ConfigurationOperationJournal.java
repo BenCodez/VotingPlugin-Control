@@ -33,7 +33,7 @@ public final class ConfigurationOperationJournal {
     private static final int LEGACY_SCHEMA_VERSION = 1;
     static final int MAX_OPERATIONS = 1000;
     private static final int MAX_NODES = 100;
-    static final int MAX_RESTART_SESSIONS = 1000;
+    static final int MAX_RESTART_SESSIONS = 10_000;
     private static final int MAX_BYTES = 2 * 1024 * 1024;
     private static final Duration RETENTION = Duration.ofHours(24);
     private static final Set<PosixFilePermission> OWNER_DIRECTORY = Set.of(
