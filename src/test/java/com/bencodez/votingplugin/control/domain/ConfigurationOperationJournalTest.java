@@ -33,7 +33,8 @@ class ConfigurationOperationJournalTest {
         UUID source = UUID.randomUUID();
         ConfigurationOperationJournal.Entry entry = new ConfigurationOperationJournal.Entry(operation, "APPLY",
                 clock.instant(), "file", "Config.yml", null, source, List.of(
-                new ConfigurationOperationJournal.NodeResult("backend-a", true, false, "WRITE_FAILED", null,
+                new ConfigurationOperationJournal.NodeResult("backend-a", UUID.randomUUID(), true, false,
+                        "WRITE_FAILED", null,
                         false, true)));
 
         journal.save(List.of(entry));
@@ -122,6 +123,7 @@ class ConfigurationOperationJournalTest {
             assertEquals("SUCCEEDED", recovered.state());
             assertTrue(recovered.recovered());
             assertEquals("a".repeat(64), recovered.results().get("backend-a").revision());
+            assertEquals(session, recovered.results().get("backend-a").sessionId());
             assertNull(recovered.results().get("backend-a").configuration());
         }
     }

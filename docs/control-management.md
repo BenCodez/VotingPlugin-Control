@@ -127,12 +127,14 @@ still requires the admin role/browser CSRF protection and consumes the token exa
 
 Production also atomically maintains an owner-readable, 2 MiB-bounded `data/configuration-operations.json`. It stores only
 operation identity/type/time, redacted domain selector (`fileName` or preset), retry lineage, and bounded per-node
-completion/success/code/revision/reload/rollback metadata. It deliberately excludes options/proposal values, file content,
-approval tokens, result messages/changes, credentials, sessions, and attempts.
+completion/success/code/revision/reload/rollback metadata. A completed result's backend session ID is also retained so the
+WebUI does not lose restart-required setup state when Control restarts. It deliberately excludes options/proposal values,
+file content, approval tokens, result messages/changes, credentials, and task attempt IDs.
 
 After a restart, journal entries are exposed as `recovered:true` history. Any node that had not completed is shown failed
 with `CONTROL_RESTARTED`; a recovered entry is never resumed or retried because its sensitive input, live session binding,
-and approval are not persisted. Start a fresh read or preview. This preserves operator visibility without replaying an
+task attempt, and approval are not persisted. A completed result's historical session ID is display state, not a live task
+binding. Start a fresh read or preview. This preserves operator visibility without replaying an
 ambiguous write.
 
 ### Configuration snapshots and restore

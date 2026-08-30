@@ -87,12 +87,24 @@ public final class InspectionOperations {
             }
             if ("IN_PROGRESS".equals(stored.state) && stored.leasedAt != null
                     && now.isBefore(stored.leasedAt.plus(LEASE))) continue;
+            String previousState = stored.state;
+            Instant previousLease = stored.leasedAt;
+            UUID previousAttempt = stored.attemptId;
+            UUID previousTargetSession = stored.targetSession;
             UUID attempt = UUID.randomUUID();
             stored.state = "IN_PROGRESS";
             stored.leasedAt = now;
             stored.attemptId = attempt;
             stored.targetSession = node.sessionId();
-            append("INSPECTION_CLAIMED", stored.id, nodeId, stored.query.kind());
+            try {
+                append("INSPECTION_CLAIMED", stored.id, nodeId, stored.query.kind());
+            } catch (RuntimeException failure) {
+                stored.state = previousState;
+                stored.leasedAt = previousLease;
+                stored.attemptId = previousAttempt;
+                stored.targetSession = previousTargetSession;
+                throw failure;
+            }
             return new InspectionTask(stored.id, stored.query, attempt);
         }
         return null;

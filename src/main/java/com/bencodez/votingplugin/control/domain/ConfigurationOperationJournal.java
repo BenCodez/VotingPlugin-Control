@@ -23,7 +23,7 @@ import java.util.UUID;
 
 /**
  * Durable, redacted operation history. The journal intentionally excludes proposal values,
- * file contents, approval tokens, changes, messages, and credentials.
+ * file contents, approval tokens, changes, messages, credentials, and task attempt identifiers.
  */
 public final class ConfigurationOperationJournal {
     static final int SCHEMA_VERSION = 1;
@@ -172,7 +172,7 @@ public final class ConfigurationOperationJournal {
     public record Entry(UUID operationId, String type, Instant createdAt, String domain, String fileName,
                         String preset, UUID sourceOperationId, List<NodeResult> nodes) { }
 
-    public record NodeResult(String nodeId, boolean complete, Boolean success, String code, String revision,
+    public record NodeResult(String nodeId, UUID sessionId, boolean complete, Boolean success, String code, String revision,
                              boolean reloaded, boolean rolledBack) { }
 
     private record JournalFile(int schemaVersion, List<Entry> operations) { }

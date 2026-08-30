@@ -13,6 +13,9 @@ import com.bencodez.votingplugin.control.protocol.InspectionTaskResult;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -22,8 +25,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class InspectionOperationsTest {
+    @TempDir Path directory;
     private static final ObjectMapper JSON = new ObjectMapper();
     private final MutableClock clock = new MutableClock(Instant.parse("2026-08-30T00:00:00Z"));
     private final InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofHours(1));
@@ -106,6 +111,24 @@ class InspectionOperationsTest {
                 () -> operations.complete(inspection, "backend-a",
                         new InspectionTaskResult(session, true, null, "done", envelope("overview"), second.attemptId())));
         assertEquals("TASK_LEASE_EXPIRED", expired.code());
+    }
+
+    @Test void failedClaimAuditRollsBackTheInspectionLease() throws Exception {
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        Path auditDirectory = directory.resolve("audit");
+        try (ConfigurationAuditLog audit = new ConfigurationAuditLog(auditDirectory, clock)) {
+            InspectionOperations operations = new InspectionOperations(registry, audit, clock);
+            operations.create("backend-a", new InspectionQuery("overview", Map.of()));
+            Path auditFile = auditDirectory.resolve("configuration-audit.jsonl");
+            byte[] validAudit = Files.readAllBytes(auditFile);
+            Files.writeString(auditFile, "tampered", StandardOpenOption.APPEND);
+
+            assertThrows(ConfigurationAuditLog.AuditException.class,
+                    () -> operations.claim("backend-a", session));
+
+            Files.write(auditFile, validAudit, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            assertNotNull(operations.claim("backend-a", session));
+        }
     }
 
     @Test void resultShapeAndUtf8ByteLimitsAreEnforced() {

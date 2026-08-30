@@ -225,9 +225,10 @@ values, credentials, or approval tokens. Operation queues are bounded; abandoned
 creation and completed operations are pruned 24 hours after creation.
 
 `configuration-operations.json` atomically retains at most 24 hours/1,000 entries/2 MiB of redacted operation history. It
-excludes configuration/options values, file contents, approval tokens, result messages/changes, credentials, sessions, and
-attempts. After restart, unfinished targets appear failed with `CONTROL_RESTARTED`; recovered entries are history-only and
-require a fresh read or preview. Named snapshots under `configuration-snapshots/` retain bounded redacted file-read
+excludes configuration/options values, file contents, approval tokens, result messages/changes, credentials, and task
+attempts. Completed-result session IDs are retained so restart-required setup warnings survive a Control restart; they
+cannot authorize or resume work. After restart, unfinished targets appear failed with `CONTROL_RESTARTED`; recovered
+entries are history-only and require a fresh read or preview. Named snapshots under `configuration-snapshots/` retain bounded redacted file-read
 results. Loading one for restore merely fills the editor—the normal preview, revision check, approval, backup, reload, and
 rollback workflow still applies; redaction placeholders preserve each target's current secrets. The store is capped at
 100 snapshots and 64 MiB of encoded files and prunes the oldest files to admit a new snapshot.

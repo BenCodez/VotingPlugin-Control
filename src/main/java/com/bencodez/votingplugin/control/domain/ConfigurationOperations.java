@@ -631,7 +631,8 @@ public final class ConfigurationOperations implements AutoCloseable {
                 String code = completed ? node.code() : "CONTROL_RESTARTED";
                 String message = completed ? "Recovered from durable operation history"
                         : "Control restarted before this node reported completion";
-                results.put(node.nodeId(), new ConfigurationTaskResult(new UUID(0, 0), success, code, message,
+                results.put(node.nodeId(), new ConfigurationTaskResult(completed ? node.sessionId() : null,
+                        success, code, message,
                         completed ? node.revision() : null, (ManagedConfiguration) null, List.of(),
                         completed && node.reloaded(),
                         completed && node.rolledBack(), null));
@@ -654,7 +655,8 @@ public final class ConfigurationOperations implements AutoCloseable {
             for (Map.Entry<String, String> node : operation.states.entrySet()) {
                 ConfigurationTaskResult result = operation.results.get(node.getKey());
                 boolean complete = "COMPLETE".equals(node.getValue()) && result != null;
-                nodes.add(new ConfigurationOperationJournal.NodeResult(node.getKey(), complete,
+                nodes.add(new ConfigurationOperationJournal.NodeResult(node.getKey(),
+                        complete ? result.sessionId() : null, complete,
                         complete ? result.success() : null, complete ? result.code() : null,
                         complete ? result.revision() : null, complete && result.reloaded(),
                         complete && result.rolledBack()));
