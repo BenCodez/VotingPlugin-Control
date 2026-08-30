@@ -2502,10 +2502,17 @@ function dedicatedSetupElements(preset) {
 async function loadDedicatedSetup(preset) {
   dedicatedSetupApprovals.delete(preset);
   const elements = dedicatedSetupElements(preset);
+  const requestNodeId = selectedServerId;
+  const requestSessionId = nodeIndex.get(requestNodeId)?.sessionId;
+  const requestGeneration = inputGeneration;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: [selectedServerId], configuration: {domain: 'quick-setup', preset, options: {}}
     }, elements.status);
+    if (requestNodeId !== selectedServerId || requestSessionId !== nodeIndex.get(requestNodeId)?.sessionId
+        || requestGeneration !== inputGeneration) {
+      throw new Error('The selected server changed while loading setup values. Load them again.');
+    }
     const options = operation.results[selectedServerId]?.configuration?.options;
     if (!options) throw new Error('The selected backend did not return this setup. Update VotingPlugin on that node.');
     if (preset === 'auto-create-vote-sites') {
