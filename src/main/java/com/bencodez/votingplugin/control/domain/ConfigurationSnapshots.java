@@ -69,10 +69,14 @@ public final class ConfigurationSnapshots {
                     .filter(path -> Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)).toList()) {
                 try (var backups = Files.list(transaction)) {
                     for (Path backup : backups.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).toList()) {
-                        Files.copy(backup, directory.resolve(backup.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
+                        Files.copy(backup, directory.resolve(backup.getFileName().toString()),
+                                StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
                     }
                 }
                 trimRecoveredSnapshots();
+                try (var leftovers = Files.list(transaction)) {
+                    leftovers.forEach(leftover -> { try { Files.deleteIfExists(leftover); } catch (IOException ignored) { } });
+                }
                 try { Files.deleteIfExists(transaction); } catch (IOException ignored) { }
             }
         }

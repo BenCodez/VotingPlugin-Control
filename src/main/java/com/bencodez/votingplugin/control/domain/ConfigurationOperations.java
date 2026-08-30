@@ -161,7 +161,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         List<StoredOperation> newestFirst = new ArrayList<>(operations.values());
         Collections.reverse(newestFirst);
         for (StoredOperation operation : newestFirst) {
-            if (operation.recovered || !"APPLY".equals(operation.type)
+            if (!"APPLY".equals(operation.type)
                     || !ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
                     || !"vote-logging".equals(operation.configuration.preset())) continue;
             operation.results.forEach((nodeId, nodeResult) -> {
