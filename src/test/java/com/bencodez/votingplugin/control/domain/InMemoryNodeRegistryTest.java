@@ -179,6 +179,21 @@ class InMemoryNodeRegistryTest {
         assertFalse(registry.list(0, 1).get(0).online());
     }
 
+    @Test void paginatedRegistryRevisionRejectsMembershipChanges() {
+        registry.register(registration("proxy-a", session, Set.of(), Set.of()));
+        NodeRegistry.RegistryPage first = registry.page(0, 1, null);
+        assertEquals(1, first.total());
+
+        registry.register(registration("proxy-b", UUID.randomUUID(), Set.of(), Set.of()));
+
+        ValidationException changed = assertThrows(ValidationException.class,
+                () -> registry.page(1, 1, first.revision()));
+        assertEquals("REGISTRY_CHANGED", changed.code());
+        NodeRegistry.RegistryPage current = registry.page(1, 1, null);
+        assertEquals(2, current.total());
+        assertEquals("proxy-b", current.items().get(0).nodeId());
+    }
+
     @Test void validatesNodeBackendProtocolCollectionAndStringBounds() {
         assertThrows(ValidationException.class,
                 () -> registry.register(registration("bad/id", session, Set.of(), Set.of())));
