@@ -353,13 +353,13 @@ public final class ConfigurationOperations implements AutoCloseable {
             persist();
             audit.append("TASK_CANCELLED", operation.id, nodeId, auditOutcome);
         } catch (RuntimeException failure) {
-            restoreCancellation(operation, nodeId, priorState, priorResult, priorLease, priorAttempt,
+            restoreTransition(operation, nodeId, priorState, priorResult, priorLease, priorAttempt,
                     priorChanges, priorMessages, priorFiles, failure);
             throw failure;
         }
     }
 
-    private void restoreCancellation(StoredOperation operation, String nodeId, String priorState,
+    private void restoreTransition(StoredOperation operation, String nodeId, String priorState,
                                      ConfigurationTaskResult priorResult, Instant priorLease, UUID priorAttempt,
                                      long priorChanges, long priorMessages, long priorFiles, RuntimeException failure) {
         ConfigurationTaskResult current = operation.results.get(nodeId);
@@ -463,12 +463,25 @@ public final class ConfigurationOperations implements AutoCloseable {
             throw new ValidationException("TASK_LEASE_EXPIRED", "Operation task lease is no longer active", List.of());
         }
         validateResultConfiguration(operation, result);
-        audit.append("TASK_COMPLETED", operation.id, nodeId, result.success() ? "SUCCESS" : result.code());
-        operation.results.put(nodeId, boundedResult(operation, result));
-        operation.states.put(nodeId, "COMPLETE");
-        operation.leasedAt.remove(nodeId);
-        operation.attemptIds.remove(nodeId);
-        persist();
+        String priorState = operation.states.get(nodeId);
+        ConfigurationTaskResult priorResult = operation.results.get(nodeId);
+        Instant priorLease = operation.leasedAt.get(nodeId);
+        UUID priorAttempt = operation.attemptIds.get(nodeId);
+        long priorChanges = retainedChangeBytes;
+        long priorMessages = retainedMessageBytes;
+        long priorFiles = retainedFileBytes;
+        try {
+            operation.results.put(nodeId, boundedResult(operation, result));
+            operation.states.put(nodeId, "COMPLETE");
+            operation.leasedAt.remove(nodeId);
+            operation.attemptIds.remove(nodeId);
+            persist();
+            audit.append("TASK_COMPLETED", operation.id, nodeId, result.success() ? "SUCCESS" : result.code());
+        } catch (RuntimeException failure) {
+            restoreTransition(operation, nodeId, priorState, priorResult, priorLease, priorAttempt,
+                    priorChanges, priorMessages, priorFiles, failure);
+            throw failure;
+        }
         return view(operation);
     }
 
