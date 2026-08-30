@@ -136,12 +136,51 @@
           <div>
             <p class="eyebrow">Global VotingPlugin settings</p>
             <h2>Network</h2>
-            <p>Routing currently uses the existing proxy capability. Method checks, transport tests, and VoteSites sync will appear here as nodes advertise those capabilities.</p>
+            <p>Manage network-wide VotingPlugin behavior and verify the live proxy-to-backend transport without sending a vote.</p>
           </div>
         </div>
-        <section class="card roadmap-card" aria-label="Planned network controls">
-          <div><span class="step">Next</span><strong>Proxy method</strong><small>One-click selection with required-setting checks</small></div>
-          <div><span class="step">Next</span><strong>Communication test</strong><small>Non-vote connectivity checks without rewards</small></div>
+        <section class="card" id="proxy-method-card">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Network transport</p>
+              <h3>Proxy method</h3>
+              <p>Choose a method to preflight its required settings on the proxy and every reported backend, then approve the coordinated switch.</p>
+            </div>
+            <span class="pill neutral" id="proxy-method-capability">Waiting for a complete network</span>
+          </div>
+          <label for="proxy-method-proxy">Proxy
+            <select id="proxy-method-proxy"><option value="">Choose a proxy</option></select>
+          </label>
+          <div class="method-buttons" aria-label="Proxy communication methods">
+            <button type="button" data-proxy-method="PLUGINMESSAGING">Plugin messaging</button>
+            <button type="button" data-proxy-method="REDIS">Redis</button>
+            <button type="button" data-proxy-method="MQTT">MQTT</button>
+            <button type="button" data-proxy-method="MYSQL">MySQL</button>
+            <button type="button" data-proxy-method="SOCKETS">Sockets</button>
+          </div>
+          <pre id="proxy-method-status" aria-live="polite">Choose a proxy. All of its reported backends must be online and method-capable.</pre>
+        </section>
+        <section class="card" id="transport-test-card">
+          <div class="section-title">
+            <div>
+              <p class="eyebrow">Live diagnostic</p>
+              <h3>Test proxy communication</h3>
+              <p>Send a correlated status request over the active VotingPlugin transport. No vote, totals, commands, or rewards are processed.</p>
+            </div>
+            <span class="pill neutral" id="transport-test-capability">Waiting for a capable proxy</span>
+          </div>
+          <div class="sync-grid">
+            <label for="transport-test-proxy">Proxy
+              <select id="transport-test-proxy"><option value="">Choose a proxy</option></select>
+            </label>
+            <label for="transport-test-backend">Backend
+              <select id="transport-test-backend"><option value="">Choose a backend</option></select>
+            </label>
+          </div>
+          <div class="operation-actions">
+            <button id="run-transport-test" type="button" disabled>Test communication</button>
+          </div>
+          <pre id="transport-test-status" aria-live="polite">Choose a proxy and one of its configured backends.</pre>
         </section>
         <section class="card sync-card" id="vote-sites-sync-card">
           <div class="section-title">

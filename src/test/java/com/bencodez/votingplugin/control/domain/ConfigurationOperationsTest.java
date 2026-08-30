@@ -8,8 +8,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.bencodez.votingplugin.control.protocol.ConfigurationTask;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
+import com.bencodez.votingplugin.control.protocol.BackendServerIdentity;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
+import com.bencodez.votingplugin.control.protocol.PresenceSnapshot;
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
 import com.bencodez.votingplugin.control.protocol.Heartbeat;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -484,6 +486,207 @@ class ConfigurationOperationsTest {
         assertFalse(completed.results().get("backend-a").configuration().options().containsKey("sourceContent"));
     }
 
+    @Test void communicationTestUsesItsOwnReadOnlyCapability() throws Exception {
+        ManagedConfiguration diagnostic = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.COMMUNICATION_TEST, Map.of("server", "survival"));
+        assertEquals(ConfigurationOperations.TRANSPORT_TEST_CAPABILITY, diagnostic.capability());
+
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("proxy-a", session, "Proxy A", "VELOCITY", "test", 1,
+                Set.of(ConfigurationOperations.TRANSPORT_TEST_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("proxy-a"), diagnostic);
+        ConfigurationTask task = operations.claim("proxy-a", session);
+        assertEquals("READ", task.type());
+        assertEquals("communication-test", task.configuration().preset());
+        assertEquals("survival", task.configuration().options().get("server"));
+        assertEquals(read.operationId(), task.operationId());
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.COMMUNICATION_TEST, Map.of()).validateProposal());
+    }
+
+    @Test void proxyMethodUsesItsOwnCoordinatedCapability() throws Exception {
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+        assertEquals(ConfigurationOperations.PROXY_METHOD_CAPABILITY, method.capability());
+
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID proxySession = UUID.randomUUID();
+        UUID backendSession = UUID.randomUUID();
+        registry.register(new NodeRegistration("proxy-a", proxySession, "Proxy A", "VELOCITY", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+        registry.replacePresence("proxy-a", new PresenceSnapshot(proxySession, 1, 1,
+                List.of(new BackendServerIdentity("lobby", "Lobby", true, true, 0))));
+        registry.register(new NodeRegistration("lobby", backendSession, "Lobby", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("proxy-a", "lobby"), method);
+        assertEquals("proxy-method", operations.claim("proxy-a", proxySession).configuration().preset());
+        assertEquals("proxy-method", operations.claim("lobby", backendSession).configuration().preset());
+        assertEquals(2, preview.nodeStates().size());
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.PROXY_METHOD,
+                Map.of("method", "UNKNOWN")).validateProposal());
+    }
+
+    @Test void proxyMethodApplyKeepsEvictedBackendsAsFailedDependencies() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofSeconds(30));
+        fixture.clock().advance(Duration.ofSeconds(30));
+        fixture.registry().heartbeat("proxy-a", new Heartbeat(fixture.proxySession(), 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+        fixture.registry().register(new NodeRegistration("other", UUID.randomUUID(), "Other", "BUKKIT", "test", 1,
+                Set.of(), Set.of()));
+        assertEquals(null, fixture.registry().find("lobby"));
+
+        assertEquals(null, fixture.operations().claim("proxy-a", fixture.proxySession()));
+
+        ConfigurationOperations.OperationView result = fixture.operations().get(fixture.applyId());
+        assertEquals("COMPLETED_WITH_ERRORS", result.state());
+        assertEquals("CAPABILITY_LOST", result.results().get("lobby").code());
+        assertEquals("DEPENDENCY_FAILED", result.results().get("proxy-a").code());
+    }
+
+    @Test void proxyMethodApplyDoesNotCancelAnOfflineBackendWithAnActiveLease() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofSeconds(30));
+        assertNotNull(fixture.operations().claim("lobby", fixture.backendSession()));
+        fixture.clock().advance(Duration.ofSeconds(31));
+        fixture.registry().heartbeat("proxy-a", new Heartbeat(fixture.proxySession(), 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+
+        assertEquals(null, fixture.operations().claim("proxy-a", fixture.proxySession()));
+
+        ConfigurationOperations.OperationView result = fixture.operations().get(fixture.applyId());
+        assertEquals("IN_PROGRESS", result.nodeStates().get("lobby"));
+        assertEquals("QUEUED", result.nodeStates().get("proxy-a"));
+        assertFalse(result.results().containsKey("lobby"));
+    }
+
+    @Test void proxyMethodApplyCancelsAnUnavailableBackendAfterItsLeaseExpires() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofSeconds(30));
+        assertNotNull(fixture.operations().claim("lobby", fixture.backendSession()));
+        fixture.clock().advance(Duration.ofMinutes(2));
+        fixture.registry().heartbeat("proxy-a", new Heartbeat(fixture.proxySession(), 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+
+        assertEquals(null, fixture.operations().claim("proxy-a", fixture.proxySession()));
+
+        ConfigurationOperations.OperationView result = fixture.operations().get(fixture.applyId());
+        assertEquals("COMPLETED_WITH_ERRORS", result.state());
+        assertEquals("CAPABILITY_LOST", result.results().get("lobby").code());
+        assertEquals("DEPENDENCY_FAILED", result.results().get("proxy-a").code());
+    }
+
+    @Test void proxyMethodApplyRequeuesAnAvailableBackendAfterItsLeaseExpires() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofMinutes(5));
+        ConfigurationTask first = fixture.operations().claim("lobby", fixture.backendSession());
+        fixture.clock().advance(Duration.ofMinutes(2));
+
+        assertEquals(null, fixture.operations().claim("proxy-a", fixture.proxySession()));
+        ConfigurationTask retry = fixture.operations().claim("lobby", fixture.backendSession());
+
+        assertNotNull(retry);
+        assertFalse(first.attemptId().equals(retry.attemptId()));
+        assertEquals("IN_PROGRESS", fixture.operations().get(fixture.applyId()).nodeStates().get("lobby"));
+    }
+
+    @Test void proxyMethodApplyRejectsTopologyChangesAfterApproval() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofMinutes(5));
+        ConfigurationTask backendApply = fixture.operations().claim("lobby", fixture.backendSession());
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+        fixture.operations().complete(fixture.applyId(), "lobby", new ConfigurationTaskResult(
+                fixture.backendSession(), true, "OK", "applied", "c".repeat(64), method, List.of(), false, false,
+                backendApply.attemptId()));
+        fixture.registry().replacePresence("proxy-a", new PresenceSnapshot(fixture.proxySession(), 2, 2, List.of(
+                new BackendServerIdentity("lobby", "Lobby", true, true, 0),
+                new BackendServerIdentity("new-backend", "New Backend", true, true, 0))));
+
+        assertEquals(null, fixture.operations().claim("proxy-a", fixture.proxySession()));
+
+        ConfigurationOperations.OperationView result = fixture.operations().get(fixture.applyId());
+        assertEquals("COMPLETED_WITH_ERRORS", result.state());
+        assertEquals("DEPENDENCY_CHANGED", result.results().get("proxy-a").code());
+    }
+
+    @Test void proxyMethodApplyRejectsAChangedTargetRole() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofMinutes(5));
+        ConfigurationTask backendApply = fixture.operations().claim("lobby", fixture.backendSession());
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+        fixture.operations().complete(fixture.applyId(), "lobby", new ConfigurationTaskResult(
+                fixture.backendSession(), true, "OK", "applied", "c".repeat(64), method, List.of(), false, false,
+                backendApply.attemptId()));
+        UUID replacementSession = UUID.randomUUID();
+        fixture.registry().register(new NodeRegistration("proxy-a", replacementSession, "Proxy A", "BUKKIT",
+                "test", 1, Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+
+        assertEquals(null, fixture.operations().claim("proxy-a", replacementSession));
+
+        ConfigurationOperations.OperationView result = fixture.operations().get(fixture.applyId());
+        assertEquals("COMPLETED_WITH_ERRORS", result.state());
+        assertEquals("TARGET_CHANGED", result.results().get("proxy-a").code());
+    }
+
+    @Test void proxyMethodApplyRevalidatesCompletedBackendIdentityBeforeProxyRelease() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofMinutes(5));
+        ConfigurationTask backendApply = fixture.operations().claim("lobby", fixture.backendSession());
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+        fixture.operations().complete(fixture.applyId(), "lobby", new ConfigurationTaskResult(
+                fixture.backendSession(), true, "OK", "applied", "c".repeat(64), method, List.of(), false, false,
+                backendApply.attemptId()));
+        fixture.registry().register(new NodeRegistration("lobby", UUID.randomUUID(), "Lobby", "VELOCITY", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY), Set.of()));
+
+        assertEquals(null, fixture.operations().claim("proxy-a", fixture.proxySession()));
+
+        ConfigurationOperations.OperationView result = fixture.operations().get(fixture.applyId());
+        assertEquals("COMPLETED_WITH_ERRORS", result.state());
+        assertEquals("DEPENDENCY_CHANGED", result.results().get("lobby").code());
+        assertEquals("DEPENDENCY_FAILED", result.results().get("proxy-a").code());
+    }
+
+    @Test void overlappingProxyMethodAppliesAreSerialized() throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-08-25T00:00:00Z"));
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(5));
+        UUID proxySession = UUID.randomUUID();
+        UUID backendSession = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY);
+        registry.register(new NodeRegistration("proxy-a", proxySession, "Proxy A", "VELOCITY", "test", 1,
+                capabilities, Set.of()));
+        registry.replacePresence("proxy-a", new PresenceSnapshot(proxySession, 1, 1,
+                List.of(new BackendServerIdentity("lobby", "Lobby", true, true, 0))));
+        registry.register(new NodeRegistration("lobby", backendSession, "Lobby", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+        ConfigurationOperations.OperationView firstPreview = operations.createPreview(
+                List.of("proxy-a", "lobby"), method);
+        ConfigurationOperations.OperationView secondPreview = operations.createPreview(
+                List.of("proxy-a", "lobby"), method);
+        firstPreview = completeProxyMethodPreview(operations, firstPreview, method, proxySession, backendSession,
+                "a", "b");
+        secondPreview = completeProxyMethodPreview(operations, secondPreview, method, proxySession, backendSession,
+                "c", "d");
+        UUID firstApply = operations.createApply(firstPreview.operationId(), firstPreview.approvalToken()).operationId();
+        ConfigurationTask backendApply = operations.claim("lobby", backendSession);
+        operations.complete(firstApply, "lobby", new ConfigurationTaskResult(backendSession, true, "OK", "applied",
+                "e".repeat(64), method, List.of(), false, false, backendApply.attemptId()));
+
+        ConfigurationOperations.OperationView approvedSecond = secondPreview;
+        assertEquals("OPERATION_CONFLICT", assertThrows(ValidationException.class,
+                () -> operations.createApply(approvedSecond.operationId(), approvedSecond.approvalToken())).code());
+    }
+
     @Test void fileAndQuickSetupOperationsRequireTheirNegotiatedCapabilities() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
@@ -642,6 +845,50 @@ class ConfigurationOperationsTest {
         @Override public Clock withZone(ZoneId zone) { return this; }
         @Override public Instant instant() { return instant; }
     }
+
+    private ConfigurationOperations.OperationView completeProxyMethodPreview(ConfigurationOperations operations,
+            ConfigurationOperations.OperationView preview, ManagedConfiguration method, UUID proxySession,
+            UUID backendSession, String proxyRevision, String backendRevision) {
+        ConfigurationTask proxyTask = operations.claim("proxy-a", proxySession);
+        ConfigurationTask backendTask = operations.claim("lobby", backendSession);
+        operations.complete(preview.operationId(), "proxy-a", new ConfigurationTaskResult(proxySession, true,
+                "OK", "valid", proxyRevision.repeat(64), method, List.of(), false, false, proxyTask.attemptId()));
+        return operations.complete(preview.operationId(), "lobby", new ConfigurationTaskResult(backendSession, true,
+                "OK", "valid", backendRevision.repeat(64), method, List.of(), false, false,
+                backendTask.attemptId()));
+    }
+
+    private ProxyMethodFixture proxyMethodApplyFixture(Duration offlineTimeout) throws Exception {
+        MutableClock clock = new MutableClock(Instant.parse("2026-08-25T00:00:00Z"));
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, offlineTimeout);
+        UUID proxySession = UUID.randomUUID();
+        UUID backendSession = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.PROXY_METHOD_CAPABILITY);
+        registry.register(new NodeRegistration("proxy-a", proxySession, "Proxy A", "VELOCITY", "test", 1,
+                capabilities, Set.of()));
+        registry.replacePresence("proxy-a", new PresenceSnapshot(proxySession, 1, 1,
+                List.of(new BackendServerIdentity("lobby", "Lobby", true, true, 0))));
+        registry.register(new NodeRegistration("lobby", backendSession, "Lobby", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("proxy-a", "lobby"), method);
+        ConfigurationTask proxyPreview = operations.claim("proxy-a", proxySession);
+        ConfigurationTask backendPreview = operations.claim("lobby", backendSession);
+        operations.complete(preview.operationId(), "proxy-a", new ConfigurationTaskResult(proxySession, true,
+                "OK", "valid", "a".repeat(64), method, List.of(), false, false, proxyPreview.attemptId()));
+        preview = operations.complete(preview.operationId(), "lobby", new ConfigurationTaskResult(backendSession,
+                true, "OK", "valid", "b".repeat(64), method, List.of(), false, false,
+                backendPreview.attemptId()));
+        UUID applyId = operations.createApply(preview.operationId(), preview.approvalToken()).operationId();
+        return new ProxyMethodFixture(clock, registry, operations, proxySession, backendSession, applyId);
+    }
+
+    private record ProxyMethodFixture(MutableClock clock, InMemoryNodeRegistry registry,
+                                      ConfigurationOperations operations, UUID proxySession,
+                                      UUID backendSession, UUID applyId) { }
 
     private static NodeRegistration registration(UUID sessionId) {
         return new NodeRegistration("proxy-a", sessionId, "Proxy A", "VELOCITY", "test", 1,

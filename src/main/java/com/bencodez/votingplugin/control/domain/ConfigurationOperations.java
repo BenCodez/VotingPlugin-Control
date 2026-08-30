@@ -28,6 +28,8 @@ public final class ConfigurationOperations implements AutoCloseable {
     public static final String FILE_CAPABILITY = "config.files.v1";
     public static final String QUICK_SETUP_CAPABILITY = "config.quick-setup.v1";
     public static final String VOTE_SITES_SYNC_CAPABILITY = "config.vote-sites-sync.v1";
+    public static final String TRANSPORT_TEST_CAPABILITY = "config.transport-test.v1";
+    public static final String PROXY_METHOD_CAPABILITY = "config.proxy-method.v1";
     private static final int MAX_OPERATIONS = 1000;
     private static final int MAX_FILE_OPERATIONS = 16;
     static final int MAX_RETAINED_CHANGE_BYTES = 256 * 1024;
@@ -60,15 +62,18 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     public synchronized OperationView createRead(List<String> nodeIds, ManagedConfiguration selector) {
         if (selector == null) selector = ManagedConfiguration.proxy(new ProxyRoutingConfiguration(false, List.of()));
+        selector.validateProposal();
         return create("READ", validateTargets(nodeIds, selector.capability()), selector, null);
     }
 
     public synchronized OperationView createPreview(List<String> nodeIds, ManagedConfiguration configuration) {
         if (configuration == null) throw invalid("configuration is required");
         configuration.validateProposal();
+        ValidatedTargets targets = validateTargets(nodeIds, configuration.capability());
+        validateProxyMethodTargets(targets, configuration);
         byte[] token = new byte[32];
         random.nextBytes(token);
-        return create("PREVIEW", validateTargets(nodeIds, configuration.capability()), configuration,
+        return create("PREVIEW", targets, configuration,
                 Base64.getUrlEncoder().withoutPadding().encodeToString(token));
     }
 
@@ -84,9 +89,13 @@ public final class ConfigurationOperations implements AutoCloseable {
                 approvalToken.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
             throw new ValidationException("APPROVAL_REQUIRED", "A valid unused preview approval is required", List.of());
         }
+        ValidatedTargets targets = validateTargets(new ArrayList<>(preview.states.keySet()),
+                preview.configuration.capability());
+        validateProxyMethodTargets(targets, preview.configuration);
+        rejectOverlappingProxyMethodApply(targets, preview.configuration);
         Map<String, String> revisions = new LinkedHashMap<>();
         preview.results.forEach((node, result) -> revisions.put(node, result.revision()));
-        StoredOperation apply = store("APPLY", new ArrayList<>(preview.states.keySet()), preview.configuration,
+        StoredOperation apply = store("APPLY", targets, preview.configuration,
                 null, revisions, preview.id);
         preview.approvalUsed = true;
         try {
@@ -118,6 +127,8 @@ public final class ConfigurationOperations implements AutoCloseable {
             Instant leased = operation.leasedAt.get(nodeId);
             if ("QUEUED".equals(state) || ("IN_PROGRESS".equals(state) && leased != null
                     && !now.isBefore(leased.plus(LEASE)))) {
+                if (cancelChangedProxyMethodRole(operation, node)) continue;
+                if (deferProxyMethodApply(operation, node)) continue;
                 if (!node.online() || !node.acceptedCapabilities().contains(operation.configuration.capability())) {
                     audit.append("TASK_CANCELLED", operation.id, nodeId, "CAPABILITY_LOST");
                     operation.results.put(nodeId, boundedResult(operation, new ConfigurationTaskResult(sessionId(node), false,
@@ -147,6 +158,137 @@ public final class ConfigurationOperations implements AutoCloseable {
             }
         }
         return null;
+    }
+
+    private boolean deferProxyMethodApply(StoredOperation operation, NodeStatus node) {
+        if (!"APPLY".equals(operation.type)
+                || !ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                || !ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset())
+                || "BUKKIT".equalsIgnoreCase(operation.targetPlatforms.get(node.nodeId()))) return false;
+        List<String> backends = operation.targetPlatforms.entrySet().stream()
+                .filter(entry -> "BUKKIT".equalsIgnoreCase(entry.getValue()))
+                .map(Map.Entry::getKey).toList();
+        for (String backendId : backends) {
+            String state = operation.states.get(backendId);
+            NodeStatus backend = registry.find(backendId);
+            if ("COMPLETE".equals(state)) {
+                ConfigurationTaskResult result = operation.results.get(backendId);
+                if (result == null || !result.success() || completedBackendStillValid(operation, backendId, backend,
+                        result)) continue;
+                audit.append("TASK_INVALIDATED", operation.id, backendId, "DEPENDENCY_CHANGED");
+                UUID backendSession = backend == null ? result.sessionId() : sessionId(backend);
+                releaseResultDetails(result);
+                operation.results.put(backendId, boundedResult(operation, new ConfigurationTaskResult(backendSession,
+                        false, "DEPENDENCY_CHANGED", "Backend identity changed after apply; preview again", null,
+                        (ManagedConfiguration) null, List.of(), false, false, null)));
+                continue;
+            }
+            if ("IN_PROGRESS".equals(state)) {
+                Instant leased = operation.leasedAt.get(backendId);
+                if (leased != null && clock.instant().isBefore(leased.plus(LEASE))) continue;
+                if (backend != null && backend.online()
+                        && backend.acceptedCapabilities().contains(operation.configuration.capability())) {
+                    audit.append("TASK_REQUEUED", operation.id, backendId, "LEASE_EXPIRED");
+                    operation.states.put(backendId, "QUEUED");
+                    operation.leasedAt.remove(backendId);
+                    operation.attemptIds.remove(backendId);
+                    continue;
+                }
+            } else if (!"QUEUED".equals(state)) {
+                continue;
+            }
+            if (backend != null && backend.online()
+                    && backend.acceptedCapabilities().contains(operation.configuration.capability())) continue;
+            audit.append("TASK_CANCELLED", operation.id, backendId, "CAPABILITY_LOST");
+            UUID backendSession = backend == null ? operation.targetSessions.get(backendId) : sessionId(backend);
+            operation.results.put(backendId, boundedResult(operation, new ConfigurationTaskResult(backendSession, false,
+                    "CAPABILITY_LOST", "Backend became unavailable before proxy method apply", null,
+                    (ManagedConfiguration) null, List.of(), false, false, null)));
+            operation.states.put(backendId, "COMPLETE");
+            operation.leasedAt.remove(backendId);
+            operation.attemptIds.remove(backendId);
+        }
+        if (backends.stream().anyMatch(id -> !"COMPLETE".equals(operation.states.get(id)))) return true;
+        if (backends.stream().noneMatch(id -> operation.results.get(id) == null
+                || !operation.results.get(id).success())) {
+            Set<String> expectedBackends = new HashSet<>(backends);
+            Set<String> currentBackends = new HashSet<>();
+            node.backends().forEach(backend -> currentBackends.add(backend.backendId()));
+            if (expectedBackends.equals(currentBackends)) return false;
+            audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "TOPOLOGY_CHANGED");
+            operation.results.put(node.nodeId(), boundedResult(operation, new ConfigurationTaskResult(sessionId(node),
+                    false, "DEPENDENCY_CHANGED", "Proxy topology changed after approval; preview again", null,
+                    (ManagedConfiguration) null, List.of(), false, false, null)));
+            operation.states.put(node.nodeId(), "COMPLETE");
+            operation.leasedAt.remove(node.nodeId());
+            operation.attemptIds.remove(node.nodeId());
+            return true;
+        }
+        audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "BACKEND_APPLY_FAILED");
+        operation.results.put(node.nodeId(), boundedResult(operation, new ConfigurationTaskResult(sessionId(node), false,
+                "DEPENDENCY_FAILED", "A backend failed the proxy method apply", null,
+                (ManagedConfiguration) null, List.of(), false, false, null)));
+        operation.states.put(node.nodeId(), "COMPLETE");
+        operation.leasedAt.remove(node.nodeId());
+        operation.attemptIds.remove(node.nodeId());
+        return true;
+    }
+
+    private boolean completedBackendStillValid(StoredOperation operation, String backendId, NodeStatus backend,
+            ConfigurationTaskResult result) {
+        return backend != null && backend.online()
+                && "BUKKIT".equalsIgnoreCase(operation.targetPlatforms.get(backendId))
+                && "BUKKIT".equalsIgnoreCase(backend.platform())
+                && backend.acceptedCapabilities().contains(operation.configuration.capability())
+                && result.sessionId().equals(sessionId(backend));
+    }
+
+    private boolean cancelChangedProxyMethodRole(StoredOperation operation, NodeStatus node) {
+        if (!"APPLY".equals(operation.type)
+                || !ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                || !ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset())) return false;
+        String expectedPlatform = operation.targetPlatforms.get(node.nodeId());
+        if (expectedPlatform == null || expectedPlatform.equalsIgnoreCase(node.platform())) return false;
+        audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "TARGET_ROLE_CHANGED");
+        operation.results.put(node.nodeId(), boundedResult(operation, new ConfigurationTaskResult(sessionId(node),
+                false, "TARGET_CHANGED", "Node platform changed after approval; preview again", null,
+                (ManagedConfiguration) null, List.of(), false, false, null)));
+        operation.states.put(node.nodeId(), "COMPLETE");
+        operation.leasedAt.remove(node.nodeId());
+        operation.attemptIds.remove(node.nodeId());
+        return true;
+    }
+
+    private void rejectOverlappingProxyMethodApply(ValidatedTargets targets, ManagedConfiguration configuration) {
+        if (!ManagedConfiguration.QUICK_SETUP.equals(configuration.domain())
+                || !ManagedConfiguration.PROXY_METHOD.equals(configuration.preset())) return;
+        Set<String> requested = new HashSet<>(targets.nodeIds());
+        boolean conflict = operations.values().stream().anyMatch(operation -> "APPLY".equals(operation.type)
+                && !operation.complete()
+                && ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                && ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset())
+                && operation.states.keySet().stream().anyMatch(requested::contains));
+        if (conflict) {
+            throw new ValidationException("OPERATION_CONFLICT",
+                    "Another proxy method apply is still running for this network", List.of());
+        }
+    }
+
+    private void validateProxyMethodTargets(ValidatedTargets targets, ManagedConfiguration configuration) {
+        if (!ManagedConfiguration.QUICK_SETUP.equals(configuration.domain())
+                || !ManagedConfiguration.PROXY_METHOD.equals(configuration.preset())) return;
+        List<NodeStatus> proxies = targets.nodeIds().stream()
+                .filter(id -> !"BUKKIT".equalsIgnoreCase(targets.platforms().get(id)))
+                .map(registry::find).filter(Objects::nonNull).toList();
+        if (proxies.size() != 1 || proxies.get(0).backends().isEmpty()) {
+            throw invalid("proxy method requires one proxy and its reported backends");
+        }
+        java.util.Set<String> expected = new java.util.LinkedHashSet<>();
+        expected.add(proxies.get(0).nodeId());
+        proxies.get(0).backends().forEach(backend -> expected.add(backend.backendId()));
+        if (!expected.equals(new java.util.LinkedHashSet<>(targets.nodeIds()))) {
+            throw invalid("proxy method targets must match the complete reported backend network");
+        }
     }
 
     public synchronized OperationView complete(UUID operationId, String nodeId, ConfigurationTaskResult result) {
@@ -182,7 +324,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         return view(operation);
     }
 
-    private OperationView create(String type, List<String> targets, ManagedConfiguration config, String token) {
+    private OperationView create(String type, ValidatedTargets targets, ManagedConfiguration config, String token) {
         StoredOperation operation = store(type, targets, config, token, Map.of(), null);
         try {
             audit.append("OPERATION_CREATED", operation.id, null, type);
@@ -193,7 +335,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         return view(operation);
     }
 
-    private StoredOperation store(String type, List<String> targets, ManagedConfiguration config,
+    private StoredOperation store(String type, ValidatedTargets targets, ManagedConfiguration config,
                                   String token, Map<String, String> revisions, UUID protectedOperation) {
         prune();
         ensureFileCapacity(config, protectedOperation);
@@ -201,9 +343,10 @@ public final class ConfigurationOperations implements AutoCloseable {
                 "Too many retained operations", List.of());
         UUID id = UUID.randomUUID();
         LinkedHashMap<String, String> states = new LinkedHashMap<>();
-        targets.forEach(node -> states.put(node, "QUEUED"));
+        targets.nodeIds().forEach(node -> states.put(node, "QUEUED"));
         StoredOperation result = new StoredOperation(id, type, config, token, clock.instant(), states,
-                new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(revisions));
+                new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(), new LinkedHashMap<>(revisions),
+                new LinkedHashMap<>(targets.platforms()), new LinkedHashMap<>(targets.sessions()));
         operations.put(id, result);
         return result;
     }
@@ -306,20 +449,24 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private void releaseResultDetails(StoredOperation operation) {
-        for (ConfigurationTaskResult result : operation.results.values()) {
-            retainedMessageBytes -= result.message().getBytes(StandardCharsets.UTF_8).length;
-            for (String change : result.changes()) {
-                retainedChangeBytes -= change.getBytes(StandardCharsets.UTF_8).length;
-            }
+        operation.results.values().forEach(this::releaseResultDetails);
+    }
+
+    private void releaseResultDetails(ConfigurationTaskResult result) {
+        retainedMessageBytes -= result.message().getBytes(StandardCharsets.UTF_8).length;
+        for (String change : result.changes()) {
+            retainedChangeBytes -= change.getBytes(StandardCharsets.UTF_8).length;
         }
         if (retainedChangeBytes < 0) retainedChangeBytes = 0;
         if (retainedMessageBytes < 0) retainedMessageBytes = 0;
     }
 
-    private List<String> validateTargets(List<String> nodeIds, String capability) {
+    private ValidatedTargets validateTargets(List<String> nodeIds, String capability) {
         if (nodeIds == null || nodeIds.isEmpty() || nodeIds.size() > 100) throw invalid("nodeIds must contain 1 to 100 entries");
         Set<String> unique = new HashSet<>();
         List<String> result = new ArrayList<>();
+        Map<String, String> platforms = new LinkedHashMap<>();
+        Map<String, UUID> sessions = new LinkedHashMap<>();
         for (String nodeId : nodeIds) {
             if (nodeId == null || !unique.add(nodeId)) throw invalid("nodeIds must be unique");
             NodeStatus node = registry.find(nodeId);
@@ -327,8 +474,10 @@ public final class ConfigurationOperations implements AutoCloseable {
                 throw new ValidationException("NODE_UNAVAILABLE", "Node cannot accept configuration operations", List.of(nodeId));
             }
             result.add(nodeId);
+            platforms.put(nodeId, node.platform());
+            sessions.put(nodeId, node.sessionId());
         }
-        return List.copyOf(result);
+        return new ValidatedTargets(List.copyOf(result), Map.copyOf(platforms), Map.copyOf(sessions));
     }
 
     private OperationView view(StoredOperation operation) {
@@ -387,6 +536,9 @@ public final class ConfigurationOperations implements AutoCloseable {
                                 ManagedConfiguration configuration, Map<String, String> nodeStates,
                                 Map<String, ConfigurationTaskResult> results, String approvalToken) { }
 
+    private record ValidatedTargets(List<String> nodeIds, Map<String, String> platforms,
+                                    Map<String, UUID> sessions) { }
+
     private static final class StoredOperation {
         private final UUID id;
         private final String type;
@@ -398,6 +550,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         private final LinkedHashMap<String, Instant> leasedAt;
         private final LinkedHashMap<String, UUID> attemptIds;
         private final LinkedHashMap<String, String> expectedRevisions;
+        private final LinkedHashMap<String, String> targetPlatforms;
+        private final LinkedHashMap<String, UUID> targetSessions;
         private boolean approvalUsed;
 
         private StoredOperation(UUID id, String type, ManagedConfiguration configuration, String approvalToken,
@@ -405,11 +559,15 @@ public final class ConfigurationOperations implements AutoCloseable {
                                 LinkedHashMap<String, ConfigurationTaskResult> results,
                                 LinkedHashMap<String, Instant> leasedAt,
                                 LinkedHashMap<String, UUID> attemptIds,
-                                LinkedHashMap<String, String> expectedRevisions) {
+                                LinkedHashMap<String, String> expectedRevisions,
+                                LinkedHashMap<String, String> targetPlatforms,
+                                LinkedHashMap<String, UUID> targetSessions) {
             this.id = id; this.type = type; this.configuration = configuration; this.approvalToken = approvalToken;
             this.createdAt = createdAt; this.states = states; this.results = results; this.leasedAt = leasedAt;
             this.attemptIds = attemptIds;
             this.expectedRevisions = expectedRevisions;
+            this.targetPlatforms = targetPlatforms;
+            this.targetSessions = targetSessions;
         }
         private boolean complete() { return states.values().stream().allMatch("COMPLETE"::equals); }
         private boolean fileOperation() {

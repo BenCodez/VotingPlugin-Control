@@ -83,6 +83,15 @@ const voteSitesSyncCapability = document.querySelector('#vote-sites-sync-capabil
 const previewVoteSitesSync = document.querySelector('#preview-vote-sites-sync');
 const applyVoteSitesSync = document.querySelector('#apply-vote-sites-sync');
 const voteSitesSyncStatus = document.querySelector('#vote-sites-sync-status');
+const transportTestProxy = document.querySelector('#transport-test-proxy');
+const transportTestBackend = document.querySelector('#transport-test-backend');
+const transportTestCapability = document.querySelector('#transport-test-capability');
+const runTransportTest = document.querySelector('#run-transport-test');
+const transportTestStatus = document.querySelector('#transport-test-status');
+const proxyMethodProxy = document.querySelector('#proxy-method-proxy');
+const proxyMethodCapability = document.querySelector('#proxy-method-capability');
+const proxyMethodButtons = [...document.querySelectorAll('[data-proxy-method]')];
+const proxyMethodStatus = document.querySelector('#proxy-method-status');
 const enrollmentCard = document.querySelector('#enrollment-card');
 const enrollmentForm = document.querySelector('#enrollment-form');
 const enrollmentSubmit = enrollmentForm.querySelector('button[type="submit"]');
@@ -94,6 +103,7 @@ const refreshEnrollments = document.querySelector('#refresh-enrollments');
 const PAGE_SIZE = 100;
 const MAX_CONFIGURATION_TARGETS = 100;
 const MAX_SYNC_TARGETS = 100;
+const MAX_OPERATION_TARGETS = 100;
 const MAX_REGISTRY_SCAN_ATTEMPTS = 3;
 let authenticated = false;
 let csrfToken = '';
@@ -106,6 +116,7 @@ let nodeIndex = new Map();
 let enrollmentIds = new Set();
 let enrollmentsLoaded = false;
 let backendTopologyTruncated = false;
+let backendTopologyTruncatedNodeIds = new Set();
 let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
@@ -113,6 +124,9 @@ let approvedVoteSitesPreview = null;
 let voteSitesSourceId = '';
 let voteSitesTargetIds = new Set();
 let voteSitesTargetsInitialized = false;
+let transportTestProxyId = '';
+let transportTestBackendId = '';
+let proxyMethodProxyId = '';
 let nodeCapabilities = new Map();
 let nodePlugins = new Map();
 let inputGeneration = 0;
@@ -123,6 +137,7 @@ let enrollmentInFlight = false;
 let enrollmentRefreshRequested = false;
 let enrollmentMutationInFlight = false;
 let configurationOperationsInFlight = 0;
+let proxyMethodWorkflowInFlight = false;
 
 function text(element, value) {
   element.textContent = value;
@@ -175,6 +190,9 @@ function applyAuthenticatedSession(body) {
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
   voteSitesTargetsInitialized = false;
+  transportTestProxyId = '';
+  transportTestBackendId = '';
+  proxyMethodProxyId = '';
   configurationContent.value = '';
   inputGeneration++;
   logout.hidden = false;
@@ -213,6 +231,8 @@ function friendlyCapability(capability) {
     'config.files.v1': 'Full configuration',
     'config.file-comments.v1': 'Comments preserved',
     'config.vote-sites-sync.v1': 'VoteSites sync',
+    'config.transport-test.v1': 'Communication test',
+    'config.proxy-method.v1': 'Proxy method',
     'config.quick-setup.v1': 'Quick Setup',
     'config.proxy-routing.v1': 'Proxy routing'
   })[capability];
@@ -574,6 +594,106 @@ function renderVoteSitesSync() {
   voteSitesSyncCapability.className = `pill ${readyCount > 0 ? 'online' : 'neutral'}`;
 }
 
+function transportTestProxies() {
+  return allNodeItems.filter(node => isProxy(node) && node.online &&
+    node.acceptedCapabilities.includes('config.transport-test.v1'));
+}
+
+function renderTransportTest() {
+  const proxies = transportTestProxies();
+  if (!proxies.some(node => node.nodeId === transportTestProxyId)) {
+    transportTestProxyId = proxies.find(node => node.nodeId === selectedServerId)?.nodeId || proxies[0]?.nodeId || '';
+    transportTestBackendId = '';
+  }
+  const proxy = proxies.find(node => node.nodeId === transportTestProxyId);
+  const reported = Array.isArray(proxy?.backends) ? proxy.backends : [];
+  const backendChoices = new Map(reported.map(backend => [backend.backendId, backend]));
+  allNodeItems.filter(isBackend).forEach(node => {
+    if (!backendChoices.has(node.nodeId)) backendChoices.set(node.nodeId,
+      {backendId: node.nodeId, displayName: node.displayName});
+  });
+  const backends = [...backendChoices.values()];
+  if (!backends.some(backend => backend.backendId === transportTestBackendId)) {
+    transportTestBackendId = backends[0]?.backendId || '';
+  }
+
+  const proxyPlaceholder = text(document.createElement('option'), proxies.length ? 'Choose a proxy' : 'No capable proxies');
+  proxyPlaceholder.value = '';
+  transportTestProxy.replaceChildren(proxyPlaceholder, ...proxies.map(node => {
+    const option = text(document.createElement('option'), `${node.displayName} · ${node.nodeId}`);
+    option.value = node.nodeId;
+    return option;
+  }));
+  transportTestProxy.value = transportTestProxyId;
+
+  const backendPlaceholder = text(document.createElement('option'), backends.length ? 'Choose a backend' : 'No backends reported');
+  backendPlaceholder.value = '';
+  transportTestBackend.replaceChildren(backendPlaceholder, ...backends.map(backend => {
+    const option = text(document.createElement('option'), `${backend.displayName} · ${backend.backendId}`);
+    option.value = backend.backendId;
+    return option;
+  }));
+  transportTestBackend.value = transportTestBackendId;
+
+  text(transportTestCapability, proxies.length > 0
+    ? `${proxies.length} test-capable ${proxies.length === 1 ? 'proxy' : 'proxies'}` : 'Waiting for a capable proxy');
+  transportTestCapability.className = `pill ${proxies.length > 0 ? 'online' : 'neutral'}`;
+}
+
+function proxyMethodCandidates() {
+  return allNodeItems.filter(node => isProxy(node) && node.online &&
+    node.acceptedCapabilities.includes('config.proxy-method.v1'));
+}
+
+function proxyMethodNetworkFor(items, truncatedNodeIds, proxyId) {
+  const index = new Map(items.map(node => [node.nodeId, node]));
+  const proxy = index.get(proxyId);
+  const proxyReady = Boolean(proxy?.online && proxy.acceptedCapabilities.includes('config.proxy-method.v1'));
+  const reported = Array.isArray(proxy?.backends) ? proxy.backends : [];
+  const backends = reported.map(backend => index.get(backend.backendId)).filter(Boolean);
+  const unavailable = reported.filter(backend => {
+    const node = index.get(backend.backendId);
+    return !node || !isBackend(node) || !node.online || !node.acceptedCapabilities.includes('config.proxy-method.v1');
+  });
+  return {proxy, proxyReady, reported, backends, unavailable, topologyComplete: !truncatedNodeIds.has(proxyId),
+    nodeIds: proxy ? [proxy.nodeId, ...backends.map(node => node.nodeId)] : []};
+}
+
+function proxyMethodNetwork() {
+  return proxyMethodNetworkFor(allNodeItems, backendTopologyTruncatedNodeIds, proxyMethodProxyId);
+}
+
+function proxyMethodNetworkSignature(network) {
+  return JSON.stringify({proxyReady: network.proxyReady, topologyComplete: network.topologyComplete, nodeIds: [...network.nodeIds].sort(),
+    unavailable: network.unavailable.map(backend => backend.backendId).sort()});
+}
+
+function renderProxyMethod() {
+  const proxies = proxyMethodCandidates();
+  if (!proxies.some(node => node.nodeId === proxyMethodProxyId)) {
+    proxyMethodProxyId = proxies.find(node => node.nodeId === selectedServerId)?.nodeId || proxies[0]?.nodeId || '';
+  }
+  const placeholder = text(document.createElement('option'), proxies.length ? 'Choose a proxy' : 'No capable proxies');
+  placeholder.value = '';
+  proxyMethodProxy.replaceChildren(placeholder, ...proxies.map(node => {
+    const option = text(document.createElement('option'), `${node.displayName} · ${node.nodeId}`);
+    option.value = node.nodeId;
+    return option;
+  }));
+  proxyMethodProxy.value = proxyMethodProxyId;
+  const network = proxyMethodNetwork();
+  const ready = network.proxyReady && network.topologyComplete && network.reported.length > 0 &&
+    network.nodeIds.length <= MAX_OPERATION_TARGETS && network.unavailable.length === 0;
+  const description = !network.proxyReady ? 'Waiting for a connected, capable proxy'
+    : !network.topologyComplete ? 'Backend topology is truncated; switching disabled'
+    : network.nodeIds.length > MAX_OPERATION_TARGETS ? `Network exceeds the ${MAX_OPERATION_TARGETS}-node operation limit`
+    : network.reported.length === 0 ? 'No backends reported'
+    : network.unavailable.length > 0 ? `${network.unavailable.length} backends unavailable`
+    : `${network.nodeIds.length} nodes ready`;
+  text(proxyMethodCapability, description);
+  proxyMethodCapability.className = `pill ${ready ? 'online' : 'neutral'}`;
+}
+
 function renderNodeViews() {
   nodes.replaceChildren();
   nodes.classList.toggle('empty', visibleNodeItems.length === 0);
@@ -586,6 +706,8 @@ function renderNodeViews() {
   renderTopology();
   renderSelectedServer();
   renderVoteSitesSync();
+  renderTransportTest();
+  renderProxyMethod();
 }
 
 function resetServerConfigurationForms(status) {
@@ -608,7 +730,7 @@ function selectPrimaryServer(nodeId) {
   renderNodeViews();
 }
 
-function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) {
+function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 || proxyMethodWorkflowInFlight) {
   const primaryCapabilities = nodeCapabilities.get(selectedServerId) || [];
   const routingReady = authenticated && primaryCapabilities.includes('config.proxy-routing.v1') &&
     targets('config.proxy-routing.v1').length > 0 && !busy;
@@ -627,6 +749,11 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0) 
   applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
   previewVoteSitesSync.disabled = !voteSitesReady;
   applyVoteSitesSync.disabled = !voteSitesReady || !approvedVoteSitesPreview;
+  runTransportTest.disabled = !authenticated || !transportTestProxyId || !transportTestBackendId || busy;
+  const methodNetwork = proxyMethodNetwork();
+  const methodReady = authenticated && methodNetwork.proxyReady && methodNetwork.topologyComplete && methodNetwork.reported.length > 0 &&
+    methodNetwork.nodeIds.length <= MAX_OPERATION_TARGETS && methodNetwork.unavailable.length === 0 && !busy;
+  proxyMethodButtons.forEach(button => { button.disabled = !methodReady; });
 }
 
 function targets(capability) {
@@ -751,12 +878,16 @@ function discardAuthenticationState(reason) {
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
   voteSitesTargetsInitialized = false;
+  transportTestProxyId = '';
+  transportTestBackendId = '';
+  proxyMethodProxyId = '';
   selectedServerId = '';
   visibleNodeItems = [];
   allNodeItems = [];
   enrollmentIds.clear();
   enrollmentsLoaded = false;
   backendTopologyTruncated = false;
+  backendTopologyTruncatedNodeIds = new Set();
   nodeIndex.clear();
   nodeCapabilities.clear();
   nodePlugins.clear();
@@ -770,6 +901,8 @@ function discardAuthenticationState(reason) {
   text(fileOperationStatus, '');
   text(quickOperationStatus, '');
   text(voteSitesSyncStatus, '');
+  text(transportTestStatus, '');
+  text(proxyMethodStatus, '');
   nodes.replaceChildren();
   nodes.classList.add('empty');
   text(nodes, 'Authenticate to view the network.');
@@ -885,6 +1018,7 @@ async function loadAllNodes() {
     const items = [];
     const pageMetadata = new Map();
     const ids = new Set();
+    const truncatedNodeIds = new Set();
     let revision = null;
     let total = null;
     let truncated = false;
@@ -904,11 +1038,12 @@ async function loadAllNodes() {
         page.items.forEach(node => ids.add(node.nodeId));
         items.push(...page.items);
         truncated ||= Boolean(page.backendItemsTruncated);
+        (page.backendItemsTruncatedNodeIds || []).forEach(nodeId => truncatedNodeIds.add(nodeId));
         pageMetadata.set(offset, {
           backendItemsReturned: page.backendItemsReturned,
           backendItemsTruncated: Boolean(page.backendItemsTruncated)
         });
-        if (items.length === total) return {items, truncated, pageMetadata};
+        if (items.length === total) return {items, truncated, truncatedNodeIds, pageMetadata};
         if (page.items.length === 0 || items.length > total) {
           throw Object.assign(new Error('Node registry changed during pagination.'), {code: 'REGISTRY_CHANGED'});
         }
@@ -931,6 +1066,7 @@ async function loadNodes() {
     visibleNodeItems = registry.items.slice(pageOffset, pageOffset + PAGE_SIZE);
     allNodeItems = registry.items;
     backendTopologyTruncated = registry.truncated;
+    backendTopologyTruncatedNodeIds = registry.truncatedNodeIds;
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
     const previousCapabilities = nodeCapabilities;
     nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
@@ -1353,6 +1489,82 @@ applyVoteSitesSync.addEventListener('click', async () => {
     }, voteSitesSyncStatus);
   } catch (error) { text(voteSitesSyncStatus, error.message); }
 });
+
+transportTestProxy.addEventListener('change', () => {
+  transportTestProxyId = transportTestProxy.value;
+  transportTestBackendId = '';
+  renderTransportTest();
+  text(transportTestStatus, 'Choose a backend, then run a live non-vote communication test.');
+  updateConfigurationButtons();
+});
+
+transportTestBackend.addEventListener('change', () => {
+  transportTestBackendId = transportTestBackend.value;
+  text(transportTestStatus, 'Ready to test the active VotingPlugin transport.');
+  updateConfigurationButtons();
+});
+
+runTransportTest.addEventListener('click', async () => {
+  const proxyId = transportTestProxyId;
+  const server = transportTestBackendId;
+  try {
+    const operation = await startConfigurationOperation('/api/v1/configuration/read', {
+      nodeIds: [proxyId],
+      configuration: {domain: 'quick-setup', preset: 'communication-test', options: {server}}
+    }, transportTestStatus);
+    if (proxyId !== transportTestProxyId || server !== transportTestBackendId) {
+      text(transportTestStatus, 'The proxy or backend changed while testing. Run the test again.');
+      return;
+    }
+    text(transportTestStatus, operationSummary(operation));
+  } catch (error) { text(transportTestStatus, error.message); }
+});
+
+proxyMethodProxy.addEventListener('change', () => {
+  proxyMethodProxyId = proxyMethodProxy.value;
+  renderProxyMethod();
+  const network = proxyMethodNetwork();
+  text(proxyMethodStatus, network.unavailable.length > 0
+    ? `Cannot switch yet. Enroll, update, and connect: ${network.unavailable.map(backend => backend.displayName).join(', ')}.`
+    : 'Choose a method to preflight every node before applying.');
+  updateConfigurationButtons();
+});
+
+proxyMethodButtons.forEach(button => button.addEventListener('click', async () => {
+  const method = button.dataset.proxyMethod;
+  const network = proxyMethodNetwork();
+  if (!network.proxyReady || !network.topologyComplete || network.reported.length === 0 ||
+      network.nodeIds.length > MAX_OPERATION_TARGETS || network.unavailable.length > 0 || proxyMethodWorkflowInFlight) return;
+  proxyMethodWorkflowInFlight = true;
+  updateConfigurationButtons();
+  try {
+    const preview = await startConfigurationOperation('/api/v1/configuration/preview', {
+      nodeIds: network.nodeIds,
+      configuration: {domain: 'quick-setup', preset: 'proxy-method', options: {method}}
+    }, proxyMethodStatus);
+    if (preview.state !== 'SUCCEEDED' || !preview.approvalToken) return;
+    if (!window.confirm(`Switch ${network.nodeIds.length} VotingPlugin nodes to ${method}? ` +
+        'The proxy runtime will restart after Control records the result.')) return;
+    const refreshedRegistry = await loadAllNodes();
+    const refreshedNetwork = proxyMethodNetworkFor(refreshedRegistry.items, refreshedRegistry.truncatedNodeIds,
+      proxyMethodProxyId);
+    if (proxyMethodProxyId !== network.proxy.nodeId ||
+        proxyMethodNetworkSignature(refreshedNetwork) !== proxyMethodNetworkSignature(network) ||
+        refreshedNetwork.nodeIds.length > MAX_OPERATION_TARGETS) {
+      text(proxyMethodStatus, 'The complete proxy topology changed while preflighting. Refresh and choose the method again.');
+      return;
+    }
+    const applied = await startConfigurationOperation('/api/v1/configuration/apply', {
+      previewOperationId: preview.operationId, approvalToken: preview.approvalToken
+    }, proxyMethodStatus);
+    text(proxyMethodStatus, `${operationSummary(applied)}\nReconnect the proxy if needed, then run the communication test.`);
+  } catch (error) {
+    text(proxyMethodStatus, error.message);
+  } finally {
+    proxyMethodWorkflowInFlight = false;
+    updateConfigurationButtons();
+  }
+}));
 
 [configurationContent, quickName, quickService, quickUrl, quickDelay, quickRewardScope,
   quickCommand, quickMessage, quickProcessRewards, quickAutoSites, quickExtraCheck, quickCountFake,

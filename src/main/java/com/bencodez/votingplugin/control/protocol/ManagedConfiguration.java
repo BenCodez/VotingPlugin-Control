@@ -11,6 +11,8 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
     public static final String FILE = "file";
     public static final String QUICK_SETUP = "quick-setup";
     public static final String VOTE_SITES_SYNC = "sync-vote-sites";
+    public static final String COMMUNICATION_TEST = "communication-test";
+    public static final String PROXY_METHOD = "proxy-method";
     public static final int MAX_CONTENT = 512 * 1024;
 
     public ManagedConfiguration {
@@ -60,6 +62,16 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
                 && (options.size() != 1 || !options.containsKey("sourceContent"))) {
             throw new IllegalArgumentException("VoteSites sync requires sourceContent");
         }
+        if (QUICK_SETUP.equals(domain) && COMMUNICATION_TEST.equals(preset)
+                && (options.size() != 1 || options.get("server") == null
+                || !options.get("server").matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}"))) {
+            throw new IllegalArgumentException("communication test requires one valid server");
+        }
+        if (QUICK_SETUP.equals(domain) && PROXY_METHOD.equals(preset)
+                && (options.size() != 1 || !List.of("PLUGINMESSAGING", "REDIS", "MQTT", "SOCKETS", "MYSQL")
+                .contains(options.get("method")))) {
+            throw new IllegalArgumentException("proxy method requires one supported method");
+        }
     }
 
     public String capability() {
@@ -67,7 +79,9 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             case PROXY_ROUTING -> "config.proxy-routing.v1";
             case FILE -> "config.files.v1";
             case QUICK_SETUP -> VOTE_SITES_SYNC.equals(preset)
-                    ? "config.vote-sites-sync.v1" : "config.quick-setup.v1";
+                    ? "config.vote-sites-sync.v1" : COMMUNICATION_TEST.equals(preset)
+                    ? "config.transport-test.v1" : PROXY_METHOD.equals(preset)
+                    ? "config.proxy-method.v1" : "config.quick-setup.v1";
             default -> throw new IllegalStateException("unsupported configuration domain");
         };
     }
