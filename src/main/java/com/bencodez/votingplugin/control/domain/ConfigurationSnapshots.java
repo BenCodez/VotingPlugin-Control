@@ -72,17 +72,25 @@ public final class ConfigurationSnapshots {
                         Files.copy(backup, directory.resolve(backup.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
                     }
                 }
-                try (var snapshots = Files.list(directory)) {
-                    snapshots.filter(path -> path.getFileName().toString().matches("[0-9a-f-]{36}\\.json"))
-                            .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
-                            .sorted(snapshotOrder().reversed()).skip(MAX_SNAPSHOTS).forEach(path -> {
-                                try { Files.deleteIfExists(path); } catch (IOException ignored) { }
-                            });
-                }
+                trimRecoveredSnapshots();
                 try { Files.deleteIfExists(transaction); } catch (IOException ignored) { }
             }
         }
         DurableFiles.forceDirectory(directory);
+    }
+
+    private void trimRecoveredSnapshots() throws IOException {
+        List<Path> snapshots;
+        try (var stream = Files.list(directory)) {
+            snapshots = stream.filter(path -> path.getFileName().toString().matches("[0-9a-f-]{36}\\.json"))
+                    .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).sorted(snapshotOrder()).toList();
+        }
+        long bytes = snapshots.stream().mapToLong(path -> { try { return Files.size(path); } catch (IOException e) { return Long.MAX_VALUE; } }).sum();
+        for (Path snapshot : snapshots) {
+            if (snapshots.size() <= MAX_SNAPSHOTS && bytes <= MAX_TOTAL_STORED_BYTES) break;
+            try { bytes -= Files.size(snapshot); } catch (IOException ignored) { }
+            Files.deleteIfExists(snapshot);
+        }
     }
 
     public synchronized Snapshot create(String name, ConfigurationOperations.OperationView operation) throws IOException {

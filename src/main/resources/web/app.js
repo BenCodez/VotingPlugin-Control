@@ -2725,9 +2725,14 @@ async function loadSnapshots() {
       restore.type = 'button';
       restore.className = 'secondary compact';
       restore.addEventListener('click', async () => {
-        restore.disabled = true;
-        try {
-          const full = await authorized(`/api/v1/snapshots/${snapshot.snapshotId}`);
+      restore.disabled = true;
+      const restoreServerId = selectedServerId;
+      const restoreGeneration = inputGeneration;
+      try {
+        const full = await authorized(`/api/v1/snapshots/${snapshot.snapshotId}`);
+        if (restoreServerId !== selectedServerId || restoreGeneration !== inputGeneration) {
+          throw new Error('The selected server changed while loading the snapshot. Load it again.');
+        }
           const document = full.documents.find(value => value.nodeId === selectedServerId) || full.documents[0];
           if (!document) throw new Error('This snapshot has no restorable document.');
           if (!nodeCapabilities.get(selectedServerId)?.includes('config.files.v1')) {
