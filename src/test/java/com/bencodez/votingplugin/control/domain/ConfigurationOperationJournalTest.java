@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.bencodez.votingplugin.control.protocol.ConfigurationTask;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
+import com.bencodez.votingplugin.control.protocol.Heartbeat;
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import java.io.IOException;
@@ -143,6 +144,27 @@ class ConfigurationOperationJournalTest {
             assertTrue(recovered.recovered());
             assertEquals("CONTROL_RESTARTED", recovered.results().get("backend-a").code());
             assertNull(recovered.results().get("backend-a").sessionId());
+        }
+    }
+
+    @Test void automaticCapabilityCancellationIsPersistedAtTheTransition() throws Exception {
+        InMemoryNodeRegistry registry = registry();
+        Path journalDirectory = directory.resolve("journal-automatic-cancellation");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        UUID operation;
+        try (ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory.resolve("audit-automatic-cancellation"), clock), clock,
+                journal)) {
+            operation = operations.createRead(List.of("backend-a"), ManagedConfiguration.file("Config.yml", null))
+                    .operationId();
+            UUID session = registry.find("backend-a").sessionId();
+            registry.heartbeat("backend-a", new Heartbeat(session, 1, Set.of("discovery.read"), Set.of()));
+
+            assertNull(operations.claim("backend-a", session));
+            ConfigurationOperationJournal.Entry stored = journal.load().stream()
+                    .filter(entry -> operation.equals(entry.operationId())).findFirst().orElseThrow();
+            assertTrue(stored.nodes().get(0).complete());
+            assertEquals("CAPABILITY_LOST", stored.nodes().get(0).code());
         }
     }
 

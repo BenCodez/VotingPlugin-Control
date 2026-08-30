@@ -145,7 +145,8 @@ node stays incomplete in the journal on later shutdowns, while each public recov
 After a restart, journal entries are exposed as `recovered:true` history. Any node that had not completed is shown failed
 with `CONTROL_RESTARTED`; a recovered entry is never resumed or retried because its sensitive input, live session binding,
 task attempt, and approval are not persisted. A completed result's historical session ID is display state, not a live task
-binding. Start a fresh read or preview. This preserves operator visibility without replaying an
+binding. Capability-loss, target-role, topology, and proxy-dependency cancellations are persisted immediately when Control
+completes them automatically. Start a fresh read or preview. This preserves operator visibility without replaying an
 ambiguous write.
 
 ### Configuration snapshots and restore

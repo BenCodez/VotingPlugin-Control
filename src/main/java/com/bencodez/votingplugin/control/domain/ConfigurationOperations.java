@@ -235,6 +235,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                     operation.states.put(nodeId, "COMPLETE");
                     operation.leasedAt.remove(nodeId);
                     operation.attemptIds.remove(nodeId);
+                    persist();
                     continue;
                 }
                 UUID previousAttempt = operation.attemptIds.get(nodeId);
@@ -279,6 +280,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                 operation.results.put(backendId, boundedResult(operation, new ConfigurationTaskResult(backendSession,
                         false, "DEPENDENCY_CHANGED", "Backend identity changed after apply; preview again", null,
                         (ManagedConfiguration) null, List.of(), false, false, null)));
+                persist();
                 continue;
             }
             if ("IN_PROGRESS".equals(state)) {
@@ -305,6 +307,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             operation.states.put(backendId, "COMPLETE");
             operation.leasedAt.remove(backendId);
             operation.attemptIds.remove(backendId);
+            persist();
         }
         if (backends.stream().anyMatch(id -> !"COMPLETE".equals(operation.states.get(id)))) return true;
         if (backends.stream().noneMatch(id -> operation.results.get(id) == null
@@ -320,6 +323,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             operation.states.put(node.nodeId(), "COMPLETE");
             operation.leasedAt.remove(node.nodeId());
             operation.attemptIds.remove(node.nodeId());
+            persist();
             return true;
         }
         audit.append("TASK_CANCELLED", operation.id, node.nodeId(), "BACKEND_APPLY_FAILED");
@@ -329,6 +333,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         operation.states.put(node.nodeId(), "COMPLETE");
         operation.leasedAt.remove(node.nodeId());
         operation.attemptIds.remove(node.nodeId());
+        persist();
         return true;
     }
 
@@ -354,6 +359,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         operation.states.put(node.nodeId(), "COMPLETE");
         operation.leasedAt.remove(node.nodeId());
         operation.attemptIds.remove(node.nodeId());
+        persist();
         return true;
     }
 

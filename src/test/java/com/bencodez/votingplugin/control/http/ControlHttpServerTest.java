@@ -129,6 +129,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("voteLogForm.reset();"));
         assertTrue(script.body().contains("voteTraceForm.reset();"));
         assertTrue(script.body().contains("siteResolutionForm.reset();"));
+        assertTrue(script.body().contains("snapshotForm.reset();"));
         assertTrue(script.body().contains("voteLogFilter.disabled = true;"));
         assertTrue(script.body().contains("body.voteLoggingRestartSessions"));
         assertTrue(script.body().contains("retainedOperations.slice(0, MAX_OPERATION_HISTORY)"));

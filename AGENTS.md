@@ -38,7 +38,8 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
   retained only to preserve restart-required UI state; the operations list exposes that state separately from its rendered
   history window. Operation IDs must be unique, completed nodes must have a session ID, and incomplete nodes must omit it.
   Recovered operations are history-only and cannot resume work; an interrupted node remains incomplete in the journal
-  across later shutdowns even though its recovered public result is `CONTROL_RESTARTED`.
+  across later shutdowns even though its recovered public result is `CONTROL_RESTARTED`. Persist automatic capability,
+  role, topology, and dependency cancellations at the state transition; do not wait for graceful shutdown.
   Quick-setup history uses an internal, non-serialized `redacted` marker, and proposal validation must reject that marker.
 - `domain/InspectionOperations` coordinates the separate, read-only `data.inspect.v1` lane.
 - `domain/ConfigurationSnapshots` stores bounded copies of the redacted content returned by completed managed-file reads.

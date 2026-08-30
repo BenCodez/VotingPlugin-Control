@@ -1541,6 +1541,7 @@ function discardAuthenticationState(reason) {
   voteLogForm.reset();
   voteTraceForm.reset();
   siteResolutionForm.reset();
+  snapshotForm.reset();
   rewardSiteLabel.hidden = false;
   copyRewardToSetup.disabled = true;
   voteLogFilter.disabled = true;

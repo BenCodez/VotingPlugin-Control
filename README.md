@@ -231,7 +231,8 @@ operations API derives that state from the full retained journal independently o
 cannot authorize or resume work. Overlapping VoteLogging applies and retries for the same backend are rejected until the
 running apply completes, so creation order cannot disagree with completion order. After restart, unfinished targets appear
 failed with `CONTROL_RESTARTED`; recovered
-entries are history-only and require a fresh read or preview. Named snapshots under `configuration-snapshots/` retain bounded redacted file-read
+entries are history-only and require a fresh read or preview. Automatic capability, role, topology, and dependency
+cancellations are journaled at the state transition rather than waiting for graceful shutdown. Named snapshots under `configuration-snapshots/` retain bounded redacted file-read
 results. Loading one for restore merely fills the editor—the normal preview, revision check, approval, backup, reload, and
 rollback workflow still applies; redaction placeholders preserve each target's current secrets. The store is capped at
 100 snapshots and 64 MiB of encoded files and prunes the oldest files to admit a new snapshot.
