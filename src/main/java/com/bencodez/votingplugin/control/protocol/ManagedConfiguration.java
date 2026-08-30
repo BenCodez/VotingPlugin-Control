@@ -1,5 +1,6 @@
 package com.bencodez.votingplugin.control.protocol;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -8,7 +9,8 @@ import java.util.Set;
 
 /** Versioned union of the configuration domains negotiated with VotingPlugin nodes. */
 public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers, List<String> blockedServers,
-                                   String fileName, String content, String preset, Map<String, String> options) {
+                                   String fileName, String content, String preset, Map<String, String> options,
+                                   @JsonIgnore boolean redacted) {
     public static final String PROXY_ROUTING = "proxy-routing";
     public static final String FILE = "file";
     public static final String QUICK_SETUP = "quick-setup";
@@ -35,12 +37,20 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             Map.entry(PROXY_METHOD, Set.of("method")),
             Map.entry(REWARD_BUILDER, Set.of("proposal", "targetFile")));
 
+    public ManagedConfiguration(String domain, Boolean sendVotesToAllServers, List<String> blockedServers,
+                                String fileName, String content, String preset, Map<String, String> options) {
+        this(domain, sendVotesToAllServers, blockedServers, fileName, content, preset, options, false);
+    }
+
     public ManagedConfiguration {
         domain = domain == null && sendVotesToAllServers != null ? PROXY_ROUTING : domain;
         blockedServers = blockedServers == null ? List.of() : List.copyOf(blockedServers);
         options = options == null ? Map.of() : Map.copyOf(new LinkedHashMap<>(options));
         if (!List.of(PROXY_ROUTING, FILE, QUICK_SETUP).contains(domain)) {
             throw new IllegalArgumentException("configuration domain is unsupported");
+        }
+        if (redacted && !QUICK_SETUP.equals(domain)) {
+            throw new IllegalArgumentException("only quick-setup views may be redacted");
         }
         if (PROXY_ROUTING.equals(domain)) {
             if (sendVotesToAllServers == null || fileName != null || content != null || preset != null || !options.isEmpty())
@@ -70,6 +80,9 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
                     REWARD_BUILDER.equals(preset)))) {
                 throw new IllegalArgumentException("quick setup options are invalid");
             }
+            if (redacted && (options.containsKey("sourceContent") || options.containsKey("proposal"))) {
+                throw new IllegalArgumentException("redacted quick setup contains private options");
+            }
         }
     }
 
@@ -82,7 +95,13 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
         return new ManagedConfiguration(FILE, null, List.of(), fileName, content, null, Map.of());
     }
 
+    /** Creates a history-only quick-setup selector whose proposal values were deliberately discarded. */
+    public static ManagedConfiguration redactedQuickSetup(String preset) {
+        return new ManagedConfiguration(QUICK_SETUP, null, List.of(), null, null, preset, Map.of(), true);
+    }
+
     public void validateProposal() {
+        if (redacted) throw new IllegalArgumentException("redacted configuration is not executable");
         if (QUICK_SETUP.equals(domain) && VOTE_SITES_SYNC.equals(preset)
                 && (options.size() != 1 || !options.containsKey("sourceContent"))) {
             throw new IllegalArgumentException("VoteSites sync requires sourceContent");
@@ -124,7 +143,7 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             visible.remove("sourceContent");
             visible.remove("proposal");
             return new ManagedConfiguration(domain, sendVotesToAllServers, blockedServers, fileName, content,
-                    preset, visible);
+                    preset, visible, true);
         }
         return this;
     }

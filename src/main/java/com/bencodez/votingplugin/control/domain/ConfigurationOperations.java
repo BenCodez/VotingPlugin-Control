@@ -618,8 +618,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                 case ManagedConfiguration.PROXY_ROUTING -> ManagedConfiguration.proxy(
                         new ProxyRoutingConfiguration(false, List.of()));
                 case ManagedConfiguration.FILE -> ManagedConfiguration.file(entry.fileName(), null);
-                case ManagedConfiguration.QUICK_SETUP -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
-                        null, List.of(), null, null, entry.preset(), Map.of());
+                case ManagedConfiguration.QUICK_SETUP -> ManagedConfiguration.redactedQuickSetup(entry.preset());
                 default -> throw new IllegalStateException("unsupported journal configuration domain");
             };
             LinkedHashMap<String, String> states = new LinkedHashMap<>();

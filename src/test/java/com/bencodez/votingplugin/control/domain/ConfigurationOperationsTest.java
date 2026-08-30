@@ -563,7 +563,7 @@ class ConfigurationOperationsTest {
                 null, List.of(), null, null, ManagedConfiguration.COMMUNICATION_TEST, Map.of()).validateProposal());
     }
 
-    @Test void rewardBuilderAcceptsOneBoundedProposalAndNeverEchoesIt() {
+    @Test void rewardBuilderAcceptsOneBoundedProposalAndNeverEchoesIt() throws Exception {
         String maximum = "x".repeat(ManagedConfiguration.MAX_REWARD_PROPOSAL);
         ManagedConfiguration reward = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
                 null, null, ManagedConfiguration.REWARD_BUILDER, Map.of("proposal", maximum));
@@ -571,7 +571,17 @@ class ConfigurationOperationsTest {
         reward.validateProposal();
         assertEquals(ConfigurationOperations.QUICK_SETUP_CAPABILITY, reward.capability());
         assertEquals(maximum, reward.options().get("proposal"));
-        assertFalse(reward.publicView().options().containsKey("proposal"));
+        ManagedConfiguration publicView = reward.publicView();
+        assertFalse(publicView.options().containsKey("proposal"));
+        assertTrue(publicView.redacted());
+        assertThrows(IllegalArgumentException.class, publicView::validateProposal);
+        ObjectMapper json = new ObjectMapper();
+        String encoded = json.writeValueAsString(publicView);
+        assertFalse(encoded.contains("proposal"));
+        assertFalse(encoded.contains("redacted"));
+        ManagedConfiguration decoded = json.readValue(encoded, ManagedConfiguration.class);
+        assertFalse(decoded.redacted());
+        assertThrows(IllegalArgumentException.class, decoded::validateProposal);
         assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
                 null, List.of(), null, null, ManagedConfiguration.REWARD_BUILDER, Map.of()).validateProposal());
         assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,

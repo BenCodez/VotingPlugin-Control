@@ -131,6 +131,28 @@ class InspectionOperationsTest {
         }
     }
 
+    @Test void failedCompletionAuditRollsBackTheInspectionResult() throws Exception {
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        Path auditDirectory = directory.resolve("completion-audit");
+        try (ConfigurationAuditLog audit = new ConfigurationAuditLog(auditDirectory, clock)) {
+            InspectionOperations operations = new InspectionOperations(registry, audit, clock);
+            UUID inspection = operations.create("backend-a", new InspectionQuery("overview", Map.of())).inspectionId();
+            InspectionTask task = operations.claim("backend-a", session);
+            InspectionTaskResult result = new InspectionTaskResult(session, true, "OK", "done",
+                    envelope("overview"), task.attemptId());
+            Path auditFile = auditDirectory.resolve("configuration-audit.jsonl");
+            byte[] validAudit = Files.readAllBytes(auditFile);
+            Files.writeString(auditFile, "tampered", StandardOpenOption.APPEND);
+
+            assertThrows(ConfigurationAuditLog.AuditException.class,
+                    () -> operations.complete(inspection, "backend-a", result));
+
+            Files.write(auditFile, validAudit, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            assertEquals("SUCCEEDED", operations.complete(inspection, "backend-a", result).state());
+            assertTrue(Files.readString(auditFile).contains("INSPECTION_COMPLETED"));
+        }
+    }
+
     @Test void resultShapeAndUtf8ByteLimitsAreEnforced() {
         register(session, Set.of(InspectionQuery.CAPABILITY));
         InspectionOperations operations = new InspectionOperations(registry, clock);

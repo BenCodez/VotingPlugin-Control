@@ -128,6 +128,29 @@ class ConfigurationOperationJournalTest {
         }
     }
 
+    @Test void rewardBuilderHistoryRestoresAsANonExecutableRedactedView() throws Exception {
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(5));
+        UUID session = UUID.fromString("00000000-0000-0000-0000-000000000002");
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        Path auditDirectory = directory.resolve("audit-reward-history");
+        Path journalDirectory = directory.resolve("journal-reward-history");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        UUID operation = UUID.randomUUID();
+        journal.save(List.of(new ConfigurationOperationJournal.Entry(operation, "PREVIEW", clock.instant(),
+                ManagedConfiguration.QUICK_SETUP, null, ManagedConfiguration.REWARD_BUILDER, null, List.of(
+                new ConfigurationOperationJournal.NodeResult("backend-a", null, false, null, null, null,
+                        false, false)))));
+
+        try (ConfigurationOperations restarted = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(auditDirectory, clock), clock, journal)) {
+            ManagedConfiguration recovered = restarted.get(operation).configuration();
+            assertTrue(recovered.redacted());
+            assertTrue(recovered.options().isEmpty());
+            assertThrows(IllegalArgumentException.class, recovered::validateProposal);
+        }
+    }
+
     private InMemoryNodeRegistry registry() {
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(5));
         UUID session = UUID.fromString("00000000-0000-0000-0000-000000000001");

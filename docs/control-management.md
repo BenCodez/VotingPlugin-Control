@@ -88,7 +88,9 @@ it does not turn a displayed YAML key into a generic write request.
 proposal documented below. It deliberately has no READ form. The selected scope determines the managed file and path, and
 the plugin replaces only that path so a second preview is deterministic and cannot leave stale actions behind. Control
 never returns the proposal in a public operation view, and the durable operation journal records only the domain/preset.
-The node's acknowledged result exposes only the derived target file, not proposal actions/messages.
+Public/history-only quick-setup selectors carry an internal non-serialized redacted marker that proposal validation rejects,
+so they cannot become executable requests. The node's acknowledged result exposes only the derived target file, not
+proposal actions/messages.
 
 File content is limited to 512 KiB. Node results mask secret-like YAML paths. A replacement secret may pass through an
 authenticated proposal, but Control omits file proposal contents from operation views and never records them in its audit.

@@ -132,11 +132,23 @@ public final class InspectionOperations {
             throw new ValidationException("TASK_NOT_CLAIMED", "Inspection attempt does not match", List.of());
         }
         validateResult(result, stored.query.kind());
+        InspectionTaskResult previousResult = stored.result;
+        String previousState = stored.state;
+        Instant previousLease = stored.leasedAt;
+        UUID previousAttempt = stored.attemptId;
         stored.result = result;
         stored.state = "COMPLETE";
         stored.leasedAt = null;
         stored.attemptId = null;
-        append("INSPECTION_COMPLETED", id, node.nodeId(), result.success() ? "SUCCESS" : safeCode(result.code()));
+        try {
+            append("INSPECTION_COMPLETED", id, node.nodeId(), result.success() ? "SUCCESS" : safeCode(result.code()));
+        } catch (RuntimeException failure) {
+            stored.result = previousResult;
+            stored.state = previousState;
+            stored.leasedAt = previousLease;
+            stored.attemptId = previousAttempt;
+            throw failure;
+        }
         return view(stored);
     }
 
