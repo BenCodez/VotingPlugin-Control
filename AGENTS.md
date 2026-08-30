@@ -87,7 +87,8 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
     `GottenServiceSites`, but it must not call an auto-creating resolver or turn a health read into a create/approve action.
 13. The current `vote-logging` quick setup changes configuration but not the runtime VoteLog manager lifecycle. Preserve
     inspection gating on `VoteLogging.Enabled`, document that a restart is required after either toggle, and do not claim
-    enabled/available/readable are interchangeable states.
+    enabled/available/readable are interchangeable states. Serialize APPLY operations and retries that share a target so
+    retained creation order is also successful completion order for restart-session warnings.
 
 ## Paired protocol workflow
 

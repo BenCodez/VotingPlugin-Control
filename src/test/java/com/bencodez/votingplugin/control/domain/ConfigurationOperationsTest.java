@@ -86,6 +86,46 @@ class ConfigurationOperationsTest {
         assertEquals("false", read.results().get("lobby").configuration().options().get("processRewards"));
     }
 
+    @Test void voteLoggingAppliesAndRetriesAreSerializedPerTarget() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration logging = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-logging",
+                Map.of("enabled", "true", "purgeDays", "30", "useMainMySQL", "true"));
+
+        ConfigurationOperations.OperationView firstPreview = operations.createPreview(List.of("backend-a"), logging);
+        ConfigurationTask firstPreviewTask = operations.claim("backend-a", session);
+        firstPreview = operations.complete(firstPreview.operationId(), "backend-a", new ConfigurationTaskResult(
+                session, true, "OK", "valid", "a".repeat(64), logging, List.of(), false, false,
+                firstPreviewTask.attemptId()));
+        ConfigurationOperations.OperationView secondPreview = operations.createPreview(List.of("backend-a"), logging);
+        ConfigurationTask secondPreviewTask = operations.claim("backend-a", session);
+        secondPreview = operations.complete(secondPreview.operationId(), "backend-a", new ConfigurationTaskResult(
+                session, true, "OK", "valid", "b".repeat(64), logging, List.of(), false, false,
+                secondPreviewTask.attemptId()));
+
+        ConfigurationOperations.OperationView firstApply = operations.createApply(firstPreview.operationId(),
+                firstPreview.approvalToken());
+        ConfigurationOperations.OperationView approvedSecond = secondPreview;
+        assertEquals("OPERATION_CONFLICT", assertThrows(ValidationException.class,
+                () -> operations.createApply(approvedSecond.operationId(), approvedSecond.approvalToken())).code());
+        ConfigurationTask firstApplyTask = operations.claim("backend-a", session);
+        operations.complete(firstApply.operationId(), "backend-a", new ConfigurationTaskResult(session, false,
+                "WRITE_FAILED", "failed", null, (ManagedConfiguration) null, List.of(), false, true,
+                firstApplyTask.attemptId()));
+
+        ConfigurationOperations.OperationView secondApply = operations.createApply(secondPreview.operationId(),
+                secondPreview.approvalToken());
+        assertEquals("OPERATION_CONFLICT", assertThrows(ValidationException.class,
+                () -> operations.retry(firstApply.operationId())).code());
+        assertEquals("RUNNING", secondApply.state());
+    }
+
     @Test void applyRequiresTheSameNodeSessionAndRoleThatPassedPreview() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

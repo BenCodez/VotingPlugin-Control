@@ -129,6 +129,8 @@ bodies are omitted. Fetching
 `GET /api/v1/operations/{operationId}` returns that operation's full bounded redacted result bodies. Both list and detail
 views may include an unused completed-preview approval token so an authenticated UI can resume after refresh; applying
 still requires the admin role/browser CSRF protection and consumes the token exactly once.
+Vote-logging applies (including retries) that share any target are serialized with `OPERATION_CONFLICT`, making the newest
+successful apply's retained session unambiguous even if several previews were prepared concurrently.
 
 Production also atomically maintains an owner-readable, 2 MiB-bounded `data/configuration-operations.json`. It stores only
 operation identity/type/time, redacted domain selector (`fileName` or preset), retry lineage, and bounded per-node

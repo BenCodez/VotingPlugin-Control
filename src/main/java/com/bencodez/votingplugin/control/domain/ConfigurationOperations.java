@@ -114,6 +114,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         validateApprovedTargets(preview, targets);
         validateProxyMethodTargets(targets, preview.configuration);
         rejectOverlappingProxyMethodApply(targets, preview.configuration);
+        rejectOverlappingVoteLoggingApply(targets, preview.configuration);
         Map<String, String> revisions = new LinkedHashMap<>();
         preview.results.forEach((node, result) -> revisions.put(node, result.revision()));
         StoredOperation apply = store("APPLY", targets, preview.configuration,
@@ -187,7 +188,10 @@ public final class ConfigurationOperations implements AutoCloseable {
         List<String> requested = "PREVIEW".equals(original.type)
                 ? new ArrayList<>(original.states.keySet()) : failed;
         ValidatedTargets targets = validateTargets(requested, original.configuration.capability());
-        if ("APPLY".equals(original.type)) validateApprovedTargets(original, targets);
+        if ("APPLY".equals(original.type)) {
+            validateApprovedTargets(original, targets);
+            rejectOverlappingVoteLoggingApply(targets, original.configuration);
+        }
         String token = null;
         if ("PREVIEW".equals(original.type)) {
             byte[] bytes = new byte[32];
@@ -365,6 +369,21 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (conflict) {
             throw new ValidationException("OPERATION_CONFLICT",
                     "Another proxy method apply is still running for this network", List.of());
+        }
+    }
+
+    private void rejectOverlappingVoteLoggingApply(ValidatedTargets targets, ManagedConfiguration configuration) {
+        if (!ManagedConfiguration.QUICK_SETUP.equals(configuration.domain())
+                || !"vote-logging".equals(configuration.preset())) return;
+        Set<String> requested = new HashSet<>(targets.nodeIds());
+        boolean conflict = operations.values().stream().anyMatch(operation -> "APPLY".equals(operation.type)
+                && !operation.complete()
+                && ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                && "vote-logging".equals(operation.configuration.preset())
+                && operation.states.keySet().stream().anyMatch(requested::contains));
+        if (conflict) {
+            throw new ValidationException("OPERATION_CONFLICT",
+                    "Another vote logging apply is still running for a target", List.of());
         }
     }
 

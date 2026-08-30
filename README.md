@@ -228,7 +228,9 @@ creation and completed operations are pruned 24 hours after creation.
 excludes configuration/options values, file contents, approval tokens, result messages/changes, credentials, and task
 attempts. Completed-result session IDs are retained so restart-required setup warnings survive a Control restart; the
 operations API derives that state from the full retained journal independently of its bounded rendered history. The IDs
-cannot authorize or resume work. After restart, unfinished targets appear failed with `CONTROL_RESTARTED`; recovered
+cannot authorize or resume work. Overlapping VoteLogging applies and retries for the same backend are rejected until the
+running apply completes, so creation order cannot disagree with completion order. After restart, unfinished targets appear
+failed with `CONTROL_RESTARTED`; recovered
 entries are history-only and require a fresh read or preview. Named snapshots under `configuration-snapshots/` retain bounded redacted file-read
 results. Loading one for restore merely fills the editor—the normal preview, revision check, approval, backup, reload, and
 rollback workflow still applies; redaction placeholders preserve each target's current secrets. The store is capped at
