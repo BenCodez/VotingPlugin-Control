@@ -126,6 +126,7 @@ let backendTopologyTruncatedNodeIds = new Set();
 let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
+let loadedQuickSetup = null;
 let voteSitesSourceId = '';
 let voteSitesTargetIds = new Set();
 let voteSitesTargetsInitialized = false;
@@ -192,6 +193,7 @@ function applyAuthenticatedSession(body) {
   approvedPreview = null;
   approvedFilePreview = null;
   approvedQuickPreview = null;
+  loadedQuickSetup = null;
   selectedNodes.clear();
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
@@ -398,7 +400,10 @@ function renderServerPicker() {
   }));
   if (!nodeIndex.has(previousValue)) {
     selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
-    if (previousValue) resetServerConfigurationForms('The selected server is no longer available. Read the replacement server before previewing changes.');
+    if (previousValue) {
+      loadedQuickSetup = null;
+      resetServerConfigurationForms('The selected server is no longer available. Read the replacement server before previewing changes.');
+    }
   }
   serverPicker.value = selectedServerId;
 }
@@ -744,6 +749,7 @@ function selectPrimaryServer(nodeId) {
   serverPicker.value = nodeId;
   selectedNodes.clear();
   if (nodeId) selectedNodes.add(nodeId);
+  loadedQuickSetup = null;
   resetServerConfigurationForms('Server changed. Read this server before previewing changes.');
   const preset = quickPreset.value;
   quickSetupForm.reset();
@@ -773,7 +779,7 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   previewFileConfiguration.disabled = !fileReady || !configurationContent.value;
   applyFileConfiguration.disabled = !fileReady || !approvedFilePreview;
   readQuickSetup.disabled = !quickReady || !quickPresetReadable();
-  previewQuickSetup.disabled = !quickReady;
+  previewQuickSetup.disabled = !quickReady || (quickPresetNeedsRead() && !quickSetupValuesLoaded());
   applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
   runTransportTest.disabled = !authenticated || !transportTestProxyId || !transportTestBackendId || busy;
   const methodNetwork = proxyMethodNetwork();
@@ -838,8 +844,18 @@ function updateQuickFields() {
 }
 
 function quickPresetReadable() {
-  return ['proxy-backend', 'vote-site', 'common-settings', 'vote-party'].includes(quickPreset.value)
+  return quickPresetNeedsRead()
     && (quickPreset.value !== 'vote-site' || quickName.value.trim().length > 0);
+}
+
+function quickPresetNeedsRead() {
+  return ['proxy-backend', 'vote-site', 'common-settings', 'vote-party'].includes(quickPreset.value);
+}
+
+function quickSetupValuesLoaded() {
+  return loadedQuickSetup?.nodeId === selectedServerId
+    && loadedQuickSetup.preset === quickPreset.value
+    && loadedQuickSetup.selector === JSON.stringify(quickReadOptions());
 }
 
 function updatePluginSuggestions() {
@@ -898,6 +914,7 @@ function discardAuthenticationState(reason) {
   approvedPreview = null;
   approvedFilePreview = null;
   approvedQuickPreview = null;
+  loadedQuickSetup = null;
   inputGeneration++;
   logout.hidden = true;
   appShell.hidden = true;
@@ -1488,7 +1505,10 @@ function populateQuickState(options) {
 readQuickSetup.addEventListener('click', async () => {
   if (!quickPresetReadable()) return;
   approvedQuickPreview = null;
+  loadedQuickSetup = null;
   const preset = quickPreset.value;
+  const nodeId = selectedServerId;
+  const selector = JSON.stringify(quickReadOptions());
   const generation = inputGeneration;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
@@ -1498,11 +1518,13 @@ readQuickSetup.addEventListener('click', async () => {
     const result = Object.values(operation.results).find(item =>
       item.success && item.configuration?.preset === preset && item.configuration?.options);
     if (!result) throw new Error('The selected backend did not return guided settings. Update VotingPlugin on that node.');
-    if (generation !== inputGeneration || preset !== quickPreset.value) {
+    if (generation !== inputGeneration || preset !== quickPreset.value || nodeId !== selectedServerId
+        || selector !== JSON.stringify(quickReadOptions())) {
       text(quickOperationStatus, 'The server or setup changed while reading. Load the current values again.');
       return;
     }
     populateQuickState(result.configuration.options);
+    loadedQuickSetup = {nodeId, preset, selector};
     inputGeneration++;
     const suffix = preset === 'vote-site' && result.configuration.options.exists === 'false'
       ? ' This site key does not exist yet; the form is ready to create it.'
@@ -1706,7 +1728,16 @@ configurationFile.addEventListener('input', () => {
   text(fileOperationStatus, 'Read the selected file before previewing changes.');
   clearApprovals();
 });
-quickPreset.addEventListener('input', () => { updateQuickFields(); clearApprovals(); });
+quickPreset.addEventListener('input', () => {
+  loadedQuickSetup = null;
+  updateQuickFields();
+  clearApprovals();
+  if (quickPresetNeedsRead()) {
+    text(quickOperationStatus, quickPreset.value === 'vote-site'
+      ? 'Enter the vote-site key, then load its current values before previewing.'
+      : 'Load the current values from the primary server before previewing changes.');
+  }
+});
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
 tabButtons.forEach(button => button.addEventListener('click', () => setActiveTab(button.dataset.tab, true)));
 configViewButtons.forEach(button => button.addEventListener('click', () => setConfigView(button.dataset.configView)));
