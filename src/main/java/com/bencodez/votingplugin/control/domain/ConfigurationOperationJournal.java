@@ -2,6 +2,7 @@ package com.bencodez.votingplugin.control.domain;
 
 import com.bencodez.votingplugin.control.DurableFiles;
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
+import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
@@ -39,9 +40,15 @@ public final class ConfigurationOperationJournal {
     private final Path directory;
     private final Path file;
     private final Clock clock;
-    private final ObjectMapper json = new ObjectMapper().findAndRegisterModules()
-            .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    private final ObjectMapper json = strictMapper();
+
+    private static ObjectMapper strictMapper() {
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
+                .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+        mapper.getFactory().enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION.mappedFeature());
+        return mapper;
+    }
 
     public ConfigurationOperationJournal(Path dataDirectory, Clock clock) throws IOException {
         this.directory = dataDirectory.toAbsolutePath().normalize();

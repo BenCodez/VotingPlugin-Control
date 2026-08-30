@@ -58,6 +58,14 @@ class ConfigurationOperationJournalTest {
         Files.writeString(oversizedDirectory.resolve("configuration-operations.json"), "x".repeat(2 * 1024 * 1024 + 1));
         assertThrows(IOException.class, oversized::load);
 
+        Path duplicateDirectory = directory.resolve("duplicate");
+        ConfigurationOperationJournal duplicate = new ConfigurationOperationJournal(duplicateDirectory, clock);
+        duplicate.save(List.of());
+        Path duplicateFile = duplicateDirectory.resolve("configuration-operations.json");
+        String valid = Files.readString(duplicateFile);
+        Files.writeString(duplicateFile, "{\"schemaVersion\":1," + valid.substring(1));
+        assertThrows(IOException.class, duplicate::load);
+
         Path unsafeDirectory = directory.resolve("unsafe");
         Files.createDirectories(unsafeDirectory);
         Path target = directory.resolve("target.json");
