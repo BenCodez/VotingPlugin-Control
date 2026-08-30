@@ -18,7 +18,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -27,9 +29,11 @@ import java.util.UUID;
  * file contents, approval tokens, changes, messages, credentials, and task attempt identifiers.
  */
 public final class ConfigurationOperationJournal {
-    static final int SCHEMA_VERSION = 1;
+    static final int SCHEMA_VERSION = 2;
+    private static final int LEGACY_SCHEMA_VERSION = 1;
     static final int MAX_OPERATIONS = 1000;
     private static final int MAX_NODES = 100;
+    static final int MAX_RESTART_SESSIONS = 1000;
     private static final int MAX_BYTES = 2 * 1024 * 1024;
     private static final Duration RETENTION = Duration.ofHours(24);
     private static final Set<PosixFilePermission> OWNER_DIRECTORY = Set.of(
@@ -64,10 +68,28 @@ public final class ConfigurationOperationJournal {
                 && (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file))) {
             throw new IOException("Configuration operation journal is unsafe");
         }
+        removeAbandonedStagingFiles();
+    }
+
+    private void removeAbandonedStagingFiles() throws IOException {
+        try (var paths = Files.list(directory)) {
+            for (Path path : paths.filter(candidate -> candidate.getFileName().toString()
+                    .matches("configuration-operations-[0-9]+\\.temporary")).toList()) {
+                if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(path)) {
+                    throw new IOException("Configuration operation journal staging file is unsafe");
+                }
+                Files.delete(path);
+            }
+        }
+        DurableFiles.forceDirectory(directory);
     }
 
     public synchronized List<Entry> load() throws IOException {
-        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return List.of();
+        return loadState().operations();
+    }
+
+    public synchronized State loadState() throws IOException {
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return new State(List.of(), Map.of());
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file)
                 || Files.size(file) > MAX_BYTES) {
             throw new IOException("Configuration operation journal is invalid");
@@ -78,7 +100,8 @@ public final class ConfigurationOperationJournal {
         } catch (RuntimeException failure) {
             throw new IOException("Configuration operation journal is invalid", failure);
         }
-        if (stored == null || stored.schemaVersion() != SCHEMA_VERSION || stored.operations() == null
+        if (stored == null || (stored.schemaVersion() != SCHEMA_VERSION
+                && stored.schemaVersion() != LEGACY_SCHEMA_VERSION) || stored.operations() == null
                 || stored.operations().size() > MAX_OPERATIONS) {
             throw new IOException("Configuration operation journal is invalid");
         }
@@ -93,11 +116,17 @@ public final class ConfigurationOperationJournal {
             if (!entry.createdAt().isBefore(cutoff)) result.add(entry);
         }
         result.sort(Comparator.comparing(Entry::createdAt));
-        return List.copyOf(result);
+        Map<String, UUID> restartSessions = validateRestartSessions(stored.voteLoggingRestartSessions());
+        return new State(List.copyOf(result), restartSessions);
     }
 
     public synchronized void save(List<Entry> entries) throws IOException {
+        save(entries, Map.of());
+    }
+
+    public synchronized void save(List<Entry> entries, Map<String, UUID> voteLoggingRestartSessions) throws IOException {
         if (entries == null) throw new IOException("Configuration operation journal is invalid");
+        Map<String, UUID> restartSessions = validateRestartSessions(voteLoggingRestartSessions);
         Instant cutoff = clock.instant().minus(RETENTION);
         List<Entry> filtered = entries.stream().filter(entry -> !entry.createdAt().isBefore(cutoff))
                 .sorted(Comparator.comparing(Entry::createdAt)).toList();
@@ -110,14 +139,14 @@ public final class ConfigurationOperationJournal {
                 throw new IOException("Configuration operation journal is invalid");
             }
         }
-        byte[] bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained));
+        byte[] bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained, restartSessions));
         while (bytes.length > MAX_BYTES && retained.size() > 1) {
             int removable = 0;
             for (int index = 0; index < retained.size(); index++) {
                 if (!isVoteLogging(retained.get(index))) { removable = index; break; }
             }
             retained.remove(removable);
-            bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained));
+            bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained, restartSessions));
         }
         if (bytes.length > MAX_BYTES) throw new IOException("Configuration operation journal exceeds its bound");
 
@@ -138,6 +167,20 @@ public final class ConfigurationOperationJournal {
         } finally {
             Files.deleteIfExists(temporary);
         }
+    }
+
+    private static Map<String, UUID> validateRestartSessions(Map<String, UUID> sessions) throws IOException {
+        if (sessions == null) return Map.of();
+        if (sessions.size() > MAX_RESTART_SESSIONS) throw new IOException("Configuration operation journal is invalid");
+        LinkedHashMap<String, UUID> validated = new LinkedHashMap<>();
+        for (Map.Entry<String, UUID> entry : sessions.entrySet()) {
+            if (entry.getKey() == null || !entry.getKey().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+                    || entry.getValue() == null) {
+                throw new IOException("Configuration operation journal is invalid");
+            }
+            validated.put(entry.getKey(), entry.getValue());
+        }
+        return java.util.Collections.unmodifiableMap(validated);
     }
 
     private static boolean isVoteLogging(Entry entry) {
@@ -201,5 +244,8 @@ public final class ConfigurationOperationJournal {
     public record NodeResult(String nodeId, UUID sessionId, boolean complete, Boolean success, String code, String revision,
                              boolean reloaded, boolean rolledBack) { }
 
-    private record JournalFile(int schemaVersion, List<Entry> operations) { }
+    public record State(List<Entry> operations, Map<String, UUID> voteLoggingRestartSessions) { }
+
+    private record JournalFile(int schemaVersion, List<Entry> operations,
+                               Map<String, UUID> voteLoggingRestartSessions) { }
 }

@@ -50,6 +50,35 @@ class ConfigurationOperationJournalTest {
         assertTrue(stored.contains("WRITE_FAILED"));
     }
 
+    @Test void startupRemovesOnlyRecognizedAbandonedStagingFiles() throws Exception {
+        Files.createDirectories(directory);
+        Path abandoned = directory.resolve("configuration-operations-123456.temporary");
+        Path unrelated = directory.resolve("configuration-operations-not-ours.temporary");
+        Files.writeString(abandoned, "partial journal");
+        Files.writeString(unrelated, "leave me alone");
+
+        new ConfigurationOperationJournal(directory, clock);
+
+        assertFalse(Files.exists(abandoned));
+        assertTrue(Files.exists(unrelated));
+    }
+
+    @Test void loadsLegacyJournalWithoutRestartMetadata() throws Exception {
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(directory, clock);
+        journal.save(List.of(journalEntry(new ConfigurationOperationJournal.NodeResult(
+                "backend-a", UUID.randomUUID(), true, true, "OK", "a".repeat(64), false, false))));
+        Path stored = directory.resolve("configuration-operations.json");
+        String current = Files.readString(stored);
+        String legacy = current.replace("\"schemaVersion\":2", "\"schemaVersion\":1")
+                .replaceFirst(",\"voteLoggingRestartSessions\":\\{\\}", "");
+        Files.writeString(stored, legacy);
+
+        ConfigurationOperationJournal.State state = journal.loadState();
+
+        assertEquals(1, state.operations().size());
+        assertTrue(state.voteLoggingRestartSessions().isEmpty());
+    }
+
     @Test void rejectsMalformedOversizedAndUnsafeJournalFiles() throws Exception {
         Path malformedDirectory = directory.resolve("malformed");
         ConfigurationOperationJournal malformed = new ConfigurationOperationJournal(malformedDirectory, clock);
@@ -240,7 +269,7 @@ class ConfigurationOperationJournalTest {
         }
         Path journalDirectory = directory.resolve("journal-restart-window");
         ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
-        journal.save(entries);
+        journal.save(entries, Map.of("backend-a", session));
 
         try (ConfigurationOperations restarted = new ConfigurationOperations(registry(),
                 new ConfigurationAuditLog(directory.resolve("audit-restart-window"), clock), clock, journal)) {
@@ -249,6 +278,24 @@ class ConfigurationOperationJournalTest {
             assertTrue(view.items().stream().noneMatch(item -> "vote-logging".equals(item.configuration().preset())));
             assertEquals(Map.of("backend-a", session), view.voteLoggingRestartSessions());
         }
+    }
+
+    @Test void restartMarkersAreIndependentOfTrimmedOperationHistory() throws Exception {
+        UUID session = UUID.fromString("00000000-0000-0000-0000-000000000004");
+        List<ConfigurationOperationJournal.Entry> entries = new ArrayList<>();
+        for (int index = 0; index < 1000; index++) {
+            entries.add(new ConfigurationOperationJournal.Entry(UUID.randomUUID(), "READ",
+                    clock.instant().minusSeconds(999L - index), ManagedConfiguration.PROXY_ROUTING,
+                    null, null, null, List.of(new ConfigurationOperationJournal.NodeResult(
+                    "backend-a", session, true, true, "OK", "b".repeat(64), false, false))));
+        }
+        Path journalDirectory = directory.resolve("journal-independent-restart-state");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        journal.save(entries, Map.of("backend-a", session));
+
+        ConfigurationOperationJournal.State state = journal.loadState();
+        assertEquals(Map.of("backend-a", session), state.voteLoggingRestartSessions());
+        assertTrue(state.operations().stream().noneMatch(entry -> "vote-logging".equals(entry.preset())));
     }
 
     private InMemoryNodeRegistry registry() {

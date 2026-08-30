@@ -139,6 +139,48 @@ class ConfigurationSnapshotsTest {
         assertEquals(created, snapshots.get(created.snapshotId()));
     }
 
+    @Test void startupRemovesOnlyRecognizedAbandonedStagingFiles() throws Exception {
+        Path snapshotDirectory = directory.resolve("configuration-snapshots");
+        Files.createDirectories(snapshotDirectory);
+        Path abandoned = snapshotDirectory.resolve("snapshot-123456.temporary");
+        Path unrelated = snapshotDirectory.resolve("snapshot-not-ours.temporary");
+        Files.writeString(abandoned, "partial snapshot");
+        Files.writeString(unrelated, "leave me alone");
+
+        new ConfigurationSnapshots(directory, clock);
+
+        assertFalse(Files.exists(abandoned));
+        assertTrue(Files.exists(unrelated));
+    }
+
+    @Test void recoveryRestoresBackupsTrimsOnceAndRemovesTheTransaction() throws Exception {
+        ConfigurationSnapshots snapshots = new ConfigurationSnapshots(directory, clock);
+        List<UUID> existing = new java.util.ArrayList<>();
+        for (int index = 0; index < 100; index++) {
+            existing.add(snapshots.create("existing-" + index,
+                    operation("READ", "SUCCEEDED", ManagedConfiguration.file("Config.yml",
+                            "Index: " + index + "\n"))).snapshotId());
+            clock.advance(Duration.ofSeconds(1));
+        }
+        Path sourceDirectory = directory.resolve("backup-source");
+        ConfigurationSnapshots source = new ConfigurationSnapshots(sourceDirectory, clock);
+        ConfigurationSnapshots.Snapshot recovered = source.create("recovered",
+                operation("READ", "SUCCEEDED", ManagedConfiguration.file("Config.yml", "Recovered: true\n")));
+        Path store = directory.resolve("configuration-snapshots");
+        Path transaction = store.resolve("snapshot-transaction-123456");
+        Files.createDirectory(transaction);
+        Files.copy(sourceDirectory.resolve("configuration-snapshots").resolve(recovered.snapshotId() + ".json"),
+                transaction.resolve(recovered.snapshotId() + ".json"),
+                java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+
+        ConfigurationSnapshots restarted = new ConfigurationSnapshots(directory, clock);
+
+        assertEquals(100, restarted.list().size());
+        assertEquals(recovered.snapshotId(), restarted.get(recovered.snapshotId()).snapshotId());
+        assertThrows(ValidationException.class, () -> restarted.get(existing.get(0)));
+        assertFalse(Files.exists(transaction));
+    }
+
     @Test void byteLimitEvictionIsDeterministicAndOccursAfterSuccessfulPublication() throws Exception {
         ConfigurationSnapshots snapshots = new ConfigurationSnapshots(directory, clock);
         String content = "Value: " + "x".repeat(400_000) + "\n";
@@ -151,6 +193,23 @@ class ConfigurationSnapshotsTest {
         assertTrue(snapshots.list().size() < 90);
         assertThrows(ValidationException.class, () -> snapshots.get(ids.get(0)));
         assertEquals(ids.get(89), snapshots.list().get(0).snapshotId());
+
+        List<ConfigurationSnapshots.SnapshotSummary> beforeRecovery = snapshots.list();
+        UUID oldestBeforeRecovery = beforeRecovery.get(beforeRecovery.size() - 1).snapshotId();
+        Path sourceDirectory = directory.resolve("byte-recovery-source");
+        ConfigurationSnapshots source = new ConfigurationSnapshots(sourceDirectory, clock);
+        ConfigurationSnapshots.Snapshot recovered = source.create("recovered-large", operationWithFiles(content));
+        Path transaction = directory.resolve("configuration-snapshots/snapshot-transaction-654321");
+        Files.createDirectory(transaction);
+        Files.copy(sourceDirectory.resolve("configuration-snapshots").resolve(recovered.snapshotId() + ".json"),
+                transaction.resolve(recovered.snapshotId() + ".json"),
+                java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+
+        ConfigurationSnapshots restarted = new ConfigurationSnapshots(directory, clock);
+        assertEquals(beforeRecovery.size(), restarted.list().size());
+        assertEquals(recovered.snapshotId(), restarted.get(recovered.snapshotId()).snapshotId());
+        assertThrows(ValidationException.class, () -> restarted.get(oldestBeforeRecovery));
+        assertFalse(Files.exists(transaction));
     }
 
     @Test void durableJsonRejectsUnknownDuplicateAndTrailingContent() throws Exception {

@@ -64,20 +64,39 @@ public final class ConfigurationSnapshots {
     }
 
     private void recoverTransactions() throws IOException {
-        try (var dirs = Files.list(directory)) {
-            for (Path transaction : dirs.filter(path -> path.getFileName().toString().startsWith("snapshot-transaction-"))
-                    .filter(path -> Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)).toList()) {
-                try (var backups = Files.list(transaction)) {
-                    for (Path backup : backups.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).toList()) {
-                        Files.copy(backup, directory.resolve(backup.getFileName().toString()),
-                                StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
-                    }
+        removeAbandonedStagingFiles();
+        List<Path> transactions = transactionDirectories();
+        for (Path transaction : transactions) {
+            List<Path> backups;
+            try (var paths = Files.list(transaction)) {
+                backups = paths.sorted(Comparator.comparing(path -> path.getFileName().toString())).toList();
+            }
+            for (Path backup : backups) {
+                if (!backup.getFileName().toString().matches("[0-9a-f-]{36}\\.json")
+                        || !Files.isRegularFile(backup, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(backup)
+                        || Files.size(backup) > MAX_STORED_BYTES) {
+                    throw new IOException("Configuration snapshot transaction is unsafe");
                 }
-                trimRecoveredSnapshots();
-                try (var leftovers = Files.list(transaction)) {
-                    leftovers.forEach(leftover -> { try { Files.deleteIfExists(leftover); } catch (IOException ignored) { } });
+                restoreBackupDurably(backup);
+            }
+            DurableFiles.forceDirectory(directory);
+            trimRecoveredSnapshots();
+            DurableFiles.forceDirectory(directory);
+            for (Path backup : backups) Files.delete(backup);
+            DurableFiles.forceDirectory(transaction);
+            Files.delete(transaction);
+            DurableFiles.forceDirectory(directory);
+        }
+    }
+
+    private void removeAbandonedStagingFiles() throws IOException {
+        try (var paths = Files.list(directory)) {
+            for (Path path : paths.filter(candidate -> candidate.getFileName().toString()
+                    .matches("snapshot-[0-9]+\\.temporary")).toList()) {
+                if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(path)) {
+                    throw new IOException("Configuration snapshot staging file is unsafe");
                 }
-                try { Files.deleteIfExists(transaction); } catch (IOException ignored) { }
+                Files.delete(path);
             }
         }
         DurableFiles.forceDirectory(directory);
@@ -89,12 +108,19 @@ public final class ConfigurationSnapshots {
             snapshots = stream.filter(path -> path.getFileName().toString().matches("[0-9a-f-]{36}\\.json"))
                     .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).sorted(snapshotOrder()).toList();
         }
-        long bytes = snapshots.stream().mapToLong(path -> { try { return Files.size(path); } catch (IOException e) { return Long.MAX_VALUE; } }).sum();
+        long bytes = 0;
+        for (Path snapshot : snapshots) bytes = Math.addExact(bytes, Files.size(snapshot));
         int remaining = snapshots.size();
         for (Path snapshot : snapshots) {
             if (remaining <= MAX_SNAPSHOTS && bytes <= MAX_TOTAL_STORED_BYTES) break;
-            try { bytes -= Files.size(snapshot); } catch (IOException ignored) { }
-            if (Files.deleteIfExists(snapshot)) remaining--;
+            long size = Files.size(snapshot);
+            if (Files.deleteIfExists(snapshot)) {
+                bytes -= size;
+                remaining--;
+            }
+        }
+        if (remaining > MAX_SNAPSHOTS || bytes > MAX_TOTAL_STORED_BYTES) {
+            throw new IOException("Configuration snapshot retention recovery failed");
         }
     }
 
@@ -214,8 +240,7 @@ public final class ConfigurationSnapshots {
             boolean restored = true;
             if (published && !retentionDeleted) {
                 for (Path backup : backups) {
-                    try { Files.copy(backup, directory.resolve(backup.getFileName().toString()),
-                            StandardCopyOption.REPLACE_EXISTING); }
+                    try { restoreBackupDurably(backup); }
                     catch (Exception rollback) { failure.addSuppressed(rollback); restored = false; }
                 }
                 try { DurableFiles.forceDirectory(directory); } catch (Exception rollback) {
@@ -239,12 +264,7 @@ public final class ConfigurationSnapshots {
     }
 
     private void enforceTransactionBounds() throws IOException {
-        List<Path> transactions;
-        try (var paths = Files.list(directory)) {
-            transactions = paths.filter(path -> path.getFileName().toString().startsWith("snapshot-transaction-"))
-                    .filter(path -> Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(path))
-                    .toList();
-        }
+        List<Path> transactions = transactionDirectories();
         long bytes = 0;
         for (Path transaction : transactions) {
             try (var paths = Files.walk(transaction, 1)) {
@@ -257,6 +277,21 @@ public final class ConfigurationSnapshots {
         if (transactions.size() >= MAX_TRANSACTION_DIRECTORIES || bytes >= MAX_TRANSACTION_BYTES) {
             throw new IOException("Configuration snapshot transaction recovery is required");
         }
+    }
+
+    private List<Path> transactionDirectories() throws IOException {
+        List<Path> transactions;
+        try (var paths = Files.list(directory)) {
+            transactions = paths.filter(path -> path.getFileName().toString()
+                            .matches("snapshot-transaction-[0-9]+"))
+                    .sorted(Comparator.comparing(path -> path.getFileName().toString())).toList();
+        }
+        for (Path transaction : transactions) {
+            if (!Files.isDirectory(transaction, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(transaction)) {
+                throw new IOException("Configuration snapshot transaction is unsafe");
+            }
+        }
+        return transactions;
     }
 
     private List<Path> files() throws IOException {
@@ -288,6 +323,14 @@ public final class ConfigurationSnapshots {
             Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
             Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private void restoreBackupDurably(Path backup) throws IOException {
+        Path restored = directory.resolve(backup.getFileName().toString());
+        Files.copy(backup, restored, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+        try (FileChannel channel = FileChannel.open(restored, StandardOpenOption.WRITE)) {
+            channel.force(true);
         }
     }
 
