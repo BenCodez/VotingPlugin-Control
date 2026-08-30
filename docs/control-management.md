@@ -85,9 +85,10 @@ rejects unknown presets/options and applies phase-specific rules (for example, m
 it does not turn a displayed YAML key into a generic write request.
 
 `reward-builder` is PREVIEW/APPLY-only and requires exactly `options.proposal`, a JSON-serialized copy of the typed reward
-proposal documented below. It deliberately has no READ form. The selected scope determines the managed file and path, and
-the plugin replaces only that path so a second preview is deterministic and cannot leave stale actions behind. Control
-never returns the proposal in a public operation view, and the durable operation journal records only the domain/preset.
+proposal documented below. It deliberately has no READ form: Control rejects that phase before an operation is queued,
+and the node independently revalidates the phase. The selected scope determines the managed file and path, and the plugin
+replaces only that path so a second preview is deterministic and cannot leave stale actions behind. Control never returns
+the proposal in a public operation view, and the durable operation journal records only the domain/preset.
 Public/history-only quick-setup selectors carry an internal non-serialized redacted marker that proposal validation rejects,
 so they cannot become executable requests. The node's acknowledged result exposes only the derived target file, not
 proposal actions/messages.
@@ -141,8 +142,9 @@ ambiguous write.
 
 ### Configuration snapshots and restore
 
-Snapshots are durable Control-side copies of the redacted managed-file content returned by successful READ results. Known
-secret paths and sensitive comment values contain `__VOTINGPLUGIN_CONTROL_REDACTED__` rather than credentials:
+Snapshots are durable Control-side copies of the redacted managed-file content returned by successful READ results. A
+successful empty file is retained as an empty document; `null` alone means content was omitted. Known secret paths and
+sensitive comment values contain `__VOTINGPLUGIN_CONTROL_REDACTED__` rather than credentials:
 
 - `POST /api/v1/snapshots` accepts a name and completed read operation ID;
 - `GET /api/v1/snapshots` lists summaries without file content;
@@ -226,7 +228,9 @@ lease is two minutes; an unleased active inspection expires five minutes after c
 pruned 15 minutes after creation. Retrying after a lost acknowledgement is safe because handlers are read-only.
 
 Control audit records only the inspection kind. Filter values may contain a player identity or vote correlation ID and
-must never be copied into audit or ordinary application logs.
+must never be copied into audit or ordinary application logs. Claim, completion, and capability-loss cancellation update
+in-memory inspection state transactionally with the audit append; an audit failure restores the prior lease/result state
+so a retry can emit the missing record.
 
 ### Query allow-list
 

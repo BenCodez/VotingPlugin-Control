@@ -154,6 +154,30 @@ class InspectionOperationsTest {
         }
     }
 
+    @Test void failedCapabilityLossAuditRollsBackTheInspectionCancellation() throws Exception {
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        Path auditDirectory = directory.resolve("capability-loss-audit");
+        try (ConfigurationAuditLog audit = new ConfigurationAuditLog(auditDirectory, clock)) {
+            InspectionOperations operations = new InspectionOperations(registry, audit, clock);
+            UUID inspection = operations.create("backend-a", new InspectionQuery("overview", Map.of())).inspectionId();
+            registry.heartbeat("backend-a", new Heartbeat(session, 1, Set.of("discovery.read"), Set.of()));
+            Path auditFile = auditDirectory.resolve("configuration-audit.jsonl");
+            byte[] validAudit = Files.readAllBytes(auditFile);
+            Files.writeString(auditFile, "tampered", StandardOpenOption.APPEND);
+
+            assertThrows(ConfigurationAuditLog.AuditException.class,
+                    () -> operations.claim("backend-a", session));
+            assertEquals("RUNNING", operations.get(inspection).state());
+            assertNull(operations.get(inspection).result());
+
+            Files.write(auditFile, validAudit, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            assertNull(operations.claim("backend-a", session));
+            assertEquals("FAILED", operations.get(inspection).state());
+            assertEquals("CAPABILITY_LOST", operations.get(inspection).result().code());
+            assertTrue(Files.readString(auditFile).contains("INSPECTION_CANCELLED"));
+        }
+    }
+
     @Test void resultShapeAndUtf8ByteLimitsAreEnforced() {
         register(session, Set.of(InspectionQuery.CAPABILITY));
         InspectionOperations operations = new InspectionOperations(registry, clock);

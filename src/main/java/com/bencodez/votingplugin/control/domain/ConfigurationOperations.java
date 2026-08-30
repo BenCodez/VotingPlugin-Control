@@ -78,6 +78,10 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     public synchronized OperationView createRead(List<String> nodeIds, ManagedConfiguration selector) {
         if (selector == null) selector = ManagedConfiguration.proxy(new ProxyRoutingConfiguration(false, List.of()));
+        if (ManagedConfiguration.QUICK_SETUP.equals(selector.domain())
+                && ManagedConfiguration.REWARD_BUILDER.equals(selector.preset())) {
+            throw invalid("reward builder is preview/apply only");
+        }
         selector.validateProposal();
         return create("READ", validateTargets(nodeIds, selector.capability()), selector, null);
     }
@@ -471,7 +475,8 @@ public final class ConfigurationOperations implements AutoCloseable {
             int contentBytes = configuration.content() == null ? 0
                     : configuration.content().getBytes(StandardCharsets.UTF_8).length;
             boolean keepContent = result.success() && "READ".equals(operation.type)
-                    && contentBytes > 0 && retainedFileBytes + contentBytes <= MAX_RETAINED_FILE_BYTES;
+                    && configuration.content() != null
+                    && retainedFileBytes + contentBytes <= MAX_RETAINED_FILE_BYTES;
             if (keepContent) retainedFileBytes += contentBytes;
             else configuration = configuration.publicView();
         } else if (configuration != null && operation.results.values().stream()

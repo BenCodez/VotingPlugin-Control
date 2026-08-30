@@ -153,12 +153,24 @@ public final class InspectionOperations {
     }
 
     private void completeUnavailable(StoredInspection stored, UUID sessionId) {
+        InspectionTaskResult previousResult = stored.result;
+        String previousState = stored.state;
+        Instant previousLease = stored.leasedAt;
+        UUID previousAttempt = stored.attemptId;
         stored.result = new InspectionTaskResult(sessionId, false, "CAPABILITY_LOST",
                 "Node no longer accepts inspection queries", null, null);
         stored.state = "COMPLETE";
         stored.leasedAt = null;
         stored.attemptId = null;
-        append("INSPECTION_CANCELLED", stored.id, stored.nodeId, "CAPABILITY_LOST");
+        try {
+            append("INSPECTION_CANCELLED", stored.id, stored.nodeId, "CAPABILITY_LOST");
+        } catch (RuntimeException failure) {
+            stored.result = previousResult;
+            stored.state = previousState;
+            stored.leasedAt = previousLease;
+            stored.attemptId = previousAttempt;
+            throw failure;
+        }
     }
 
     private static void validateResult(InspectionTaskResult result, String expectedKind) {

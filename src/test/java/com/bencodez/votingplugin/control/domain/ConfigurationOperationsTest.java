@@ -605,6 +605,11 @@ class ConfigurationOperationsTest {
         ManagedConfiguration reward = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
                 null, null, ManagedConfiguration.REWARD_BUILDER,
                 Map.of("proposal", "{\"scope\":\"every-site\",\"commands\":[\"say hi\"]}"));
+
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.createRead(List.of("backend-a"), reward)).code());
+        assertNull(operations.claim("backend-a", session));
+
         ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-a"), reward);
         ConfigurationTask task = operations.claim("backend-a", session);
 
@@ -965,6 +970,28 @@ class ConfigurationOperationsTest {
         ConfigurationOperations.OperationView summary = operations.list().get(0);
         assertNull(summary.results().get("backend-a").configuration().content());
         assertNull(summary.approvalToken());
+    }
+
+    @Test void successfulReadRetainsAndSnapshotsAnEmptyFileBody() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("backend-a"),
+                ManagedConfiguration.file("Config.yml", null));
+        ConfigurationTask task = operations.claim("backend-a", session);
+
+        read = operations.complete(read.operationId(), "backend-a", new ConfigurationTaskResult(session, true, "OK",
+                "read", "a".repeat(64), ManagedConfiguration.file("Config.yml", ""), List.of(),
+                false, false, task.attemptId()));
+
+        assertEquals("", read.results().get("backend-a").configuration().content());
+        ConfigurationSnapshots.Snapshot snapshot = new ConfigurationSnapshots(directory, clock)
+                .create("Empty file", read);
+        assertEquals("", snapshot.documents().get(0).content());
     }
 
     @Test void retryOfAReadTargetsOnlyFailedNodes() throws Exception {

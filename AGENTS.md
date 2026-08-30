@@ -39,8 +39,9 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
   Quick-setup history uses an internal, non-serialized `redacted` marker, and proposal validation must reject that marker.
 - `domain/InspectionOperations` coordinates the separate, read-only `data.inspect.v1` lane.
 - `domain/ConfigurationSnapshots` stores bounded copies of the redacted content returned by completed managed-file reads.
-  The list API omits content, full reads are admin-only, and durable files are owner-permissioned where the platform
-  supports POSIX modes. Restoring still uses the normal preview and one-time approval path.
+  A successful empty file remains a non-null empty document rather than being confused with omitted content. The list API
+  omits content, full reads are admin-only, and durable files are owner-permissioned where the platform supports POSIX
+  modes. Restoring still uses the normal preview and one-time approval path.
 - `domain/ConfigurationAuditLog` is the durable, bounded, hash-chained metadata audit log. Configuration values and query
   filters do not belong there.
 - `protocol/` contains the wire DTOs and capability-to-domain mapping. Keep them immutable and validate at construction or
@@ -62,7 +63,8 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
 4. Configuration writes follow `READ`/`PREVIEW`/`APPLY`. Apply consumes the one-time approval from a completely successful
    preview and carries the node revisions that were previewed. Do not create a shortcut around this workflow.
 5. A claimed task has a two-minute lease and a unique `attemptId`. A result must echo the current node session and attempt;
-   stale attempts cannot complete reissued work.
+   stale attempts cannot complete reissued work. Claim, completion, and capability-loss state transitions must roll back
+   if their durable audit append fails.
 6. The inspection lane is read-only. Its allow-listed kind and bounded string filters are the whole request; results are a
    structured JSON envelope whose serialized size is at most 512 KiB, and are retained only briefly. Audit the kind, never
    player names or other filter values.
@@ -77,8 +79,8 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
 10. Keep the HTTP executor, password executor, operation stores, retained messages/content, topology, and inspection data
     bounded. Do not replace limits with unbounded queues, streams, maps, or full database scans.
 11. `reward-simulation` and `reward-builder` share one strict proposal schema, but only the latter can persist. Keep the
-    builder PREVIEW/APPLY-only, replace only its selected Rewards subtree, strip `proposal` from public/history views, and
-    never execute reward actions from Control.
+    builder PREVIEW/APPLY-only (Control must reject it on READ before queueing), replace only its selected Rewards subtree,
+    strip `proposal` from public/history views, and never execute reward actions from Control.
 12. Keep discovered service names observational. `vote-site-health` may copy a bounded view of persisted
     `GottenServiceSites`, but it must not call an auto-creating resolver or turn a health read into a create/approve action.
 13. The current `vote-logging` quick setup changes configuration but not the runtime VoteLog manager lifecycle. Preserve
