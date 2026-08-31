@@ -80,7 +80,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Control enrollment unavailable"));
         assertTrue(script.body().contains("Comments preserved for every target"));
         assertTrue(script.body().contains("Backend topology is truncated"));
-        assertTrue(script.body().contains("function resetServerConfigurationForms(status, preserveDirtyFile = false)"));
+        assertTrue(script.body().contains("function resetServerConfigurationForms(status, preserveDirtyDrafts = false)"));
         assertTrue(script.body().contains("Network data is unavailable. Refresh and load current values before continuing."));
         assertTrue(script.body().contains("backendTopologyTruncated = false;"));
         assertTrue(script.body().contains("nextPage.addEventListener"));
@@ -127,6 +127,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("operation.results?.[proxyId]?.sessionId !== proxySessionId"));
         assertTrue(script.body().contains("confirmDiscardUnsavedConfiguration('switching servers')"));
         assertTrue(script.body().contains("voteId === voteTraceId.value.trim()"));
+        assertTrue(script.body().contains("const traceReady = authenticated && connectedInspectionNodes().length > 0"));
+        assertTrue(script.body().contains("traceVote.disabled = !traceReady;"));
+        assertTrue(script.body().contains("const retainedRoutingDraft = preserveDirtyDrafts && routingDirty;"));
+        assertTrue(script.body().contains("routingDraftNodeId === selectedServerId"));
+        assertTrue(script.body().contains("Your unsaved proxy-routing draft is retained"));
+        assertTrue(script.body().contains("text(operationStatus, routingDraftStatus('The selected nodes changed during refresh."));
         assertTrue(script.body().contains("Your unsaved ${configurationFile.value} draft is retained"));
         assertTrue(script.body().contains("Discard unsaved routing changes and load current values?"));
         assertTrue(script.body().contains("Discard unsaved ${configurationFile.value} changes and load the current file?"));

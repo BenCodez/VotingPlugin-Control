@@ -250,6 +250,7 @@ let lastFileReadOperation = null;
 let configurationContentPresent = false;
 let configurationDirty = false;
 let routingDirty = false;
+let routingDraftNodeId = '';
 let configurationFileSelection = configurationFile.value;
 let inspectionInFlight = false;
 let lastDiagnostics = null;
@@ -954,6 +955,7 @@ function applyAuthenticatedSession(body) {
   configurationContentPresent = false;
   configurationDirty = false;
   routingDirty = false;
+  routingDraftNodeId = '';
   configurationFileSelection = configurationFile.value;
   autoLoadInFlight.clear();
   inputGeneration++;
@@ -1578,6 +1580,7 @@ function updateSetupChecklist(overview = lastOverview) {
 function updateExtendedButtons() {
   const node = nodeIndex.get(selectedServerId);
   const inspectionReady = authenticated && Boolean(inspectionCapableNode()) && !inspectionInFlight;
+  const traceReady = authenticated && connectedInspectionNodes().length > 0 && !inspectionInFlight;
   const backendTargets = backendQuickTargets();
   const allQuickBackends = allNodeItems.filter(item => isBackend(item) && item.online
     && item.acceptedCapabilities.includes('config.quick-setup.v1')).slice(0, MAX_CONFIGURATION_TARGETS);
@@ -1594,7 +1597,7 @@ function updateExtendedButtons() {
   loadSiteHealth.disabled = !inspectionReady;
   loadVoteLogSummary.disabled = !inspectionReady;
   searchVoteLog.disabled = !inspectionReady;
-  traceVote.disabled = !inspectionReady;
+  traceVote.disabled = !traceReady;
   resolveSite.disabled = !inspectionReady;
   simulateReward.disabled = !inspectionReady;
   previewReward.disabled = !quickReady;
@@ -1639,17 +1642,27 @@ function renderNodeViews() {
   updateExtendedButtons();
 }
 
-function resetServerConfigurationForms(status, preserveDirtyFile = false) {
-  configurationForm.reset();
-  routingDirty = false;
-  if (preserveDirtyFile && configurationDirty) {
+function routingDraftStatus(status) {
+  return routingDirty
+    ? `${status} Your unsaved proxy-routing draft is retained for ${routingDraftNodeId || 'the previous server'}; explicitly switch servers or load current values to discard it.`
+    : status;
+}
+
+function resetServerConfigurationForms(status, preserveDirtyDrafts = false) {
+  const retainedRoutingDraft = preserveDirtyDrafts && routingDirty;
+  if (!retainedRoutingDraft) {
+    configurationForm.reset();
+    routingDirty = false;
+    routingDraftNodeId = '';
+  }
+  if (preserveDirtyDrafts && configurationDirty) {
     lastFileReadOperation = null;
     approvedFilePreview = null;
     text(fileOperationStatus, `${status} Your unsaved ${configurationFile.value} draft is retained; explicitly switch files or load the current file to discard it.`);
   } else {
     resetFileEditorForSelection(status);
   }
-  text(operationStatus, status);
+  text(operationStatus, routingDraftStatus(status));
   clearApprovals();
 }
 
@@ -1664,7 +1677,7 @@ function resetDedicatedSetupValues() {
   voteLoggingState.className = 'pill neutral';
 }
 
-function resetServerContextValues(reason, preserveDirtyFile = false) {
+function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   dedicatedSetupApprovals.clear();
   pendingDetectedVoteSite = null;
   lastFileReadOperation = null;
@@ -1694,7 +1707,7 @@ function resetServerContextValues(reason, preserveDirtyFile = false) {
   text(autoSitesStatus, reason);
   text(voteLoggingStatus, reason);
   loadedQuickSetup = null;
-  resetServerConfigurationForms(reason, preserveDirtyFile);
+  resetServerConfigurationForms(reason, preserveDirtyDrafts);
   const preset = quickPreset.value;
   quickSetupForm.reset();
   quickPreset.value = preset;
@@ -1720,7 +1733,8 @@ function selectPrimaryServer(nodeId) {
 function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 || proxyMethodWorkflowInFlight) {
   const primaryCapabilities = nodeCapabilities.get(selectedServerId) || [];
   const routingReady = authenticated && primaryCapabilities.includes('config.proxy-routing.v1') &&
-    targets('config.proxy-routing.v1').length > 0 && !busy;
+    targets('config.proxy-routing.v1').length > 0
+    && (!routingDirty || routingDraftNodeId === selectedServerId) && !busy;
   const fileCapability = selectedFileCapability();
   const fileReady = authenticated && primaryCapabilities.includes(fileCapability) &&
     fileTargetsForSelection().length > 0 && !busy;
@@ -1922,6 +1936,7 @@ function discardAuthenticationState(reason) {
   configurationContentPresent = false;
   configurationDirty = false;
   routingDirty = false;
+  routingDraftNodeId = '';
   autoLoadInFlight.clear();
   quickSetupForm.reset();
   resetDedicatedSetupValues();
@@ -2228,7 +2243,7 @@ async function loadNodes() {
       lastOverview = null;
       lastDiagnostics = null;
       inputGeneration++;
-      text(operationStatus, 'A selected node changed capabilities during refresh. Preview again before apply.');
+      text(operationStatus, routingDraftStatus('A selected node changed capabilities during refresh. Preview again before apply.'));
     }
     const invalidRoutingApproval = approvedPreview && !approvedPreview.nodeIds.every(node =>
       nodeCapabilities.get(node)?.includes('config.proxy-routing.v1'));
@@ -2248,7 +2263,7 @@ async function loadNodes() {
       if (invalidVoteSitesApproval) approvedQuickPreview = null;
       dedicatedSetupApprovals.clear();
       inputGeneration++;
-      text(operationStatus, 'A preview target went offline or lost the required capability. Preview again before apply.');
+      text(operationStatus, routingDraftStatus('A preview target went offline or lost the required capability. Preview again before apply.'));
     }
     const visibleIds = new Set(registry.items.filter(node => node.online && node.acceptedCapabilities.some(value => value.startsWith('config.') || value.startsWith('data.')))
       .map(node => node.nodeId));
@@ -2269,7 +2284,7 @@ async function loadNodes() {
       approvedQuickPreview = null;
       dedicatedSetupApprovals.clear();
       inputGeneration++;
-      text(operationStatus, 'The selected nodes changed during refresh. Preview again before apply.');
+      text(operationStatus, routingDraftStatus('The selected nodes changed during refresh. Preview again before apply.'));
     }
     selectedNodes = filteredSelection;
     renderNodeViews();
@@ -2444,6 +2459,7 @@ async function loadProxyRouting(automatic = false) {
       blockedServers.value = retained.configuration.blockedServers.join('\n');
       approvedPreview = null;
       routingDirty = false;
+      routingDraftNodeId = '';
       inputGeneration++;
       updateConfigurationButtons();
     }
@@ -2481,10 +2497,14 @@ applyConfiguration.addEventListener('click', async () => {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     });
-    if (operation.state === 'SUCCEEDED') routingDirty = false;
+    if (operation.state === 'SUCCEEDED') {
+      routingDirty = false;
+      routingDraftNodeId = '';
+    }
   } catch (error) { text(operationStatus, error.message); }
 });
 [sendAll, blockedServers].forEach(field => field.addEventListener('input', () => {
+  if (!routingDirty) routingDraftNodeId = selectedServerId;
   routingDirty = true;
   if (approvedPreview) text(operationStatus, 'The proposal changed. Preview it again before apply.');
   approvedPreview = null;
