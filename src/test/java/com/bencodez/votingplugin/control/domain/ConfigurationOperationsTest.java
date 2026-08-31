@@ -3,6 +3,7 @@ package com.bencodez.votingplugin.control.domain;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -33,6 +34,36 @@ import org.junit.jupiter.api.io.TempDir;
 
 class ConfigurationOperationsTest {
     @TempDir Path directory;
+
+    @Test void automaticCancellationRollsBackWhenJournalPersistenceFails() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        Path journalDirectory = directory.resolve("journal");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        ConfigurationAuditLog audit = new ConfigurationAuditLog(directory.resolve("audit"), clock);
+        ConfigurationOperations operations = new ConfigurationOperations(registry, audit, clock, journal);
+        operations.createRead(List.of("backend-a"), ManagedConfiguration.file("Config.yml", null));
+
+        Path moved = directory.resolve("journal-away");
+        Files.move(journalDirectory, moved);
+        Files.writeString(journalDirectory, "unwritable");
+        registry.heartbeat("backend-a", new Heartbeat(session, 1, Set.of(), Set.of()));
+        assertThrows(IllegalStateException.class, () -> operations.claim("backend-a", session));
+        assertEquals("RUNNING", operations.list().get(0).state());
+
+        Files.delete(journalDirectory);
+        Files.move(moved, journalDirectory);
+        assertNull(operations.claim("backend-a", session));
+        assertEquals("COMPLETED_WITH_ERRORS", operations.list().get(0).state());
+        operations.close();
+        audit = new ConfigurationAuditLog(directory.resolve("audit"), clock);
+        ConfigurationOperations recovered = new ConfigurationOperations(registry, audit, clock, journal);
+        assertEquals("CAPABILITY_LOST", recovered.list().get(0).results().get("backend-a").code());
+        recovered.close();
+    }
 
     @Test void previewApprovalCarriesEachNodesRevisionIntoApplyAndIsSingleUse() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
@@ -83,6 +114,227 @@ class ConfigurationOperationsTest {
 
         assertEquals("SUCCEEDED", read.state());
         assertEquals("false", read.results().get("lobby").configuration().options().get("processRewards"));
+    }
+
+    @Test void voteLoggingAppliesAndRetriesAreSerializedPerTarget() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration logging = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-logging",
+                Map.of("enabled", "true", "purgeDays", "30", "useMainMySQL", "true"));
+
+        ConfigurationOperations.OperationView firstPreview = operations.createPreview(List.of("backend-a"), logging);
+        ConfigurationTask firstPreviewTask = operations.claim("backend-a", session);
+        firstPreview = operations.complete(firstPreview.operationId(), "backend-a", new ConfigurationTaskResult(
+                session, true, "OK", "valid", "a".repeat(64), logging, List.of(), false, false,
+                firstPreviewTask.attemptId()));
+        ConfigurationOperations.OperationView secondPreview = operations.createPreview(List.of("backend-a"), logging);
+        ConfigurationTask secondPreviewTask = operations.claim("backend-a", session);
+        secondPreview = operations.complete(secondPreview.operationId(), "backend-a", new ConfigurationTaskResult(
+                session, true, "OK", "valid", "b".repeat(64), logging, List.of(), false, false,
+                secondPreviewTask.attemptId()));
+
+        ConfigurationOperations.OperationView firstApply = operations.createApply(firstPreview.operationId(),
+                firstPreview.approvalToken());
+        ConfigurationOperations.OperationView approvedSecond = secondPreview;
+        assertEquals("OPERATION_CONFLICT", assertThrows(ValidationException.class,
+                () -> operations.createApply(approvedSecond.operationId(), approvedSecond.approvalToken())).code());
+        ConfigurationTask firstApplyTask = operations.claim("backend-a", session);
+        operations.complete(firstApply.operationId(), "backend-a", new ConfigurationTaskResult(session, false,
+                "WRITE_FAILED", "failed", null, (ManagedConfiguration) null, List.of(), false, true,
+                firstApplyTask.attemptId()));
+
+        ConfigurationOperations.OperationView secondApply = operations.createApply(secondPreview.operationId(),
+                secondPreview.approvalToken());
+        assertEquals("OPERATION_CONFLICT", assertThrows(ValidationException.class,
+                () -> operations.retry(firstApply.operationId())).code());
+        assertEquals("RUNNING", secondApply.state());
+    }
+
+    @Test void voteLoggingRestartStateTracksOnlyRuntimeChangesAndSurvivesRestart() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        Path journalDirectory = directory.resolve("vote-logging-restart-journal");
+        Path auditDirectory = directory.resolve("vote-logging-restart-audit");
+        ManagedConfiguration logging = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-logging",
+                Map.of("enabled", "true", "purgeDays", "30", "useMainMySQL", "true"));
+        try (ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(auditDirectory, clock), clock,
+                new ConfigurationOperationJournal(journalDirectory, clock))) {
+            ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-a"), logging);
+            ConfigurationTask previewTask = operations.claim("backend-a", session);
+            preview = operations.complete(preview.operationId(), "backend-a", new ConfigurationTaskResult(session,
+                    true, "OK", "valid", "a".repeat(64), logging, List.of(), false, false,
+                    previewTask.attemptId()));
+            ConfigurationOperations.OperationView apply = operations.createApply(preview.operationId(),
+                    preview.approvalToken());
+            ConfigurationTask applyTask = operations.claim("backend-a", session);
+            operations.complete(apply.operationId(), "backend-a", new ConfigurationTaskResult(session, true, "OK",
+                    "applied", "b".repeat(64), logging, List.of("VoteLogging.PurgeDays changed"), true, false,
+                    applyTask.attemptId()));
+            assertTrue(operations.listView().voteLoggingRestartSessions().isEmpty());
+
+            preview = operations.createPreview(List.of("backend-a"), logging);
+            previewTask = operations.claim("backend-a", session);
+            preview = operations.complete(preview.operationId(), "backend-a", new ConfigurationTaskResult(session,
+                    true, "OK", "valid", "b".repeat(64), logging, List.of(), false, false,
+                    previewTask.attemptId()));
+            apply = operations.createApply(preview.operationId(), preview.approvalToken());
+            applyTask = operations.claim("backend-a", session);
+            operations.complete(apply.operationId(), "backend-a", new ConfigurationTaskResult(session, true, "OK",
+                    "applied", "c".repeat(64), logging, List.of("VoteLogging.Enabled changed"), true, false,
+                    applyTask.attemptId()));
+            assertEquals(Map.of("backend-a", session), operations.listView().voteLoggingRestartSessions());
+        }
+
+        try (ConfigurationOperations restarted = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(auditDirectory, clock), clock,
+                new ConfigurationOperationJournal(journalDirectory, clock))) {
+            assertEquals(Map.of("backend-a", session), restarted.listView().voteLoggingRestartSessions());
+        }
+    }
+
+    @Test void voteLoggingRestartStateRollsBackWithFailedCompletionPersistence() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        Path journalDirectory = directory.resolve("restart-rollback-journal");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory.resolve("restart-rollback-audit"), clock), clock, journal);
+        ManagedConfiguration logging = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-logging",
+                Map.of("enabled", "true", "purgeDays", "30", "useMainMySQL", "true"));
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-a"), logging);
+        ConfigurationTask previewTask = operations.claim("backend-a", session);
+        preview = operations.complete(preview.operationId(), "backend-a", new ConfigurationTaskResult(session,
+                true, "OK", "valid", "a".repeat(64), logging, List.of(), false, false,
+                previewTask.attemptId()));
+        ConfigurationOperations.OperationView apply = operations.createApply(preview.operationId(),
+                preview.approvalToken());
+        ConfigurationTask applyTask = operations.claim("backend-a", session);
+        ConfigurationTaskResult completion = new ConfigurationTaskResult(session, true, "OK", "applied",
+                "b".repeat(64), logging, List.of("VoteLogging.UseMainMySQL changed"), true, false,
+                applyTask.attemptId());
+
+        Path moved = directory.resolve("restart-rollback-journal-away");
+        Files.move(journalDirectory, moved);
+        Files.writeString(journalDirectory, "unwritable");
+        assertThrows(IllegalStateException.class,
+                () -> operations.complete(apply.operationId(), "backend-a", completion));
+        assertEquals("RUNNING", operations.get(apply.operationId()).state());
+        assertTrue(operations.listView().voteLoggingRestartSessions().isEmpty());
+
+        Files.delete(journalDirectory);
+        Files.move(moved, journalDirectory);
+        operations.complete(apply.operationId(), "backend-a", completion);
+        assertEquals(Map.of("backend-a", session), operations.listView().voteLoggingRestartSessions());
+        operations.close();
+    }
+
+    @Test void voteLoggingRestartStateReclaimsKnownReconnectedSessionsBeforeAddingMarkers() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID priorSession = UUID.randomUUID();
+        UUID currentOldSession = UUID.randomUUID();
+        UUID newSession = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-old", currentOldSession, "Old Backend", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        registry.register(new NodeRegistration("backend-new", newSession, "New Backend", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        Path journalDirectory = directory.resolve("restart-reclaim-journal");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        journal.save(List.of(), Map.of("backend-old", priorSession));
+        ManagedConfiguration logging = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-logging",
+                Map.of("enabled", "true", "purgeDays", "30", "useMainMySQL", "true"));
+
+        try (ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory.resolve("restart-reclaim-audit"), clock), clock, journal)) {
+            ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-new"), logging);
+            ConfigurationTask previewTask = operations.claim("backend-new", newSession);
+            preview = operations.complete(preview.operationId(), "backend-new", new ConfigurationTaskResult(newSession,
+                    true, "OK", "valid", "a".repeat(64), logging, List.of(), false, false,
+                    previewTask.attemptId()));
+            ConfigurationOperations.OperationView apply = operations.createApply(preview.operationId(),
+                    preview.approvalToken());
+            ConfigurationTask applyTask = operations.claim("backend-new", newSession);
+            operations.complete(apply.operationId(), "backend-new", new ConfigurationTaskResult(newSession, true,
+                    "OK", "applied", "b".repeat(64), logging, List.of("VoteLogging.Enabled changed"), true,
+                    false, applyTask.attemptId()));
+
+            assertEquals(Map.of("backend-new", newSession), operations.listView().voteLoggingRestartSessions());
+        }
+        assertEquals(Map.of("backend-new", newSession), journal.loadState().voteLoggingRestartSessions());
+    }
+
+    @Test void voteLoggingRestartStatePreservesUnknownSessionsAtCapacity() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-new", session, "New Backend", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        LinkedHashMap<String, UUID> retained = new LinkedHashMap<>();
+        for (int index = 0; index < ConfigurationOperationJournal.MAX_RESTART_SESSIONS; index++) {
+            retained.put("retained-" + index, UUID.randomUUID());
+        }
+        Path journalDirectory = directory.resolve("restart-capacity-journal");
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(journalDirectory, clock);
+        journal.save(List.of(), retained);
+        ManagedConfiguration logging = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-logging",
+                Map.of("enabled", "true", "purgeDays", "30", "useMainMySQL", "true"));
+
+        try (ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory.resolve("restart-capacity-audit"), clock), clock, journal)) {
+            ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-new"), logging);
+            ConfigurationTask previewTask = operations.claim("backend-new", session);
+            preview = operations.complete(preview.operationId(), "backend-new", new ConfigurationTaskResult(session,
+                    true, "OK", "valid", "a".repeat(64), logging, List.of(), false, false,
+                    previewTask.attemptId()));
+            ConfigurationOperations.OperationView apply = operations.createApply(preview.operationId(),
+                    preview.approvalToken());
+            ConfigurationTask applyTask = operations.claim("backend-new", session);
+            assertThrows(IllegalStateException.class, () -> operations.complete(apply.operationId(), "backend-new",
+                    new ConfigurationTaskResult(session, true, "OK", "applied", "b".repeat(64), logging,
+                            List.of("VoteLogging.Enabled changed"), true, false, applyTask.attemptId())));
+            assertEquals("RUNNING", operations.get(apply.operationId()).state());
+            assertEquals(retained, operations.listView().voteLoggingRestartSessions());
+        }
+        assertEquals(retained, journal.loadState().voteLoggingRestartSessions());
+    }
+
+    @Test void applyRequiresTheSameNodeSessionAndRoleThatPassedPreview() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID originalSession = UUID.randomUUID();
+        registry.register(registration(originalSession));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ProxyRoutingConfiguration proposal = new ProxyRoutingConfiguration(true, List.of("lobby"));
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("proxy-a"), proposal);
+        ConfigurationTask task = operations.claim("proxy-a", originalSession);
+        preview = operations.complete(preview.operationId(), "proxy-a", new ConfigurationTaskResult(
+                originalSession, true, "OK", "valid", "a".repeat(64), proposal, List.of(), false, false,
+                task.attemptId()));
+
+        registry.register(registration(UUID.randomUUID()));
+
+        ConfigurationOperations.OperationView approvedPreview = preview;
+        ValidationException changed = assertThrows(ValidationException.class,
+                () -> operations.createApply(approvedPreview.operationId(), approvedPreview.approvalToken()));
+        assertEquals("TARGET_CHANGED", changed.code());
     }
 
     @Test void auditChainSurvivesRestartAndTamperingFailsClosed() throws Exception {
@@ -471,7 +723,16 @@ class ConfigurationOperationsTest {
         assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(
                 ManagedConfiguration.FILE, null, List.of("other"), "Config.yml", null, null, Map.of()));
         new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null,
-                "standalone", Map.of("label", "é".repeat(500)));
+                "easy-reward", Map.of("message", "é".repeat(250)));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(
+                ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null,
+                "easy-reward", Map.of("message", "é".repeat(251))));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(
+                ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null,
+                "standalone", Map.of("label", "ignored")));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(
+                ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null,
+                "future-preset", Map.of()));
     }
 
     @Test void voteSitesSyncAllowsOneBoundedSourceDocumentAndHidesItFromOperationViews() throws Exception {
@@ -529,6 +790,64 @@ class ConfigurationOperationsTest {
         assertEquals(read.operationId(), task.operationId());
         assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
                 null, List.of(), null, null, ManagedConfiguration.COMMUNICATION_TEST, Map.of()).validateProposal());
+    }
+
+    @Test void rewardBuilderAcceptsOneBoundedProposalAndNeverEchoesIt() throws Exception {
+        String maximum = "x".repeat(ManagedConfiguration.MAX_REWARD_PROPOSAL);
+        ManagedConfiguration reward = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.REWARD_BUILDER, Map.of("proposal", maximum));
+
+        reward.validateProposal();
+        assertEquals(ConfigurationOperations.QUICK_SETUP_CAPABILITY, reward.capability());
+        assertEquals(maximum, reward.options().get("proposal"));
+        ManagedConfiguration publicView = reward.publicView();
+        assertFalse(publicView.options().containsKey("proposal"));
+        assertTrue(publicView.redacted());
+        assertThrows(IllegalArgumentException.class, publicView::validateProposal);
+        ObjectMapper json = new ObjectMapper();
+        String encoded = json.writeValueAsString(publicView);
+        assertFalse(encoded.contains("proposal"));
+        assertFalse(encoded.contains("redacted"));
+        ManagedConfiguration decoded = json.readValue(encoded, ManagedConfiguration.class);
+        assertFalse(decoded.redacted());
+        assertThrows(IllegalArgumentException.class, decoded::validateProposal);
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.REWARD_BUILDER, Map.of()).validateProposal());
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.REWARD_BUILDER,
+                Map.of("proposal", maximum, "extra", "value")).validateProposal());
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, ManagedConfiguration.REWARD_BUILDER,
+                Map.of("proposal", maximum + "x")));
+        assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
+                null, List.of(), null, null, "standalone", Map.of("proposal", "x".repeat(501))));
+    }
+
+    @Test void rewardBuilderResultDoesNotRetainOrEchoItsProposal() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration reward = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.REWARD_BUILDER,
+                Map.of("proposal", "{\"scope\":\"every-site\",\"commands\":[\"say hi\"]}"));
+
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.createRead(List.of("backend-a"), reward)).code());
+        assertNull(operations.claim("backend-a", session));
+
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("backend-a"), reward);
+        ConfigurationTask task = operations.claim("backend-a", session);
+
+        preview = operations.complete(preview.operationId(), "backend-a", new ConfigurationTaskResult(session,
+                true, "OK", "valid", "a".repeat(64), reward, List.of("changed Rewards"), false, false,
+                task.attemptId()));
+
+        assertTrue(preview.configuration().options().isEmpty());
+        assertTrue(preview.results().get("backend-a").configuration().options().isEmpty());
     }
 
     @Test void proxyMethodUsesItsOwnCoordinatedCapability() throws Exception {
@@ -754,7 +1073,7 @@ class ConfigurationOperationsTest {
         assertEquals("CAPABILITY_LOST", view.results().get("backend-a").code());
     }
 
-    @Test void fileOperationRetentionAndMultiNodeContentsAreBounded() throws Exception {
+    @Test void fileOperationRetentionAndMultiNodeContentsAreRetainedWithinTheGlobalBound() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
         UUID first = UUID.randomUUID();
@@ -776,7 +1095,7 @@ class ConfigurationOperationsTest {
         read = operations.complete(read.operationId(), "backend-b", new ConfigurationTaskResult(second, true, "OK",
                 "read", "f".repeat(64), content, List.of(), false, false, secondTask.attemptId()));
         assertNotNull(read.results().get("backend-a").configuration().content());
-        assertEquals(null, read.results().get("backend-b").configuration().content());
+        assertNotNull(read.results().get("backend-b").configuration().content());
 
         for (int i = 0; i < 16; i++) operations.createRead(List.of("backend-a"), selector);
         assertEquals("OPERATION_LIMIT", assertThrows(ValidationException.class,
@@ -857,6 +1176,198 @@ class ConfigurationOperationsTest {
 
         assertEquals(null, read.results().get("backend-a").configuration());
         assertEquals("Feature: true\n", read.results().get("backend-b").configuration().content());
+    }
+
+    @Test void operationListOmitsRetainedFileBodiesButSingleOperationKeepsThem() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("backend-a"),
+                ManagedConfiguration.file("Config.yml", null));
+        ConfigurationTask task = operations.claim("backend-a", session);
+        read = operations.complete(read.operationId(), "backend-a", new ConfigurationTaskResult(session, true, "OK",
+                "read", "a".repeat(64), ManagedConfiguration.file("Config.yml", "Feature: true\n"), List.of(),
+                false, false, task.attemptId()));
+
+        assertEquals("Feature: true\n", read.results().get("backend-a").configuration().content());
+        assertEquals("Feature: true\n", operations.get(read.operationId()).results().get("backend-a")
+                .configuration().content());
+        ConfigurationOperations.OperationView summary = operations.list().get(0);
+        assertNull(summary.results().get("backend-a").configuration().content());
+        assertNull(summary.approvalToken());
+    }
+
+    @Test void successfulReadRetainsAndSnapshotsAnEmptyFileBody() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("backend-a"),
+                ManagedConfiguration.file("Config.yml", null));
+        ConfigurationTask task = operations.claim("backend-a", session);
+
+        read = operations.complete(read.operationId(), "backend-a", new ConfigurationTaskResult(session, true, "OK",
+                "read", "a".repeat(64), ManagedConfiguration.file("Config.yml", ""), List.of(),
+                false, false, task.attemptId()));
+
+        assertEquals("", read.results().get("backend-a").configuration().content());
+        ConfigurationSnapshots.Snapshot snapshot = new ConfigurationSnapshots(directory, clock)
+                .create("Empty file", read);
+        assertEquals("", snapshot.documents().get(0).content());
+    }
+
+    @Test void retryOfAReadTargetsOnlyFailedNodes() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.FILE_CAPABILITY);
+        registry.register(new NodeRegistration("backend-a", first, "Backend A", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        registry.register(new NodeRegistration("backend-b", second, "Backend B", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = ManagedConfiguration.file("Config.yml", null);
+        ConfigurationOperations.OperationView original = operations.createRead(
+                List.of("backend-a", "backend-b"), selector);
+        ConfigurationTask firstTask = operations.claim("backend-a", first);
+        ConfigurationTask secondTask = operations.claim("backend-b", second);
+        operations.complete(original.operationId(), "backend-a", new ConfigurationTaskResult(first, true, "OK",
+                "read", "a".repeat(64), ManagedConfiguration.file("Config.yml", "Feature: true\n"), List.of(),
+                false, false, firstTask.attemptId()));
+        original = operations.complete(original.operationId(), "backend-b", new ConfigurationTaskResult(second,
+                false, "READ_FAILED", "failed", null, (ManagedConfiguration) null, List.of(), false, false,
+                secondTask.attemptId()));
+        assertEquals("COMPLETED_WITH_ERRORS", original.state());
+
+        ConfigurationOperations.OperationView retried = operations.retry(original.operationId());
+
+        assertEquals("READ", retried.type());
+        assertEquals(Set.of("backend-b"), retried.nodeStates().keySet());
+        assertNull(operations.claim("backend-a", first));
+        ConfigurationTask retriedTask = operations.claim("backend-b", second);
+        assertNotNull(retriedTask);
+        assertEquals(retried.operationId(), retriedTask.operationId());
+    }
+
+    @Test void retryRejectsIncompleteAndFullySuccessfulOperations() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend-a", session, "Backend A", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("backend-a"),
+                ManagedConfiguration.file("Config.yml", null));
+
+        assertEquals("OPERATION_INCOMPLETE", assertThrows(ValidationException.class,
+                () -> operations.retry(read.operationId())).code());
+
+        ConfigurationTask task = operations.claim("backend-a", session);
+        operations.complete(read.operationId(), "backend-a", new ConfigurationTaskResult(session, true, "OK",
+                "read", "a".repeat(64), ManagedConfiguration.file("Config.yml", "Feature: true\n"), List.of(),
+                false, false, task.attemptId()));
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.retry(read.operationId())).code());
+    }
+
+    @Test void retryOfAnApplyKeepsPreviewRevisionAndSkipsSuccessfulNodes() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.FILE_CAPABILITY);
+        registry.register(new NodeRegistration("backend-a", first, "Backend A", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        registry.register(new NodeRegistration("backend-b", second, "Backend B", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration proposal = ManagedConfiguration.file("Config.yml", "Feature: true\n");
+        ConfigurationOperations.OperationView preview = operations.createPreview(
+                List.of("backend-a", "backend-b"), proposal);
+        ConfigurationTask firstPreview = operations.claim("backend-a", first);
+        ConfigurationTask secondPreview = operations.claim("backend-b", second);
+        operations.complete(preview.operationId(), "backend-a", new ConfigurationTaskResult(first, true, "OK",
+                "valid", "a".repeat(64), ManagedConfiguration.file("Config.yml", "Feature: false\n"), List.of(),
+                false, false, firstPreview.attemptId()));
+        preview = operations.complete(preview.operationId(), "backend-b", new ConfigurationTaskResult(second, true,
+                "OK", "valid", "b".repeat(64), ManagedConfiguration.file("Config.yml", "Feature: false\n"),
+                List.of(), false, false, secondPreview.attemptId()));
+        ConfigurationOperations.OperationView apply = operations.createApply(preview.operationId(),
+                preview.approvalToken());
+        ConfigurationTask firstApply = operations.claim("backend-a", first);
+        ConfigurationTask secondApply = operations.claim("backend-b", second);
+        operations.complete(apply.operationId(), "backend-a", new ConfigurationTaskResult(first, true, "OK",
+                "applied", "c".repeat(64), proposal, List.of(), true, false, firstApply.attemptId()));
+        apply = operations.complete(apply.operationId(), "backend-b", new ConfigurationTaskResult(second, false,
+                "WRITE_FAILED", "failed", null, (ManagedConfiguration) null, List.of(), false, true,
+                secondApply.attemptId()));
+
+        ConfigurationOperations.OperationView retry = operations.retry(apply.operationId());
+
+        assertEquals("APPLY", retry.type());
+        assertEquals(Set.of("backend-b"), retry.nodeStates().keySet());
+        assertNull(operations.claim("backend-a", first));
+        ConfigurationTask retryTask = operations.claim("backend-b", second);
+        assertEquals("b".repeat(64), retryTask.expectedRevision());
+    }
+
+    @Test void retryOfAPreviewRechecksEveryTargetAndIssuesFreshApproval() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.FILE_CAPABILITY);
+        registry.register(new NodeRegistration("backend-a", first, "Backend A", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        registry.register(new NodeRegistration("backend-b", second, "Backend B", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration proposal = ManagedConfiguration.file("Config.yml", "Feature: true\n");
+        ConfigurationOperations.OperationView preview = operations.createPreview(
+                List.of("backend-a", "backend-b"), proposal);
+        ConfigurationTask firstTask = operations.claim("backend-a", first);
+        ConfigurationTask secondTask = operations.claim("backend-b", second);
+        operations.complete(preview.operationId(), "backend-a", new ConfigurationTaskResult(first, true, "OK",
+                "valid", "a".repeat(64), proposal, List.of(), false, false, firstTask.attemptId()));
+        preview = operations.complete(preview.operationId(), "backend-b", new ConfigurationTaskResult(second,
+                false, "VALIDATION_FAILED", "invalid", null, (ManagedConfiguration) null, List.of(), false, false,
+                secondTask.attemptId()));
+
+        ConfigurationOperations.OperationView retry = operations.retry(preview.operationId());
+        assertEquals(Set.of("backend-a", "backend-b"), retry.nodeStates().keySet());
+        ConfigurationTask firstRetry = operations.claim("backend-a", first);
+        ConfigurationTask secondRetry = operations.claim("backend-b", second);
+        operations.complete(retry.operationId(), "backend-a", new ConfigurationTaskResult(first, true, "OK",
+                "valid", "c".repeat(64), proposal, List.of(), false, false, firstRetry.attemptId()));
+        retry = operations.complete(retry.operationId(), "backend-b", new ConfigurationTaskResult(second, true,
+                "OK", "valid", "d".repeat(64), proposal, List.of(), false, false, secondRetry.attemptId()));
+
+        assertEquals("SUCCEEDED", retry.state());
+        assertNotNull(retry.approvalToken());
+    }
+
+    @Test void proxyMethodApplyMustBePreviewedAgainInsteadOfRetried() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofMinutes(5));
+        ConfigurationTask backendApply = fixture.operations().claim("lobby", fixture.backendSession());
+        fixture.operations().complete(fixture.applyId(), "lobby", new ConfigurationTaskResult(
+                fixture.backendSession(), false, "WRITE_FAILED", "failed", null, (ManagedConfiguration) null,
+                List.of(), false, true, backendApply.attemptId()));
+        assertNull(fixture.operations().claim("proxy-a", fixture.proxySession()));
+
+        assertEquals("PREVIEW_REQUIRED", assertThrows(ValidationException.class,
+                () -> fixture.operations().retry(fixture.applyId())).code());
     }
 
     private static final class MutableClock extends Clock {

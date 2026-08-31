@@ -2,6 +2,7 @@ package com.bencodez.votingplugin.control.domain;
 
 import com.bencodez.votingplugin.control.protocol.BackendServerIdentity;
 import com.bencodez.votingplugin.control.protocol.Heartbeat;
+import com.bencodez.votingplugin.control.protocol.InspectionQuery;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.bencodez.votingplugin.control.protocol.NodeStatus;
 import com.bencodez.votingplugin.control.protocol.PresenceSnapshot;
@@ -28,7 +29,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
             ConfigurationOperations.CAPABILITY, ConfigurationOperations.FILE_CAPABILITY,
             ConfigurationOperations.QUICK_SETUP_CAPABILITY, ConfigurationOperations.VOTE_SITES_SYNC_CAPABILITY,
             ConfigurationOperations.TRANSPORT_TEST_CAPABILITY, ConfigurationOperations.PROXY_METHOD_CAPABILITY,
-            "config.file-comments.v1");
+            "config.file-comments.v1", InspectionQuery.CAPABILITY);
     private static final Pattern ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final Pattern CAPABILITY = Pattern.compile("[a-z][a-z0-9.-]{0,63}");
     private static final Set<String> PLATFORMS = Set.of("BUNGEECORD", "VELOCITY", "BUKKIT");

@@ -15,6 +15,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.UUID;
@@ -80,7 +81,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Comments preserved for every target"));
         assertTrue(script.body().contains("Backend topology is truncated"));
         assertTrue(script.body().contains("function resetServerConfigurationForms(status)"));
-        assertTrue(script.body().contains("Network data is unavailable. Refresh before editing."));
+        assertTrue(script.body().contains("Network data is unavailable. Refresh and load current values before continuing."));
         assertTrue(script.body().contains("backendTopologyTruncated = false;"));
         assertTrue(script.body().contains("nextPage.addEventListener"));
         assertTrue(script.body().contains("result.configuration?.content != null"));
@@ -109,6 +110,15 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("enrollmentSubmit.disabled = true"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
+        assertTrue(script.body().contains("let configurationContentPresent = false;"));
+        assertTrue(script.body().contains(
+                "previewFileConfiguration.disabled = !fileReady || !configurationContentPresent;"));
+        assertTrue(script.body().contains(
+                "configurationContent.value = document.content;\n          configurationContentPresent = true;"));
+        assertTrue(script.body().contains(
+                "resetServerContextValues('A selected server reconnected. Load current values before continuing.');"));
+        assertTrue(script.body().contains(
+                "configurationContent.addEventListener('input', () => {\n  configurationContentPresent = true;"));
         assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));
         assertTrue(script.body().contains("loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId"));
         assertTrue(script.body().contains("previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId"));
@@ -123,7 +133,16 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("text(fileOperationStatus, '');"));
         assertTrue(script.body().contains("text(quickOperationStatus, '');"));
         assertTrue(script.body().contains("configurationForm.reset();"));
-        assertTrue(script.body().contains("quickSetupForm.reset();\n  updateQuickFields();"));
+        assertTrue(script.body().contains("quickSetupForm.reset();"));
+        assertTrue(script.body().contains("rewardSimulationForm.reset();"));
+        assertTrue(script.body().contains("playerLookupForm.reset();"));
+        assertTrue(script.body().contains("voteLogForm.reset();"));
+        assertTrue(script.body().contains("voteTraceForm.reset();"));
+        assertTrue(script.body().contains("siteResolutionForm.reset();"));
+        assertTrue(script.body().contains("snapshotForm.reset();"));
+        assertTrue(script.body().contains("voteLogFilter.disabled = true;"));
+        assertTrue(script.body().contains("body.voteLoggingRestartSessions"));
+        assertTrue(script.body().contains("retainedOperations.slice(0, MAX_OPERATION_HISTORY)"));
         assertTrue(script.body().contains("quickCommandSuggestions.replaceChildren();"));
         assertTrue(script.body().contains("Sign out could not be confirmed"));
         assertTrue(script.body().contains("result.success && result.configuration"));
@@ -156,6 +175,9 @@ class ControlHttpServerTest {
         assertEquals(200, health.statusCode());
         assertEquals("00000000-0000-0000-0000-000000000123",
                 json.readTree(health.body()).get("launchId").asText());
+        JsonNode operations = json.readTree(get("/api/v1/operations", adminToken).body());
+        assertTrue(operations.get("items").isArray());
+        assertTrue(operations.get("voteLoggingRestartSessions").isObject());
         assertError(get("/api/v1/health/anything", null), 404, "NOT_FOUND");
         assertError(get("/api/v1/nodes/register/anything", null), 404, "NOT_FOUND");
         HttpResponse<String> method = send("POST", "/api/v1/health", "{}", null);
@@ -255,6 +277,70 @@ class ControlHttpServerTest {
                 "{\"previewOperationId\":\"" + previewId + "\",\"approvalToken\":\"" + approval + "\"}",
                 adminToken), 409, "APPROVAL_REQUIRED");
         assertEquals(applyId, applyTask.get("operationId").asText());
+    }
+
+    @Test void inspectionRetryAndSnapshotRoutesAreEndToEnd() throws Exception {
+        String capableRegistration = registration().replace("\"presence.snapshot\"]",
+                "\"presence.snapshot\",\"data.inspect.v1\",\"config.files.v1\"]");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", capableRegistration, nodeToken).statusCode());
+
+        HttpResponse<String> inspectionQueued = send("POST", "/api/v1/inspections",
+                "{\"nodeId\":\"proxy-a\",\"query\":{\"kind\":\"overview\",\"filters\":{}}}", adminToken);
+        assertEquals(202, inspectionQueued.statusCode(), inspectionQueued.body());
+        String inspectionId = json.readTree(inspectionQueued.body()).get("inspectionId").asText();
+        JsonNode inspectionTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/inspections",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        assertEquals(inspectionId, inspectionTask.get("inspectionId").asText());
+        String inspectionResult = "{\"sessionId\":\"" + SESSION + "\",\"success\":true,"
+                + "\"code\":\"OK\",\"message\":\"current\",\"data\":{\"schemaVersion\":1,"
+                + "\"kind\":\"overview\",\"generatedAt\":\"2026-08-30T00:00:00Z\","
+                + "\"result\":{\"loggingEnabled\":true}},\"attemptId\":\""
+                + inspectionTask.get("attemptId").asText() + "\"}";
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/inspections/" + inspectionId + "/result",
+                inspectionResult, nodeToken).statusCode());
+        JsonNode completedInspection = json.readTree(get("/api/v1/inspections/" + inspectionId,
+                adminToken).body());
+        assertEquals("SUCCEEDED", completedInspection.get("state").asText());
+        assertTrue(completedInspection.at("/result/data/result/loggingEnabled").asBoolean());
+
+        String selector = "{\"domain\":\"file\",\"fileName\":\"Config.yml\"}";
+        HttpResponse<String> readQueued = send("POST", "/api/v1/configuration/read",
+                "{\"nodeIds\":[\"proxy-a\"],\"configuration\":" + selector + "}", adminToken);
+        assertEquals(202, readQueued.statusCode(), readQueued.body());
+        String readId = json.readTree(readQueued.body()).get("operationId").asText();
+        JsonNode failedTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        String failedResult = "{\"sessionId\":\"" + SESSION + "\",\"success\":false,"
+                + "\"code\":\"READ_FAILED\",\"message\":\"failed\",\"changes\":[],"
+                + "\"reloaded\":false,\"rolledBack\":false,\"attemptId\":\""
+                + failedTask.get("attemptId").asText() + "\"}";
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/operations/" + readId + "/result",
+                failedResult, nodeToken).statusCode());
+
+        HttpResponse<String> retryQueued = send("POST", "/api/v1/operations/" + readId + "/retry",
+                null, adminToken);
+        assertEquals(202, retryQueued.statusCode(), retryQueued.body());
+        String retryId = json.readTree(retryQueued.body()).get("operationId").asText();
+        assertNotEquals(readId, retryId);
+        JsonNode retryTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        assertEquals(retryId, retryTask.get("operationId").asText());
+        String successfulResult = "{\"sessionId\":\"" + SESSION + "\",\"success\":true,"
+                + "\"code\":\"OK\",\"message\":\"read\",\"revision\":\"" + "a".repeat(64) + "\","
+                + "\"configuration\":{\"domain\":\"file\",\"fileName\":\"Config.yml\","
+                + "\"content\":\"Feature: true\\n\"},\"changes\":[],\"reloaded\":false,"
+                + "\"rolledBack\":false,\"attemptId\":\"" + retryTask.get("attemptId").asText() + "\"}";
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/operations/" + retryId + "/result",
+                successfulResult, nodeToken).statusCode());
+
+        HttpResponse<String> snapshotCreated = send("POST", "/api/v1/snapshots",
+                "{\"name\":\"Known good\",\"operationId\":\"" + retryId + "\"}", adminToken);
+        assertEquals(201, snapshotCreated.statusCode(), snapshotCreated.body());
+        String snapshotId = json.readTree(snapshotCreated.body()).get("snapshotId").asText();
+        JsonNode snapshots = json.readTree(get("/api/v1/snapshots", adminToken).body());
+        assertEquals(snapshotId, snapshots.at("/items/0/snapshotId").asText());
+        JsonNode snapshot = json.readTree(get("/api/v1/snapshots/" + snapshotId, adminToken).body());
+        assertEquals("Feature: true\n", snapshot.at("/documents/0/content").asText());
     }
 
     @Test void missingInvalidWrongNodeRevokedAndRotatedCredentialsFailWithoutDisclosure() throws Exception {
@@ -454,6 +540,11 @@ class ControlHttpServerTest {
         assertError(send("POST", "/api/v1/configuration/read", "null", adminToken), 400, "VALIDATION_ERROR");
         assertError(send("POST", "/api/v1/configuration/preview", "null", adminToken), 400, "VALIDATION_ERROR");
         assertError(send("POST", "/api/v1/configuration/apply", "null", adminToken), 400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/inspections", "null", adminToken), 400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/inspections",
+                "{\"query\":{\"kind\":\"overview\",\"filters\":{}}}", adminToken),
+                400, "VALIDATION_ERROR");
+        assertError(send("POST", "/api/v1/snapshots", "null", adminToken), 400, "VALIDATION_ERROR");
         assertError(send("POST", "/api/v1/nodes/proxy-a/operations", "null", nodeToken), 400,
                 "VALIDATION_ERROR");
         String duplicate = registration().replaceFirst("\\{", "{\"nodeId\":\"proxy-a\",");
@@ -473,6 +564,29 @@ class ControlHttpServerTest {
                 .header("Content-Type", "application/json").header("Authorization", "Bearer " + nodeToken)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(new byte[] {(byte) 0xc3, (byte) 0x28})).build();
         assertError(client.send(invalidUtf8, HttpResponse.BodyHandlers.ofString()), 400, "MALFORMED_JSON");
+    }
+
+    @Test void snapshotStoreFailuresReturnStructuredErrorsAndServerRemainsUsable() throws Exception {
+        var field = ControlHttpServer.class.getDeclaredField("configurationSnapshots");
+        field.setAccessible(true);
+        Object snapshots = field.get(server);
+        var directoryField = snapshots.getClass().getDeclaredField("directory");
+        directoryField.setAccessible(true);
+        Path snapshotDirectory = (Path) directoryField.get(snapshots);
+        UUID id = UUID.randomUUID();
+        Path corrupted = snapshotDirectory.resolve(id + ".json");
+        Files.writeString(corrupted, "{\"snapshotId\":\"" + id + "\",\"name\":\"x\"}");
+        HttpResponse<String> response = get("/api/v1/snapshots/" + id, adminToken);
+        assertError(response, 503, "SNAPSHOT_STORE_UNAVAILABLE");
+        assertFalse(response.body().contains(snapshotDirectory.toString()));
+        assertFalse(response.body().contains("Configuration snapshot is invalid"));
+        assertEquals(200, get("/api/v1/health", null).statusCode());
+        Files.deleteIfExists(corrupted);
+        Files.createDirectory(corrupted);
+        response = get("/api/v1/snapshots/" + id, adminToken);
+        assertError(response, 503, "SNAPSHOT_STORE_UNAVAILABLE");
+        assertFalse(response.body().contains(snapshotDirectory.toString()));
+        Files.deleteIfExists(corrupted);
     }
 
     @Test void unknownFieldsAreAdditivelyCompatibleButUnsupportedProtocolAndRequirementsAreExplicit() throws Exception {
