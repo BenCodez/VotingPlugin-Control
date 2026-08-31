@@ -645,7 +645,7 @@ async function traceVoteAcrossNodes() {
   const contextCurrent = () => requestAuthenticationGeneration === authenticationGeneration
     && requestInputGeneration === inputGeneration && requestSelectedNodeId === selectedServerId
     && requestSelectedSessionId === nodeIndex.get(requestSelectedNodeId)?.sessionId
-    && days === String(voteLogDays.value)
+    && voteId === voteTraceId.value.trim() && days === String(voteLogDays.value)
     && candidates.every(node => candidateSessions.get(node.nodeId) === nodeIndex.get(node.nodeId)?.sessionId);
   const events = new Map();
   const sources = [];
@@ -673,7 +673,12 @@ async function traceVoteAcrossNodes() {
         unavailable.push(`${node.displayName} (${node.nodeId}): ${error.message || 'inspection failed'}`);
       }
     }
-    if (!contextCurrent()) return;
+    if (!contextCurrent()) {
+      if (requestAuthenticationGeneration === authenticationGeneration) {
+        text(voteTraceResult, 'The selected server, node session, or trace window changed. Run the trace again.');
+      }
+      return;
+    }
     if (Date.now() >= traceDeadline) unavailable.push('The remaining nodes were omitted after the 90-second trace budget expired');
     const ordered = [...events.values()].map(item => ({...item, sources: [...new Set(item.sources)].sort()})).sort((left, right) =>
       Number(left.event.voteTime || 0) - Number(right.event.voteTime || 0)
@@ -1158,6 +1163,10 @@ function syncFileSelection() {
   const expected = proxySelected ? 'bungeeconfig.yml' : 'Config.yml';
   if ((proxySelected && configurationFile.value !== 'bungeeconfig.yml')
       || (!proxySelected && configurationFile.value === 'bungeeconfig.yml')) {
+    if (!proxySelected && configurationFile.value === 'bungeeconfig.yml' && configurationDirty) {
+      text(fileOperationStatus, 'The selected proxy is no longer available for this file. Your unsaved draft is retained; reconnect the proxy or explicitly switch files to discard it.');
+      return;
+    }
     configurationFile.value = expected;
     configurationFileSelection = expected;
     resetFileEditorForSelection('Read the selected file before previewing changes.');
@@ -1215,7 +1224,7 @@ function renderServerPicker() {
   if (!nodeIndex.has(previousValue)) {
     selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
     if (previousValue) {
-      resetServerContextValues('The selected server is no longer available. Load current values from its replacement.');
+      resetServerContextValues('The selected server is no longer available. Load current values from its replacement.', true);
     }
   }
   serverPicker.value = selectedServerId;
@@ -1630,10 +1639,16 @@ function renderNodeViews() {
   updateExtendedButtons();
 }
 
-function resetServerConfigurationForms(status) {
+function resetServerConfigurationForms(status, preserveDirtyFile = false) {
   configurationForm.reset();
   routingDirty = false;
-  resetFileEditorForSelection(status);
+  if (preserveDirtyFile && configurationDirty) {
+    lastFileReadOperation = null;
+    approvedFilePreview = null;
+    text(fileOperationStatus, `${status} Your unsaved ${configurationFile.value} draft is retained; explicitly switch files or load the current file to discard it.`);
+  } else {
+    resetFileEditorForSelection(status);
+  }
   text(operationStatus, status);
   clearApprovals();
 }
@@ -1649,7 +1664,7 @@ function resetDedicatedSetupValues() {
   voteLoggingState.className = 'pill neutral';
 }
 
-function resetServerContextValues(reason) {
+function resetServerContextValues(reason, preserveDirtyFile = false) {
   dedicatedSetupApprovals.clear();
   pendingDetectedVoteSite = null;
   lastFileReadOperation = null;
@@ -1679,7 +1694,7 @@ function resetServerContextValues(reason) {
   text(autoSitesStatus, reason);
   text(voteLoggingStatus, reason);
   loadedQuickSetup = null;
-  resetServerConfigurationForms(reason);
+  resetServerConfigurationForms(reason, preserveDirtyFile);
   const preset = quickPreset.value;
   quickSetupForm.reset();
   quickPreset.value = preset;
@@ -2194,7 +2209,7 @@ async function loadNodes() {
     const selectedSessionChanged = primarySessionChanged || [...selectedNodes].some(node => previousNodeIndex.get(node)?.sessionId
       && previousNodeIndex.get(node)?.sessionId !== nodeIndex.get(node)?.sessionId);
     if (selectedSessionChanged) {
-      resetServerContextValues('A selected server reconnected. Load current values before continuing.');
+      resetServerContextValues('A selected server reconnected. Load current values before continuing.', true);
     }
     const previousCapabilities = nodeCapabilities;
     nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
@@ -2280,7 +2295,7 @@ async function loadNodes() {
     nodePlugins.clear();
     selectedNodes.clear();
     selectedServerId = '';
-    resetServerContextValues('Network data is unavailable. Refresh and load current values before continuing.');
+    resetServerContextValues('Network data is unavailable. Refresh and load current values before continuing.', true);
     renderServerPicker();
     renderNodeViews();
     updatePluginSuggestions();

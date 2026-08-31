@@ -80,7 +80,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Control enrollment unavailable"));
         assertTrue(script.body().contains("Comments preserved for every target"));
         assertTrue(script.body().contains("Backend topology is truncated"));
-        assertTrue(script.body().contains("function resetServerConfigurationForms(status)"));
+        assertTrue(script.body().contains("function resetServerConfigurationForms(status, preserveDirtyFile = false)"));
         assertTrue(script.body().contains("Network data is unavailable. Refresh and load current values before continuing."));
         assertTrue(script.body().contains("backendTopologyTruncated = false;"));
         assertTrue(script.body().contains("nextPage.addEventListener"));
@@ -116,7 +116,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(
                 "configurationContent.value = document.content;\n          configurationContentPresent = true;"));
         assertTrue(script.body().contains(
-                "resetServerContextValues('A selected server reconnected. Load current values before continuing.');"));
+                "resetServerContextValues('A selected server reconnected. Load current values before continuing.', true);"));
         assertTrue(script.body().contains(
                 "configurationContent.addEventListener('input', () => {\n  configurationContentPresent = true;"));
         assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));
@@ -126,6 +126,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("retained.sessionId === readSessionId"));
         assertTrue(script.body().contains("operation.results?.[proxyId]?.sessionId !== proxySessionId"));
         assertTrue(script.body().contains("confirmDiscardUnsavedConfiguration('switching servers')"));
+        assertTrue(script.body().contains("voteId === voteTraceId.value.trim()"));
+        assertTrue(script.body().contains("Your unsaved ${configurationFile.value} draft is retained"));
         assertTrue(script.body().contains("Discard unsaved routing changes and load current values?"));
         assertTrue(script.body().contains("Discard unsaved ${configurationFile.value} changes and load the current file?"));
         assertTrue(script.body().contains("window.addEventListener('beforeunload'"));

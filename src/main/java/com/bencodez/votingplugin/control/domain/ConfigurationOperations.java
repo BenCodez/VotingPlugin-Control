@@ -239,11 +239,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                 if (cancelChangedFileRole(operation, node)) continue;
                 if (cancelChangedProxyMethodRole(operation, node)) continue;
                 if (deferProxyMethodApply(operation, node)) continue;
-                if (!node.online() || !node.acceptedCapabilities().contains(operation.configuration.capability())) {
-                    automaticCancellation(operation, nodeId, sessionId(node), "CAPABILITY_LOST",
-                            "Node no longer accepts this configuration capability", "CAPABILITY_LOST");
-                    continue;
-                }
+                if (cancelLostCapability(operation, node)) continue;
                 UUID previousAttempt = operation.attemptIds.get(nodeId);
                 UUID previousClaimSession = operation.claimSessions.get(nodeId);
                 UUID attemptId = UUID.randomUUID();
@@ -357,6 +353,13 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
         automaticCancellation(operation, node.nodeId(), sessionId(node), "TARGET_CHANGED",
                 "Node platform changed after the task was created; create it again", "TARGET_ROLE_CHANGED");
+        return true;
+    }
+
+    private boolean cancelLostCapability(StoredOperation operation, NodeStatus node) {
+        if (node.online() && node.acceptedCapabilities().contains(operation.configuration.capability())) return false;
+        automaticCancellation(operation, node.nodeId(), sessionId(node), "CAPABILITY_LOST",
+                "Node no longer accepts this configuration capability", "CAPABILITY_LOST");
         return true;
     }
 
@@ -489,14 +492,15 @@ public final class ConfigurationOperations implements AutoCloseable {
     public synchronized OperationView complete(UUID operationId, String nodeId, ConfigurationTaskResult result) {
         validateResult(result);
         return registry.withSession(nodeId, result.sessionId(),
-                ignored -> completeCurrentSession(operationId, nodeId, result));
+                node -> completeCurrentSession(operationId, nodeId, result, node));
     }
 
     private static UUID sessionId(NodeStatus node) {
         return node.sessionId();
     }
 
-    private OperationView completeCurrentSession(UUID operationId, String nodeId, ConfigurationTaskResult result) {
+    private OperationView completeCurrentSession(UUID operationId, String nodeId, ConfigurationTaskResult result,
+            NodeStatus node) {
         StoredOperation operation = operations.get(operationId);
         if (operation == null || !operation.states.containsKey(nodeId)) {
             throw new ValidationException("OPERATION_NOT_FOUND", "Operation task was not found", List.of());
@@ -515,6 +519,10 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
         if (!Objects.equals(operation.claimSessions.get(nodeId), result.sessionId())) {
             throw new ValidationException("SESSION_MISMATCH", "Operation task belongs to another node session", List.of());
+        }
+        if (cancelChangedFileRole(operation, node) || cancelChangedProxyMethodRole(operation, node)
+                || cancelLostCapability(operation, node)) {
+            return view(operation);
         }
         validateResultConfiguration(operation, result);
         String priorState = operation.states.get(nodeId);

@@ -1111,6 +1111,52 @@ class ConfigurationOperationsTest {
         assertEquals("TARGET_CHANGED", view.results().get("proxy-a").code());
     }
 
+    @Test void completionCancelsClaimedProxyFileTaskWhenTheNodeChangesRoleWithinItsSession() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.PROXY_FILE_CAPABILITY);
+        registry.register(new NodeRegistration("proxy-a", session, "Proxy A", "VELOCITY", "test", 1,
+                capabilities, Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = ManagedConfiguration.file("bungeeconfig.yml", null);
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("proxy-a"), selector);
+        ConfigurationTask task = operations.claim("proxy-a", session);
+
+        registry.register(new NodeRegistration("proxy-a", session, "Proxy A", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        read = operations.complete(read.operationId(), "proxy-a", new ConfigurationTaskResult(session, true,
+                "OK", "read", "a".repeat(64), ManagedConfiguration.file("bungeeconfig.yml", "Key: value\n"),
+                List.of(), false, false, task.attemptId()));
+
+        assertEquals("COMPLETED_WITH_ERRORS", read.state());
+        assertEquals("TARGET_CHANGED", read.results().get("proxy-a").code());
+        assertEquals(false, read.results().get("proxy-a").success());
+    }
+
+    @Test void completionCancelsClaimedTaskWhenTheNodeLosesItsCapabilityWithinTheSession() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("proxy-a", session, "Proxy A", "VELOCITY", "test", 1,
+                Set.of(ConfigurationOperations.CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("proxy-a"));
+        ConfigurationTask task = operations.claim("proxy-a", session);
+
+        registry.register(new NodeRegistration("proxy-a", session, "Proxy A", "VELOCITY", "test", 1,
+                Set.of(), Set.of()));
+        read = operations.complete(read.operationId(), "proxy-a", new ConfigurationTaskResult(session, true,
+                "OK", "read", "a".repeat(64), new ProxyRoutingConfiguration(false, List.of()),
+                List.of(), false, false, task.attemptId()));
+
+        assertEquals("COMPLETED_WITH_ERRORS", read.state());
+        assertEquals("CAPABILITY_LOST", read.results().get("proxy-a").code());
+        assertFalse(read.results().get("proxy-a").success());
+    }
+
     @Test void claimCancelsTaskWhenCurrentSessionLostItsCapability() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
