@@ -11,6 +11,8 @@ Requirements: JDK 17+ and Maven 3.9+.
 ```shell
 mvn -B clean verify
 node --check src/main/resources/web/app.js
+# From the paired VotingPlugin/VotingPlugin checkout when protocol or node code changes:
+mvn -B clean package
 ```
 
 Use a focused Maven test while iterating, then run the complete command before opening a PR:
@@ -42,6 +44,9 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
   role, topology, and dependency cancellations at the state transition; do not wait for graceful shutdown.
   Quick-setup history uses an internal, non-serialized `redacted` marker, and proposal validation must reject that marker.
 - `domain/InspectionOperations` coordinates the separate, read-only `data.inspect.v1` lane.
+- `config.proxy-files.v1` is the deliberately narrow proxy-file capability: it manages only a proxy node's
+  `bungeeconfig.yml`, through the same revision-bound READ/PREVIEW/one-time-APPLY operation model. It is not generic
+  proxy filesystem access. The paired node service is `VotingPlugin/.../proxy/control/ProxyConfigurationFileService`.
 - `domain/ConfigurationSnapshots` stores bounded copies of the redacted content returned by completed managed-file reads.
   A successful empty file remains a non-null empty document rather than being confused with omitted content. The list API
   omits content, full reads are admin-only, and durable files are owner-permissioned where the platform supports POSIX
@@ -69,12 +74,19 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
    exact versioned capability. Unknown advertised capabilities remain unaccepted.
 4. Configuration writes follow `READ`/`PREVIEW`/`APPLY`. Apply consumes the one-time approval from a completely successful
    preview and carries the node revisions that were previewed. Do not create a shortcut around this workflow.
+   `bungeeconfig.yml` is proxy-only and requires `config.proxy-files.v1`; managed Bukkit files require
+   `config.files.v1`. Proxy-file reads mask secrets, preserve redaction markers/comments, reject unsafe YAML and symlinks,
+   and atomically stage, back up, and publish. General proxy-file changes may still require a proxy restart; do not report
+   them as hot-applied.
 5. A claimed task has a two-minute lease and a unique `attemptId`. A result must echo the current node session, the exact
    session that claimed the lease, and the attempt; stale attempts or post-claim reconnects cannot complete work. Claim,
    completion, and capability-loss state transitions must roll back if their durable audit append fails.
 6. The inspection lane is read-only. Its allow-listed kind and bounded string filters are the whole request; results are a
    structured JSON envelope whose serialized size is at most 512 KiB, and are retained only briefly. Audit the kind, never
    player names or other filter values.
+   Exact player inspection may expose only bounded, allow-listed stored VotingPlugin fields, never arbitrary database
+   columns, raw offline-vote payloads, or player enumeration. Adding player mutation requires a separate durable,
+   revisioned, capability-negotiated operation; do not turn inspection into an editor.
 7. Mask passwords, credentials, tokens, API keys, authorization values, webhook secrets, and comparable secrets before a
    read leaves a node. Never put secrets, proposed file contents, approval tokens, or inspection filters in logs/audit.
    Configuration snapshots persist only the node's redacted read result; do not weaken masking, admin authorization, or
@@ -121,6 +133,11 @@ when the pieces are independently deployable or need materially different review
 
 Protocol version `1` describes the registration/heartbeat resource protocol. Feature evolution normally uses a new
 capability such as `data.inspect.v1`; do not bump the whole protocol for an optional additive feature.
+
+`config.proxy-method.v1` persists a validated method on the proxy and reported backends. Backends reload only their proxy
+communication handler. The proxy acknowledges the durable result before its existing guarded runtime replacement, so
+teardown cannot lose the completion. A failed backend reload must restore its backup. Control availability or a method
+switch must never delay or prevent normal proxy or backend startup.
 
 ## Safe change checklist
 

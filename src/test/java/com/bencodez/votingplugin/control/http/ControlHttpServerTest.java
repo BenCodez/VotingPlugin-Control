@@ -123,11 +123,18 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId"));
         assertTrue(script.body().contains("previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId"));
         assertTrue(script.body().contains("sessionId !== nodeIndex.get(nodeId)?.sessionId"));
+        assertTrue(script.body().contains("retained.sessionId === readSessionId"));
+        assertTrue(script.body().contains("operation.results?.[proxyId]?.sessionId !== proxySessionId"));
+        assertTrue(script.body().contains("confirmDiscardUnsavedConfiguration('switching servers')"));
+        assertTrue(script.body().contains("Discard unsaved routing changes and load current values?"));
+        assertTrue(script.body().contains("Discard unsaved ${configurationFile.value} changes and load the current file?"));
+        assertTrue(script.body().contains("window.addEventListener('beforeunload'"));
         assertTrue(script.body().contains("loadedQuickSetup = {nodeId, sessionId, preset, selector}"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
-        assertTrue(script.body().contains("approvedPreview = null;\n      inputGeneration++;"));
+        assertTrue(script.body().contains("if (selectedCapabilitiesChanged) {\n      approvedPreview = null;"));
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
         assertTrue(script.body().contains("selectedCapabilitiesChanged"));
+        assertTrue(script.body().contains("proxyFile ? !isProxy(restoreNode) : !isBackend(restoreNode)"));
         assertTrue(script.body().contains("discardAuthenticationState"));
         assertTrue(script.body().contains("text(operationStatus, '');"));
         assertTrue(script.body().contains("text(fileOperationStatus, '');"));
@@ -281,7 +288,8 @@ class ControlHttpServerTest {
 
     @Test void inspectionRetryAndSnapshotRoutesAreEndToEnd() throws Exception {
         String capableRegistration = registration().replace("\"presence.snapshot\"]",
-                "\"presence.snapshot\",\"data.inspect.v1\",\"config.files.v1\"]");
+                "\"presence.snapshot\",\"data.inspect.v1\",\"config.files.v1\"]")
+                .replace("\"platform\":\"VELOCITY\"", "\"platform\":\"BUKKIT\"");
         assertEquals(201, send("POST", "/api/v1/nodes/register", capableRegistration, nodeToken).statusCode());
 
         HttpResponse<String> inspectionQueued = send("POST", "/api/v1/inspections",

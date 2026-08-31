@@ -1054,6 +1054,63 @@ class ConfigurationOperationsTest {
                         ManagedConfiguration.proxy(new ProxyRoutingConfiguration(false, List.of())))).code());
     }
 
+    @Test void bungeeConfigUsesTheOptionalProxyFileCapabilityAndRejectsLegacyTargets() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID capableProxySession = UUID.randomUUID();
+        UUID legacyProxySession = UUID.randomUUID();
+        UUID misleadingBackendSession = UUID.randomUUID();
+        registry.register(new NodeRegistration("velocity-a", capableProxySession, "Velocity A", "VELOCITY", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_FILE_CAPABILITY), Set.of()));
+        registry.register(new NodeRegistration("bungee-legacy", legacyProxySession, "Legacy Bungee", "BUNGEECORD", "test", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        registry.register(new NodeRegistration("misleading-backend", misleadingBackendSession, "Backend", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_FILE_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+
+        ManagedConfiguration bungeeConfig = ManagedConfiguration.file("bungeeconfig.yml", null);
+        assertEquals(ConfigurationOperations.PROXY_FILE_CAPABILITY, bungeeConfig.capability());
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("velocity-a"), bungeeConfig);
+        assertEquals("bungeeconfig.yml", operations.claim("velocity-a", capableProxySession).configuration().fileName());
+        assertEquals("NODE_UNAVAILABLE", assertThrows(ValidationException.class,
+                () -> operations.createRead(List.of("bungee-legacy"), bungeeConfig)).code());
+        assertEquals("NODE_UNAVAILABLE", assertThrows(ValidationException.class,
+                () -> operations.createRead(List.of("velocity-a", "bungee-legacy"), bungeeConfig)).code());
+        ValidationException wrongRole = assertThrows(ValidationException.class,
+                () -> operations.createRead(List.of("misleading-backend"), bungeeConfig));
+        assertEquals("INVALID_TARGET", wrongRole.code());
+        assertEquals(List.of("misleading-backend"), wrongRole.details());
+
+        ValidationException backendFileOnProxy = assertThrows(ValidationException.class,
+                () -> operations.createRead(List.of("bungee-legacy"), ManagedConfiguration.file("Config.yml", null)));
+        assertEquals("INVALID_TARGET", backendFileOnProxy.code());
+        assertEquals(List.of("bungee-legacy"), backendFileOnProxy.details());
+        assertEquals(1, operations.list().size());
+        assertEquals(read.operationId(), operations.get(read.operationId()).operationId());
+    }
+
+    @Test void claimCancelsProxyFileTaskWhenTheNodeChangesRoleWithinItsSession() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.PROXY_FILE_CAPABILITY);
+        registry.register(new NodeRegistration("proxy-a", session, "Proxy A", "VELOCITY", "test", 1,
+                capabilities, Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        UUID operation = operations.createRead(List.of("proxy-a"),
+                ManagedConfiguration.file("bungeeconfig.yml", null)).operationId();
+
+        registry.register(new NodeRegistration("proxy-a", session, "Proxy A", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+
+        assertEquals(null, operations.claim("proxy-a", session));
+        ConfigurationOperations.OperationView view = operations.get(operation);
+        assertEquals("COMPLETED_WITH_ERRORS", view.state());
+        assertEquals("TARGET_CHANGED", view.results().get("proxy-a").code());
+    }
+
     @Test void claimCancelsTaskWhenCurrentSessionLostItsCapability() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

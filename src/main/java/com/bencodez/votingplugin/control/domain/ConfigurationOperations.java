@@ -28,6 +28,7 @@ import java.util.UUID;
 public final class ConfigurationOperations implements AutoCloseable {
     public static final String CAPABILITY = "config.proxy-routing.v1";
     public static final String FILE_CAPABILITY = "config.files.v1";
+    public static final String PROXY_FILE_CAPABILITY = "config.proxy-files.v1";
     public static final String QUICK_SETUP_CAPABILITY = "config.quick-setup.v1";
     public static final String VOTE_SITES_SYNC_CAPABILITY = "config.vote-sites-sync.v1";
     public static final String TRANSPORT_TEST_CAPABILITY = "config.transport-test.v1";
@@ -84,13 +85,16 @@ public final class ConfigurationOperations implements AutoCloseable {
             throw invalid("reward builder is preview/apply only");
         }
         selector.validateProposal();
-        return create("READ", validateTargets(nodeIds, selector.capability()), selector, null);
+        ValidatedTargets targets = validateTargets(nodeIds, selector.capability());
+        validateConfigurationTargets(targets, selector);
+        return create("READ", targets, selector, null);
     }
 
     public synchronized OperationView createPreview(List<String> nodeIds, ManagedConfiguration configuration) {
         if (configuration == null) throw invalid("configuration is required");
         configuration.validateProposal();
         ValidatedTargets targets = validateTargets(nodeIds, configuration.capability());
+        validateConfigurationTargets(targets, configuration);
         validateProxyMethodTargets(targets, configuration);
         byte[] token = new byte[32];
         random.nextBytes(token);
@@ -117,6 +121,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         ValidatedTargets targets = validateTargets(new ArrayList<>(preview.states.keySet()),
                 preview.configuration.capability());
         validateApprovedTargets(preview, targets);
+        validateConfigurationTargets(targets, preview.configuration);
         validateProxyMethodTargets(targets, preview.configuration);
         rejectOverlappingProxyMethodApply(targets, preview.configuration);
         rejectOverlappingVoteLoggingApply(targets, preview.configuration);
@@ -185,6 +190,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         List<String> requested = "PREVIEW".equals(original.type)
                 ? new ArrayList<>(original.states.keySet()) : failed;
         ValidatedTargets targets = validateTargets(requested, original.configuration.capability());
+        validateConfigurationTargets(targets, original.configuration);
         if ("APPLY".equals(original.type)) {
             validateApprovedTargets(original, targets);
             rejectOverlappingVoteLoggingApply(targets, original.configuration);
@@ -230,6 +236,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             Instant leased = operation.leasedAt.get(nodeId);
             if ("QUEUED".equals(state) || ("IN_PROGRESS".equals(state) && leased != null
                     && !now.isBefore(leased.plus(LEASE)))) {
+                if (cancelChangedFileRole(operation, node)) continue;
                 if (cancelChangedProxyMethodRole(operation, node)) continue;
                 if (deferProxyMethodApply(operation, node)) continue;
                 if (!node.online() || !node.acceptedCapabilities().contains(operation.configuration.capability())) {
@@ -338,6 +345,21 @@ public final class ConfigurationOperations implements AutoCloseable {
         return true;
     }
 
+    private boolean cancelChangedFileRole(StoredOperation operation, NodeStatus node) {
+        if (!ManagedConfiguration.FILE.equals(operation.configuration.domain())) return false;
+        String expectedPlatform = operation.targetPlatforms.get(node.nodeId());
+        boolean proxyFile = "bungeeconfig.yml".equals(operation.configuration.fileName());
+        boolean currentRoleMatches = proxyFile
+                ? !"BUKKIT".equalsIgnoreCase(node.platform())
+                : "BUKKIT".equalsIgnoreCase(node.platform());
+        if (expectedPlatform != null && expectedPlatform.equalsIgnoreCase(node.platform()) && currentRoleMatches) {
+            return false;
+        }
+        automaticCancellation(operation, node.nodeId(), sessionId(node), "TARGET_CHANGED",
+                "Node platform changed after the task was created; create it again", "TARGET_ROLE_CHANGED");
+        return true;
+    }
+
     /**
      * Commits an automatic task completion only after the redacted journal is durable.  Both the
      * operation maps and retention counters are restored if either durable step fails, leaving the
@@ -435,6 +457,22 @@ public final class ConfigurationOperations implements AutoCloseable {
         proxies.get(0).backends().forEach(backend -> expected.add(backend.backendId()));
         if (!expected.equals(new java.util.LinkedHashSet<>(targets.nodeIds()))) {
             throw invalid("proxy method targets must match the complete reported backend network");
+        }
+    }
+
+    private static void validateConfigurationTargets(ValidatedTargets targets,
+                                                       ManagedConfiguration configuration) {
+        if (!ManagedConfiguration.FILE.equals(configuration.domain())) return;
+        boolean proxyFile = "bungeeconfig.yml".equals(configuration.fileName());
+        List<String> invalid = targets.nodeIds().stream()
+                .filter(nodeId -> proxyFile
+                        ? "BUKKIT".equalsIgnoreCase(targets.platforms().get(nodeId))
+                        : !"BUKKIT".equalsIgnoreCase(targets.platforms().get(nodeId)))
+                .toList();
+        if (!invalid.isEmpty()) {
+            throw new ValidationException("INVALID_TARGET",
+                    proxyFile ? "Proxy configuration files require proxy nodes"
+                            : "Backend configuration files require Bukkit nodes", invalid);
         }
     }
 
