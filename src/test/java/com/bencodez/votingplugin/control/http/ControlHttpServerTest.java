@@ -208,7 +208,15 @@ class ControlHttpServerTest {
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
         HttpResponse<String> stylesheet = get("/app.css", null);
         assertEquals(200, stylesheet.statusCode());
-        assertTrue(stylesheet.body().contains(".tabs"));
+        assertTrue(stylesheet.body().contains(".sidebar"));
+        assertTrue(web.body().contains("id=\"primary-navigation\""));
+        assertTrue(web.body().contains("id=\"attention-feed\""));
+        assertTrue(web.body().contains("id=\"global-search-input\""));
+        assertTrue(script.body().contains("async function refreshDashboard()"));
+        assertTrue(script.body().contains("function dashboardIssues()"));
+        assertTrue(script.body().contains("disconnected from Control"));
+        assertTrue(script.body().contains("document.createElement('progress')"));
+        assertFalse(script.body().contains(".style."));
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         HttpResponse<String> health = get("/api/v1/health", null);
         assertEquals(200, health.statusCode());

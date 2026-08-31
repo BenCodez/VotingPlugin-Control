@@ -250,6 +250,11 @@ rollback workflow still applies; redaction placeholders preserve each target's c
 
 ### WebUI management suite
 
+- **Overview** uses a persistent grouped sidebar and server-aware header to keep the selected target visible. Its six
+  bounded summary cards, Attention Required feed, topology, logged-service activity, recent operations, and capability-
+  gated quick actions reuse existing inspections and management flows. Health reflects only currently observed Control,
+  topology, VoteSite, communication, operation, and VoteLog state: a disconnected registered node is a warning, unknown
+  Minecraft presence is not called offline, and vote counts remain explicitly labeled as logged `VOTE_RECEIVED` events.
 - **Setup** provides a readiness checklist, browser-local non-secret profiles, dedicated auto-create and VoteLogging cards,
   the existing typed setup assistant, a reward builder with simulation plus preview/apply, and a searchable common-setting
   catalog.

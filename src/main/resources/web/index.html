@@ -8,11 +8,29 @@
 </head>
 <body>
   <header class="topbar">
+    <button id="sidebar-toggle" class="sidebar-toggle secondary compact" type="button" aria-controls="primary-navigation"
+            aria-expanded="false" aria-label="Open navigation" hidden>☰</button>
     <a class="brand" href="#overview" aria-label="VotingPlugin Control overview">
       <span class="brand-mark" aria-hidden="true">V</span>
       <span><strong>VotingPlugin</strong><small>Control</small></span>
     </a>
     <div class="topbar-actions">
+      <form id="global-search" class="global-search" role="search" hidden>
+        <label class="sr-only" for="global-search-input">Search Control</label>
+        <input id="global-search-input" type="search" list="global-search-options" maxlength="80"
+               placeholder="Search settings, sites, servers, tools…" autocomplete="off">
+        <datalist id="global-search-options">
+          <option value="Add Vote Site"></option>
+          <option value="Vote Sites"></option>
+          <option value="Rewards"></option>
+          <option value="Vote logging"></option>
+          <option value="Proxy &amp; Routing"></option>
+          <option value="Network Doctor"></option>
+          <option value="Configuration Compare"></option>
+          <option value="Votes &amp; Data"></option>
+        </datalist>
+        <button class="sr-only" type="submit">Open result</button>
+      </form>
       <label class="server-picker" id="server-picker-label" for="server-picker" hidden>
         <span>VotingPlugin server</span>
         <select id="server-picker" aria-label="Selected VotingPlugin server">
@@ -20,6 +38,7 @@
         </select>
       </label>
       <output id="health" class="status">Connecting…</output>
+      <button id="header-action" class="compact" type="button" hidden>Refresh dashboard</button>
       <button id="logout" class="secondary compact" type="button" hidden>Sign out</button>
     </div>
   </header>
@@ -67,31 +86,45 @@
 
     <p id="message" class="global-message" role="status"></p>
 
-    <div id="app-shell" hidden>
-      <nav class="tabs" aria-label="Control sections" role="tablist">
-        <button type="button" role="tab" aria-selected="true" aria-controls="overview-panel" data-tab="overview">Overview</button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="servers-panel" data-tab="servers">Servers</button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="network-panel" data-tab="network">Network</button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="configurations-panel" data-tab="configurations">Configurations</button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="quick-setup-panel" data-tab="quick-setup">Setup</button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="data-panel" data-tab="data">Votes &amp; Data</button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="activity-panel" data-tab="activity">Activity</button>
-        <button type="button" role="tab" aria-selected="false" aria-controls="access-panel" data-tab="access">Access</button>
+    <div id="app-shell" class="app-shell" hidden>
+      <nav id="primary-navigation" class="sidebar" aria-label="Control sections">
+        <button type="button" aria-current="page" aria-controls="overview-panel" data-tab="overview"><span aria-hidden="true">⌂</span>Overview</button>
+        <p>Manage</p>
+        <button type="button" data-open-tab="data" data-scroll-target="site-health-card" data-search-term="vote sites service site planet"><span aria-hidden="true">◆</span>Vote Sites</button>
+        <button type="button" data-open-tab="quick-setup" data-scroll-target="reward-builder-card" data-search-term="rewards reward builder"><span aria-hidden="true">✦</span>Rewards</button>
+        <button type="button" aria-controls="quick-setup-panel" data-tab="quick-setup"><span aria-hidden="true">＋</span>Setup</button>
+        <button type="button" data-open-tab="quick-setup" data-scroll-target="settings-catalog-card" data-search-term="settings configuration catalog"><span aria-hidden="true">⚙</span>Settings</button>
+        <p>Network</p>
+        <button type="button" aria-controls="servers-panel" data-tab="servers"><span aria-hidden="true">▦</span>Servers</button>
+        <button type="button" aria-controls="network-panel" data-tab="network"><span aria-hidden="true">⇄</span>Proxy &amp; Routing</button>
+        <button type="button" data-open-tab="quick-setup" data-quick-preset="sync-vote-sites" data-scroll-target="quick-setup-card" data-search-term="sync vote sites"><span aria-hidden="true">↻</span>Sync</button>
+        <p>Insights</p>
+        <button type="button" aria-controls="data-panel" data-tab="data"><span aria-hidden="true">▥</span>Votes &amp; Data</button>
+        <button type="button" aria-controls="activity-panel" data-tab="activity"><span aria-hidden="true">◷</span>Activity</button>
+        <p>Tools</p>
+        <button type="button" data-open-tab="network" data-scroll-target="network-doctor-card" data-search-term="network doctor diagnostics"><span aria-hidden="true">✚</span>Network Doctor</button>
+        <button type="button" aria-controls="configurations-panel" data-tab="configurations"><span aria-hidden="true">≠</span>Configuration Compare</button>
+        <p>Admin</p>
+        <button type="button" aria-controls="access-panel" data-tab="access"><span aria-hidden="true">◇</span>Access</button>
       </nav>
 
-      <section class="tab-panel" id="overview-panel" role="tabpanel" data-panel="overview">
+      <div class="content-shell">
+
+      <section class="tab-panel" id="overview-panel" data-panel="overview">
         <div class="page-heading">
           <div>
             <p class="eyebrow">Network overview</p>
             <h2>Everything important, without the protocol noise</h2>
           </div>
-          <button class="secondary" type="button" data-open-tab="servers">View all servers</button>
+          <button id="refresh-dashboard" class="secondary" type="button">Refresh dashboard</button>
         </div>
         <div class="metrics" aria-label="Network summary">
-          <article><span>Registered nodes</span><strong id="metric-nodes">0</strong></article>
-          <article><span>Control connected</span><strong id="metric-online">0</strong></article>
-          <article><span>Configured backends</span><strong id="metric-backends">0</strong></article>
-          <article><span>Needs attention</span><strong id="metric-issues">0</strong></article>
+          <article><span>Network Health</span><strong id="metric-health">Unavailable</strong><small id="metric-health-detail">Choose a server</small></article>
+          <article><span>Logged Votes · 24h</span><strong id="metric-votes-today">—</strong><small>Retained VOTE_RECEIVED events</small></article>
+          <article><span>Vote Sites</span><strong id="metric-vote-sites">—</strong><small id="metric-vote-sites-detail">Not inspected</small></article>
+          <article><span>Proxy Communication</span><strong id="metric-proxy">—</strong><small id="metric-proxy-detail">Method unavailable</small></article>
+          <article><span>Logged Events</span><strong id="metric-logged-events">—</strong><small>Last 30 days</small></article>
+          <article><span>Pending Issues</span><strong id="metric-issues">0</strong><small id="metric-issues-detail">Registry state only</small></article>
         </div>
         <section class="card selected-summary-card">
           <div class="section-title">
@@ -104,6 +137,18 @@
           <p id="selected-server-summary">Use the server picker above to keep configuration and setup actions focused on one node.</p>
           <div id="selected-server-capabilities" class="pills"></div>
         </section>
+        <div class="overview-grid">
+          <section class="card attention-card">
+            <div class="section-title">
+              <div><p class="eyebrow">Attention required</p><h3>What needs action</h3><p>Only observed problems are listed; informational unknowns are labeled separately.</p></div>
+            </div>
+            <div id="attention-feed" class="attention-feed" role="status">Refresh the dashboard to inspect the selected server.</div>
+          </section>
+          <section class="card quick-actions-card">
+            <div class="section-title"><div><p class="eyebrow">Quick actions</p><h3>Safe next steps</h3></div></div>
+            <div id="overview-quick-actions" class="quick-action-grid"></div>
+          </section>
+        </div>
         <section class="card">
           <div class="section-title">
             <div>
@@ -113,9 +158,19 @@
           </div>
           <div id="topology" class="topology empty">No topology loaded.</div>
         </section>
+        <div class="overview-grid lower-overview-grid">
+          <section class="card">
+            <div class="section-title"><div><p class="eyebrow">Logged vote activity</p><h3>Top services</h3><p>Bounded retained VoteLog events, not every internal delivery hop.</p></div></div>
+            <div id="vote-activity" class="activity-bars">VoteLog summary unavailable.</div>
+          </section>
+          <section class="card">
+            <div class="section-title"><div><p class="eyebrow">Recent activity</p><h3>Configuration operations</h3></div><button class="secondary compact" type="button" data-open-tab="activity">View all</button></div>
+            <div id="overview-activity" class="compact-activity">No retained operations.</div>
+          </section>
+        </div>
       </section>
 
-      <section class="tab-panel" id="servers-panel" role="tabpanel" data-panel="servers" hidden>
+      <section class="tab-panel" id="servers-panel" data-panel="servers" hidden>
         <div class="page-heading">
           <div>
             <p class="eyebrow">VotingPlugin nodes</p>
@@ -132,7 +187,7 @@
         </nav>
       </section>
 
-      <section class="tab-panel" id="network-panel" role="tabpanel" data-panel="network" hidden>
+      <section class="tab-panel" id="network-panel" data-panel="network" hidden>
         <div class="page-heading">
           <div>
             <p class="eyebrow">Global VotingPlugin settings</p>
@@ -224,7 +279,7 @@
         </section>
       </section>
 
-      <section class="tab-panel" id="configurations-panel" role="tabpanel" data-panel="configurations" hidden>
+      <section class="tab-panel" id="configurations-panel" data-panel="configurations" hidden>
         <div class="page-heading">
           <div>
             <p class="eyebrow">Selected VotingPlugin server</p>
@@ -313,7 +368,7 @@
         </div>
       </section>
 
-      <section class="tab-panel" id="quick-setup-panel" role="tabpanel" data-panel="quick-setup" hidden>
+      <section class="tab-panel" id="quick-setup-panel" data-panel="quick-setup" hidden>
         <div class="page-heading">
           <div>
             <p class="eyebrow">Guided VotingPlugin changes</p>
@@ -478,26 +533,26 @@
           </form>
           <div id="reward-simulation-result" class="result-panel" role="status">Add an action, then simulate it safely.</div>
         </section>
-        <section class="card stacked-card">
+        <section class="card stacked-card" id="settings-catalog-card">
           <div class="section-title"><div><p class="eyebrow">Schema-driven reference</p><h3>Settings catalog</h3><p>Known settings include their file, type, default, and effect. Guided forms use these same constraints.</p></div></div>
           <label for="settings-filter">Filter settings<input id="settings-filter" maxlength="80" placeholder="vote sites"></label>
           <div class="table-scroll"><table><thead><tr><th>Setting</th><th>File</th><th>Type</th><th>Default</th><th>Effect</th><th>After apply</th></tr></thead><tbody id="settings-catalog"></tbody></table></div>
         </section>
       </section>
 
-      <section class="tab-panel" id="data-panel" role="tabpanel" data-panel="data" hidden>
+      <section class="tab-panel" id="data-panel" data-panel="data" hidden>
         <div class="page-heading"><div><p class="eyebrow">Bounded VotingPlugin records</p><h2>Votes &amp; Data</h2><p>Inspect bounded summaries, exact players, vote-site health, and retained MySQL vote-log events. Player data is read-only, and results are cleared when you sign out.</p></div><button id="refresh-data-overview" class="secondary" type="button" disabled>Refresh overview</button></div>
         <div class="feature-grid">
           <section class="card"><div class="section-title"><div><h3>Server overview</h3><p>Operational state without credentials or raw configuration.</p></div></div><div id="data-overview" class="result-panel">Choose an inspection-capable backend.</div></section>
           <section class="card"><div class="section-title"><div><h3>Exact player lookup</h3><p>Enter a complete player name or UUID. Control does not enumerate players. The profile and bounded stored columns are read-only.</p></div></div><form id="player-lookup-form"><label for="player-lookup">Player name or UUID<input id="player-lookup" maxlength="36" required spellcheck="false"></label><button id="lookup-player" type="submit" disabled>View player data</button></form><div id="player-result" class="result-panel">No player queried.</div></section>
         </div>
-        <section class="card stacked-card"><div class="section-title"><div><h3>Vote-site health</h3><p>Configured sites, detected unconfigured services (including while auto-create is off), recent logged votes, and unmatched log services. “No recent votes” is not proof that a site is broken.</p></div><button id="load-site-health" class="secondary" type="button" disabled>Load health</button></div><div id="site-health-result" class="result-panel">No health query run.</div></section>
+        <section class="card stacked-card" id="site-health-card"><div class="section-title"><div><h3>Vote-site health</h3><p>Configured sites, detected unconfigured services (including while auto-create is off), recent logged votes, and unmatched log services. “No recent votes” is not proof that a site is broken.</p></div><button id="load-site-health" class="secondary" type="button" disabled>Load health</button></div><div id="site-health-result" class="result-panel">No health query run.</div></section>
         <section class="card stacked-card"><div class="section-title"><div><h3>Logged vote events</h3><p>Search retained MySQL vote-log events. This is not a guaranteed record of every internal delivery hop.</p></div><button id="load-vote-log-summary" class="secondary" type="button" disabled>Load 30-day summary</button></div><div id="vote-log-summary-result" class="result-panel">No vote-log summary loaded.</div><form id="vote-log-form"><div class="form-grid"><label>Filter type<select id="vote-log-filter-type"><option value="">Recent events</option><option value="player">Exact player</option><option value="service">Exact service</option><option value="server">Exact server</option></select></label><label>Filter value<input id="vote-log-filter" maxlength="64" disabled></label><label>Event<select id="vote-log-event"><option value="">All logged events</option><option>VOTE_RECEIVED</option><option>VOTEMILESTONE</option><option>VOTE_STREAK_REWARD</option><option>TOP_VOTER_REWARD</option><option>VOTESHOP_PURCHASE</option></select></label><label>Days<input id="vote-log-days" type="number" min="1" max="365" value="30"></label><label>Limit<input id="vote-log-limit" type="number" min="1" max="100" value="25"></label></div><button id="search-vote-log" type="submit" disabled>Search logged events</button></form><div id="vote-log-result" class="result-panel">No event search run.</div></section>
         <section class="card stacked-card"><div class="section-title"><div><h3>Vote trace</h3><p>Collect and correlate retained vote-log events from connected inspection-capable backends. The trace identifies its source nodes and unavailable nodes; it cannot invent internal hops that no node retained.</p></div></div><form id="vote-trace-form" class="inline-form"><label for="vote-trace-id">Vote ID<input id="vote-trace-id" maxlength="36" placeholder="00000000-0000-0000-0000-000000000000" required spellcheck="false"></label><button id="trace-vote" type="submit" disabled>Trace retained events</button></form><div id="vote-trace-result" class="result-panel">No vote traced.</div></section>
         <section class="card stacked-card"><div class="section-title"><div><h3>Safe service-site test</h3><p>Resolve a service name and report whether it would match or auto-create. No fake vote is submitted and no reward runs.</p></div></div><form id="site-resolution-form" class="inline-form"><label for="site-resolution-service">Service site<input id="site-resolution-service" maxlength="64" placeholder="PlanetMinecraft.com" required></label><label class="check-row"><input id="site-resolution-disabled" type="checkbox"> Include disabled sites</label><button id="resolve-site" type="submit" disabled>Test resolution</button></form><div id="site-resolution-result" class="result-panel">No service tested.</div></section>
       </section>
 
-      <section class="tab-panel" id="activity-panel" role="tabpanel" data-panel="activity" hidden>
+      <section class="tab-panel" id="activity-panel" data-panel="activity" hidden>
         <div class="page-heading">
           <div><p class="eyebrow">Safe changes</p><h2>Activity</h2></div>
         </div>
@@ -507,7 +562,7 @@
         </section>
       </section>
 
-      <section class="tab-panel" id="access-panel" role="tabpanel" data-panel="access" hidden>
+      <section class="tab-panel" id="access-panel" data-panel="access" hidden>
         <div class="page-heading">
           <div><p class="eyebrow">Control access</p><h2>Node enrollment</h2></div>
         </div>
@@ -533,6 +588,7 @@
           <p id="enrollment-message" role="status"></p>
         </section>
       </section>
+      </div>
     </div>
   </main>
   <script src="/app.js" defer></script>
