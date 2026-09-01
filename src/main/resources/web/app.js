@@ -290,6 +290,7 @@ let dedicatedSetupApprovals = new Map();
 let pendingDetectedVoteSite = null;
 let voteLoggingRestartPending = new Map();
 let autoLoadInFlight = new Set();
+let autoLoadPending = new Set();
 
 function text(element, value) {
   element.textContent = value;
@@ -1084,6 +1085,7 @@ function applyAuthenticatedSession(body) {
   routingDraftNodeId = '';
   configurationFileSelection = configurationFile.value;
   autoLoadInFlight.clear();
+  autoLoadPending.clear();
   inputGeneration++;
   logout.hidden = false;
   sidebarToggle.hidden = false;
@@ -1300,16 +1302,16 @@ function setActiveTab(tab, updateHash = false) {
 }
 
 function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = null) {
-  setActiveTab(tab, true);
-  if (navigationButton && primaryNavigation.contains(navigationButton)) {
-    navigationButtons.forEach(button => button.removeAttribute('aria-current'));
-    navigationButton.setAttribute('aria-current', 'page');
-  }
   if (preset) {
     quickPreset.value = preset;
     loadedQuickSetup = null;
     updateQuickFields();
     clearApprovals();
+  }
+  setActiveTab(tab, true);
+  if (navigationButton && primaryNavigation.contains(navigationButton)) {
+    navigationButtons.forEach(button => button.removeAttribute('aria-current'));
+    navigationButton.setAttribute('aria-current', 'page');
   }
   if (scrollTarget) window.requestAnimationFrame(() => {
     document.getElementById(scrollTarget)?.scrollIntoView({behavior: 'smooth', block: 'start'});
@@ -1376,19 +1378,28 @@ function syncFileSelection() {
   }
 }
 
+function finishAutoLoad(tab) {
+  autoLoadInFlight.delete(tab);
+  if (autoLoadPending.delete(tab)) void autoLoadTab(tab);
+}
+
 async function autoLoadTab(tab) {
-  if (!authenticated || autoLoadInFlight.has(tab)) return;
+  if (!authenticated) return;
+  if (autoLoadInFlight.has(tab)) {
+    autoLoadPending.add(tab);
+    return;
+  }
   if (tab === 'overview' && inspectionCapableNode() && dashboardLoadedContext !== dashboardContext()
       && !dashboardLoading && !inspectionInFlight) {
     autoLoadInFlight.add(tab);
-    try { await refreshDashboard(); } finally { autoLoadInFlight.delete(tab); }
+    try { await refreshDashboard(); } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'configurations') {
     const yamlVisible = configViewPanels.some(panel => panel.dataset.configPanel === 'yaml' && !panel.hidden);
     if (!yamlVisible || configurationDirty || configurationContentPresent || !fileTargetsForSelection().length) return;
     autoLoadInFlight.add(tab);
-    try { await loadFileConfiguration(true); } finally { autoLoadInFlight.delete(tab); }
+    try { await loadFileConfiguration(true); } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'network' && !proxyMethodWorkflowInFlight) {
@@ -1396,18 +1407,18 @@ async function autoLoadTab(tab) {
     try {
       await Promise.all([proxyMethodCurrentValue ? Promise.resolve() : loadProxyMethod(true),
         routingDirty || approvedPreview ? Promise.resolve() : loadProxyRouting(true)]);
-    } finally { autoLoadInFlight.delete(tab); }
+    } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'quick-setup' && quickPresetReadable() && !loadedQuickSetup
       && !approvedQuickPreview && !configurationOperationsInFlight) {
     autoLoadInFlight.add(tab);
-    try { await loadQuickSetupValues(true); } finally { autoLoadInFlight.delete(tab); }
+    try { await loadQuickSetupValues(true); } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'data' && inspectionCapableNode() && !inspectionInFlight && !lastOverview) {
     autoLoadInFlight.add(tab);
-    try { await refreshOverview(dataOverview); } finally { autoLoadInFlight.delete(tab); }
+    try { await refreshOverview(dataOverview); } finally { finishAutoLoad(tab); }
   }
 }
 
@@ -2514,6 +2525,7 @@ function discardAuthenticationState(reason) {
   routingDirty = false;
   routingDraftNodeId = '';
   autoLoadInFlight.clear();
+  autoLoadPending.clear();
   quickSetupForm.reset();
   resetDedicatedSetupValues();
   rewardSimulationForm.reset();
@@ -4274,8 +4286,8 @@ const GLOBAL_PAGE_SHORTCUTS = new Map([
 ]);
 
 function openGlobalShortcut(destination) {
-  openWorkspace(destination.tab, destination.scrollTarget || '', destination.preset || '');
   if (destination.configView) setConfigView(destination.configView);
+  openWorkspace(destination.tab, destination.scrollTarget || '', destination.preset || '');
 }
 
 globalSearch.addEventListener('submit', event => {

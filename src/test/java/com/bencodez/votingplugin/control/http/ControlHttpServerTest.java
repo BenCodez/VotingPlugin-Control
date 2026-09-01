@@ -247,6 +247,20 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("data-tab=\"configurations\" data-config-shortcut=\"compare\""));
         assertTrue(script.body().contains("if (button.dataset.configShortcut) setConfigView(button.dataset.configShortcut);"));
         assertTrue(script.body().contains("if (setting) {\n    settingsFilter.value = query;"));
+        int openWorkspace = script.body().indexOf("function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = null)");
+        int presetBeforeTab = script.body().indexOf("quickPreset.value = preset;", openWorkspace);
+        int activateAfterPreset = script.body().indexOf("setActiveTab(tab, true);", openWorkspace);
+        assertTrue(openWorkspace >= 0 && presetBeforeTab > openWorkspace && activateAfterPreset > presetBeforeTab,
+                "Nested shortcuts must establish their preset before tab autoload starts.");
+        assertTrue(script.body().contains("if (autoLoadInFlight.has(tab)) {\n    autoLoadPending.add(tab);"));
+        assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"),
+                "A preset change during an older read must queue a fresh autoload.");
+        assertTrue(script.body().contains("autoLoadPending.clear();"));
+        int globalShortcut = script.body().indexOf("function openGlobalShortcut(destination)");
+        int selectConfigView = script.body().indexOf("setConfigView(destination.configView);", globalShortcut);
+        int openShortcutTab = script.body().indexOf("openWorkspace(destination.tab", globalShortcut);
+        assertTrue(globalShortcut >= 0 && selectConfigView > globalShortcut && openShortcutTab > selectConfigView,
+                "Nested search shortcuts must establish their subview before tab autoload starts.");
         assertFalse(script.body().contains(".style."));
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         HttpResponse<String> health = get("/api/v1/health", null);
