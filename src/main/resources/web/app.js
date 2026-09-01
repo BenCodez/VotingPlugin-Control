@@ -15,16 +15,34 @@ const logout = document.querySelector('#logout');
 const message = document.querySelector('#message');
 const welcome = document.querySelector('#welcome');
 const appShell = document.querySelector('#app-shell');
+const sidebarToggle = document.querySelector('#sidebar-toggle');
+const primaryNavigation = document.querySelector('#primary-navigation');
+const globalSearch = document.querySelector('#global-search');
+const globalSearchInput = document.querySelector('#global-search-input');
+const globalSearchOptions = document.querySelector('#global-search-options');
+const headerAction = document.querySelector('#header-action');
 const serverPickerLabel = document.querySelector('#server-picker-label');
 const serverPicker = document.querySelector('#server-picker');
 const tabButtons = [...document.querySelectorAll('[data-tab]')];
+const navigationButtons = [...primaryNavigation.querySelectorAll('button')];
 const tabPanels = [...document.querySelectorAll('[data-panel]')];
 const configViewButtons = [...document.querySelectorAll('[data-config-view]')];
 const configViewPanels = [...document.querySelectorAll('[data-config-panel]')];
-const metricNodes = document.querySelector('#metric-nodes');
-const metricOnline = document.querySelector('#metric-online');
-const metricBackends = document.querySelector('#metric-backends');
+const metricHealth = document.querySelector('#metric-health');
+const metricHealthDetail = document.querySelector('#metric-health-detail');
+const metricVotesToday = document.querySelector('#metric-votes-today');
+const metricVoteSites = document.querySelector('#metric-vote-sites');
+const metricVoteSitesDetail = document.querySelector('#metric-vote-sites-detail');
+const metricProxy = document.querySelector('#metric-proxy');
+const metricProxyDetail = document.querySelector('#metric-proxy-detail');
+const metricLoggedEvents = document.querySelector('#metric-logged-events');
 const metricIssues = document.querySelector('#metric-issues');
+const metricIssuesDetail = document.querySelector('#metric-issues-detail');
+const refreshDashboardButton = document.querySelector('#refresh-dashboard');
+const attentionFeed = document.querySelector('#attention-feed');
+const overviewQuickActions = document.querySelector('#overview-quick-actions');
+const voteActivity = document.querySelector('#vote-activity');
+const overviewActivity = document.querySelector('#overview-activity');
 const selectedServerName = document.querySelector('#selected-server-name');
 const selectedServerState = document.querySelector('#selected-server-state');
 const selectedServerSummary = document.querySelector('#selected-server-summary');
@@ -259,11 +277,20 @@ let configurationFileSelection = configurationFile.value;
 let inspectionInFlight = false;
 let lastDiagnostics = null;
 let lastOverview = null;
+let dashboardOverview = null;
+let dashboardVoteSiteHealth = null;
+let dashboardVoteSummary24h = null;
+let dashboardVoteSummary30d = null;
+let dashboardLoadedContext = '';
+let dashboardInspectionStatus = emptyDashboardInspectionStatus();
+let dashboardTopologySignature = '';
+let dashboardLoading = false;
 let operationHistoryItems = [];
 let dedicatedSetupApprovals = new Map();
 let pendingDetectedVoteSite = null;
 let voteLoggingRestartPending = new Map();
 let autoLoadInFlight = new Set();
+let autoLoadPending = new Set();
 
 function text(element, value) {
   element.textContent = value;
@@ -803,6 +830,7 @@ function renderOperationHistory() {
   operationHistory.replaceChildren();
   if (operationHistoryItems.length === 0) {
     text(operationHistory, 'No retained configuration operations.');
+    renderMetrics();
     return;
   }
   operationHistoryItems.forEach(operation => {
@@ -876,6 +904,7 @@ function renderOperationHistory() {
     item.append(heading, detail);
     operationHistory.append(item);
   });
+  renderMetrics();
 }
 
 async function loadOperationHistory() {
@@ -1035,6 +1064,13 @@ function applyAuthenticatedSession(body) {
   lastFileReadOperation = null;
   lastDiagnostics = null;
   lastOverview = null;
+  dashboardOverview = null;
+  dashboardVoteSiteHealth = null;
+  dashboardVoteSummary24h = null;
+  dashboardVoteSummary30d = null;
+  dashboardLoadedContext = '';
+  dashboardInspectionStatus = emptyDashboardInspectionStatus();
+  dashboardTopologySignature = '';
   operationHistoryItems = [];
   dedicatedSetupApprovals.clear();
   voteLoggingRestartPending.clear();
@@ -1049,8 +1085,12 @@ function applyAuthenticatedSession(body) {
   routingDraftNodeId = '';
   configurationFileSelection = configurationFile.value;
   autoLoadInFlight.clear();
+  autoLoadPending.clear();
   inputGeneration++;
   logout.hidden = false;
+  sidebarToggle.hidden = false;
+  globalSearch.hidden = false;
+  headerAction.hidden = false;
   authCard.hidden = true;
   welcome.hidden = true;
   appShell.hidden = false;
@@ -1216,12 +1256,66 @@ function tabFromHash() {
   return tabPanels.some(panel => panel.dataset.panel === requested) ? requested : 'overview';
 }
 
+function closeSidebar() {
+  const restoreFocus = window.matchMedia('(max-width: 920px)').matches
+    && primaryNavigation.contains(document.activeElement);
+  document.body.classList.remove('sidebar-open');
+  sidebarToggle.setAttribute('aria-expanded', 'false');
+  sidebarToggle.setAttribute('aria-label', 'Open navigation');
+  if (restoreFocus) sidebarToggle.focus();
+}
+
+function updateHeaderAction(tab) {
+  const actions = {
+    overview: ['Refresh dashboard', () => refreshDashboard()],
+    servers: ['Refresh servers', () => loadNodes()],
+    network: ['Run Network Doctor', () => runNetworkDoctor.click()],
+    configurations: ['Compare configuration', () => runDriftCheck.click()],
+    'quick-setup': ['Add Vote Site', () => openWorkspace('quick-setup', 'quick-setup-card', 'vote-site')],
+    data: ['Refresh server overview', () => refreshDataOverview.click()],
+    activity: ['Refresh activity', () => loadOperationHistory()],
+    access: ['Refresh access', () => loadEnrollments()]
+  };
+  const [label, action] = actions[tab] || actions.overview;
+  text(headerAction, label);
+  headerAction.onclick = action;
+  const unavailable = tab === 'overview' ? !inspectionCapableNode() || dashboardLoading
+    : tab === 'network' ? runNetworkDoctor.disabled
+    : tab === 'configurations' ? runDriftCheck.disabled
+    : tab === 'data' ? refreshDataOverview.disabled
+    : tab === 'quick-setup' ? !nodeCapabilities.get(selectedServerId)?.includes('config.quick-setup.v1')
+    : false;
+  headerAction.disabled = !authenticated || unavailable;
+}
+
 function setActiveTab(tab, updateHash = false) {
   if (!tabPanels.some(panel => panel.dataset.panel === tab)) tab = 'overview';
-  tabButtons.forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === tab)));
+  navigationButtons.forEach(button => button.removeAttribute('aria-current'));
+  tabButtons.forEach(button => {
+    if (button.dataset.tab === tab) button.setAttribute('aria-current', 'page');
+  });
   tabPanels.forEach(panel => { panel.hidden = panel.dataset.panel !== tab; });
   if (updateHash && window.location.hash !== `#${tab}`) window.history.replaceState(null, '', `#${tab}`);
+  closeSidebar();
+  updateHeaderAction(tab);
   void autoLoadTab(tab);
+}
+
+function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = null) {
+  if (preset) {
+    quickPreset.value = preset;
+    loadedQuickSetup = null;
+    updateQuickFields();
+    clearApprovals();
+  }
+  setActiveTab(tab, true);
+  if (navigationButton && primaryNavigation.contains(navigationButton)) {
+    navigationButtons.forEach(button => button.removeAttribute('aria-current'));
+    navigationButton.setAttribute('aria-current', 'page');
+  }
+  if (scrollTarget) window.requestAnimationFrame(() => {
+    document.getElementById(scrollTarget)?.scrollIntoView({behavior: 'smooth', block: 'start'});
+  });
 }
 
 function setConfigView(view) {
@@ -1284,13 +1378,28 @@ function syncFileSelection() {
   }
 }
 
+function finishAutoLoad(tab) {
+  autoLoadInFlight.delete(tab);
+  if (autoLoadPending.delete(tab)) void autoLoadTab(tab);
+}
+
 async function autoLoadTab(tab) {
-  if (!authenticated || autoLoadInFlight.has(tab)) return;
+  if (!authenticated) return;
+  if (autoLoadInFlight.has(tab)) {
+    autoLoadPending.add(tab);
+    return;
+  }
+  if (tab === 'overview' && inspectionCapableNode() && dashboardLoadedContext !== dashboardContext()
+      && !dashboardLoading && !inspectionInFlight) {
+    autoLoadInFlight.add(tab);
+    try { await refreshDashboard(); } finally { finishAutoLoad(tab); }
+    return;
+  }
   if (tab === 'configurations') {
     const yamlVisible = configViewPanels.some(panel => panel.dataset.configPanel === 'yaml' && !panel.hidden);
     if (!yamlVisible || configurationDirty || configurationContentPresent || !fileTargetsForSelection().length) return;
     autoLoadInFlight.add(tab);
-    try { await loadFileConfiguration(true); } finally { autoLoadInFlight.delete(tab); }
+    try { await loadFileConfiguration(true); } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'network' && !proxyMethodWorkflowInFlight) {
@@ -1298,18 +1407,18 @@ async function autoLoadTab(tab) {
     try {
       await Promise.all([proxyMethodCurrentValue ? Promise.resolve() : loadProxyMethod(true),
         routingDirty || approvedPreview ? Promise.resolve() : loadProxyRouting(true)]);
-    } finally { autoLoadInFlight.delete(tab); }
+    } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'quick-setup' && quickPresetReadable() && !loadedQuickSetup
       && !approvedQuickPreview && !configurationOperationsInFlight) {
     autoLoadInFlight.add(tab);
-    try { await loadQuickSetupValues(true); } finally { autoLoadInFlight.delete(tab); }
+    try { await loadQuickSetupValues(true); } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'data' && inspectionCapableNode() && !inspectionInFlight && !lastOverview) {
     autoLoadInFlight.add(tab);
-    try { await refreshOverview(dataOverview); } finally { autoLoadInFlight.delete(tab); }
+    try { await refreshOverview(dataOverview); } finally { finishAutoLoad(tab); }
   }
 }
 
@@ -1339,6 +1448,7 @@ function renderServerPicker() {
     }
   }
   serverPicker.value = selectedServerId;
+  populateGlobalSearch();
 }
 
 function renderSelectedServer() {
@@ -1436,23 +1546,365 @@ function renderTopology() {
   }
 }
 
-function renderMetrics() {
-  const backendIds = new Set(allNodeItems.filter(isProxy).flatMap(node =>
-    (Array.isArray(node.backends) ? node.backends : []).map(backend => backend.backendId)));
-  const issueIds = new Set(allNodeItems.filter(node => !node.online).map(node => node.nodeId));
-  backendIds.forEach(backendId => { if (!nodeIndex.has(backendId)) issueIds.add(backendId); });
-  if (enrollmentsLoaded) {
-    backendIds.forEach(backendId => { if (!enrollmentIds.has(backendId)) issueIds.add(backendId); });
+function dashboardContext() {
+  const node = nodeIndex.get(selectedServerId);
+  return node ? `${node.nodeId}|${node.sessionId}|${node.online}|${node.acceptedCapabilities.includes('data.inspect.v1')}|${dashboardTopologySignature}` : '';
+}
+
+function topologySignature(items) {
+  return items.filter(isProxy).map(proxy => `${proxy.nodeId}|${proxy.sessionId}|${proxy.online}|${proxy.snapshotSequence}`).join(';');
+}
+
+function emptyDashboardInspectionStatus() {
+  return {overview: 'not-loaded', voteSiteHealth: 'not-loaded', voteLog24h: 'not-required', voteLog30d: 'not-required'};
+}
+
+function dashboardRecord(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} returned malformed data.`);
   }
-  allNodeItems.filter(node => isProxy(node) && node.online).forEach(proxy =>
-    (Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {
-      if (backend.presenceKnown && !backend.available) issueIds.add(backend.backendId);
-    }));
-  text(metricNodes, allNodeItems.length);
-  text(metricOnline, allNodeItems.filter(node => node.online).length);
-  text(metricBackends, backendTopologyTruncated ? `${backendIds.size}+` : backendIds.size);
-  const issueCount = issueIds.size;
-  text(metricIssues, backendTopologyTruncated ? `${issueCount}+` : issueCount);
+  return value;
+}
+
+function boundedDashboardString(value, maximum, allowEmpty = false) {
+  if (typeof value !== 'string') return {value: '', incomplete: true};
+  const normalized = value.trim();
+  if (!allowEmpty && !normalized) return {value: '', incomplete: true};
+  return {value: normalized.slice(0, maximum), incomplete: normalized.length > maximum};
+}
+
+function normalizeDashboardCollection(value, maximum, normalize) {
+  if (!Array.isArray(value)) return {items: [], incomplete: true};
+  let incomplete = value.length > maximum;
+  const items = [];
+  value.slice(0, maximum).forEach(entry => {
+    const normalized = normalize(entry);
+    if (!normalized) incomplete = true;
+    else {
+      items.push(normalized.value);
+      incomplete ||= normalized.incomplete;
+    }
+  });
+  return {items, incomplete};
+}
+
+function normalizeDashboardOverview(value) {
+  const source = dashboardRecord(value, 'Overview inspection');
+  const result = {...source};
+  let incomplete = false;
+  ['configuredVoteSites', 'enabledVoteSites'].forEach(field => {
+    const count = finiteCount(source[field]);
+    if (count == null || !Number.isSafeInteger(count)) incomplete = true;
+    result[field] = count;
+  });
+  ['autoCreateVoteSites', 'processRewards', 'voteLoggingEnabled', 'voteLogAvailable', 'voteLogReadable',
+    'proxyMode', 'votifierDetected', 'configurationHealthy'].forEach(field => {
+    if (typeof source[field] !== 'boolean') incomplete = true;
+    result[field] = typeof source[field] === 'boolean' ? source[field] : undefined;
+  });
+  [['pluginVersion', 80], ['platform', 32], ['serverSoftware', 80], ['serverVersion', 80],
+    ['dataStorage', 32], ['proxyMethod', 32]].forEach(([field, maximum]) => {
+    const normalized = boundedDashboardString(source[field], maximum, true);
+    incomplete ||= normalized.incomplete;
+    result[field] = normalized.value;
+  });
+  return {result, incomplete};
+}
+
+function normalizeDashboardVoteSiteHealth(value) {
+  const source = dashboardRecord(value, 'Vote Site health inspection');
+  let incomplete = typeof source.autoCreateVoteSites !== 'boolean';
+  const allowedStatuses = new Set(['ACTIVE', 'DISABLED', 'SERVICE_SITE_MISSING', 'VOTE_LOG_UNAVAILABLE',
+    'VOTE_LOG_UNREADABLE', 'NO_RECENT_VOTES']);
+  const sites = normalizeDashboardCollection(source.sites, 100, entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const status = boundedDashboardString(entry.status, 64);
+    const key = boundedDashboardString(entry.key, 100, true);
+    const displayName = boundedDashboardString(entry.displayName, 100, true);
+    if (status.incomplete || !allowedStatuses.has(status.value) || (!key.value && !displayName.value)) return null;
+    return {value: {...entry, status: status.value, key: key.value, displayName: displayName.value},
+      incomplete: key.incomplete || displayName.incomplete};
+  });
+  const detected = normalizeDashboardCollection(source.detectedUnconfiguredServices, 100, entry => {
+    const service = boundedDashboardString(entry, 100);
+    return service.incomplete ? null : {value: service.value, incomplete: false};
+  });
+  const unmatched = normalizeDashboardCollection(source.unmatchedLoggedServices, 100, entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const service = boundedDashboardString(entry.serviceSite, 100);
+    return service.incomplete ? null : {value: {...entry, serviceSite: service.value}, incomplete: false};
+  });
+  incomplete ||= sites.incomplete || detected.incomplete || unmatched.incomplete;
+  return {result: {...source, autoCreateVoteSites: typeof source.autoCreateVoteSites === 'boolean'
+    ? source.autoCreateVoteSites : undefined, sites: sites.items,
+    detectedUnconfiguredServices: detected.items, unmatchedLoggedServices: unmatched.items}, incomplete};
+}
+
+function normalizeDashboardVoteSummary(value) {
+  const source = dashboardRecord(value, 'VoteLog summary inspection');
+  const total = finiteCount(source.total);
+  let incomplete = total == null || !Number.isSafeInteger(total);
+  const services = normalizeDashboardCollection(source.topServices, 20, entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const service = boundedDashboardString(entry.service, 100, true);
+    const countSource = Object.hasOwn(entry, 'count') ? entry.count : entry.votes;
+    const count = finiteCount(countSource);
+    if (service.incomplete || count == null || !Number.isSafeInteger(count)) return null;
+    return {value: {...entry, service: service.value || 'Unknown service', count}, incomplete: false};
+  });
+  incomplete ||= services.incomplete;
+  return {result: {...source, total, topServices: services.items}, incomplete};
+}
+
+function issue(severity, title, detail, action, tab, scrollTarget = '', preset = '') {
+  return {severity, title, detail, action, tab, scrollTarget, preset};
+}
+
+function dashboardIssues() {
+  const issues = [];
+  const selected = nodeIndex.get(selectedServerId);
+  if (!selected) {
+    issues.push(issue('informational', 'Choose a VotingPlugin server',
+      'Server-specific health and administration actions need an explicit target.', 'Choose server', 'servers'));
+  } else if (!selected.online) {
+    issues.push(issue('critical', `${selected.displayName} is disconnected from Control`,
+      'Minecraft presence is separate; reconnect the Control node before attempting changes.', 'View server', 'servers'));
+  } else if (dashboardLoadedContext !== dashboardContext()) {
+    issues.push(issue('informational', 'Detailed health has not been loaded',
+      'Refresh the dashboard to inspect Vote Sites, VoteLog, configuration, and runtime state.', 'Refresh dashboard', 'overview'));
+  }
+  if (dashboardLoadedContext === dashboardContext()) {
+    const labels = {overview: 'Overview', voteSiteHealth: 'Vote Site health',
+      voteLog24h: '24-hour VoteLog summary', voteLog30d: '30-day VoteLog summary'};
+    Object.entries(dashboardInspectionStatus).forEach(([inspection, status]) => {
+      if (!['failed', 'incomplete'].includes(status)) return;
+      issues.push(issue('warning', `${labels[inspection]} is ${status === 'failed' ? 'unavailable' : 'incomplete'}`,
+        'Some dashboard checks could not be verified, so this server is not reported as fully healthy.',
+        'Refresh dashboard', 'overview'));
+    });
+  }
+  if (backendTopologyTruncated) {
+    issues.push(issue('informational', 'Topology view is incomplete',
+      'Control bounded the backend summaries, so omitted relationships are not classified as offline.', 'View servers', 'servers'));
+  }
+  const disconnectedNodes = allNodeItems.filter(node => !node.online && node.nodeId !== selectedServerId);
+  disconnectedNodes.slice(0, 10).forEach(node => {
+    issues.push(issue('warning', `${node.displayName} is disconnected from Control`,
+      `The registered ${roleLabel(node).toLowerCase()} is not currently connected. Minecraft availability is separate.`,
+      'View server', 'servers'));
+  });
+  if (disconnectedNodes.length > 10) {
+    issues.push(issue('informational', `${disconnectedNodes.length - 10} additional nodes are disconnected`,
+      'Open Servers to inspect the complete registered-node state.', 'View servers', 'servers'));
+  }
+  allNodeItems.filter(node => isProxy(node) && node.online).forEach(proxy => {
+    (Array.isArray(proxy.backends) ? proxy.backends : []).slice(0, 100).forEach(backend => {
+      const registered = nodeIndex.get(backend.backendId);
+      if (!registered) issues.push(issue('warning', `${backend.displayName} is not registered with Control`,
+        `${proxy.displayName} reports this backend, but Control has no current node record.`, 'View servers', 'servers'));
+      if (enrollmentsLoaded && !enrollmentIds.has(backend.backendId)) {
+        issues.push(issue('warning', `${backend.displayName} is not enrolled`,
+          'Enroll the node before expecting authenticated Control connectivity.', 'Open access', 'access'));
+      }
+      if (backend.presenceKnown && !backend.available) issues.push(issue('warning', `${backend.displayName} is unavailable to the proxy`,
+        `${proxy.displayName} reported a known Minecraft availability failure.`, 'Test communication', 'network', 'transport-test-card'));
+    });
+  });
+  if (dashboardOverview && dashboardLoadedContext === dashboardContext()) {
+    if (dashboardOverview.configurationHealthy === false) issues.push(issue('warning', 'VotingPlugin configuration needs attention',
+      'The selected backend reported an unhealthy configuration state.', 'Open configuration', 'configurations'));
+    if (dashboardOverview.votifierDetected === false) issues.push(issue('warning', 'Votifier was not detected',
+      'The selected backend cannot confirm the vote-listener prerequisite.', 'Diagnose', 'network', 'network-doctor-card'));
+    if (dashboardOverview.configuredVoteSites === 0) issues.push(issue('warning', 'No Vote Sites are configured',
+      'Add a reviewed VoteSites entry before expecting service matches.', 'Add Vote Site', 'quick-setup', 'quick-setup-card', 'vote-site'));
+    if (dashboardOverview.processRewards === false) issues.push(issue('warning', 'Vote rewards are disabled on this backend',
+      'ProcessRewards is off. Confirm that this is intentional for the selected topology.', 'Open setting', 'quick-setup', 'settings-catalog-card'));
+    if (dashboardOverview.voteLoggingEnabled === true && dashboardOverview.voteLogReadable !== true) issues.push(issue('warning', 'VoteLog is unavailable',
+      'Logging is enabled, but retained logged-event history is not readable.', 'Open Vote Logs', 'data', 'vote-log-summary-result'));
+    if (voteLoggingRestartRequired()) issues.push(issue('warning', `Restart required on ${selected?.displayName || selectedServerId}`,
+      'Vote logging configuration was saved but is not live until the backend restarts and reconnects.', 'Open setup', 'quick-setup'));
+    if (dashboardOverview.proxyMode === true && proxyReportsFor(selectedServerId).length === 0) issues.push(issue('warning', 'No proxy reports this backend',
+      'Proxy mode is enabled, but no connected proxy currently reports the selected backend ID.', 'Open routing', 'network'));
+  }
+  if (dashboardVoteSiteHealth && dashboardLoadedContext === dashboardContext()) {
+    const sites = Array.isArray(dashboardVoteSiteHealth.sites) ? dashboardVoteSiteHealth.sites : [];
+    sites.filter(site => site.status === 'SERVICE_SITE_MISSING').slice(0, 10).forEach(site => {
+      issues.push(issue('warning', `${site.displayName || site.key} has no ServiceSite`,
+        'Votes cannot be matched reliably until the service identifier is configured.', 'Open Vote Sites', 'data', 'site-health-card'));
+    });
+    dashboardVoteSiteHealth.detectedUnconfiguredServices.slice(0, 10).forEach(service => {
+      issues.push(issue('warning', `Detected service is not configured: ${service}`,
+        dashboardVoteSiteHealth.autoCreateVoteSites === false
+          ? 'AutoCreateVoteSites is disabled; review and create this site explicitly.'
+          : 'VotingPlugin observed this service but no configured ServiceSite matches it.',
+        'Configure', 'quick-setup', 'quick-setup-card', 'vote-site'));
+    });
+    dashboardVoteSiteHealth.unmatchedLoggedServices.slice(0, 10).forEach(service => {
+      issues.push(issue('warning', `Logged service does not match a Vote Site: ${service.serviceSite || 'Unknown'}`,
+        'A retained vote event used a service identifier with no configured match.', 'Open Vote Sites', 'data', 'site-health-card'));
+    });
+  }
+  operationHistoryItems.filter(operation => ['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state)).slice(0, 5)
+    .forEach(operation => issues.push(issue('warning', `${operationLabel(operation)} needs review`,
+      operationPhase(operation), 'View operation', 'activity')));
+  return issues.slice(0, 30);
+}
+
+function renderAttention(issues) {
+  attentionFeed.replaceChildren();
+  if (issues.length === 0) {
+    const empty = text(document.createElement('p'), 'No actionable problems were found in the currently loaded state.');
+    empty.className = 'attention-empty';
+    attentionFeed.append(empty);
+    return;
+  }
+  issues.slice(0, 8).forEach(item => {
+    const row = document.createElement('article');
+    row.className = `attention-item ${item.severity}`;
+    const indicator = document.createElement('span');
+    indicator.className = 'attention-indicator';
+    indicator.setAttribute('aria-label', item.severity);
+    const copy = document.createElement('div');
+    copy.append(text(document.createElement('strong'), item.title), text(document.createElement('small'), item.detail));
+    const action = text(document.createElement('button'), item.action);
+    action.type = 'button';
+    action.className = 'secondary compact';
+    action.addEventListener('click', () => openWorkspace(item.tab, item.scrollTarget, item.preset));
+    row.append(indicator, copy, action);
+    attentionFeed.append(row);
+  });
+  if (issues.length > 8) attentionFeed.append(text(document.createElement('small'), `${issues.length - 8} additional issues are available in their related pages.`));
+}
+
+function addQuickAction(label, tab, scrollTarget = '', preset = '') {
+  const button = text(document.createElement('button'), label);
+  button.type = 'button';
+  button.className = 'secondary';
+  button.addEventListener('click', () => openWorkspace(tab, scrollTarget, preset));
+  overviewQuickActions.append(button);
+}
+
+function renderQuickActions() {
+  overviewQuickActions.replaceChildren();
+  const selected = nodeIndex.get(selectedServerId);
+  if (selected?.online && isBackend(selected) && selected.acceptedCapabilities.includes('config.quick-setup.v1')) {
+    addQuickAction('Add Vote Site', 'quick-setup', 'quick-setup-card', 'vote-site');
+    addQuickAction('Build Reward', 'quick-setup', 'reward-builder-card');
+  }
+  const syncSources = syncSourceCandidates();
+  const syncTargets = syncTargetCandidates();
+  if (syncSources.some(source => syncTargets.some(target => target.nodeId !== source.nodeId))) {
+    addQuickAction('Sync Vote Sites', 'quick-setup', 'quick-setup-card', 'sync-vote-sites');
+  }
+  if (inspectionCapableNode()) addQuickAction('Run Network Doctor', 'network', 'network-doctor-card');
+  if (transportTestProxies().length) addQuickAction('Test Communication', 'network', 'transport-test-card');
+  if (inspectionCapableNode()) addQuickAction('View Logged Events', 'data', 'vote-log-summary-result');
+  if (overviewQuickActions.childElementCount === 0) {
+    addQuickAction(allNodeItems.length ? 'View Servers' : 'Refresh Servers', 'servers');
+  }
+}
+
+function renderVoteActivity() {
+  voteActivity.replaceChildren();
+  if (!authenticated || !inspectionCapableNode() || dashboardLoadedContext !== dashboardContext()) {
+    text(voteActivity, 'No current retained VoteLog service summary is loaded.');
+    return;
+  }
+  const services = Array.isArray(dashboardVoteSummary30d?.topServices)
+    ? dashboardVoteSummary30d.topServices.slice(0, 6) : [];
+  if (services.length === 0) {
+    text(voteActivity, dashboardOverview?.voteLoggingEnabled === false
+      ? 'Vote logging is disabled; no retained event chart is expected.' : 'No readable retained VoteLog service summary is loaded.');
+    return;
+  }
+  const maximum = Math.max(...services.map(service => service.count), 1);
+  services.forEach(service => {
+    const row = document.createElement('div');
+    row.className = 'activity-bar-row';
+    row.append(text(document.createElement('strong'), service.service || 'Unknown service'));
+    const track = document.createElement('progress');
+    track.className = 'activity-bar-track';
+    track.max = maximum;
+    track.value = service.count;
+    track.setAttribute('aria-label', `${service.service || 'Unknown service'} logged votes`);
+    row.append(track, text(document.createElement('span'), service.count));
+    voteActivity.append(row);
+  });
+}
+
+function operationLabel(operation) {
+  const configuration = operation.configuration || {};
+  if (configuration.domain === 'quick-setup') {
+    return ({'vote-site': 'Vote Site change', 'sync-vote-sites': 'Vote Site synchronization',
+      'reward-builder': 'Reward update', 'proxy-method': 'Proxy method change',
+      'vote-logging': 'Vote logging change'}[configuration.preset] || 'Guided setup change');
+  }
+  if (configuration.domain === 'file') return `${configuration.fileName || 'Configuration'} change`;
+  if (configuration.domain === 'proxy-routing') return 'Proxy routing change';
+  return 'Configuration operation';
+}
+
+function renderOverviewActivity() {
+  overviewActivity.replaceChildren();
+  if (operationHistoryItems.length === 0) {
+    text(overviewActivity, 'No retained configuration operations.');
+    return;
+  }
+  operationHistoryItems.slice(0, 5).forEach(operation => {
+    const item = document.createElement('article');
+    item.className = 'activity-item';
+    const results = Object.values(operation.results || {});
+    const successful = results.filter(result => result?.success).length;
+    item.append(text(document.createElement('strong'), operationLabel(operation)));
+    const when = operation.createdAt ? new Date(operation.createdAt).toLocaleString() : 'Time unavailable';
+    item.append(text(document.createElement('small'), `${operationPhase(operation)} · ${successful}/${results.length} targets successful · ${when}`));
+    overviewActivity.append(item);
+  });
+}
+
+function renderMetrics() {
+  const issues = dashboardIssues();
+  const selected = nodeIndex.get(selectedServerId);
+  const current = dashboardLoadedContext === dashboardContext();
+  const hasCritical = issues.some(item => item.severity === 'critical');
+  const hasWarning = issues.some(item => item.severity === 'warning');
+  const hasIncompleteInspection = Object.values(dashboardInspectionStatus)
+    .some(status => ['failed', 'incomplete'].includes(status));
+  const state = !selected ? 'Unavailable' : !selected.online || hasCritical ? 'Critical'
+    : !current || hasWarning || hasIncompleteInspection ? 'Warning' : 'Healthy';
+  text(metricHealth, state);
+  text(metricHealthDetail, !selected ? 'Choose a server' : !selected.online ? 'Control disconnected'
+    : !current ? 'Inspection not loaded' : hasCritical ? 'Immediate attention required'
+    : hasIncompleteInspection ? 'Dashboard data incomplete'
+    : hasWarning ? 'Review observed warnings' : 'No observed problems');
+  metricHealth.closest('article').className = selected ? state.toLowerCase() : '';
+  const votes24h = current ? finiteCount(dashboardVoteSummary24h?.total) : null;
+  text(metricVotesToday, votes24h == null ? '—' : votes24h);
+  const configured = current ? finiteCount(dashboardOverview?.configuredVoteSites) : null;
+  const enabled = current ? finiteCount(dashboardOverview?.enabledVoteSites) : null;
+  const siteWarnings = current && Array.isArray(dashboardVoteSiteHealth?.sites)
+    ? dashboardVoteSiteHealth.sites.filter(site => site.status === 'SERVICE_SITE_MISSING').length
+      + dashboardVoteSiteHealth.detectedUnconfiguredServices.length : null;
+  const siteCountsKnown = configured != null && enabled != null;
+  text(metricVoteSites, !siteCountsKnown ? '—' : `${enabled}/${configured}`);
+  text(metricVoteSitesDetail, !siteCountsKnown ? 'Counts unavailable'
+    : `${enabled} enabled${siteWarnings == null ? '' : ` · ${siteWarnings} need attention`}`);
+  text(metricProxy, !current ? '—' : dashboardOverview?.proxyMode === false ? 'Standalone' : dashboardOverview?.proxyMethod || 'Unknown');
+  text(metricProxyDetail, !current ? 'Method unavailable' : dashboardOverview?.proxyMode === false
+    ? 'Proxy mode disabled' : proxyReportsFor(selectedServerId).length ? 'Proxy relationship reported' : 'No reporting proxy');
+  const logged30d = current ? finiteCount(dashboardVoteSummary30d?.total) : null;
+  text(metricLoggedEvents, logged30d == null ? '—' : logged30d);
+  const actionable = issues.filter(item => item.severity !== 'informational').length;
+  text(metricIssues, actionable >= 30 ? `${actionable}+` : actionable);
+  text(metricIssuesDetail, actionable ? `${actionable} actionable` : 'No observed problems');
+  renderAttention(issues);
+  renderQuickActions();
+  renderVoteActivity();
+  renderOverviewActivity();
+}
+
+function finiteCount(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function syncSourceCandidates() {
@@ -1665,7 +2117,7 @@ function updateSetupChecklist(overview = lastOverview) {
   const states = [
     Boolean(node?.online && isBackend(node)),
     Boolean(overview && typeof overview.proxyMode === 'boolean'),
-    Boolean(overview && Number.isFinite(Number(overview.configuredVoteSites))),
+    Boolean(overview && Number.isSafeInteger(overview.configuredVoteSites) && overview.configuredVoteSites >= 0),
     Boolean(overview?.processRewards),
     Boolean(overview?.dataStorage && !loggingRestartPending
       && (!overview.voteLoggingEnabled || overview.voteLogReadable === true)),
@@ -1698,6 +2150,7 @@ function updateExtendedButtons() {
     && configurationOperationsInFlight === 0;
   const fileTargets = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
   const driftReady = authenticated && fileTargets.length >= 2 && configurationOperationsInFlight === 0;
+  refreshDashboardButton.disabled = !inspectionReady || dashboardLoading;
   runNetworkDoctor.disabled = !inspectionReady;
   downloadNetworkDiagnostics.disabled = !lastDiagnostics;
   refreshSetupChecklist.disabled = !inspectionReady;
@@ -1731,6 +2184,7 @@ function updateExtendedButtons() {
   rewardSimulationCapability.className = `pill ${rewardReady ? 'online' : 'neutral'}`;
   text(driftCapability, driftReady ? `${fileTargets.length} selected nodes ready` : 'Select at least two readable nodes');
   driftCapability.className = `pill ${driftReady ? 'online' : 'neutral'}`;
+  updateHeaderAction(tabFromHash());
   updateSetupChecklist();
 }
 
@@ -1792,6 +2246,13 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   lastFileReadOperation = null;
   lastDiagnostics = null;
   lastOverview = null;
+  dashboardOverview = null;
+  dashboardVoteSiteHealth = null;
+  dashboardVoteSummary24h = null;
+  dashboardVoteSummary30d = null;
+  dashboardLoadedContext = '';
+  dashboardInspectionStatus = emptyDashboardInspectionStatus();
+  dashboardTopologySignature = '';
   downloadNetworkDiagnostics.disabled = true;
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
@@ -1822,6 +2283,7 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   quickPreset.value = preset;
   updateQuickFields();
   text(quickOperationStatus, reason);
+  renderMetrics();
 }
 
 function selectPrimaryServer(nodeId) {
@@ -1837,6 +2299,7 @@ function selectPrimaryServer(nodeId) {
   resetServerContextValues('Server changed. Load current values before continuing.');
   updatePluginSuggestions();
   renderNodeViews();
+  void autoLoadTab(tabFromHash());
 }
 
 function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 || proxyMethodWorkflowInFlight) {
@@ -2004,6 +2467,10 @@ function discardAuthenticationState(reason) {
   loadedQuickSetup = null;
   inputGeneration++;
   logout.hidden = true;
+  sidebarToggle.hidden = true;
+  globalSearch.hidden = true;
+  headerAction.hidden = true;
+  closeSidebar();
   appShell.hidden = true;
   serverPickerLabel.hidden = true;
   welcome.hidden = false;
@@ -2026,6 +2493,13 @@ function discardAuthenticationState(reason) {
   lastFileReadOperation = null;
   lastDiagnostics = null;
   lastOverview = null;
+  dashboardOverview = null;
+  dashboardVoteSiteHealth = null;
+  dashboardVoteSummary24h = null;
+  dashboardVoteSummary30d = null;
+  dashboardLoadedContext = '';
+  dashboardInspectionStatus = emptyDashboardInspectionStatus();
+  dashboardTopologySignature = '';
   operationHistoryItems = [];
   dedicatedSetupApprovals.clear();
   voteLoggingRestartPending.clear();
@@ -2051,6 +2525,7 @@ function discardAuthenticationState(reason) {
   routingDirty = false;
   routingDraftNodeId = '';
   autoLoadInFlight.clear();
+  autoLoadPending.clear();
   quickSetupForm.reset();
   resetDedicatedSetupValues();
   rewardSimulationForm.reset();
@@ -2191,6 +2666,12 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
     lastFileReadOperation = null;
     lastOverview = null;
     lastDiagnostics = null;
+    dashboardOverview = null;
+    dashboardVoteSiteHealth = null;
+    dashboardVoteSummary24h = null;
+    dashboardVoteSummary30d = null;
+    dashboardLoadedContext = '';
+    dashboardInspectionStatus = emptyDashboardInspectionStatus();
     updateExtendedButtons();
   }
   return operation;
@@ -2329,6 +2810,7 @@ async function loadNodes() {
     const previousNodeIndex = nodeIndex;
     visibleNodeItems = registry.items.slice(pageOffset, pageOffset + PAGE_SIZE);
     allNodeItems = registry.items;
+    dashboardTopologySignature = topologySignature(registry.items);
     backendTopologyTruncated = registry.truncated;
     backendTopologyTruncatedNodeIds = registry.truncatedNodeIds;
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
@@ -2355,6 +2837,12 @@ async function loadNodes() {
       dedicatedSetupApprovals.clear();
       lastOverview = null;
       lastDiagnostics = null;
+      dashboardOverview = null;
+      dashboardVoteSiteHealth = null;
+      dashboardVoteSummary24h = null;
+      dashboardVoteSummary30d = null;
+      dashboardLoadedContext = '';
+      dashboardInspectionStatus = emptyDashboardInspectionStatus();
       inputGeneration++;
       text(operationStatus, routingDraftStatus('A selected node changed capabilities during refresh. Preview again before apply.'));
     }
@@ -3188,6 +3676,78 @@ async function refreshOverview(target = dataOverview) {
   } catch (error) { text(target, error.message); }
 }
 
+async function refreshDashboard() {
+  if (!inspectionCapableNode() || dashboardLoading) {
+    renderMetrics();
+    return;
+  }
+  const requestedContext = dashboardContext();
+  dashboardLoading = true;
+  dashboardLoadedContext = '';
+  dashboardOverview = null;
+  dashboardVoteSiteHealth = null;
+  dashboardVoteSummary24h = null;
+  dashboardVoteSummary30d = null;
+  dashboardInspectionStatus = {overview: 'loading', voteSiteHealth: 'loading',
+    voteLog24h: 'not-required', voteLog30d: 'not-required'};
+  refreshDashboardButton.disabled = true;
+  text(attentionFeed, 'Inspecting the selected VotingPlugin server…');
+  try {
+    const overview = normalizeDashboardOverview((await runInspection('overview')).result);
+    dashboardOverview = overview.result;
+    dashboardInspectionStatus.overview = overview.incomplete ? 'incomplete' : 'available';
+    lastOverview = dashboardOverview;
+    updateSetupChecklist(lastOverview);
+    try {
+      const health = normalizeDashboardVoteSiteHealth(
+        (await runInspection('vote-site-health', {days: '30'})).result);
+      dashboardVoteSiteHealth = health.result;
+      dashboardInspectionStatus.voteSiteHealth = health.incomplete ? 'incomplete' : 'available';
+    } catch (error) {
+      if (requestedContext !== dashboardContext()) throw error;
+      dashboardVoteSiteHealth = null;
+      dashboardInspectionStatus.voteSiteHealth = 'failed';
+    }
+    if (dashboardOverview.voteLogReadable === true) {
+      dashboardInspectionStatus.voteLog24h = 'loading';
+      dashboardInspectionStatus.voteLog30d = 'loading';
+      try {
+        const summary = normalizeDashboardVoteSummary(
+          (await runInspection('vote-log-summary', {days: '1'})).result);
+        dashboardVoteSummary24h = summary.result;
+        dashboardInspectionStatus.voteLog24h = summary.incomplete ? 'incomplete' : 'available';
+      } catch (error) {
+        if (requestedContext !== dashboardContext()) throw error;
+        dashboardVoteSummary24h = null;
+        dashboardInspectionStatus.voteLog24h = 'failed';
+      }
+      try {
+        const summary = normalizeDashboardVoteSummary(
+          (await runInspection('vote-log-summary', {days: '30'})).result);
+        dashboardVoteSummary30d = summary.result;
+        dashboardInspectionStatus.voteLog30d = summary.incomplete ? 'incomplete' : 'available';
+      } catch (error) {
+        if (requestedContext !== dashboardContext()) throw error;
+        dashboardVoteSummary30d = null;
+        dashboardInspectionStatus.voteLog30d = 'failed';
+      }
+    }
+    if (requestedContext === dashboardContext()) dashboardLoadedContext = requestedContext;
+  } catch (error) {
+    if (requestedContext === dashboardContext()) {
+      dashboardInspectionStatus.overview = 'failed';
+      text(attentionFeed, error.message || 'Dashboard inspection failed.');
+    }
+  } finally {
+    dashboardLoading = false;
+    renderMetrics();
+    updateExtendedButtons();
+    if (requestedContext !== dashboardContext() && tabFromHash() === 'overview') {
+      window.setTimeout(() => void autoLoadTab('overview'), 0);
+    }
+  }
+}
+
 refreshSetupChecklist.addEventListener('click', async () => {
   try {
     const envelope = await runInspection('diagnostics', {}, setupChecklistStatus);
@@ -3209,11 +3769,13 @@ runNetworkDoctor.addEventListener('click', async () => {
       : diagnostics.result.voteLogReadable === true
       ? {state: 'READABLE', message: 'Retained logged-event history is readable. It is not a guaranteed record of every internal vote-delivery hop.'}
       : {state: 'UNREADABLE', message: 'Vote logging is enabled, but retained logged-event history is not currently readable.'};
+    const configuredVoteSites = finiteCount(diagnostics.result.configuredVoteSites);
     const checks = {
       controlConnected: Boolean(node?.online),
       configurationHealthy: diagnostics.result.configurationHealthy,
       votifierDetected: diagnostics.result.votifierDetected,
-      voteSitesConfigured: Number(diagnostics.result.configuredVoteSites) > 0,
+      voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0,
+      voteSitesConfiguredKnown: configuredVoteSites != null,
       processRewards: diagnostics.result.processRewards,
       voteLogging: voteLog,
       topologyReported: isBackend(node) ? proxyReportsFor(node.nodeId).length > 0 || !diagnostics.result.proxyMode : true
@@ -3383,14 +3945,39 @@ playerLookupForm.addEventListener('submit', async event => {
 });
 
 loadSiteHealth.addEventListener('click', async () => {
-  try { renderSiteHealthResult((await runInspection('vote-site-health', {days: '30'}, siteHealthResult)).result); }
-  catch (error) { text(siteHealthResult, error.message); }
+  try {
+    const health = normalizeDashboardVoteSiteHealth(
+      (await runInspection('vote-site-health', {days: '30'}, siteHealthResult)).result);
+    dashboardVoteSiteHealth = health.result;
+    if (dashboardLoadedContext === dashboardContext()) {
+      dashboardInspectionStatus.voteSiteHealth = health.incomplete ? 'incomplete' : 'available';
+    }
+    renderSiteHealthResult(health.result);
+    renderMetrics();
+  }
+  catch (error) {
+    if (dashboardLoadedContext === dashboardContext()) dashboardInspectionStatus.voteSiteHealth = 'failed';
+    text(siteHealthResult, error.message);
+    renderMetrics();
+  }
 });
 
 loadVoteLogSummary.addEventListener('click', async () => {
-  try { renderJsonResult(voteLogSummaryResult,
-    (await runInspection('vote-log-summary', {days: '30'}, voteLogSummaryResult)).result); }
-  catch (error) { text(voteLogSummaryResult, error.message); }
+  try {
+    const summary = normalizeDashboardVoteSummary(
+      (await runInspection('vote-log-summary', {days: '30'}, voteLogSummaryResult)).result);
+    dashboardVoteSummary30d = summary.result;
+    if (dashboardLoadedContext === dashboardContext()) {
+      dashboardInspectionStatus.voteLog30d = summary.incomplete ? 'incomplete' : 'available';
+    }
+    renderJsonResult(voteLogSummaryResult, summary.result);
+    renderMetrics();
+  }
+  catch (error) {
+    if (dashboardLoadedContext === dashboardContext()) dashboardInspectionStatus.voteLog30d = 'failed';
+    text(voteLogSummaryResult, error.message);
+    renderMetrics();
+  }
 });
 
 voteLogFilterType.addEventListener('change', () => {
@@ -3619,10 +4206,13 @@ quickPreset.addEventListener('input', () => {
   }
 });
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
-tabButtons.forEach(button => button.addEventListener('click', () => setActiveTab(button.dataset.tab, true)));
+tabButtons.forEach(button => button.addEventListener('click', () => {
+  if (button.dataset.configShortcut) setConfigView(button.dataset.configShortcut);
+  setActiveTab(button.dataset.tab, true);
+}));
 configViewButtons.forEach(button => button.addEventListener('click', () => setConfigView(button.dataset.configView)));
 document.querySelectorAll('[data-open-tab]').forEach(button => button.addEventListener('click', () => {
-  setActiveTab(button.dataset.openTab, true);
+  openWorkspace(button.dataset.openTab, button.dataset.scrollTarget, button.dataset.quickPreset, button);
 }));
 document.querySelectorAll('[data-open-config-view]').forEach(button => button.addEventListener('click', () => {
   setActiveTab('configurations', true);
@@ -3633,12 +4223,124 @@ document.querySelectorAll('[data-open-config-view]').forEach(button => button.ad
   }
 }));
 window.addEventListener('hashchange', () => setActiveTab(tabFromHash()));
+sidebarToggle.addEventListener('click', () => {
+  const open = document.body.classList.toggle('sidebar-open');
+  sidebarToggle.setAttribute('aria-expanded', String(open));
+  sidebarToggle.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+  if (open) primaryNavigation.querySelector('button')?.focus();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.body.classList.contains('sidebar-open')) {
+    closeSidebar();
+    sidebarToggle.focus();
+    return;
+  }
+  if (event.key === 'Tab' && document.body.classList.contains('sidebar-open')
+      && window.matchMedia('(max-width: 920px)').matches) {
+    const focusable = navigationButtons.filter(button => !button.disabled);
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
+});
+document.addEventListener('click', event => {
+  if (!document.body.classList.contains('sidebar-open') || primaryNavigation.contains(event.target)
+      || sidebarToggle.contains(event.target)) return;
+  closeSidebar();
+});
+
+function populateGlobalSearch() {
+  const values = ['Add Vote Site', 'Vote Sites', 'Rewards', 'Setup', 'Settings', 'Vote logging',
+    'Servers', 'Proxy & Routing', 'Sync Vote Sites', 'Votes & Data', 'Activity', 'Network Doctor',
+    'Configuration Compare', 'Access', ...SETTINGS_SCHEMA.map(setting => setting.key),
+    ...allNodeItems.flatMap(node => [node.displayName, node.nodeId])];
+  const unique = [...new Set(values.filter(Boolean))].slice(0, 300);
+  globalSearchOptions.replaceChildren(...unique.map(value => {
+    const option = document.createElement('option');
+    option.value = value;
+    return option;
+  }));
+}
+
+const GLOBAL_PAGE_SHORTCUTS = new Map([
+  ['add vote site', {tab: 'quick-setup', scrollTarget: 'quick-setup-card', preset: 'vote-site'}],
+  ['vote sites', {tab: 'data', scrollTarget: 'site-health-card'}],
+  ['rewards', {tab: 'quick-setup', scrollTarget: 'reward-builder-card'}],
+  ['setup', {tab: 'quick-setup', scrollTarget: 'quick-setup-card'}],
+  ['settings', {tab: 'quick-setup', scrollTarget: 'settings-catalog-card'}],
+  ['vote logging', {tab: 'quick-setup', scrollTarget: 'quick-setup-card', preset: 'vote-logging'}],
+  ['servers', {tab: 'servers'}],
+  ['proxy & routing', {tab: 'network'}],
+  ['sync vote sites', {tab: 'quick-setup', scrollTarget: 'quick-setup-card', preset: 'sync-vote-sites'}],
+  ['votes & data', {tab: 'data'}],
+  ['activity', {tab: 'activity'}],
+  ['network doctor', {tab: 'network', scrollTarget: 'network-doctor-card'}],
+  ['configuration compare', {tab: 'configurations', configView: 'compare', scrollTarget: 'drift-results'}],
+  ['access', {tab: 'access'}]
+]);
+
+function openGlobalShortcut(destination) {
+  if (destination.configView) setConfigView(destination.configView);
+  openWorkspace(destination.tab, destination.scrollTarget || '', destination.preset || '');
+}
+
+globalSearch.addEventListener('submit', event => {
+  event.preventDefault();
+  const query = globalSearchInput.value.trim();
+  const normalized = query.toLowerCase();
+  if (!normalized) return;
+  const exactShortcut = GLOBAL_PAGE_SHORTCUTS.get(normalized);
+  if (exactShortcut) {
+    openGlobalShortcut(exactShortcut);
+    globalSearchInput.value = '';
+    return;
+  }
+  const node = allNodeItems.find(item => item.nodeId.toLowerCase() === normalized
+    || item.displayName.toLowerCase() === normalized)
+    || allNodeItems.find(item => item.nodeId.toLowerCase().includes(normalized)
+      || item.displayName.toLowerCase().includes(normalized));
+  if (node) {
+    selectPrimaryServer(node.nodeId);
+    openWorkspace('servers');
+    globalSearchInput.value = '';
+    return;
+  }
+  const setting = SETTINGS_SCHEMA.find(item => Object.values(item).join(' ').toLowerCase().includes(normalized));
+  if (setting) {
+    settingsFilter.value = query;
+    renderSettingsCatalog();
+    openWorkspace('quick-setup', 'settings-catalog-card');
+  } else if (normalized.includes('sync')) openWorkspace('quick-setup', 'quick-setup-card', 'sync-vote-sites');
+  else if (normalized.includes('reward')) openWorkspace('quick-setup', 'reward-builder-card');
+  else if (normalized.includes('vote site') || normalized.includes('service') || normalized.includes('planet')) openWorkspace('data', 'site-health-card');
+  else if (normalized.includes('vote logging')) openWorkspace('quick-setup', 'quick-setup-card', 'vote-logging');
+  else if (normalized.includes('doctor') || normalized.includes('diagnostic')) openWorkspace('network', 'network-doctor-card');
+  else if (['proxy', 'routing', 'redis', 'mqtt', 'mysql', 'sockets', 'transport'].some(value => normalized.includes(value))) openWorkspace('network');
+  else if (normalized.includes('compare') || normalized.includes('drift') || normalized.includes('configuration')) openWorkspace('configurations');
+  else if (normalized.includes('vote') || normalized.includes('data') || normalized.includes('log')) openWorkspace('data');
+  else if (normalized.includes('activity') || normalized.includes('operation') || normalized.includes('history')) openWorkspace('activity');
+  else if (normalized.includes('server') || normalized.includes('topology')) openWorkspace('servers');
+  else if (normalized.includes('access') || normalized.includes('enroll')) openWorkspace('access');
+  else if (normalized.includes('setup')) openWorkspace('quick-setup');
+  else {
+    text(message, `No Control page or setting matched “${query}”.`);
+    return;
+  }
+  globalSearchInput.value = '';
+});
 window.addEventListener('beforeunload', event => {
   if (!configurationDirty && !routingDirty) return;
   event.preventDefault();
   event.returnValue = '';
 });
 refresh.addEventListener('click', loadNodes);
+refreshDashboardButton.addEventListener('click', () => refreshDashboard());
 previousPage.addEventListener('click', () => {
   pageOffset = Math.max(0, pageOffset - PAGE_SIZE);
   loadNodes();
@@ -3654,6 +4356,7 @@ async function initialize() {
   updateQuickFields();
   updatePluginSuggestions();
   renderSettingsCatalog();
+  populateGlobalSearch();
   populateProfilePicker();
   rewardSiteLabel.hidden = rewardScope.value !== 'site';
   updateExtendedButtons();
