@@ -380,10 +380,42 @@ function renderPlayerData(value) {
   const totals = value.totals && typeof value.totals === 'object' ? value.totals : {};
   add('Online', value.online === true ? 'Yes' : 'No');
   add('Votes', `Daily ${totals.daily ?? 'Unknown'} · Weekly ${totals.weekly ?? 'Unknown'} · Monthly ${totals.monthly ?? 'Unknown'} · All-time ${totals.allTime ?? 'Unknown'}`);
+  const streaks = value.streaks && typeof value.streaks === 'object' ? value.streaks : {};
+  add('Vote streaks', `Daily ${streaks.daily ?? 'Unknown'} · Weekly ${streaks.weekly ?? 'Unknown'} · Monthly ${streaks.monthly ?? 'Unknown'}`);
   add('Points', value.points ?? 'Unknown');
+  add('Pending offline votes', value.pendingOfflineVotes ?? 'Unknown');
   add('Last vote', formatEpoch(value.lastVoteTime));
   add('Last online', formatEpoch(value.lastOnline));
   playerResult.append(profile);
+  const lastVotes = Array.isArray(value.lastVotes)
+    ? value.lastVotes.filter(lastVote => lastVote && typeof lastVote === 'object').slice(0, 100) : [];
+  if (lastVotes.length) {
+    const heading = text(document.createElement('h4'), 'VoteSite history');
+    const scroll = document.createElement('div');
+    scroll.className = 'table-scroll';
+    const table = document.createElement('table');
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    ['Vote Site', 'ServiceSite', 'Last vote'].forEach(label => headRow.append(text(document.createElement('th'), label)));
+    head.append(headRow);
+    const body = document.createElement('tbody');
+    lastVotes.forEach(lastVote => {
+      const row = document.createElement('tr');
+      row.append(text(document.createElement('td'), lastVote.displayName || lastVote.siteKey || 'Unknown'));
+      row.append(text(document.createElement('td'), lastVote.serviceSite || 'Not configured'));
+      row.append(text(document.createElement('td'), formatEpoch(lastVote.time)));
+      body.append(row);
+    });
+    table.append(head, body);
+    scroll.append(table);
+    playerResult.append(heading, scroll);
+  }
+  if (value.lastVotesTruncated === true) {
+    const warning = document.createElement('p');
+    warning.className = 'warning-text';
+    text(warning, 'Additional VoteSite history was omitted by the 100-row inspection limit.');
+    playerResult.append(warning);
+  }
   if (!Array.isArray(value.columns)) return;
   const scroll = document.createElement('div');
   scroll.className = 'table-scroll';
@@ -622,9 +654,15 @@ function renderVoteTrace(trace) {
     text(diagnostics, `Unavailable or failed sources: ${trace.unavailable.join('; ')}.`);
     voteTraceResult.append(diagnostics);
   }
+  if (trace.truncatedSources.length) {
+    const truncation = document.createElement('p');
+    truncation.className = 'warning-text';
+    text(truncation, `Node result limit reached; this trace is incomplete for: ${trace.truncatedSources.join(', ')}.`);
+    voteTraceResult.append(truncation);
+  }
   const boundary = document.createElement('p');
   boundary.className = 'warning-text';
-  text(boundary, 'This is the complete retained trace returned by the readable nodes above. It cannot show an internal hop that no node recorded.');
+  text(boundary, 'This bounded view contains only events returned by the readable nodes above. A missing logged event is unknown or not logged, not proof that an internal hop failed.');
   voteTraceResult.append(boundary);
 }
 
@@ -651,6 +689,7 @@ async function traceVoteAcrossNodes() {
   const events = new Map();
   const sources = [];
   const unavailable = [];
+  const truncatedSources = [];
   if (available.length > candidates.length) unavailable.push(`${available.length - candidates.length} additional capable nodes were omitted by the ${MAX_TRACE_NODES}-node trace limit`);
   inspectionInFlight = true;
   updateExtendedButtons();
@@ -662,7 +701,9 @@ async function traceVoteAcrossNodes() {
         const envelope = await runInspectionOnNode(node, 'vote-trace', {voteId, days, limit: '100'},
           {deadlineAt: traceDeadline, manageBusy: false});
         const listed = Array.isArray(envelope.result?.events) ? envelope.result.events : [];
-        sources.push(`${node.displayName} (${node.nodeId})`);
+        const source = `${node.displayName} (${node.nodeId})`;
+        sources.push(source);
+        if (envelope.result?.truncated === true) truncatedSources.push(source);
         listed.forEach(event => {
           if (!event || typeof event !== 'object') return;
           const key = traceEventKey(event);
@@ -685,7 +726,7 @@ async function traceVoteAcrossNodes() {
       Number(left.event.voteTime || 0) - Number(right.event.voteTime || 0)
       || String(left.event.event || '').localeCompare(String(right.event.event || ''))
       || String(left.event.server || '').localeCompare(String(right.event.server || '')));
-    renderVoteTrace({events: ordered, sources, unavailable});
+    renderVoteTrace({events: ordered, sources, unavailable, truncatedSources});
   } finally {
     inspectionInFlight = false;
     updateExtendedButtons();

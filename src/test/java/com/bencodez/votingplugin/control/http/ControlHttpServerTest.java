@@ -127,6 +127,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("operation.results?.[proxyId]?.sessionId !== proxySessionId"));
         assertTrue(script.body().contains("confirmDiscardUnsavedConfiguration('switching servers')"));
         assertTrue(script.body().contains("voteId === voteTraceId.value.trim()"));
+        assertTrue(script.body().contains("Pending offline votes"));
+        assertTrue(script.body().contains("Additional VoteSite history was omitted"));
+        assertTrue(script.body().contains("Node result limit reached; this trace is incomplete"));
+        assertFalse(script.body().contains("This is the complete retained trace"));
         assertTrue(script.body().contains("const traceReady = authenticated && connectedInspectionNodes().length > 0"));
         assertTrue(script.body().contains("traceVote.disabled = !traceReady;"));
         assertTrue(script.body().contains("const retainedRoutingDraft = preserveDirtyDrafts && routingDirty;"));
