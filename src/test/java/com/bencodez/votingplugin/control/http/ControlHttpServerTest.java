@@ -135,6 +135,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("traceVote.disabled = !traceReady;"));
         assertTrue(script.body().contains("const retainedRoutingDraft = preserveDirtyDrafts && routingDirty;"));
         assertTrue(script.body().contains("routingDraftNodeId === selectedServerId"));
+        assertTrue(script.body().contains("readConfiguration.disabled = !routingReadReady;"));
+        assertTrue(script.body().contains("previewConfiguration.disabled = !routingDraftReady;"));
+        assertTrue(script.body().contains("applyConfiguration.disabled = !routingDraftReady || !approvedPreview;"));
         assertTrue(script.body().contains("Your unsaved proxy-routing draft is retained"));
         assertTrue(script.body().contains("text(operationStatus, routingDraftStatus('The selected nodes changed during refresh."));
         assertTrue(script.body().contains("Your unsaved ${configurationFile.value} draft is retained"));

@@ -1773,9 +1773,9 @@ function selectPrimaryServer(nodeId) {
 
 function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 || proxyMethodWorkflowInFlight) {
   const primaryCapabilities = nodeCapabilities.get(selectedServerId) || [];
-  const routingReady = authenticated && primaryCapabilities.includes('config.proxy-routing.v1') &&
-    targets('config.proxy-routing.v1').length > 0
-    && (!routingDirty || routingDraftNodeId === selectedServerId) && !busy;
+  const routingReadReady = authenticated && primaryCapabilities.includes('config.proxy-routing.v1') &&
+    targets('config.proxy-routing.v1').length > 0 && !busy;
+  const routingDraftReady = routingReadReady && (!routingDirty || routingDraftNodeId === selectedServerId);
   const fileCapability = selectedFileCapability();
   const fileReady = authenticated && primaryCapabilities.includes(fileCapability) &&
     fileTargetsForSelection().length > 0 && !busy;
@@ -1783,9 +1783,9 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   const quickReady = authenticated && !busy && (syncSelected
     ? Boolean(voteSitesSourceId && selectedVoteSitesTargets().length > 0)
     : primaryCapabilities.includes('config.quick-setup.v1') && targets('config.quick-setup.v1').length > 0);
-  readConfiguration.disabled = !routingReady;
-  previewConfiguration.disabled = !routingReady;
-  applyConfiguration.disabled = !routingReady || !approvedPreview;
+  readConfiguration.disabled = !routingReadReady;
+  previewConfiguration.disabled = !routingDraftReady;
+  applyConfiguration.disabled = !routingDraftReady || !approvedPreview;
   readFileConfiguration.disabled = !fileReady;
   previewFileConfiguration.disabled = !fileReady || !configurationContentPresent;
   applyFileConfiguration.disabled = !fileReady || !approvedFilePreview;
