@@ -202,6 +202,9 @@ const PAGE_SIZE = 100;
 const MAX_CONFIGURATION_TARGETS = 100;
 const MAX_SYNC_TARGETS = 100;
 const MAX_OPERATION_TARGETS = 100;
+const MAX_TRACE_NODES = 12;
+const MAX_TRACE_EVENTS_PER_NODE = 100;
+const TRACE_DEADLINE_MS = 90_000;
 const MAX_REGISTRY_SCAN_ATTEMPTS = 3;
 let authenticated = false;
 let csrfToken = '';
@@ -246,6 +249,13 @@ const SETUP_PROFILE_KEY = 'votingplugin-control.setup-profiles.v1';
 let fileReadCache = new Map();
 let lastFileReadOperation = null;
 let configurationContentPresent = false;
+let configurationDirty = false;
+let configurationDraftNodeId = '';
+let configurationDraftSessionId = '';
+let configurationDraftFileName = '';
+let routingDirty = false;
+let routingDraftNodeId = '';
+let configurationFileSelection = configurationFile.value;
 let inspectionInFlight = false;
 let lastDiagnostics = null;
 let lastOverview = null;
@@ -253,6 +263,7 @@ let operationHistoryItems = [];
 let dedicatedSetupApprovals = new Map();
 let pendingDetectedVoteSite = null;
 let voteLoggingRestartPending = new Map();
+let autoLoadInFlight = new Set();
 
 function text(element, value) {
   element.textContent = value;
@@ -277,6 +288,32 @@ const SETTINGS_SCHEMA = Object.freeze([
 function inspectionCapableNode() {
   const node = nodeIndex.get(selectedServerId);
   return node?.online && node.acceptedCapabilities.includes('data.inspect.v1') ? node : null;
+}
+
+function connectedInspectionNodes() {
+  return allNodeItems.filter(node => node.online && isBackend(node)
+    && node.acceptedCapabilities.includes('data.inspect.v1'));
+}
+
+function selectedFileCapability(fileName = configurationFile.value) {
+  return fileName === 'bungeeconfig.yml' ? 'config.proxy-files.v1' : 'config.files.v1';
+}
+
+function fileTargetsForSelection(fileName = configurationFile.value) {
+  const capability = selectedFileCapability(fileName);
+  const selected = nodeIndex.get(selectedServerId);
+  if (capability === 'config.proxy-files.v1') {
+    return selected?.online && isProxy(selected) && selected.acceptedCapabilities.includes(capability)
+      ? [selected.nodeId] : [];
+  }
+  return targets(capability).filter(nodeId => isBackend(nodeIndex.get(nodeId)));
+}
+
+function fileTargetDescription(fileName = configurationFile.value) {
+  const targetsForFile = fileTargetsForSelection(fileName);
+  if (fileName === 'bungeeconfig.yml') return targetsForFile.length
+    ? `the selected proxy (${targetsForFile[0]})` : 'the selected proxy';
+  return `every selected Bukkit node`;
 }
 
 function boundedLines(value, maximum = 20) {
@@ -318,6 +355,115 @@ function renderJsonResult(element, value, emptyMessage = 'No data returned.') {
   pre.className = 'json-result';
   text(pre, JSON.stringify(value, null, 2));
   element.append(pre);
+}
+
+function formatEpoch(value) {
+  const epoch = Number(value);
+  return Number.isFinite(epoch) && epoch > 0 ? new Date(epoch).toLocaleString() : 'Unknown';
+}
+
+function renderPlayerData(value) {
+  playerResult.replaceChildren();
+  if (!value || value.found !== true) {
+    text(playerResult, value?.found === false ? 'Player not found.' : 'No player queried.');
+    return;
+  }
+  const summary = document.createElement('p');
+  summary.append(text(document.createElement('strong'), `${value.name || 'Unknown'} · ${value.uuid || 'Unknown'}`));
+  const storage = typeof value.storage === 'string' ? ` · ${value.storage}`
+    : value.storageRowAvailable === false ? ' · stored row unavailable' : '';
+  const columnCount = Array.isArray(value.columns) ? ` · ${value.columns.length} stored columns` : '';
+  summary.append(document.createTextNode(`${storage}${columnCount}`));
+  playerResult.append(summary);
+  const profile = document.createElement('dl');
+  profile.className = 'detail-list';
+  const add = (label, detail) => {
+    profile.append(text(document.createElement('dt'), label));
+    profile.append(text(document.createElement('dd'), detail));
+  };
+  const totals = value.totals && typeof value.totals === 'object' ? value.totals : {};
+  add('Online', value.online === true ? 'Yes' : 'No');
+  add('Votes', `Daily ${totals.daily ?? 'Unknown'} · Weekly ${totals.weekly ?? 'Unknown'} · Monthly ${totals.monthly ?? 'Unknown'} · All-time ${totals.allTime ?? 'Unknown'}`);
+  const streaks = value.streaks && typeof value.streaks === 'object' ? value.streaks : {};
+  add('Vote streaks', `Daily ${streaks.daily ?? 'Unknown'} · Weekly ${streaks.weekly ?? 'Unknown'} · Monthly ${streaks.monthly ?? 'Unknown'}`);
+  add('Points', value.points ?? 'Unknown');
+  add('Pending offline votes', value.pendingOfflineVotes ?? 'Unknown');
+  add('Last vote', formatEpoch(value.lastVoteTime));
+  add('Last online', formatEpoch(value.lastOnline));
+  playerResult.append(profile);
+  const lastVotes = Array.isArray(value.lastVotes)
+    ? value.lastVotes.filter(lastVote => lastVote && typeof lastVote === 'object').slice(0, 100) : [];
+  if (lastVotes.length) {
+    const heading = text(document.createElement('h4'), 'VoteSite history');
+    const scroll = document.createElement('div');
+    scroll.className = 'table-scroll';
+    const table = document.createElement('table');
+    const head = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    ['Vote Site', 'ServiceSite', 'Last vote'].forEach(label => headRow.append(text(document.createElement('th'), label)));
+    head.append(headRow);
+    const body = document.createElement('tbody');
+    lastVotes.forEach(lastVote => {
+      const row = document.createElement('tr');
+      row.append(text(document.createElement('td'), lastVote.displayName || lastVote.siteKey || 'Unknown'));
+      row.append(text(document.createElement('td'), lastVote.serviceSite || 'Not configured'));
+      row.append(text(document.createElement('td'), formatEpoch(lastVote.time)));
+      body.append(row);
+    });
+    table.append(head, body);
+    scroll.append(table);
+    playerResult.append(heading, scroll);
+  }
+  if (value.lastVotesTruncated === true) {
+    const warning = document.createElement('p');
+    warning.className = 'warning-text';
+    text(warning, 'Additional VoteSite history was omitted by the 100-row inspection limit.');
+    playerResult.append(warning);
+  }
+  if (!Array.isArray(value.columns)) return;
+  const scroll = document.createElement('div');
+  scroll.className = 'table-scroll';
+  const table = document.createElement('table');
+  const head = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  ['Column', 'Storage type', 'Exact stored value'].forEach(label => headRow.append(text(document.createElement('th'), label)));
+  head.append(headRow);
+  const body = document.createElement('tbody');
+  value.columns.forEach(column => {
+    const row = document.createElement('tr');
+    row.append(text(document.createElement('td'), column.name));
+    row.append(text(document.createElement('td'), column.type));
+    const value = document.createElement('td');
+    const code = document.createElement('code');
+    text(code, column.value);
+    value.append(code);
+    row.append(value);
+    body.append(row);
+  });
+  table.append(head, body);
+  scroll.append(table);
+  playerResult.append(scroll);
+  if (value.columnsTruncated === true) {
+    const warning = document.createElement('p');
+    warning.className = 'warning-text';
+    text(warning, 'Some stored values were omitted by the bounded, allow-listed inspection contract.');
+    playerResult.append(warning);
+  }
+}
+
+async function loadPlayerData(value) {
+  const request = value.trim();
+  const filters = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request)
+    ? {uuid: request} : {name: request};
+  if (!filters.uuid && !/^[A-Za-z0-9_]{1,16}$/.test(request)) {
+    throw new Error('Enter a complete Minecraft player name or canonical UUID.');
+  }
+  try {
+    renderPlayerData((await runInspection('player', filters, playerResult)).result);
+  } catch (error) {
+    text(playerResult, error.message);
+    throw error;
+  }
 }
 
 function renderSiteHealthResult(value) {
@@ -410,6 +556,225 @@ async function runInspection(kind, filters = {}, statusElement = null) {
     }
     return envelope;
   } finally {
+    inspectionInFlight = false;
+    updateExtendedButtons();
+  }
+}
+
+async function runInspectionOnNode(node, kind, filters = {}, options = {}) {
+  const nodeId = node?.nodeId;
+  const sessionId = node?.sessionId;
+  if (!nodeId || !sessionId) throw new Error('The inspection node is unavailable.');
+  const requestAuthenticationGeneration = authenticationGeneration;
+  const boundedFilters = {};
+  Object.entries(filters).forEach(([key, value]) => {
+    const serialized = String(value);
+    if (new TextEncoder().encode(serialized).length > 500) throw new Error(`${key} exceeds the bounded inspection limit.`);
+    boundedFilters[key] = serialized;
+  });
+  if (options.manageBusy !== false) {
+    inspectionInFlight = true;
+    updateExtendedButtons();
+  }
+  const requestedDeadline = Number(options.deadlineAt);
+  const deadline = Number.isFinite(requestedDeadline)
+    ? Math.min(Date.now() + 180_000, requestedDeadline)
+    : Date.now() + 180_000;
+  const ensureActive = () => {
+    if (typeof options.contextCurrent === 'function' && !options.contextCurrent()) {
+      throw new Error('The trace context changed while an inspection was running.');
+    }
+    if (Date.now() >= deadline || options.signal?.aborted) {
+      throw new Error('Inspection did not finish within this request budget.');
+    }
+  };
+  const request = async (path, requestOptions = {}) => {
+    ensureActive();
+    try {
+      const response = await authorized(path, {...requestOptions, signal: options.signal});
+      ensureActive();
+      return response;
+    } catch (error) {
+      if (Date.now() >= deadline || options.signal?.aborted) {
+        throw new Error('Inspection did not finish within this request budget.');
+      }
+      throw error;
+    }
+  };
+  try {
+    let inspection = await request('/api/v1/inspections', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({nodeId, query: {kind, filters: boundedFilters}})
+    });
+    while (inspection.state === 'RUNNING') {
+      ensureActive();
+      await new Promise(resolve => window.setTimeout(resolve, Math.min(1000, Math.max(0, deadline - Date.now()))));
+      inspection = await request(`/api/v1/inspections/${inspection.inspectionId}`);
+    }
+    if (requestAuthenticationGeneration !== authenticationGeneration || sessionId !== nodeIndex.get(nodeId)?.sessionId) {
+      throw new Error('The node reconnected or the session changed while the trace ran.');
+    }
+    if (inspection.state !== 'SUCCEEDED' || !inspection.result?.success) {
+      throw new Error(inspection.result?.message || inspection.result?.code || 'Inspection failed.');
+    }
+    let envelope = inspection.result.data;
+    if (typeof envelope === 'string') {
+      try { envelope = JSON.parse(envelope); } catch (_) { throw new Error('The node returned malformed inspection data.'); }
+    }
+    if (envelope?.schemaVersion !== 1 || envelope.kind !== kind || !Object.hasOwn(envelope, 'result')) {
+      throw new Error('The node returned an unsupported inspection schema.');
+    }
+    return envelope;
+  } finally {
+    if (options.manageBusy !== false) {
+      inspectionInFlight = false;
+      updateExtendedButtons();
+    }
+  }
+}
+
+function traceEventKey(event) {
+  return ['voteId', 'voteTime', 'playerUuid', 'playerName', 'service', 'server', 'event', 'context', 'status', 'cachedTotal']
+    .map(key => String(event?.[key] ?? '')).join('\u0000');
+}
+
+function renderVoteTrace(trace) {
+  voteTraceResult.replaceChildren();
+  const summary = document.createElement('p');
+  text(summary, `${trace.events.length} unique retained ${trace.events.length === 1 ? 'event' : 'events'} from ${trace.sources.length} readable ${trace.sources.length === 1 ? 'node' : 'nodes'}.`);
+  voteTraceResult.append(summary);
+  if (trace.events.length) {
+    const scroll = document.createElement('div');
+    scroll.className = 'table-scroll';
+    const table = document.createElement('table');
+    const head = document.createElement('thead');
+    const row = document.createElement('tr');
+    ['Time', 'Event', 'Status', 'Player', 'Service', 'Server', 'Context', 'Source nodes'].forEach(label => row.append(text(document.createElement('th'), label)));
+    head.append(row);
+    const body = document.createElement('tbody');
+    trace.events.forEach(item => {
+      const event = item.event;
+      const eventRow = document.createElement('tr');
+      const time = Number(event.voteTime);
+      eventRow.append(text(document.createElement('td'), Number.isFinite(time) && time > 0 ? new Date(time).toLocaleString() : 'Unknown'));
+      eventRow.append(text(document.createElement('td'), event.event || 'Unknown'));
+      eventRow.append(text(document.createElement('td'), event.status || 'Unknown'));
+      eventRow.append(text(document.createElement('td'), event.playerName || event.playerUuid || 'Unknown'));
+      eventRow.append(text(document.createElement('td'), event.service || 'Unknown'));
+      eventRow.append(text(document.createElement('td'), event.server || 'Unknown'));
+      eventRow.append(text(document.createElement('td'), event.context || ''));
+      eventRow.append(text(document.createElement('td'), item.sources.join(', ')));
+      body.append(eventRow);
+    });
+    table.append(head, body);
+    scroll.append(table);
+    voteTraceResult.append(scroll);
+  }
+  const source = document.createElement('p');
+  text(source, `Readable sources: ${trace.sources.join(', ') || 'none'}.`);
+  voteTraceResult.append(source);
+  if (trace.unavailable.length) {
+    const diagnostics = document.createElement('p');
+    diagnostics.className = 'warning-text';
+    text(diagnostics, `Unavailable or failed sources: ${trace.unavailable.join('; ')}.`);
+    voteTraceResult.append(diagnostics);
+  }
+  if (trace.truncatedSources.length) {
+    const truncation = document.createElement('p');
+    truncation.className = 'warning-text';
+    text(truncation, `Node result limit reached; this trace is incomplete for: ${trace.truncatedSources.join(', ')}.`);
+    voteTraceResult.append(truncation);
+  }
+  const boundary = document.createElement('p');
+  boundary.className = 'warning-text';
+  text(boundary, 'This bounded view contains only events returned by the readable nodes above. A missing logged event is unknown or not logged, not proof that an internal hop failed.');
+  voteTraceResult.append(boundary);
+}
+
+async function traceVoteAcrossNodes() {
+  const available = connectedInspectionNodes();
+  const candidates = available.slice(0, MAX_TRACE_NODES);
+  if (candidates.length === 0) throw new Error('No connected backend supports vote-log inspection.');
+  const voteId = voteTraceId.value.trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(voteId)) {
+    throw new Error('Enter a canonical vote UUID.');
+  }
+  const requestAuthenticationGeneration = authenticationGeneration;
+  const requestInputGeneration = inputGeneration;
+  const requestSelectedNodeId = selectedServerId;
+  const requestSelectedSessionId = nodeIndex.get(requestSelectedNodeId)?.sessionId;
+  const days = String(voteLogDays.value);
+  const candidateSessions = new Map(candidates.map(node => [node.nodeId, node.sessionId]));
+  const traceDeadline = Date.now() + TRACE_DEADLINE_MS;
+  const contextCurrent = () => requestAuthenticationGeneration === authenticationGeneration
+    && requestInputGeneration === inputGeneration && requestSelectedNodeId === selectedServerId
+    && requestSelectedSessionId === nodeIndex.get(requestSelectedNodeId)?.sessionId
+    && voteId === voteTraceId.value.trim() && days === String(voteLogDays.value)
+    && candidates.every(node => {
+      const current = nodeIndex.get(node.nodeId);
+      return Boolean(current?.online) && candidateSessions.get(node.nodeId) === current.sessionId
+        && Array.isArray(current.acceptedCapabilities) && current.acceptedCapabilities.includes('data.inspect.v1');
+    });
+  const events = new Map();
+  const sources = [];
+  const unavailable = [];
+  const truncatedSources = [];
+  if (available.length > candidates.length) unavailable.push(`${available.length - candidates.length} additional capable nodes were omitted by the ${MAX_TRACE_NODES}-node trace limit`);
+  inspectionInFlight = true;
+  updateExtendedButtons();
+  text(voteTraceResult, `Collecting retained events from ${candidates.length} connected backend ${candidates.length === 1 ? 'node' : 'nodes'}…`);
+  const traceAbortController = new AbortController();
+  const abortTrace = () => {
+    if (!traceAbortController.signal.aborted) traceAbortController.abort();
+  };
+  const deadlineTimer = window.setTimeout(abortTrace, Math.max(0, traceDeadline - Date.now()));
+  const contextTimer = window.setInterval(() => {
+    if (!contextCurrent()) abortTrace();
+  }, 250);
+  try {
+    const results = await Promise.allSettled(candidates.map(async node => {
+      const envelope = await runInspectionOnNode(node, 'vote-trace', {voteId, days, limit: String(MAX_TRACE_EVENTS_PER_NODE)}, {
+        deadlineAt: traceDeadline, signal: traceAbortController.signal, contextCurrent, manageBusy: false
+      });
+      return {node, envelope};
+    }));
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        const {node, envelope} = result.value;
+        const listed = Array.isArray(envelope.result?.events)
+          ? envelope.result.events.slice(0, MAX_TRACE_EVENTS_PER_NODE) : [];
+        const source = `${node.displayName} (${node.nodeId})`;
+        sources.push(source);
+        if (envelope.result?.truncated === true) truncatedSources.push(source);
+        listed.forEach(event => {
+          if (!event || typeof event !== 'object') return;
+          const key = traceEventKey(event);
+          const retained = events.get(key) || {event, sources: []};
+          retained.sources.push(`${node.displayName} (${node.nodeId})`);
+          events.set(key, retained);
+        });
+      } else {
+        const node = candidates[index];
+        const error = result.reason;
+        unavailable.push(`${node.displayName} (${node.nodeId}): ${error.message || 'inspection failed'}`);
+      }
+    });
+    if (!contextCurrent()) {
+      if (requestAuthenticationGeneration === authenticationGeneration) {
+        text(voteTraceResult, 'The selected server, node session, or trace window changed. Run the trace again.');
+      }
+      return;
+    }
+    if (Date.now() >= traceDeadline) unavailable.push('The 90-second trace budget expired before one or more node inspections completed');
+    const ordered = [...events.values()].map(item => ({...item, sources: [...new Set(item.sources)].sort()})).sort((left, right) =>
+      Number(left.event.voteTime || 0) - Number(right.event.voteTime || 0)
+      || String(left.event.event || '').localeCompare(String(right.event.event || ''))
+      || String(left.event.server || '').localeCompare(String(right.event.server || '')));
+    renderVoteTrace({events: ordered, sources, unavailable, truncatedSources});
+  } finally {
+    window.clearTimeout(deadlineTimer);
+    window.clearInterval(contextTimer);
+    abortTrace();
     inspectionInFlight = false;
     updateExtendedButtons();
   }
@@ -676,6 +1041,14 @@ function applyAuthenticatedSession(body) {
   pendingDetectedVoteSite = null;
   configurationContent.value = '';
   configurationContentPresent = false;
+  configurationDirty = false;
+  configurationDraftNodeId = '';
+  configurationDraftSessionId = '';
+  configurationDraftFileName = '';
+  routingDirty = false;
+  routingDraftNodeId = '';
+  configurationFileSelection = configurationFile.value;
+  autoLoadInFlight.clear();
   inputGeneration++;
   logout.hidden = false;
   authCard.hidden = true;
@@ -690,8 +1063,7 @@ function applyAuthenticatedSession(body) {
 }
 
 function isProxy(node) {
-  return ['VELOCITY', 'BUNGEECORD'].includes(String(node.platform).toUpperCase()) ||
-    node.acceptedCapabilities.includes('config.proxy-routing.v1');
+  return ['VELOCITY', 'BUNGEECORD'].includes(String(node.platform).toUpperCase());
 }
 
 function isBackend(node) {
@@ -713,6 +1085,7 @@ function platformLabel(platform) {
 function friendlyCapability(capability) {
   return ({
     'config.files.v1': 'Full configuration',
+    'config.proxy-files.v1': 'Proxy configuration',
     'config.file-comments.v1': 'Comments preserved',
     'config.vote-sites-sync.v1': 'VoteSites sync',
     'config.transport-test.v1': 'Communication test',
@@ -795,7 +1168,7 @@ function nodeCard(node) {
   selector.className = 'node-select';
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
-  const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.quick-setup.v1']
+  const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1', 'config.quick-setup.v1']
     .some(capability => node.acceptedCapabilities.includes(capability));
   checkbox.disabled = !node.online || !controllable || node.nodeId === selectedServerId;
   checkbox.checked = selectedNodes.has(node.nodeId);
@@ -848,12 +1221,96 @@ function setActiveTab(tab, updateHash = false) {
   tabButtons.forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === tab)));
   tabPanels.forEach(panel => { panel.hidden = panel.dataset.panel !== tab; });
   if (updateHash && window.location.hash !== `#${tab}`) window.history.replaceState(null, '', `#${tab}`);
+  void autoLoadTab(tab);
 }
 
 function setConfigView(view) {
   if (!configViewPanels.some(panel => panel.dataset.configPanel === view)) view = 'easy';
   configViewButtons.forEach(button => button.classList.toggle('active', button.dataset.configView === view));
   configViewPanels.forEach(panel => { panel.hidden = panel.dataset.configPanel !== view; });
+  if (view === 'yaml') void autoLoadTab('configurations');
+}
+
+function resetFileEditorForSelection(message) {
+  configurationContent.value = '';
+  configurationContentPresent = false;
+  configurationDirty = false;
+  configurationDraftNodeId = '';
+  configurationDraftSessionId = '';
+  configurationDraftFileName = '';
+  lastFileReadOperation = null;
+  approvedFilePreview = null;
+  updateEditorPosition();
+  text(fileOperationStatus, message);
+}
+
+function fileDraftMatchesCurrentContext() {
+  return !configurationDirty || configurationDraftNodeId === selectedServerId
+    && configurationDraftSessionId === nodeIndex.get(selectedServerId)?.sessionId
+    && configurationDraftFileName === configurationFile.value;
+}
+
+function fileDraftStatus(status) {
+  if (!configurationDirty) return status;
+  const owner = configurationDraftNodeId
+    ? `${configurationDraftNodeId}${configurationDraftSessionId ? ` (session ${configurationDraftSessionId})` : ''}`
+    : 'the previous server';
+  return `${status} Your unsaved ${configurationFile.value} draft is retained for ${owner}; read/reload the current file to explicitly discard it and bind the editor to this server.`;
+}
+
+function confirmDiscardUnsavedConfiguration(context) {
+  if (!configurationDirty && !routingDirty) return true;
+  return window.confirm(`Discard unsaved ${configurationDirty && routingDirty ? 'YAML and routing' : configurationDirty ? 'YAML' : 'routing'} changes before ${context}?`);
+}
+
+function syncFileSelection() {
+  const selected = nodeIndex.get(selectedServerId);
+  const proxyFile = [...configurationFile.options].find(option => option.value === 'bungeeconfig.yml');
+  if (proxyFile) proxyFile.disabled = !(selected?.online && isProxy(selected)
+    && selected.acceptedCapabilities.includes('config.proxy-files.v1'));
+  const proxySelected = Boolean(selected?.online && isProxy(selected)
+    && selected.acceptedCapabilities.includes('config.proxy-files.v1'));
+  const expected = proxySelected ? 'bungeeconfig.yml' : 'Config.yml';
+  if ((proxySelected && configurationFile.value !== 'bungeeconfig.yml')
+      || (!proxySelected && configurationFile.value === 'bungeeconfig.yml')) {
+    if (configurationDirty) {
+      text(fileOperationStatus, fileDraftStatus(
+        'The selected server cannot manage this file. Reconnect the original server or explicitly switch files to discard it.'));
+      return;
+    }
+    configurationFile.value = expected;
+    configurationFileSelection = expected;
+    resetFileEditorForSelection('Read the selected file before previewing changes.');
+  }
+}
+
+async function autoLoadTab(tab) {
+  if (!authenticated || autoLoadInFlight.has(tab)) return;
+  if (tab === 'configurations') {
+    const yamlVisible = configViewPanels.some(panel => panel.dataset.configPanel === 'yaml' && !panel.hidden);
+    if (!yamlVisible || configurationDirty || configurationContentPresent || !fileTargetsForSelection().length) return;
+    autoLoadInFlight.add(tab);
+    try { await loadFileConfiguration(true); } finally { autoLoadInFlight.delete(tab); }
+    return;
+  }
+  if (tab === 'network' && !proxyMethodWorkflowInFlight) {
+    autoLoadInFlight.add(tab);
+    try {
+      await Promise.all([proxyMethodCurrentValue ? Promise.resolve() : loadProxyMethod(true),
+        routingDirty || approvedPreview ? Promise.resolve() : loadProxyRouting(true)]);
+    } finally { autoLoadInFlight.delete(tab); }
+    return;
+  }
+  if (tab === 'quick-setup' && quickPresetReadable() && !loadedQuickSetup
+      && !approvedQuickPreview && !configurationOperationsInFlight) {
+    autoLoadInFlight.add(tab);
+    try { await loadQuickSetupValues(true); } finally { autoLoadInFlight.delete(tab); }
+    return;
+  }
+  if (tab === 'data' && inspectionCapableNode() && !inspectionInFlight && !lastOverview) {
+    autoLoadInFlight.add(tab);
+    try { await refreshOverview(dataOverview); } finally { autoLoadInFlight.delete(tab); }
+  }
 }
 
 function chooseDefaultServer(items) {
@@ -878,7 +1335,7 @@ function renderServerPicker() {
   if (!nodeIndex.has(previousValue)) {
     selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
     if (previousValue) {
-      resetServerContextValues('The selected server is no longer available. Load current values from its replacement.');
+      resetServerContextValues('The selected server is no longer available. Load current values from its replacement.', true);
     }
   }
   serverPicker.value = selectedServerId;
@@ -895,8 +1352,10 @@ function renderSelectedServer() {
     text(configurationContext, 'Choose a backend from the server picker to work with its VotingPlugin configuration.');
     text(commentPreservationState, 'Comment support unknown');
     commentPreservationState.className = 'pill warning';
+    syncFileSelection();
     return;
   }
+  syncFileSelection();
   text(selectedServerName, selected.displayName);
   text(selectedServerState, selected.online ? 'Control connected' : 'Control disconnected');
   selectedServerState.className = `pill ${selected.online ? 'online' : 'offline'}`;
@@ -907,7 +1366,7 @@ function renderSelectedServer() {
     `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion}.${relationshipText}`);
   text(configurationContext,
     `${selected.displayName} (${selected.nodeId}) · ${roleLabel(selected)} · ${selected.online ? 'Control connected' : 'Control disconnected'}`);
-  const fileTargets = targets('config.files.v1');
+  const fileTargets = fileTargetsForSelection();
   const preservesComments = fileTargets.length > 0 && fileTargets.every(nodeId =>
     nodeCapabilities.get(nodeId)?.includes('config.file-comments.v1'));
   text(commentPreservationState, preservesComments ? 'Comments preserved for every target' : 'Comments not guaranteed for every target');
@@ -1230,23 +1689,24 @@ function updateSetupChecklist(overview = lastOverview) {
 function updateExtendedButtons() {
   const node = nodeIndex.get(selectedServerId);
   const inspectionReady = authenticated && Boolean(inspectionCapableNode()) && !inspectionInFlight;
+  const traceReady = authenticated && connectedInspectionNodes().length > 0 && !inspectionInFlight;
   const backendTargets = backendQuickTargets();
   const allQuickBackends = allNodeItems.filter(item => isBackend(item) && item.online
     && item.acceptedCapabilities.includes('config.quick-setup.v1')).slice(0, MAX_CONFIGURATION_TARGETS);
   const quickReady = authenticated && Boolean(node?.online && isBackend(node)
     && node.acceptedCapabilities.includes('config.quick-setup.v1')) && backendTargets.length > 0
     && configurationOperationsInFlight === 0;
-  const fileTargets = targets('config.files.v1');
+  const fileTargets = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
   const driftReady = authenticated && fileTargets.length >= 2 && configurationOperationsInFlight === 0;
   runNetworkDoctor.disabled = !inspectionReady;
   downloadNetworkDiagnostics.disabled = !lastDiagnostics;
   refreshSetupChecklist.disabled = !inspectionReady;
   refreshDataOverview.disabled = !inspectionReady;
-  lookupPlayer.disabled = !inspectionReady;
+  lookupPlayer.disabled = !inspectionReady || configurationOperationsInFlight > 0;
   loadSiteHealth.disabled = !inspectionReady;
   loadVoteLogSummary.disabled = !inspectionReady;
   searchVoteLog.disabled = !inspectionReady;
-  traceVote.disabled = !inspectionReady;
+  traceVote.disabled = !traceReady;
   resolveSite.disabled = !inspectionReady;
   simulateReward.disabled = !inspectionReady;
   previewReward.disabled = !quickReady;
@@ -1291,13 +1751,27 @@ function renderNodeViews() {
   updateExtendedButtons();
 }
 
-function resetServerConfigurationForms(status) {
-  configurationForm.reset();
-  configurationContent.value = '';
-  configurationContentPresent = false;
-  text(operationStatus, status);
-  text(fileOperationStatus, status);
-  updateEditorPosition();
+function routingDraftStatus(status) {
+  return routingDirty
+    ? `${status} Your unsaved proxy-routing draft is retained for ${routingDraftNodeId || 'the previous server'}; explicitly switch servers or load current values to discard it.`
+    : status;
+}
+
+function resetServerConfigurationForms(status, preserveDirtyDrafts = false) {
+  const retainedRoutingDraft = preserveDirtyDrafts && routingDirty;
+  if (!retainedRoutingDraft) {
+    configurationForm.reset();
+    routingDirty = false;
+    routingDraftNodeId = '';
+  }
+  if (preserveDirtyDrafts && configurationDirty) {
+    lastFileReadOperation = null;
+    approvedFilePreview = null;
+    text(fileOperationStatus, fileDraftStatus(status));
+  } else {
+    resetFileEditorForSelection(status);
+  }
+  text(operationStatus, routingDraftStatus(status));
   clearApprovals();
 }
 
@@ -1312,7 +1786,7 @@ function resetDedicatedSetupValues() {
   voteLoggingState.className = 'pill neutral';
 }
 
-function resetServerContextValues(reason) {
+function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   dedicatedSetupApprovals.clear();
   pendingDetectedVoteSite = null;
   lastFileReadOperation = null;
@@ -1342,7 +1816,7 @@ function resetServerContextValues(reason) {
   text(autoSitesStatus, reason);
   text(voteLoggingStatus, reason);
   loadedQuickSetup = null;
-  resetServerConfigurationForms(reason);
+  resetServerConfigurationForms(reason, preserveDirtyDrafts);
   const preset = quickPreset.value;
   quickSetupForm.reset();
   quickPreset.value = preset;
@@ -1352,6 +1826,10 @@ function resetServerContextValues(reason) {
 
 function selectPrimaryServer(nodeId) {
   if (nodeId && !nodeIndex.has(nodeId)) return;
+  if (nodeId !== selectedServerId && !confirmDiscardUnsavedConfiguration('switching servers')) {
+    serverPicker.value = selectedServerId;
+    return;
+  }
   selectedServerId = nodeId;
   serverPicker.value = nodeId;
   selectedNodes.clear();
@@ -1363,20 +1841,23 @@ function selectPrimaryServer(nodeId) {
 
 function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 || proxyMethodWorkflowInFlight) {
   const primaryCapabilities = nodeCapabilities.get(selectedServerId) || [];
-  const routingReady = authenticated && primaryCapabilities.includes('config.proxy-routing.v1') &&
+  const routingReadReady = authenticated && primaryCapabilities.includes('config.proxy-routing.v1') &&
     targets('config.proxy-routing.v1').length > 0 && !busy;
-  const fileReady = authenticated && primaryCapabilities.includes('config.files.v1') &&
-    targets('config.files.v1').length > 0 && !busy;
+  const routingDraftReady = routingReadReady && (!routingDirty || routingDraftNodeId === selectedServerId);
+  const fileCapability = selectedFileCapability();
+  const fileReady = authenticated && primaryCapabilities.includes(fileCapability) &&
+    fileTargetsForSelection().length > 0 && !busy;
+  const fileDraftReady = fileReady && fileDraftMatchesCurrentContext();
   const syncSelected = quickPreset.value === 'sync-vote-sites';
   const quickReady = authenticated && !busy && (syncSelected
     ? Boolean(voteSitesSourceId && selectedVoteSitesTargets().length > 0)
     : primaryCapabilities.includes('config.quick-setup.v1') && targets('config.quick-setup.v1').length > 0);
-  readConfiguration.disabled = !routingReady;
-  previewConfiguration.disabled = !routingReady;
-  applyConfiguration.disabled = !routingReady || !approvedPreview;
+  readConfiguration.disabled = !routingReadReady;
+  previewConfiguration.disabled = !routingDraftReady;
+  applyConfiguration.disabled = !routingDraftReady || !approvedPreview;
   readFileConfiguration.disabled = !fileReady;
-  previewFileConfiguration.disabled = !fileReady || !configurationContentPresent;
-  applyFileConfiguration.disabled = !fileReady || !approvedFilePreview;
+  previewFileConfiguration.disabled = !fileDraftReady || !configurationContentPresent;
+  applyFileConfiguration.disabled = !fileDraftReady || !approvedFilePreview;
   readQuickSetup.disabled = !quickReady || !quickPresetReadable();
   previewQuickSetup.disabled = !quickReady || (quickPresetNeedsRead() && !quickSetupValuesLoaded());
   applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
@@ -1561,7 +2042,15 @@ function discardAuthenticationState(reason) {
   nodePlugins.clear();
   configurationForm.reset();
   fileConfigurationForm.reset();
+  configurationFileSelection = configurationFile.value;
   configurationContentPresent = false;
+  configurationDirty = false;
+  configurationDraftNodeId = '';
+  configurationDraftSessionId = '';
+  configurationDraftFileName = '';
+  routingDirty = false;
+  routingDraftNodeId = '';
+  autoLoadInFlight.clear();
   quickSetupForm.reset();
   resetDedicatedSetupValues();
   rewardSimulationForm.reset();
@@ -1675,17 +2164,29 @@ function operationSummary(operation) {
   return lines.join('\n');
 }
 
-async function waitForOperation(operation, statusElement = operationStatus) {
-  text(statusElement, operationSummary(operation));
+function operationContext() {
+  return {authenticationGeneration, inputGeneration, selectedServerId,
+    selectedSessionId: nodeIndex.get(selectedServerId)?.sessionId};
+}
+
+function operationContextCurrent(context) {
+  return context.authenticationGeneration === authenticationGeneration && context.inputGeneration === inputGeneration
+    && context.selectedServerId === selectedServerId
+    && context.selectedSessionId === nodeIndex.get(context.selectedServerId)?.sessionId;
+}
+
+async function waitForOperation(operation, statusElement = operationStatus, context = operationContext()) {
+  if (operationContextCurrent(context)) text(statusElement, operationSummary(operation));
   rememberOperation(operation);
   while (operation.state === 'RUNNING') {
     await new Promise(resolve => window.setTimeout(resolve, 1500));
     operation = await authorized(`/api/v1/operations/${operation.operationId}`);
-    text(statusElement, operationSummary(operation));
+    if (operationContextCurrent(context)) text(statusElement, operationSummary(operation));
     rememberOperation(operation);
   }
   rememberVoteLoggingRestart(operation);
-  if (operation.type === 'APPLY' && Object.values(operation.results || {}).some(result => result?.success)) {
+  if (operationContextCurrent(context) && operation.type === 'APPLY'
+      && Object.values(operation.results || {}).some(result => result?.success)) {
     fileReadCache.clear();
     lastFileReadOperation = null;
     lastOverview = null;
@@ -1703,13 +2204,14 @@ async function startConfigurationOperation(path, body, statusElement = operation
     dedicatedSetupApprovals.clear();
     inputGeneration++;
   }
+  const context = operationContext();
   configurationOperationsInFlight++;
   updateConfigurationButtons();
   updateExtendedButtons();
   try {
     return await waitForOperation(await authorized(path, {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
-    }), statusElement);
+    }), statusElement, context);
   } finally {
     configurationOperationsInFlight--;
     updateConfigurationButtons();
@@ -1835,14 +2337,15 @@ async function loadNodes() {
     const selectedSessionChanged = primarySessionChanged || [...selectedNodes].some(node => previousNodeIndex.get(node)?.sessionId
       && previousNodeIndex.get(node)?.sessionId !== nodeIndex.get(node)?.sessionId);
     if (selectedSessionChanged) {
-      resetServerContextValues('A selected server reconnected. Load current values before continuing.');
+      resetServerContextValues('A selected server reconnected. Load current values before continuing.', true);
     }
     const previousCapabilities = nodeCapabilities;
     nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
     nodePlugins = new Map(registry.items.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
       ? node.detectedPlugins : []]));
     const selectedCapabilitiesChanged = [...selectedNodes].some(node =>
-      ['config.proxy-routing.v1', 'config.files.v1', 'config.quick-setup.v1', 'data.inspect.v1'].some(capability =>
+      ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1', 'config.quick-setup.v1',
+        'data.inspect.v1'].some(capability =>
         Boolean(previousCapabilities.get(node)?.includes(capability)) !==
           Boolean(nodeCapabilities.get(node)?.includes(capability))));
     if (selectedCapabilitiesChanged) {
@@ -1853,12 +2356,12 @@ async function loadNodes() {
       lastOverview = null;
       lastDiagnostics = null;
       inputGeneration++;
-      text(operationStatus, 'A selected node changed capabilities during refresh. Preview again before apply.');
+      text(operationStatus, routingDraftStatus('A selected node changed capabilities during refresh. Preview again before apply.'));
     }
     const invalidRoutingApproval = approvedPreview && !approvedPreview.nodeIds.every(node =>
       nodeCapabilities.get(node)?.includes('config.proxy-routing.v1'));
     const invalidFileApproval = approvedFilePreview && !approvedFilePreview.nodeIds.every(node =>
-      nodeCapabilities.get(node)?.includes('config.files.v1'));
+      nodeCapabilities.get(node)?.includes(selectedFileCapability()));
     const invalidQuickApproval = approvedQuickPreview && approvedQuickPreview.workflow !== 'sync-vote-sites' &&
       !approvedQuickPreview.nodeIds.every(node =>
       nodeCapabilities.get(node)?.includes('config.quick-setup.v1'));
@@ -1873,9 +2376,9 @@ async function loadNodes() {
       if (invalidVoteSitesApproval) approvedQuickPreview = null;
       dedicatedSetupApprovals.clear();
       inputGeneration++;
-      text(operationStatus, 'A preview target went offline or lost the required capability. Preview again before apply.');
+      text(operationStatus, routingDraftStatus('A preview target went offline or lost the required capability. Preview again before apply.'));
     }
-    const visibleIds = new Set(registry.items.filter(node => node.online && node.acceptedCapabilities.some(value => value.startsWith('config.')))
+    const visibleIds = new Set(registry.items.filter(node => node.online && node.acceptedCapabilities.some(value => value.startsWith('config.') || value.startsWith('data.')))
       .map(node => node.nodeId));
     const filteredSelection = new Set([...selectedNodes].filter(node => visibleIds.has(node)));
     renderServerPicker();
@@ -1894,7 +2397,7 @@ async function loadNodes() {
       approvedQuickPreview = null;
       dedicatedSetupApprovals.clear();
       inputGeneration++;
-      text(operationStatus, 'The selected nodes changed during refresh. Preview again before apply.');
+      text(operationStatus, routingDraftStatus('The selected nodes changed during refresh. Preview again before apply.'));
     }
     selectedNodes = filteredSelection;
     renderNodeViews();
@@ -1910,6 +2413,7 @@ async function loadNodes() {
     text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);
     previousPage.disabled = pageOffset === 0;
     nextPage.disabled = pageOffset + visibleNodeItems.length >= registry.items.length;
+    void autoLoadTab(tabFromHash());
   } catch (error) {
     visibleNodeItems = [];
     allNodeItems = [];
@@ -1919,7 +2423,7 @@ async function loadNodes() {
     nodePlugins.clear();
     selectedNodes.clear();
     selectedServerId = '';
-    resetServerContextValues('Network data is unavailable. Refresh and load current values before continuing.');
+    resetServerContextValues('Network data is unavailable. Refresh and load current values before continuing.', true);
     renderServerPicker();
     renderNodeViews();
     updatePluginSuggestions();
@@ -2049,23 +2553,35 @@ enrollmentForm.addEventListener('submit', async event => {
 });
 refreshEnrollments.addEventListener('click', loadEnrollments);
 
-readConfiguration.addEventListener('click', async () => {
+async function loadProxyRouting(automatic = false) {
+  if (!automatic && routingDirty && !window.confirm('Discard unsaved routing changes and load current values?')) return;
   approvedPreview = null;
   const readAuthenticationGeneration = authenticationGeneration;
   const readInputGeneration = inputGeneration;
+  const readNodeId = selectedServerId;
+  const readSessionId = nodeIndex.get(readNodeId)?.sessionId;
+  if (!nodeCapabilities.get(readNodeId)?.includes('config.proxy-routing.v1')) return;
   try {
-    const operation = await startConfigurationOperation('/api/v1/configuration/read', {nodeIds: [selectedServerId]});
-    const retained = Object.values(operation.results).find(result => result.success && result.configuration);
+    const operation = await startConfigurationOperation('/api/v1/configuration/read', {nodeIds: [readNodeId]});
+    const retained = operation.results?.[readNodeId];
     if (retained && authenticated && readAuthenticationGeneration === authenticationGeneration
-        && readInputGeneration === inputGeneration) {
+        && readInputGeneration === inputGeneration && readNodeId === selectedServerId
+        && readSessionId === nodeIndex.get(readNodeId)?.sessionId && retained.sessionId === readSessionId
+        && retained.success && retained.configuration) {
       sendAll.checked = retained.configuration.sendVotesToAllServers;
       blockedServers.value = retained.configuration.blockedServers.join('\n');
       approvedPreview = null;
+      routingDirty = false;
+      routingDraftNodeId = '';
       inputGeneration++;
       updateConfigurationButtons();
     }
-  } catch (error) { text(operationStatus, error.message); }
-});
+  } catch (error) {
+    if (!automatic) text(operationStatus, error.message);
+  }
+}
+
+readConfiguration.addEventListener('click', () => { void loadProxyRouting(false); });
 
 previewConfiguration.addEventListener('click', async () => {
   approvedPreview = null;
@@ -2091,29 +2607,47 @@ applyConfiguration.addEventListener('click', async () => {
   approvedPreview = null;
   inputGeneration++;
   try {
-    await startConfigurationOperation('/api/v1/configuration/apply', {
+    const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     });
+    if (operation.state === 'SUCCEEDED') {
+      routingDirty = false;
+      routingDraftNodeId = '';
+    }
   } catch (error) { text(operationStatus, error.message); }
 });
 [sendAll, blockedServers].forEach(field => field.addEventListener('input', () => {
+  if (!routingDirty) routingDraftNodeId = selectedServerId;
+  routingDirty = true;
   if (approvedPreview) text(operationStatus, 'The proposal changed. Preview it again before apply.');
   approvedPreview = null;
   inputGeneration++;
   updateConfigurationButtons();
 }));
 
-readFileConfiguration.addEventListener('click', async () => {
+async function loadFileConfiguration(automatic = false) {
+  if (!automatic && configurationDirty
+      && !window.confirm(`Discard the unsaved ${configurationFile.value} draft and read/reload the current file for this server?`)) return;
   approvedFilePreview = null;
   const readAuthenticationGeneration = authenticationGeneration;
   const readInputGeneration = inputGeneration;
   const selectedFile = configurationFile.value;
   const selectedNode = nodeIndex.get(selectedServerId);
+  const selectedReadNodeId = selectedNode?.online && selectedNode.acceptedCapabilities.includes(selectedFileCapability(selectedFile))
+    && (selectedFile === 'bungeeconfig.yml' ? isProxy(selectedNode) : isBackend(selectedNode)) ? selectedServerId : '';
+  if (!selectedReadNodeId) {
+    if (!automatic) text(fileOperationStatus, 'Choose a connected node that supports this configuration file.');
+    return;
+  }
   const cacheKey = `${selectedServerId}|${selectedNode?.sessionId || ''}|${selectedFile}`;
   const cached = cachedFile(cacheKey);
   if (cached) {
     configurationContent.value = cached.content;
     configurationContentPresent = true;
+    configurationDirty = false;
+    configurationDraftNodeId = '';
+    configurationDraftSessionId = '';
+    configurationDraftFileName = '';
     lastFileReadOperation = {operationId: cached.operationId};
     updateEditorPosition();
     text(fileOperationStatus, `Cached read · ${selectedServerId} · ${selectedFile}\nLoaded instantly; cache expires after 30 seconds. Preview still checks the live revision.`);
@@ -2124,15 +2658,20 @@ readFileConfiguration.addEventListener('click', async () => {
   }
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
-      nodeIds: [selectedServerId],
+      nodeIds: [selectedReadNodeId],
       configuration: {domain: 'file', fileName: selectedFile}
     }, fileOperationStatus);
-    const contentResult = Object.values(operation.results).find(result =>
-      result.success && result.configuration?.content != null);
+    const contentResult = operation.results?.[selectedReadNodeId];
     if (contentResult && authenticated && readAuthenticationGeneration === authenticationGeneration
-        && readInputGeneration === inputGeneration && selectedFile === configurationFile.value) {
+        && readInputGeneration === inputGeneration && selectedFile === configurationFile.value
+        && selectedReadNodeId === selectedServerId && selectedNode.sessionId === nodeIndex.get(selectedReadNodeId)?.sessionId
+        && contentResult.success && typeof contentResult.configuration?.content === 'string') {
       configurationContent.value = contentResult.configuration.content;
       configurationContentPresent = true;
+      configurationDirty = false;
+      configurationDraftNodeId = '';
+      configurationDraftSessionId = '';
+      configurationDraftFileName = '';
       lastFileReadOperation = {operationId: operation.operationId};
       cacheFile(cacheKey, contentResult.configuration.content, operation.operationId);
       updateEditorPosition();
@@ -2142,29 +2681,49 @@ readFileConfiguration.addEventListener('click', async () => {
       updateExtendedButtons();
     }
   } catch (error) { text(fileOperationStatus, error.message); }
-});
+}
+
+readFileConfiguration.addEventListener('click', () => { void loadFileConfiguration(false); });
 
 previewFileConfiguration.addEventListener('click', async () => {
   approvedFilePreview = null;
+  if (!fileDraftMatchesCurrentContext()) {
+    text(fileOperationStatus, fileDraftStatus('This draft belongs to a different node session and cannot be previewed here.'));
+    updateConfigurationButtons();
+    return;
+  }
   const previewGeneration = inputGeneration;
+  const selectedFile = configurationFile.value;
+  const previewTargets = fileTargetsForSelection(selectedFile);
+  const previewSessions = new Map(previewTargets.map(nodeId => [nodeId, nodeIndex.get(nodeId)?.sessionId]));
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
-      nodeIds: targets('config.files.v1'),
-      configuration: {domain: 'file', fileName: configurationFile.value, content: configurationContent.value}
+      nodeIds: previewTargets,
+      configuration: {domain: 'file', fileName: selectedFile, content: configurationContent.value}
     }, fileOperationStatus);
-    text(fileOperationStatus, operationSummary(operation));
-    if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration) {
+    const targetsCurrent = selectedFile === configurationFile.value && previewTargets.length > 0
+      && previewTargets.every(nodeId => previewSessions.get(nodeId) === nodeIndex.get(nodeId)?.sessionId)
+      && previewTargets.every(nodeId => fileTargetsForSelection(selectedFile).includes(nodeId));
+    if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration && targetsCurrent) {
+      text(fileOperationStatus, operationSummary(operation));
       approvedFilePreview = {operationId: operation.operationId, approvalToken: operation.approvalToken,
-        nodeIds: targets('config.files.v1')};
+        nodeIds: previewTargets, fileName: selectedFile, sessions: previewSessions};
       updateConfigurationButtons();
-    } else if (previewGeneration !== inputGeneration) {
+    } else if (previewGeneration !== inputGeneration || !targetsCurrent) {
       text(fileOperationStatus, 'The targets or file changed while previewing. Preview again before apply.');
+    } else {
+      text(fileOperationStatus, operationSummary(operation));
     }
   } catch (error) { text(fileOperationStatus, error.message); }
 });
 
 applyFileConfiguration.addEventListener('click', async () => {
-  if (!approvedFilePreview || !window.confirm(`Apply this exact ${configurationFile.value} preview to every selected Bukkit node?`)) return;
+  const currentTargets = fileTargetsForSelection(configurationFile.value);
+  if (!fileDraftMatchesCurrentContext() || !approvedFilePreview || approvedFilePreview.fileName !== configurationFile.value
+      || !approvedFilePreview.nodeIds.every(nodeId => approvedFilePreview.sessions.get(nodeId) === nodeIndex.get(nodeId)?.sessionId)
+      || currentTargets.length !== approvedFilePreview.nodeIds.length
+      || !approvedFilePreview.nodeIds.every(nodeId => currentTargets.includes(nodeId))
+      || !window.confirm(`Apply this exact ${configurationFile.value} preview to ${fileTargetDescription()}?`)) return;
   const approval = approvedFilePreview;
   approvedFilePreview = null;
   inputGeneration++;
@@ -2176,6 +2735,10 @@ applyFileConfiguration.addEventListener('click', async () => {
     if (operation.state === 'SUCCEEDED') {
       fileReadCache.clear();
       lastFileReadOperation = null;
+      configurationDirty = false;
+      configurationDraftNodeId = '';
+      configurationDraftSessionId = '';
+      configurationDraftFileName = '';
       updateExtendedButtons();
     }
   } catch (error) { text(fileOperationStatus, error.message); }
@@ -2245,7 +2808,7 @@ function populateQuickState(options) {
   }
 }
 
-readQuickSetup.addEventListener('click', async () => {
+async function loadQuickSetupValues(automatic = false) {
   if (!quickPresetReadable()) return;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
@@ -2286,8 +2849,12 @@ readQuickSetup.addEventListener('click', async () => {
       ? ` ${result.configuration.options.rewardCommandCount} existing reward command(s) will be preserved.` : '';
     text(quickOperationStatus, `Current values loaded from ${Object.keys(operation.results).find(id => operation.results[id] === result)}.${suffix}`);
     updateConfigurationButtons();
-  } catch (error) { text(quickOperationStatus, error.message); }
-});
+  } catch (error) {
+    if (!automatic) text(quickOperationStatus, error.message);
+  }
+}
+
+readQuickSetup.addEventListener('click', () => { void loadQuickSetupValues(false); });
 
 previewQuickSetup.addEventListener('click', async () => {
   approvedQuickPreview = null;
@@ -2380,12 +2947,18 @@ transportTestBackend.addEventListener('change', () => {
 runTransportTest.addEventListener('click', async () => {
   const proxyId = transportTestProxyId;
   const server = transportTestBackendId;
+  const requestAuthenticationGeneration = authenticationGeneration;
+  const proxySessionId = nodeIndex.get(proxyId)?.sessionId;
+  const backendSessionId = nodeIndex.get(server)?.sessionId;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: [proxyId],
       configuration: {domain: 'quick-setup', preset: 'communication-test', options: {server}}
     }, transportTestStatus);
-    if (proxyId !== transportTestProxyId || server !== transportTestBackendId) {
+    if (requestAuthenticationGeneration !== authenticationGeneration || proxyId !== transportTestProxyId
+        || server !== transportTestBackendId || proxySessionId !== nodeIndex.get(proxyId)?.sessionId
+        || backendSessionId !== nodeIndex.get(server)?.sessionId
+        || operation.results?.[proxyId]?.sessionId !== proxySessionId) {
       text(transportTestStatus, 'The proxy or backend changed while testing. Run the test again.');
       return;
     }
@@ -2393,9 +2966,10 @@ runTransportTest.addEventListener('click', async () => {
   } catch (error) { text(transportTestStatus, error.message); }
 });
 
-readProxyMethod.addEventListener('click', async () => {
+async function loadProxyMethod(automatic = false) {
   const proxyId = proxyMethodProxyId;
   const sessionId = proxyMethodNetwork().proxy?.sessionId;
+  const requestAuthenticationGeneration = authenticationGeneration;
   if (!proxyId) return;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
@@ -2405,14 +2979,19 @@ readProxyMethod.addEventListener('click', async () => {
     const result = operation.results[proxyId];
     const method = result?.success ? result.configuration?.options?.method : '';
     if (!method) throw new Error('The proxy did not return its active communication method.');
-    if (proxyId !== proxyMethodProxyId || sessionId !== proxyMethodNetwork().proxy?.sessionId) return;
+    if (requestAuthenticationGeneration !== authenticationGeneration || proxyId !== proxyMethodProxyId
+        || sessionId !== proxyMethodNetwork().proxy?.sessionId || result?.sessionId !== sessionId) return;
     proxyMethodCurrentFor = proxyId;
     proxyMethodCurrentSessionId = sessionId;
     proxyMethodCurrentValue = method;
     renderProxyMethod();
     text(proxyMethodStatus, `Active method on ${proxyId}: ${method}`);
-  } catch (error) { text(proxyMethodStatus, error.message); }
-});
+  } catch (error) {
+    if (!automatic) text(proxyMethodStatus, error.message);
+  }
+}
+
+readProxyMethod.addEventListener('click', () => { void loadProxyMethod(false); });
 
 proxyMethodProxy.addEventListener('change', () => {
   proxyMethodProxyId = proxyMethodProxy.value;
@@ -2441,7 +3020,7 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
     }, proxyMethodStatus);
     if (preview.state !== 'SUCCEEDED' || !preview.approvalToken) return;
     if (!window.confirm(`Switch ${network.nodeIds.length} VotingPlugin nodes to ${method}? ` +
-        'The proxy runtime will restart after Control records the result.')) return;
+        'Backends reload their communication handler; the proxy replaces its runtime after Control records the result.')) return;
     const refreshedRegistry = await loadAllNodes();
     const refreshedNetwork = proxyMethodNetworkFor(refreshedRegistry.items, refreshedRegistry.truncatedNodeIds,
       proxyMethodProxyId);
@@ -2462,7 +3041,7 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
       renderProxyMethod();
     }
     const nextStep = applied.state === 'SUCCEEDED'
-      ? 'Reconnect the proxy if needed, then run the communication test.'
+      ? 'Wait for the proxy to reconnect, then run the communication test to confirm the active transport.'
       : 'No network-wide method change was committed. Fix the failed nodes, refresh the active method, and preview again.';
     text(proxyMethodStatus, `${operationSummary(applied)}\n${nextStep}`);
   } catch (error) {
@@ -2625,18 +3204,23 @@ runNetworkDoctor.addEventListener('click', async () => {
     const diagnostics = await runInspection('diagnostics', {}, networkDoctorResults);
     lastOverview = diagnostics.result;
     const node = nodeIndex.get(selectedServerId);
+    const voteLog = diagnostics.result.voteLoggingEnabled !== true
+      ? {state: 'DISABLED', message: 'Vote logging is disabled; no retained logged-event history is expected.'}
+      : diagnostics.result.voteLogReadable === true
+      ? {state: 'READABLE', message: 'Retained logged-event history is readable. It is not a guaranteed record of every internal vote-delivery hop.'}
+      : {state: 'UNREADABLE', message: 'Vote logging is enabled, but retained logged-event history is not currently readable.'};
     const checks = {
       controlConnected: Boolean(node?.online),
       configurationHealthy: diagnostics.result.configurationHealthy,
       votifierDetected: diagnostics.result.votifierDetected,
       voteSitesConfigured: Number(diagnostics.result.configuredVoteSites) > 0,
       processRewards: diagnostics.result.processRewards,
-      voteLoggingEnabled: diagnostics.result.voteLoggingEnabled,
+      voteLogging: voteLog,
       topologyReported: isBackend(node) ? proxyReportsFor(node.nodeId).length > 0 || !diagnostics.result.proxyMode : true
     };
     lastDiagnostics = {
       schemaVersion: 1, generatedAt: new Date().toISOString(), selectedNodeId: selectedServerId,
-      checks, node: diagnostics.result,
+      checks, voteLog, node: diagnostics.result,
       control: {application: 'VotingPlugin Control', registeredNodes: allNodeItems.length,
         nodes: allNodeItems.slice(0, 100).map(item => ({nodeId: item.nodeId, displayName: item.displayName,
           role: roleLabel(item), online: item.online, pluginVersion: item.pluginVersion}))}
@@ -2652,19 +3236,26 @@ downloadNetworkDiagnostics.addEventListener('click', () => {
 });
 
 runDriftCheck.addEventListener('click', async () => {
-  const nodeIds = targets('config.files.v1');
+  const nodeIds = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
   const selectedFile = driftFile.value;
   const requestAuthenticationGeneration = authenticationGeneration;
+  const requestInputGeneration = inputGeneration;
+  const requestSelectedNodeId = selectedServerId;
+  const requestSelectedSessionId = nodeIndex.get(requestSelectedNodeId)?.sessionId;
   const requestSessions = new Map(nodeIds.map(nodeId => [nodeId, nodeIndex.get(nodeId)?.sessionId]));
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds, configuration: {domain: 'file', fileName: selectedFile}
     }, driftResults);
-    if (requestAuthenticationGeneration !== authenticationGeneration) {
-      throw new Error('Authentication changed while the drift check ran. Run it again.');
-    }
-    if (nodeIds.some(nodeId => requestSessions.get(nodeId) !== operation.results?.[nodeId]?.sessionId)) {
-      throw new Error('A selected server reconnected while the drift check ran. Run it again.');
+    const currentTargets = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
+    const targetsStillCurrent = selectedFile === driftFile.value && nodeIds.length >= 2
+      && nodeIds.length === currentTargets.length && nodeIds.every(nodeId => currentTargets.includes(nodeId))
+      && nodeIds.every(nodeId => requestSessions.get(nodeId) === nodeIndex.get(nodeId)?.sessionId
+        && requestSessions.get(nodeId) === operation.results?.[nodeId]?.sessionId);
+    if (requestAuthenticationGeneration !== authenticationGeneration || requestInputGeneration !== inputGeneration
+        || requestSelectedNodeId !== selectedServerId || requestSelectedSessionId !== nodeIndex.get(requestSelectedNodeId)?.sessionId
+        || !targetsStillCurrent) {
+      return;
     }
     const rows = nodeIds.map(nodeId => {
       const result = operation.results[nodeId];
@@ -2726,6 +3317,7 @@ async function loadSnapshots() {
       restore.type = 'button';
       restore.className = 'secondary compact';
       restore.addEventListener('click', async () => {
+      if (configurationDirty && !window.confirm('Discard unsaved YAML changes and load this snapshot?')) return;
       restore.disabled = true;
       const restoreServerId = selectedServerId;
       const restoreGeneration = inputGeneration;
@@ -2733,15 +3325,23 @@ async function loadSnapshots() {
         const full = await authorized(`/api/v1/snapshots/${snapshot.snapshotId}`);
         if (restoreServerId !== selectedServerId || restoreGeneration !== inputGeneration) {
           throw new Error('The selected server changed while loading the snapshot. Load it again.');
-        }
+          }
           const document = full.documents.find(value => value.nodeId === selectedServerId) || full.documents[0];
           if (!document) throw new Error('This snapshot has no restorable document.');
-          if (!nodeCapabilities.get(selectedServerId)?.includes('config.files.v1')) {
-            throw new Error('Choose a connected file-capable Bukkit node before restoring.');
+          const restoreNode = nodeIndex.get(selectedServerId);
+          const proxyFile = document.fileName === 'bungeeconfig.yml';
+          if (!restoreNode?.online || !nodeCapabilities.get(selectedServerId)?.includes(selectedFileCapability(document.fileName))
+              || (proxyFile ? !isProxy(restoreNode) : !isBackend(restoreNode))) {
+            throw new Error('Choose a connected node that supports this snapshot file before restoring.');
           }
           configurationFile.value = document.fileName;
+          configurationFileSelection = document.fileName;
           configurationContent.value = document.content;
           configurationContentPresent = true;
+          configurationDirty = false;
+          configurationDraftNodeId = '';
+          configurationDraftSessionId = '';
+          configurationDraftFileName = '';
           lastFileReadOperation = null;
           updateEditorPosition();
           approvedFilePreview = null;
@@ -2778,8 +3378,7 @@ refreshSnapshots.addEventListener('click', loadSnapshots);
 playerLookupForm.addEventListener('submit', async event => {
   event.preventDefault();
   const value = playerLookup.value.trim();
-  const filter = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(value) ? {uuid: value} : {name: value};
-  try { renderJsonResult(playerResult, (await runInspection('player', filter, playerResult)).result); }
+  try { await loadPlayerData(value); }
   catch (error) { text(playerResult, error.message); }
 });
 
@@ -2810,8 +3409,7 @@ voteLogForm.addEventListener('submit', async event => {
 
 voteTraceForm.addEventListener('submit', async event => {
   event.preventDefault();
-  try { renderJsonResult(voteTraceResult, (await runInspection('vote-trace',
-    {voteId: voteTraceId.value.trim(), days: voteLogDays.value, limit: '100'}, voteTraceResult)).result); }
+  try { await traceVoteAcrossNodes(); }
   catch (error) { text(voteTraceResult, error.message); }
 });
 
@@ -2983,7 +3581,13 @@ quickName.addEventListener('input', () => {
   updateQuickFields();
 });
 configurationContent.addEventListener('input', () => {
+  if (!configurationDirty) {
+    configurationDraftNodeId = selectedServerId;
+    configurationDraftSessionId = nodeIndex.get(selectedServerId)?.sessionId || '';
+    configurationDraftFileName = configurationFile.value;
+  }
   configurationContentPresent = true;
+  configurationDirty = true;
   clearApprovals();
   updateEditorPosition();
 });
@@ -2991,13 +3595,17 @@ configurationContent.addEventListener('click', updateEditorPosition);
 configurationContent.addEventListener('keyup', updateEditorPosition);
 configurationContent.addEventListener('keydown', handleEditorKeydown);
 configurationFile.addEventListener('input', () => {
-  configurationContent.value = '';
-  configurationContentPresent = false;
-  lastFileReadOperation = null;
-  updateEditorPosition();
-  text(fileOperationStatus, 'Read the selected file before previewing changes.');
+  const requestedFile = configurationFile.value;
+  if (requestedFile !== configurationFileSelection && configurationDirty
+      && !window.confirm('Discard unsaved YAML changes and switch files?')) {
+    configurationFile.value = configurationFileSelection;
+    return;
+  }
+  configurationFileSelection = requestedFile;
+  resetFileEditorForSelection('Read the selected file before previewing changes.');
   clearApprovals();
   updateExtendedButtons();
+  void autoLoadTab('configurations');
 });
 quickPreset.addEventListener('input', () => {
   loadedQuickSetup = null;
@@ -3025,6 +3633,11 @@ document.querySelectorAll('[data-open-config-view]').forEach(button => button.ad
   }
 }));
 window.addEventListener('hashchange', () => setActiveTab(tabFromHash()));
+window.addEventListener('beforeunload', event => {
+  if (!configurationDirty && !routingDirty) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
 refresh.addEventListener('click', loadNodes);
 previousPage.addEventListener('click', () => {
   pageOffset = Math.max(0, pageOffset - PAGE_SIZE);

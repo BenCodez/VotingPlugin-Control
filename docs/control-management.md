@@ -19,6 +19,15 @@ Connectors always initiate outbound HTTP(S) to Control. No Control feature adds 
 One node credential is bound to one stable node ID. Browser sessions and the API automation credential are separate from
 node credentials.
 
+## Paired development verification
+
+For a Control-only change, run the focused tests first and then `mvn -B clean verify` in this repository. Any change to
+the negotiated capability map, a node task/result, proxy transport activation, or inspection schema also requires the
+paired `VotingPlugin/VotingPlugin` checkout to pass its full `mvn -B clean package` verification. Run `git diff --check`
+in every modified repository; run `node --check src/main/resources/web/app.js` when the static WebUI changes. Control
+must remain optional throughout these checks: an unavailable or older peer must reject the new capability cleanly, never
+block normal vote processing or server/proxy startup.
+
 ## Capability map
 
 Capability negotiation is the compatibility boundary. A node advertises capabilities during registration/heartbeat;
@@ -29,12 +38,13 @@ Control accepts only the intersection with its own allow-list.
 | `discovery.read` | Current node identity and status |
 | `presence.snapshot` | Full replacement backend presence snapshots from a proxy |
 | `config.proxy-routing.v1` | `SendVotesToAllServers` and `BlockedServers` on a proxy |
+| `config.proxy-files.v1` | Revisioned, redacted management of that proxy's single `bungeeconfig.yml` file |
 | `config.files.v1` | Bounded reads/previews/applies for managed Bukkit YAML files |
 | `config.file-comments.v1` | Preserves Control-managed comment metadata where supported |
 | `config.quick-setup.v1` | Typed guided settings and reward/site presets |
 | `config.vote-sites-sync.v1` | Reward-safe VoteSites merge from one backend to selected targets |
 | `config.transport-test.v1` | Typed, bounded proxy-to-backend communication check |
-| `config.proxy-method.v1` | Coordinated preview/apply of a supported network proxy method |
+| `config.proxy-method.v1` | Coordinated preview/apply and acknowledged runtime replacement for a supported network proxy method |
 | `data.inspect.v1` | Typed read-only data, health, simulation, and diagnostics requests |
 
 Do not infer support from plugin version strings. Check `acceptedCapabilities` for the exact capability.
@@ -50,6 +60,8 @@ authenticated, CSRF-protected endpoint and node capability checks as an external
 | Diagnostics download | Downloads the last Network Doctor result as local JSON | Redacted status bundle only; no raw configuration/logs/player records/infrastructure secrets |
 | Activity | Loads the newest 50 live/recovered operation views, labels phases, lineage, reload/rollback, resumes eligible guided preview approvals, and offers retry only when `retryable` | Recovered history cannot be retried; approval is single-use and apply is CSRF-protected; proxy-method apply needs a new preview |
 | Fast file reads | Caches a successful file read for 30 seconds by node ID, node session, and file | Browser memory only; cleared on logout and successful relevant writes; session binding prevents reuse after reconnect |
+| Full-YAML drafts | Keeps unsaved editor contents during a registry refresh | A dirty draft is bound to its source node, session, and file; it cannot preview or apply after that session changes. The operator must explicitly confirm a current-file read/reload, which discards the retained draft and rebinds the editor. |
+| Proxy configuration | Opens `bungeeconfig.yml` only for the selected online proxy that negotiated `config.proxy-files.v1` | Fixed one-file capability, never proxy file browsing; redacted READ, PREVIEW, and one-time approved APPLY still apply |
 | Configuration drift | Reads the same redacted managed file from two or more selected capable nodes, groups exact revisions, and compares each target with the first successful baseline | Read-only; renders at most 50 differing line pairs per target and truncates each redacted line to 200 characters |
 | Snapshots | Creates a named durable snapshot from the last completed file read and loads one document into the editor | Stores the full redacted read result; restore is proposed content and must be freshly previewed/approved |
 | Settings catalog | Filters a static schema of commonly managed setting key, file, type, default, and effect | Reference for guided forms, not a generic setting API or claim to cover every VotingPlugin option |
@@ -58,7 +70,7 @@ authenticated, CSRF-protected endpoint and node capability checks as an external
 | Vote-logging setup | Reads/previews/applies enabled state, retention, and main-connection choice | Never accepts credentials; dedicated connection details stay in the redacted editor |
 | Setup profiles | Stores up to 20 named guided-form profiles in browser `localStorage` | Browser-local, versioned, non-secret values only; no raw YAML or credentials; loading never applies |
 | Reward builder/simulator | Builds site/every-site/vote-party proposals with commands, player/broadcast messages, items, money, permissions, chance, and online-only behavior; simulates or previews/applies the exact proposal; can copy one command/message into simple Setup | Simulation has no side effects; persistence replaces only the selected Rewards subtree through normal preview/approval; editing invalidates approval |
-| Votes & Data | Shows overview, exact player lookup, vote-site health plus persisted unconfigured-service observations, a 30-day VoteLog summary, exact/bounded logged-event search, and correlation trace | Inspection-capable Bukkit node only; VoteLog reads require logging; results and form inputs are cleared on logout; no player enumeration |
+| Votes & Data | Shows overview, exact player lookup, vote-site health plus persisted unconfigured-service observations, a 30-day VoteLog summary, exact/bounded logged-event search, and correlation trace | Inspection-capable Bukkit node only; trace starts its bounded node set concurrently under one 90-second budget, so a stalled node cannot delay healthy sources; VoteLog reads require logging; results and form inputs are cleared on logout; no player enumeration |
 | Safe service-site test | Dry-runs resolution, including optional disabled-site matching and whether auto-create would be considered | Sends no fake vote, creates no site, changes no total, and runs no reward |
 
 The Setup tab replaces the former “Quick Setup” framing but retains existing typed presets, VoteSites sync, detected-plugin
@@ -73,7 +85,8 @@ values should be loaded before modifying an existing configuration.
 
 - `proxy-routing` manages only `sendVotesToAllServers` and `blockedServers`;
 - `file` manages one allow-listed file: `Config.yml`, `VoteSites.yml`, `SpecialRewards.yml`, `GUI.yml`, `Shop.yml`,
-  `BungeeSettings.yml`, or one validated split file under `VoteSites/`;
+  `BungeeSettings.yml`, or one validated split file under `VoteSites/` on a Bukkit node. A proxy node can separately
+  manage only its fixed `bungeeconfig.yml` when it negotiated `config.proxy-files.v1`;
 - `quick-setup` manages one typed preset with at most 20 bounded string options. Ordinary options are at most 500
   UTF-8 bytes; the internal VoteSites sync source may be 512 KiB and a `reward-builder` proposal may be 64 KiB. Both large
   inputs are stripped from every public operation view.
@@ -95,6 +108,11 @@ proposal actions/messages.
 
 File content is limited to 512 KiB. Node results mask secret-like YAML paths. A replacement secret may pass through an
 authenticated proposal, but Control omits file proposal contents from operation views and never records them in its audit.
+`bungeeconfig.yml` is strict UTF-8 safe YAML with duplicate keys, aliases, merge keys, symlinks, and oversized content
+rejected. Its comment-aware editor preserves existing comments/formatting where possible and keeps redacted secret values
+and their markers safe. It stages a permission-preserving backup and an atomic replacement before reporting a save. A
+normal proxy-file save intentionally does not reload or restart the proxy: the result must tell the administrator that
+general setting activation still requires a proxy restart.
 
 ### Read, preview, and apply
 
@@ -105,6 +123,12 @@ authenticated proposal, but Control omits file proposal contents from operation 
    from preview so a concurrent edit becomes a stale-revision failure.
 4. Nodes stage and atomically replace managed YAML, reload VotingPlugin, and restore the local `.control-backup` if reload
    fails. The result distinguishes reload and rollback from a successful save.
+
+The proxy method preset validates and persists the requested `MYSQL`, `PLUGINMESSAGING`, `REDIS`, `MQTT`, or `SOCKETS`
+method on the proxy and its reported backends. The proxy acknowledges its durable result before replacing its runtime, so
+the operation result cannot be lost during teardown. Backends reload only their proxy communication handler. If a durable
+write or backend handler reload fails, its local backup is restored and the operation reports the failed/rolled-back state
+rather than a false network-wide success.
 
 Each target state is `QUEUED`, `IN_PROGRESS`, or `COMPLETE`; the aggregate state is `RUNNING`, `SUCCEEDED`, or
 `COMPLETED_WITH_ERRORS`. A claim has a two-minute lease and new `attemptId`. The result must echo that attempt and the
@@ -261,7 +285,7 @@ task is string-valued and VotingPlugin's handler validates text after selecting 
 | --- | --- | --- |
 | `overview` | none | Plugin/platform versions; configuration health; bounded data-storage mode; proxy mode; vote-site counts; auto-create state; configured/available/readable VoteLog state |
 | `vote-site-health` | string `days` 1–365, default 30 | Configured site state, bounded logged aggregates, unmatched logged services, and bounded persisted service observations with no configured match |
-| `player` | exactly one of `name` (1–16 characters) or `uuid` (canonical 36-character UUID) | Exact existing-player lookup; totals, points, streaks, up to 100 per-site last-vote rows, and backend pending-offline count; never player enumeration |
+| `player` | exactly one of `name` (1–16 characters) or `uuid` (canonical 36-character UUID) | Exact existing-player lookup; totals, points, streaks, up to 100 per-site last-vote rows, backend pending-offline count, and a bounded read-only allow-list of stored VotingPlugin fields when storage is available; never player enumeration or editing |
 | `vote-log-summary` | string `days` 1–365, default 30 | Vote count, immediate/cached split, unique voters, and top 20 services/servers |
 | `vote-log-search` | at most one of exact `player` (1–16 characters), `service` (1–64), or `server` (1–64); optional `event` and string `days`/`limit` | Most recent bounded logged-event rows; default 25 and maximum 100 |
 | `vote-trace` | required canonical 36-character UUID `voteId`; optional string `days`/`limit` | Chronological logged events sharing one correlation ID; default 50 and maximum 100 |
@@ -285,7 +309,7 @@ values; `generatedAt` is the ISO-8601 string generated by the connector.
 | --- | --- |
 | `overview` | `pluginVersion`, `platform`, `serverSoftware`, `serverVersion`, configured/enabled vote-site counts, `autoCreateVoteSites`, `processRewards`, `dataStorage`, `voteLoggingEnabled`, `voteLogAvailable`, `voteLogReadable`, proxy mode/method, `votifierDetected`, `configurationHealthy` |
 | `vote-site-health` | `days`, `voteLoggingEnabled`, `voteLoggingAvailable`, `voteLogReadable`, `autoCreateVoteSites`, `sites`, `unmatchedLoggedServices`, `detectedUnconfiguredServices`, and truncation flags. Site rows always include identity/settings/reward presence and status; logged/immediate/cached counts and last-vote time are present only when VoteLog is readable. Status is `ACTIVE`, `DISABLED`, `SERVICE_SITE_MISSING`, `VOTE_LOG_UNAVAILABLE`, `VOTE_LOG_UNREADABLE`, or `NO_RECENT_VOTES` |
-| `player` | Either `{found:false, entity:"player"}` or identity/online state, daily/weekly/monthly/all-time totals, points, streaks, `lastVoteTime`, `lastVotes`, `lastVotesTruncated`, and `pendingOfflineVotes` saturated at 100,000. Last-vote rows contain `siteKey`, `displayName`, `serviceSite`, and `time`, and include only stored keys that currently resolve as enabled sites |
+| `player` | Either `{found:false, entity:"player"}` or identity/online state, daily/weekly/monthly/all-time totals, points, streaks, `lastVoteTime`, `lastVotes`, `lastVotesTruncated`, and `pendingOfflineVotes` saturated at 100,000. When the storage row is safely available, `storage`, `storageRowAvailable`, bounded allow-listed `columns`, and `columnsTruncated` describe stored VotingPlugin values. Last-vote rows contain `siteKey`, `displayName`, `serviceSite`, and `time`, and include only stored keys that currently resolve as enabled sites |
 | `vote-log-summary` | `days`, `total`, `immediate`, `cached`, `uniqueVoters`, top-20 `topServices` and `topServers` count rows |
 | `vote-log-search` | `days`, `limit`, `entries`, `truncated`; each entry has `voteId`, `voteTime`, player UUID/name, service, server, event, context, status, and `cachedTotal` |
 | `vote-trace` | normalized `voteId`, `found`, chronological `events` using the same entry schema, and `truncated` |
