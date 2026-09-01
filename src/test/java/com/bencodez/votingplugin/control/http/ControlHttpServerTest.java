@@ -229,6 +229,14 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (!Array.isArray(value)) return {items: [], incomplete: true};"));
         assertTrue(script.body().contains("normalizeDashboardVoteSiteHealth"));
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
+        assertTrue(script.body().contains("typeof value === 'number' && Number.isSafeInteger(value) && value >= 0"),
+                "Dashboard counts must reject null, booleans, whitespace strings, and fractional values.");
+        assertFalse(script.body().contains("const count = Number(value);"));
+        assertFalse(script.body().contains("Number(dashboardOverview.configuredVoteSites) === 0"));
+        assertTrue(script.body().contains("const siteCountsKnown = configured != null && enabled != null;"));
+        assertTrue(script.body().contains("text(metricVoteSites, !siteCountsKnown ? '—'"));
+        assertTrue(script.body().contains("voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0"));
+        assertTrue(script.body().contains("voteSitesConfiguredKnown: configuredVoteSites != null"));
         int exactShortcut = script.body().indexOf("const exactShortcut = GLOBAL_PAGE_SHORTCUTS.get(normalized);");
         int fuzzySetting = script.body().indexOf("const setting = SETTINGS_SCHEMA.find");
         assertTrue(exactShortcut >= 0 && exactShortcut < fuzzySetting);
@@ -236,6 +244,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("['vote sites', {tab: 'data', scrollTarget: 'site-health-card'}]"));
         assertTrue(script.body().contains("['network doctor', {tab: 'network', scrollTarget: 'network-doctor-card'}]"));
         assertTrue(script.body().contains("['configuration compare', {tab: 'configurations', configView: 'compare'"));
+        assertTrue(web.body().contains("data-tab=\"configurations\" data-config-shortcut=\"compare\""));
+        assertTrue(script.body().contains("if (button.dataset.configShortcut) setConfigView(button.dataset.configShortcut);"));
         assertTrue(script.body().contains("if (setting) {\n    settingsFilter.value = query;"));
         assertFalse(script.body().contains(".style."));
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");

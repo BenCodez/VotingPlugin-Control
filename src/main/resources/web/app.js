@@ -1704,7 +1704,7 @@ function dashboardIssues() {
       'The selected backend reported an unhealthy configuration state.', 'Open configuration', 'configurations'));
     if (dashboardOverview.votifierDetected === false) issues.push(issue('warning', 'Votifier was not detected',
       'The selected backend cannot confirm the vote-listener prerequisite.', 'Diagnose', 'network', 'network-doctor-card'));
-    if (Number(dashboardOverview.configuredVoteSites) === 0) issues.push(issue('warning', 'No Vote Sites are configured',
+    if (dashboardOverview.configuredVoteSites === 0) issues.push(issue('warning', 'No Vote Sites are configured',
       'Add a reviewed VoteSites entry before expecting service matches.', 'Add Vote Site', 'quick-setup', 'quick-setup-card', 'vote-site'));
     if (dashboardOverview.processRewards === false) issues.push(issue('warning', 'Vote rewards are disabled on this backend',
       'ProcessRewards is off. Confirm that this is intentional for the selected topology.', 'Open setting', 'quick-setup', 'settings-catalog-card'));
@@ -1874,8 +1874,9 @@ function renderMetrics() {
   const siteWarnings = current && Array.isArray(dashboardVoteSiteHealth?.sites)
     ? dashboardVoteSiteHealth.sites.filter(site => site.status === 'SERVICE_SITE_MISSING').length
       + dashboardVoteSiteHealth.detectedUnconfiguredServices.length : null;
-  text(metricVoteSites, configured == null ? '—' : `${enabled}/${configured}`);
-  text(metricVoteSitesDetail, configured == null ? 'Not inspected'
+  const siteCountsKnown = configured != null && enabled != null;
+  text(metricVoteSites, !siteCountsKnown ? '—' : `${enabled}/${configured}`);
+  text(metricVoteSitesDetail, !siteCountsKnown ? 'Counts unavailable'
     : `${enabled} enabled${siteWarnings == null ? '' : ` · ${siteWarnings} need attention`}`);
   text(metricProxy, !current ? '—' : dashboardOverview?.proxyMode === false ? 'Standalone' : dashboardOverview?.proxyMethod || 'Unknown');
   text(metricProxyDetail, !current ? 'Method unavailable' : dashboardOverview?.proxyMode === false
@@ -1892,8 +1893,7 @@ function renderMetrics() {
 }
 
 function finiteCount(value) {
-  const count = Number(value);
-  return Number.isFinite(count) && count >= 0 ? count : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function syncSourceCandidates() {
@@ -2106,7 +2106,7 @@ function updateSetupChecklist(overview = lastOverview) {
   const states = [
     Boolean(node?.online && isBackend(node)),
     Boolean(overview && typeof overview.proxyMode === 'boolean'),
-    Boolean(overview && Number.isFinite(Number(overview.configuredVoteSites))),
+    Boolean(overview && Number.isSafeInteger(overview.configuredVoteSites) && overview.configuredVoteSites >= 0),
     Boolean(overview?.processRewards),
     Boolean(overview?.dataStorage && !loggingRestartPending
       && (!overview.voteLoggingEnabled || overview.voteLogReadable === true)),
@@ -3757,11 +3757,13 @@ runNetworkDoctor.addEventListener('click', async () => {
       : diagnostics.result.voteLogReadable === true
       ? {state: 'READABLE', message: 'Retained logged-event history is readable. It is not a guaranteed record of every internal vote-delivery hop.'}
       : {state: 'UNREADABLE', message: 'Vote logging is enabled, but retained logged-event history is not currently readable.'};
+    const configuredVoteSites = finiteCount(diagnostics.result.configuredVoteSites);
     const checks = {
       controlConnected: Boolean(node?.online),
       configurationHealthy: diagnostics.result.configurationHealthy,
       votifierDetected: diagnostics.result.votifierDetected,
-      voteSitesConfigured: Number(diagnostics.result.configuredVoteSites) > 0,
+      voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0,
+      voteSitesConfiguredKnown: configuredVoteSites != null,
       processRewards: diagnostics.result.processRewards,
       voteLogging: voteLog,
       topologyReported: isBackend(node) ? proxyReportsFor(node.nodeId).length > 0 || !diagnostics.result.proxyMode : true
@@ -4192,7 +4194,10 @@ quickPreset.addEventListener('input', () => {
   }
 });
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
-tabButtons.forEach(button => button.addEventListener('click', () => setActiveTab(button.dataset.tab, true)));
+tabButtons.forEach(button => button.addEventListener('click', () => {
+  if (button.dataset.configShortcut) setConfigView(button.dataset.configShortcut);
+  setActiveTab(button.dataset.tab, true);
+}));
 configViewButtons.forEach(button => button.addEventListener('click', () => setConfigView(button.dataset.configView)));
 document.querySelectorAll('[data-open-tab]').forEach(button => button.addEventListener('click', () => {
   openWorkspace(button.dataset.openTab, button.dataset.scrollTarget, button.dataset.quickPreset, button);
