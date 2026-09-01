@@ -203,6 +203,7 @@ const MAX_CONFIGURATION_TARGETS = 100;
 const MAX_SYNC_TARGETS = 100;
 const MAX_OPERATION_TARGETS = 100;
 const MAX_TRACE_NODES = 12;
+const MAX_TRACE_EVENTS_PER_NODE = 100;
 const TRACE_DEADLINE_MS = 90_000;
 const MAX_REGISTRY_SCAN_ATTEMPTS = 3;
 let authenticated = false;
@@ -249,6 +250,9 @@ let fileReadCache = new Map();
 let lastFileReadOperation = null;
 let configurationContentPresent = false;
 let configurationDirty = false;
+let configurationDraftNodeId = '';
+let configurationDraftSessionId = '';
+let configurationDraftFileName = '';
 let routingDirty = false;
 let routingDraftNodeId = '';
 let configurationFileSelection = configurationFile.value;
@@ -572,19 +576,40 @@ async function runInspectionOnNode(node, kind, filters = {}, options = {}) {
     inspectionInFlight = true;
     updateExtendedButtons();
   }
+  const requestedDeadline = Number(options.deadlineAt);
+  const deadline = Number.isFinite(requestedDeadline)
+    ? Math.min(Date.now() + 180_000, requestedDeadline)
+    : Date.now() + 180_000;
+  const ensureActive = () => {
+    if (typeof options.contextCurrent === 'function' && !options.contextCurrent()) {
+      throw new Error('The trace context changed while an inspection was running.');
+    }
+    if (Date.now() >= deadline || options.signal?.aborted) {
+      throw new Error('Inspection did not finish within this request budget.');
+    }
+  };
+  const request = async (path, requestOptions = {}) => {
+    ensureActive();
+    try {
+      const response = await authorized(path, {...requestOptions, signal: options.signal});
+      ensureActive();
+      return response;
+    } catch (error) {
+      if (Date.now() >= deadline || options.signal?.aborted) {
+        throw new Error('Inspection did not finish within this request budget.');
+      }
+      throw error;
+    }
+  };
   try {
-    let inspection = await authorized('/api/v1/inspections', {
+    let inspection = await request('/api/v1/inspections', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({nodeId, query: {kind, filters: boundedFilters}})
     });
-    const requestedDeadline = Number(options.deadlineAt);
-    const deadline = Number.isFinite(requestedDeadline)
-      ? Math.min(Date.now() + 180_000, requestedDeadline)
-      : Date.now() + 180_000;
     while (inspection.state === 'RUNNING') {
-      if (Date.now() >= deadline) throw new Error('Inspection did not finish within this request budget.');
+      ensureActive();
       await new Promise(resolve => window.setTimeout(resolve, Math.min(1000, Math.max(0, deadline - Date.now()))));
-      inspection = await authorized(`/api/v1/inspections/${inspection.inspectionId}`);
+      inspection = await request(`/api/v1/inspections/${inspection.inspectionId}`);
     }
     if (requestAuthenticationGeneration !== authenticationGeneration || sessionId !== nodeIndex.get(nodeId)?.sessionId) {
       throw new Error('The node reconnected or the session changed while the trace ran.');
@@ -685,7 +710,11 @@ async function traceVoteAcrossNodes() {
     && requestInputGeneration === inputGeneration && requestSelectedNodeId === selectedServerId
     && requestSelectedSessionId === nodeIndex.get(requestSelectedNodeId)?.sessionId
     && voteId === voteTraceId.value.trim() && days === String(voteLogDays.value)
-    && candidates.every(node => candidateSessions.get(node.nodeId) === nodeIndex.get(node.nodeId)?.sessionId);
+    && candidates.every(node => {
+      const current = nodeIndex.get(node.nodeId);
+      return Boolean(current?.online) && candidateSessions.get(node.nodeId) === current.sessionId
+        && Array.isArray(current.acceptedCapabilities) && current.acceptedCapabilities.includes('data.inspect.v1');
+    });
   const events = new Map();
   const sources = [];
   const unavailable = [];
@@ -694,13 +723,26 @@ async function traceVoteAcrossNodes() {
   inspectionInFlight = true;
   updateExtendedButtons();
   text(voteTraceResult, `Collecting retained events from ${candidates.length} connected backend ${candidates.length === 1 ? 'node' : 'nodes'}…`);
+  const traceAbortController = new AbortController();
+  const abortTrace = () => {
+    if (!traceAbortController.signal.aborted) traceAbortController.abort();
+  };
+  const deadlineTimer = window.setTimeout(abortTrace, Math.max(0, traceDeadline - Date.now()));
+  const contextTimer = window.setInterval(() => {
+    if (!contextCurrent()) abortTrace();
+  }, 250);
   try {
-    for (const node of candidates) {
-      if (!contextCurrent() || Date.now() >= traceDeadline) break;
-      try {
-        const envelope = await runInspectionOnNode(node, 'vote-trace', {voteId, days, limit: '100'},
-          {deadlineAt: traceDeadline, manageBusy: false});
-        const listed = Array.isArray(envelope.result?.events) ? envelope.result.events : [];
+    const results = await Promise.allSettled(candidates.map(async node => {
+      const envelope = await runInspectionOnNode(node, 'vote-trace', {voteId, days, limit: String(MAX_TRACE_EVENTS_PER_NODE)}, {
+        deadlineAt: traceDeadline, signal: traceAbortController.signal, contextCurrent, manageBusy: false
+      });
+      return {node, envelope};
+    }));
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        const {node, envelope} = result.value;
+        const listed = Array.isArray(envelope.result?.events)
+          ? envelope.result.events.slice(0, MAX_TRACE_EVENTS_PER_NODE) : [];
         const source = `${node.displayName} (${node.nodeId})`;
         sources.push(source);
         if (envelope.result?.truncated === true) truncatedSources.push(source);
@@ -711,23 +753,28 @@ async function traceVoteAcrossNodes() {
           retained.sources.push(`${node.displayName} (${node.nodeId})`);
           events.set(key, retained);
         });
-      } catch (error) {
+      } else {
+        const node = candidates[index];
+        const error = result.reason;
         unavailable.push(`${node.displayName} (${node.nodeId}): ${error.message || 'inspection failed'}`);
       }
-    }
+    });
     if (!contextCurrent()) {
       if (requestAuthenticationGeneration === authenticationGeneration) {
         text(voteTraceResult, 'The selected server, node session, or trace window changed. Run the trace again.');
       }
       return;
     }
-    if (Date.now() >= traceDeadline) unavailable.push('The remaining nodes were omitted after the 90-second trace budget expired');
+    if (Date.now() >= traceDeadline) unavailable.push('The 90-second trace budget expired before one or more node inspections completed');
     const ordered = [...events.values()].map(item => ({...item, sources: [...new Set(item.sources)].sort()})).sort((left, right) =>
       Number(left.event.voteTime || 0) - Number(right.event.voteTime || 0)
       || String(left.event.event || '').localeCompare(String(right.event.event || ''))
       || String(left.event.server || '').localeCompare(String(right.event.server || '')));
     renderVoteTrace({events: ordered, sources, unavailable, truncatedSources});
   } finally {
+    window.clearTimeout(deadlineTimer);
+    window.clearInterval(contextTimer);
+    abortTrace();
     inspectionInFlight = false;
     updateExtendedButtons();
   }
@@ -995,6 +1042,9 @@ function applyAuthenticatedSession(body) {
   configurationContent.value = '';
   configurationContentPresent = false;
   configurationDirty = false;
+  configurationDraftNodeId = '';
+  configurationDraftSessionId = '';
+  configurationDraftFileName = '';
   routingDirty = false;
   routingDraftNodeId = '';
   configurationFileSelection = configurationFile.value;
@@ -1185,10 +1235,27 @@ function resetFileEditorForSelection(message) {
   configurationContent.value = '';
   configurationContentPresent = false;
   configurationDirty = false;
+  configurationDraftNodeId = '';
+  configurationDraftSessionId = '';
+  configurationDraftFileName = '';
   lastFileReadOperation = null;
   approvedFilePreview = null;
   updateEditorPosition();
   text(fileOperationStatus, message);
+}
+
+function fileDraftMatchesCurrentContext() {
+  return !configurationDirty || configurationDraftNodeId === selectedServerId
+    && configurationDraftSessionId === nodeIndex.get(selectedServerId)?.sessionId
+    && configurationDraftFileName === configurationFile.value;
+}
+
+function fileDraftStatus(status) {
+  if (!configurationDirty) return status;
+  const owner = configurationDraftNodeId
+    ? `${configurationDraftNodeId}${configurationDraftSessionId ? ` (session ${configurationDraftSessionId})` : ''}`
+    : 'the previous server';
+  return `${status} Your unsaved ${configurationFile.value} draft is retained for ${owner}; read/reload the current file to explicitly discard it and bind the editor to this server.`;
 }
 
 function confirmDiscardUnsavedConfiguration(context) {
@@ -1206,8 +1273,9 @@ function syncFileSelection() {
   const expected = proxySelected ? 'bungeeconfig.yml' : 'Config.yml';
   if ((proxySelected && configurationFile.value !== 'bungeeconfig.yml')
       || (!proxySelected && configurationFile.value === 'bungeeconfig.yml')) {
-    if (!proxySelected && configurationFile.value === 'bungeeconfig.yml' && configurationDirty) {
-      text(fileOperationStatus, 'The selected proxy is no longer available for this file. Your unsaved draft is retained; reconnect the proxy or explicitly switch files to discard it.');
+    if (configurationDirty) {
+      text(fileOperationStatus, fileDraftStatus(
+        'The selected server cannot manage this file. Reconnect the original server or explicitly switch files to discard it.'));
       return;
     }
     configurationFile.value = expected;
@@ -1699,7 +1767,7 @@ function resetServerConfigurationForms(status, preserveDirtyDrafts = false) {
   if (preserveDirtyDrafts && configurationDirty) {
     lastFileReadOperation = null;
     approvedFilePreview = null;
-    text(fileOperationStatus, `${status} Your unsaved ${configurationFile.value} draft is retained; explicitly switch files or load the current file to discard it.`);
+    text(fileOperationStatus, fileDraftStatus(status));
   } else {
     resetFileEditorForSelection(status);
   }
@@ -1779,6 +1847,7 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   const fileCapability = selectedFileCapability();
   const fileReady = authenticated && primaryCapabilities.includes(fileCapability) &&
     fileTargetsForSelection().length > 0 && !busy;
+  const fileDraftReady = fileReady && fileDraftMatchesCurrentContext();
   const syncSelected = quickPreset.value === 'sync-vote-sites';
   const quickReady = authenticated && !busy && (syncSelected
     ? Boolean(voteSitesSourceId && selectedVoteSitesTargets().length > 0)
@@ -1787,8 +1856,8 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   previewConfiguration.disabled = !routingDraftReady;
   applyConfiguration.disabled = !routingDraftReady || !approvedPreview;
   readFileConfiguration.disabled = !fileReady;
-  previewFileConfiguration.disabled = !fileReady || !configurationContentPresent;
-  applyFileConfiguration.disabled = !fileReady || !approvedFilePreview;
+  previewFileConfiguration.disabled = !fileDraftReady || !configurationContentPresent;
+  applyFileConfiguration.disabled = !fileDraftReady || !approvedFilePreview;
   readQuickSetup.disabled = !quickReady || !quickPresetReadable();
   previewQuickSetup.disabled = !quickReady || (quickPresetNeedsRead() && !quickSetupValuesLoaded());
   applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
@@ -1976,6 +2045,9 @@ function discardAuthenticationState(reason) {
   configurationFileSelection = configurationFile.value;
   configurationContentPresent = false;
   configurationDirty = false;
+  configurationDraftNodeId = '';
+  configurationDraftSessionId = '';
+  configurationDraftFileName = '';
   routingDirty = false;
   routingDraftNodeId = '';
   autoLoadInFlight.clear();
@@ -2555,7 +2627,7 @@ applyConfiguration.addEventListener('click', async () => {
 
 async function loadFileConfiguration(automatic = false) {
   if (!automatic && configurationDirty
-      && !window.confirm(`Discard unsaved ${configurationFile.value} changes and load the current file?`)) return;
+      && !window.confirm(`Discard the unsaved ${configurationFile.value} draft and read/reload the current file for this server?`)) return;
   approvedFilePreview = null;
   const readAuthenticationGeneration = authenticationGeneration;
   const readInputGeneration = inputGeneration;
@@ -2573,6 +2645,9 @@ async function loadFileConfiguration(automatic = false) {
     configurationContent.value = cached.content;
     configurationContentPresent = true;
     configurationDirty = false;
+    configurationDraftNodeId = '';
+    configurationDraftSessionId = '';
+    configurationDraftFileName = '';
     lastFileReadOperation = {operationId: cached.operationId};
     updateEditorPosition();
     text(fileOperationStatus, `Cached read · ${selectedServerId} · ${selectedFile}\nLoaded instantly; cache expires after 30 seconds. Preview still checks the live revision.`);
@@ -2594,6 +2669,9 @@ async function loadFileConfiguration(automatic = false) {
       configurationContent.value = contentResult.configuration.content;
       configurationContentPresent = true;
       configurationDirty = false;
+      configurationDraftNodeId = '';
+      configurationDraftSessionId = '';
+      configurationDraftFileName = '';
       lastFileReadOperation = {operationId: operation.operationId};
       cacheFile(cacheKey, contentResult.configuration.content, operation.operationId);
       updateEditorPosition();
@@ -2609,6 +2687,11 @@ readFileConfiguration.addEventListener('click', () => { void loadFileConfigurati
 
 previewFileConfiguration.addEventListener('click', async () => {
   approvedFilePreview = null;
+  if (!fileDraftMatchesCurrentContext()) {
+    text(fileOperationStatus, fileDraftStatus('This draft belongs to a different node session and cannot be previewed here.'));
+    updateConfigurationButtons();
+    return;
+  }
   const previewGeneration = inputGeneration;
   const selectedFile = configurationFile.value;
   const previewTargets = fileTargetsForSelection(selectedFile);
@@ -2636,7 +2719,7 @@ previewFileConfiguration.addEventListener('click', async () => {
 
 applyFileConfiguration.addEventListener('click', async () => {
   const currentTargets = fileTargetsForSelection(configurationFile.value);
-  if (!approvedFilePreview || approvedFilePreview.fileName !== configurationFile.value
+  if (!fileDraftMatchesCurrentContext() || !approvedFilePreview || approvedFilePreview.fileName !== configurationFile.value
       || !approvedFilePreview.nodeIds.every(nodeId => approvedFilePreview.sessions.get(nodeId) === nodeIndex.get(nodeId)?.sessionId)
       || currentTargets.length !== approvedFilePreview.nodeIds.length
       || !approvedFilePreview.nodeIds.every(nodeId => currentTargets.includes(nodeId))
@@ -2653,6 +2736,9 @@ applyFileConfiguration.addEventListener('click', async () => {
       fileReadCache.clear();
       lastFileReadOperation = null;
       configurationDirty = false;
+      configurationDraftNodeId = '';
+      configurationDraftSessionId = '';
+      configurationDraftFileName = '';
       updateExtendedButtons();
     }
   } catch (error) { text(fileOperationStatus, error.message); }
@@ -3253,6 +3339,9 @@ async function loadSnapshots() {
           configurationContent.value = document.content;
           configurationContentPresent = true;
           configurationDirty = false;
+          configurationDraftNodeId = '';
+          configurationDraftSessionId = '';
+          configurationDraftFileName = '';
           lastFileReadOperation = null;
           updateEditorPosition();
           approvedFilePreview = null;
@@ -3492,6 +3581,11 @@ quickName.addEventListener('input', () => {
   updateQuickFields();
 });
 configurationContent.addEventListener('input', () => {
+  if (!configurationDirty) {
+    configurationDraftNodeId = selectedServerId;
+    configurationDraftSessionId = nodeIndex.get(selectedServerId)?.sessionId || '';
+    configurationDraftFileName = configurationFile.value;
+  }
   configurationContentPresent = true;
   configurationDirty = true;
   clearApprovals();

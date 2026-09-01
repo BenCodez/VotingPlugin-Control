@@ -111,14 +111,31 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
         assertTrue(script.body().contains("let configurationContentPresent = false;"));
+        assertTrue(script.body().contains("const MAX_TRACE_EVENTS_PER_NODE = 100;"));
+        assertTrue(script.body().contains("const traceAbortController = new AbortController();"));
+        assertTrue(script.body().contains("await Promise.allSettled(candidates.map(async node => {"));
+        assertTrue(script.body().contains("const response = await authorized(path, {...requestOptions, signal: options.signal});\n      ensureActive();"));
+        assertTrue(script.body().contains("current.acceptedCapabilities.includes('data.inspect.v1')"));
         assertTrue(script.body().contains(
-                "previewFileConfiguration.disabled = !fileReady || !configurationContentPresent;"));
+                "signal: traceAbortController.signal, contextCurrent, manageBusy: false"));
+        assertTrue(script.body().contains("window.clearTimeout(deadlineTimer);"));
+        assertFalse(script.body().contains("for (const node of candidates)"));
+        assertTrue(script.body().contains("let configurationDraftNodeId = '';"));
+        assertTrue(script.body().contains("let configurationDraftSessionId = '';"));
+        assertTrue(script.body().contains("function fileDraftMatchesCurrentContext()"));
+        assertTrue(script.body().contains("if (configurationDirty) {\n      text(fileOperationStatus, fileDraftStatus("),
+                "Routine refresh must retain dirty drafts when the replacement has a different node role.");
+        assertTrue(script.body().contains("const fileDraftReady = fileReady && fileDraftMatchesCurrentContext();"));
+        assertTrue(script.body().contains(
+                "previewFileConfiguration.disabled = !fileDraftReady || !configurationContentPresent;"));
+        assertTrue(script.body().contains(
+                "applyFileConfiguration.disabled = !fileDraftReady || !approvedFilePreview;"));
         assertTrue(script.body().contains(
                 "configurationContent.value = document.content;\n          configurationContentPresent = true;"));
         assertTrue(script.body().contains(
                 "resetServerContextValues('A selected server reconnected. Load current values before continuing.', true);"));
         assertTrue(script.body().contains(
-                "configurationContent.addEventListener('input', () => {\n  configurationContentPresent = true;"));
+                "configurationContent.addEventListener('input', () => {\n  if (!configurationDirty) {\n    configurationDraftNodeId = selectedServerId;"));
         assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));
         assertTrue(script.body().contains("loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId"));
         assertTrue(script.body().contains("previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId"));
@@ -142,7 +159,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("text(operationStatus, routingDraftStatus('The selected nodes changed during refresh."));
         assertTrue(script.body().contains("Your unsaved ${configurationFile.value} draft is retained"));
         assertTrue(script.body().contains("Discard unsaved routing changes and load current values?"));
-        assertTrue(script.body().contains("Discard unsaved ${configurationFile.value} changes and load the current file?"));
+        assertTrue(script.body().contains("Discard the unsaved ${configurationFile.value} draft and read/reload the current file for this server?"));
         assertTrue(script.body().contains("window.addEventListener('beforeunload'"));
         assertTrue(script.body().contains("loadedQuickSetup = {nodeId, sessionId, preset, selector}"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
