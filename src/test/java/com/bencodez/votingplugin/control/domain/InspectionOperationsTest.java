@@ -261,6 +261,12 @@ class InspectionOperationsTest {
                         new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId()))).code());
 
         ((ObjectNode) data.path("result")).remove("storage");
+        ((ObjectNode) data.path("result")).put("columnsTruncated", "false");
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(inspection, "backend-a",
+                        new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId()))).code());
+
+        ((ObjectNode) data.path("result")).put("columnsTruncated", false);
         ((ObjectNode) ((com.fasterxml.jackson.databind.node.ArrayNode) data.path("result").path("lastVotes"))
                 .get(0)).put("unexpected", "field");
         assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,

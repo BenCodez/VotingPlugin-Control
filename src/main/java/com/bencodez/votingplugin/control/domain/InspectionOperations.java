@@ -277,7 +277,8 @@ public final class InspectionOperations {
         if (!storageAvailable) {
             return !value.has("storage")
                     && (!value.has("columns") || value.path("columns").isArray() && value.path("columns").isEmpty())
-                    && (!value.has("columnsTruncated") || !value.path("columnsTruncated").booleanValue());
+                    && (!value.has("columnsTruncated") || value.path("columnsTruncated").isBoolean()
+                    && !value.path("columnsTruncated").booleanValue());
         }
         return boundedText(value.path("storage"), 32) && !value.path("storage").textValue().isBlank()
                 && validColumns(value.path("columns")) && value.path("columnsTruncated").isBoolean();
