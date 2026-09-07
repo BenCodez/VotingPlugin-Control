@@ -2622,12 +2622,12 @@ applyConfiguration.addEventListener('click', async () => {
   if (!approvedPreview || !window.confirm('Apply this exact preview to every selected proxy? Each node may still reject a stale revision.')) return;
   const approval = approvedPreview;
   approvedPreview = null;
-  inputGeneration++;
+  const applyGeneration = inputGeneration + 1;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     });
-    if (operation.state === 'SUCCEEDED') {
+    if (operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration) {
       routingDirty = false;
       routingDraftNodeId = '';
     }
@@ -2745,13 +2745,13 @@ applyFileConfiguration.addEventListener('click', async () => {
       || !window.confirm(`Apply this exact ${configurationFile.value} preview to ${fileTargetDescription()}?`)) return;
   const approval = approvedFilePreview;
   approvedFilePreview = null;
-  inputGeneration++;
+  const applyGeneration = inputGeneration + 1;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, fileOperationStatus);
     text(fileOperationStatus, operationSummary(operation));
-    if (operation.state === 'SUCCEEDED') {
+    if (operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration) {
       fileReadCache.clear();
       lastFileReadOperation = null;
       configurationDirty = false;

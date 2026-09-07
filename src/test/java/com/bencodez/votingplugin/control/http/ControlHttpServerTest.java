@@ -219,6 +219,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(".slice(0, MAX_PLAYER_LAST_VOTES)"));
         assertTrue(script.body().contains("if (!automatic) text(fileOperationStatus, error.message);"));
         assertTrue(script.body().contains("const cell = document.createElement('td');"));
+        assertTrue(script.body().contains("const applyGeneration = inputGeneration + 1;"));
+        assertTrue(script.body().contains("operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
         HttpResponse<String> stylesheet = get("/app.css", null);
