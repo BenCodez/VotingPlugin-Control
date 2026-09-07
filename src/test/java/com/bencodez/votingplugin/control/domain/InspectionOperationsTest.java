@@ -45,8 +45,7 @@ class InspectionOperationsTest {
         assertNotNull(task);
         assertEquals(created.inspectionId(), task.inspectionId());
         assertEquals("player", task.query().kind());
-        ObjectNode data = envelope("player");
-        ((ObjectNode) data.get("result")).put("name", "Example");
+        ObjectNode data = playerEnvelope(false);
         InspectionOperations.InspectionView completed = operations.complete(created.inspectionId(), "backend-a",
                 new InspectionTaskResult(session, true, null, "Current data", data, task.attemptId()));
 
@@ -220,6 +219,61 @@ class InspectionOperationsTest {
                         task.attemptId()))).code());
     }
 
+    @Test void playerResultsRejectColumnsOutsideTheServerAllowListBeforeRetention() {
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        InspectionOperations operations = new InspectionOperations(registry, clock);
+        UUID inspection = operations.create("backend-a", new InspectionQuery("player", Map.of("name", "Example")))
+                .inspectionId();
+        InspectionTask task = operations.claim("backend-a", session);
+        ObjectNode data = playerEnvelope(true);
+        ((ObjectNode) data.path("result").path("lastVotes").get(0)).put("displayName", "é".repeat(100));
+        ObjectNode runtimeColumn = ((com.fasterxml.jackson.databind.node.ArrayNode) data.path("result").path("columns"))
+                .addObject();
+        runtimeColumn.put("name", "CoolDownCheck_lobby east");
+        runtimeColumn.put("type", "BOOLEAN");
+        runtimeColumn.put("value", "false");
+        ((ObjectNode) ((com.fasterxml.jackson.databind.node.ArrayNode) data.path("result").path("columns"))
+                .get(0)).put("name", "OfflineVotes");
+
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(inspection, "backend-a",
+                        new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId()))).code());
+        assertNull(operations.get(inspection).result());
+        assertEquals("RUNNING", operations.get(inspection).state());
+
+        ((ObjectNode) ((com.fasterxml.jackson.databind.node.ArrayNode) data.path("result").path("columns"))
+                .get(0)).put("name", "Points");
+        assertEquals("SUCCEEDED", operations.complete(inspection, "backend-a",
+                new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId())).state());
+    }
+
+    @Test void playerResultsRequireBoundedLastVotesAndConsistentStorageAvailability() {
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        InspectionOperations operations = new InspectionOperations(registry, clock);
+        UUID inspection = operations.create("backend-a", new InspectionQuery("player", Map.of("name", "Example")))
+                .inspectionId();
+        InspectionTask task = operations.claim("backend-a", session);
+        ObjectNode data = playerEnvelope(false);
+        ((ObjectNode) data.path("result")).put("storage", "SQLITE");
+
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(inspection, "backend-a",
+                        new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId()))).code());
+
+        ((ObjectNode) data.path("result")).remove("storage");
+        ((ObjectNode) ((com.fasterxml.jackson.databind.node.ArrayNode) data.path("result").path("lastVotes"))
+                .get(0)).put("unexpected", "field");
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(inspection, "backend-a",
+                        new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId()))).code());
+        assertNull(operations.get(inspection).result());
+
+        ((ObjectNode) ((com.fasterxml.jackson.databind.node.ArrayNode) data.path("result").path("lastVotes"))
+                .get(0)).remove("unexpected");
+        assertEquals("SUCCEEDED", operations.complete(inspection, "backend-a",
+                new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId())).state());
+    }
+
     @Test void abandonedAndCompletedInspectionsHaveSeparateRetentionWindows() {
         register(session, Set.of(InspectionQuery.CAPABILITY));
         InspectionOperations operations = new InspectionOperations(registry, clock);
@@ -294,6 +348,45 @@ class InspectionOperationsTest {
         ObjectNode envelope = JSON.createObjectNode().put("schemaVersion", 1).put("kind", kind)
                 .put("generatedAt", "2026-08-30T00:00:00Z");
         envelope.putObject("result");
+        return envelope;
+    }
+
+    private static ObjectNode playerEnvelope(boolean storageAvailable) {
+        ObjectNode envelope = envelope("player");
+        ObjectNode result = envelope.putObject("result");
+        result.put("found", true);
+        result.put("uuid", "3b0c76c1-b7ef-4a2c-a565-b7bc662531f9");
+        result.put("name", "Example");
+        result.put("lastOnline", 0L);
+        result.put("online", false);
+        ObjectNode totals = result.putObject("totals");
+        totals.put("daily", 1);
+        totals.put("weekly", 2);
+        totals.put("monthly", 3);
+        totals.put("allTime", 4);
+        result.put("points", 5);
+        ObjectNode streaks = result.putObject("streaks");
+        streaks.put("daily", 1);
+        streaks.put("weekly", 2);
+        streaks.put("monthly", 3);
+        result.put("lastVoteTime", 0L);
+        com.fasterxml.jackson.databind.node.ArrayNode lastVotes = result.putArray("lastVotes");
+        ObjectNode lastVote = lastVotes.addObject();
+        lastVote.put("siteKey", "ExampleSite");
+        lastVote.put("displayName", "Example Site");
+        lastVote.put("serviceSite", "example.org");
+        lastVote.put("time", 0L);
+        result.put("lastVotesTruncated", false);
+        result.put("pendingOfflineVotes", 0);
+        result.put("storageRowAvailable", storageAvailable);
+        if (storageAvailable) {
+            result.put("storage", "SQLITE");
+            ObjectNode column = result.putArray("columns").addObject();
+            column.put("name", "Points");
+            column.put("type", "INTEGER");
+            column.put("value", "5");
+            result.put("columnsTruncated", false);
+        }
         return envelope;
     }
 

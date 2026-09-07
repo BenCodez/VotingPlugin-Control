@@ -386,15 +386,19 @@ function validPlayerColumn(column) {
   if (!exactObjectKeys(column, ['name', 'type', 'value'])) return false;
   if (typeof column.name !== 'string' || typeof column.type !== 'string' || typeof column.value !== 'string'
       || new TextEncoder().encode(column.value).length > 16 * 1024) return false;
-  const runtimeSuffix = '[A-Za-z0-9_-]{1,64}';
-  const runtimeString = new RegExp(`^CoolDownCheck(?:_${runtimeSuffix})?_Sites$`).test(column.name);
+  const runtimeSuffix = suffix => suffix.length > 0 && !/[\u0000-\u001f\u007f-\u009f]/.test(suffix);
+  const runtimeString = column.name === 'CoolDownCheck_Sites'
+    || column.name.startsWith('CoolDownCheck_') && column.name.endsWith('_Sites')
+      && runtimeSuffix(column.name.slice('CoolDownCheck_'.length, -'_Sites'.length));
   if (PLAYER_STRING_COLUMNS.has(column.name) || runtimeString) return column.type === 'STRING';
-  const runtimeBoolean = new RegExp(`^CoolDownCheck(?:_${runtimeSuffix})?$`).test(column.name);
+  const runtimeBoolean = column.name.startsWith('CoolDownCheck_')
+    && runtimeSuffix(column.name.slice('CoolDownCheck_'.length));
   if (PLAYER_BOOLEAN_COLUMNS.has(column.name) || runtimeBoolean) {
     return column.type === 'BOOLEAN' && /^(?:true|false)$/.test(column.value)
       || column.type === 'STRING' && /^(?:true|false)$/i.test(column.value);
   }
-  const runtimeInteger = new RegExp(`^(?:AllSitesLast|AlmostAllSitesLast)(?:_${runtimeSuffix})?$`).test(column.name);
+  const runtimeInteger = ['AllSitesLast_', 'AlmostAllSitesLast_'].some(prefix => column.name.startsWith(prefix)
+    && runtimeSuffix(column.name.slice(prefix.length)));
   const integerName = PLAYER_INTEGER_COLUMNS.has(column.name) || runtimeInteger
     || /^(?:MonthTotal-(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)-[0-9]{4}|VoteShopLimit[A-Za-z0-9_-]{1,64})$/.test(column.name);
   if (!integerName || column.type !== 'INTEGER' || !/^-?(?:0|[1-9][0-9]*)$/.test(column.value)) return false;

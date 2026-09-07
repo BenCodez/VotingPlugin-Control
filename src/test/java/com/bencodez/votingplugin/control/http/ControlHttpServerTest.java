@@ -164,6 +164,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("receivedLastVotes.some(lastVote => !validPlayerLastVote(lastVote))"));
         assertTrue(script.body().contains("const lastVotes = malformedLastVotes ? [] : receivedLastVotes.slice(0, MAX_PLAYER_LAST_VOTES);"));
         assertTrue(script.body().contains("function validPlayerColumn(column)"));
+        assertTrue(script.body().contains("const runtimeSuffix = suffix => suffix.length > 0"));
         assertTrue(script.body().contains("const columnsOmittedForUnavailableStorage = value.storageRowAvailable === false && value.columns === undefined;"));
         assertTrue(script.body().contains("if (columnsOmittedForUnavailableStorage) return;"));
         assertTrue(script.body().contains("fields outside the allow-listed column schema"));
