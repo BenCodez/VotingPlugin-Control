@@ -214,6 +214,10 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("id=\"global-search-input\""));
         assertTrue(script.body().contains("async function refreshDashboard()"));
         assertTrue(script.body().contains("function dashboardIssues()"));
+        assertTrue(script.body().contains(
+                "configurations: ['Compare configuration', () => {\n      setConfigView('compare');\n      runDriftCheck.click();"));
+        assertTrue(script.body().contains(
+                "dashboardLoadedContext = requestedContext;\n      dashboardInspectionStatus.overview = 'failed';"));
         assertTrue(script.body().contains("disconnected from Control"));
         assertTrue(script.body().contains("document.createElement('progress')"));
         assertTrue(script.body().contains("const countSource = Object.hasOwn(entry, 'count') ? entry.count : entry.votes;"));

@@ -1270,7 +1270,10 @@ function updateHeaderAction(tab) {
     overview: ['Refresh dashboard', () => refreshDashboard()],
     servers: ['Refresh servers', () => loadNodes()],
     network: ['Run Network Doctor', () => runNetworkDoctor.click()],
-    configurations: ['Compare configuration', () => runDriftCheck.click()],
+    configurations: ['Compare configuration', () => {
+      setConfigView('compare');
+      runDriftCheck.click();
+    }],
     'quick-setup': ['Add Vote Site', () => openWorkspace('quick-setup', 'quick-setup-card', 'vote-site')],
     data: ['Refresh server overview', () => refreshDataOverview.click()],
     activity: ['Refresh activity', () => loadOperationHistory()],
@@ -3735,6 +3738,7 @@ async function refreshDashboard() {
     if (requestedContext === dashboardContext()) dashboardLoadedContext = requestedContext;
   } catch (error) {
     if (requestedContext === dashboardContext()) {
+      dashboardLoadedContext = requestedContext;
       dashboardInspectionStatus.overview = 'failed';
       text(attentionFeed, error.message || 'Dashboard inspection failed.');
     }
