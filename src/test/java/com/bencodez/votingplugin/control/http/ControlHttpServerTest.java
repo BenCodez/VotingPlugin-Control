@@ -112,6 +112,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
         assertTrue(script.body().contains("let configurationContentPresent = false;"));
         assertTrue(script.body().contains("const MAX_TRACE_EVENTS_PER_NODE = 100;"));
+        assertTrue(script.body().contains(
+                "envelope.result?.truncated === true || received.length > MAX_TRACE_EVENTS_PER_NODE"));
+        assertTrue(script.body().contains("columns.length < value.columns.length"));
         assertTrue(script.body().contains("const traceAbortController = new AbortController();"));
         assertTrue(script.body().contains("await Promise.allSettled(candidates.map(async node => {"));
         assertTrue(script.body().contains("const response = await authorized(path, {...requestOptions, signal: options.signal});\n      ensureActive();"));
@@ -204,6 +207,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("preset: 'proxy-method'"));
         assertTrue(script.body().contains("proxyMethodButtons.forEach"));
         assertTrue(script.body().contains("handleEditorKeydown"));
+        assertTrue(script.body().contains("receivedLastVotes.length > 100"));
+        assertTrue(script.body().contains("const cell = document.createElement('td');"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
         HttpResponse<String> stylesheet = get("/app.css", null);

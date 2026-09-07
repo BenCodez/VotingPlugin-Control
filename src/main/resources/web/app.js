@@ -418,8 +418,9 @@ function renderPlayerData(value) {
   add('Last vote', formatEpoch(value.lastVoteTime));
   add('Last online', formatEpoch(value.lastOnline));
   playerResult.append(profile);
-  const lastVotes = Array.isArray(value.lastVotes)
-    ? value.lastVotes.filter(lastVote => lastVote && typeof lastVote === 'object').slice(0, 100) : [];
+  const receivedLastVotes = Array.isArray(value.lastVotes) ? value.lastVotes : [];
+  const lastVotes = receivedLastVotes
+    .filter(lastVote => lastVote && typeof lastVote === 'object').slice(0, 100);
   if (lastVotes.length) {
     const heading = text(document.createElement('h4'), 'VoteSite history');
     const scroll = document.createElement('div');
@@ -441,13 +442,15 @@ function renderPlayerData(value) {
     scroll.append(table);
     playerResult.append(heading, scroll);
   }
-  if (value.lastVotesTruncated === true) {
+  if (value.lastVotesTruncated === true || receivedLastVotes.length > 100) {
     const warning = document.createElement('p');
     warning.className = 'warning-text';
     text(warning, 'Additional VoteSite history was omitted by the 100-row inspection limit.');
     playerResult.append(warning);
   }
   if (!Array.isArray(value.columns)) return;
+  const columns = value.columns.filter(column => column && typeof column === 'object' && !Array.isArray(column))
+    .slice(0, 100);
   const scroll = document.createElement('div');
   scroll.className = 'table-scroll';
   const table = document.createElement('table');
@@ -456,21 +459,21 @@ function renderPlayerData(value) {
   ['Column', 'Storage type', 'Exact stored value'].forEach(label => headRow.append(text(document.createElement('th'), label)));
   head.append(headRow);
   const body = document.createElement('tbody');
-  value.columns.forEach(column => {
+  columns.forEach(column => {
     const row = document.createElement('tr');
     row.append(text(document.createElement('td'), column.name));
     row.append(text(document.createElement('td'), column.type));
-    const value = document.createElement('td');
+    const cell = document.createElement('td');
     const code = document.createElement('code');
     text(code, column.value);
-    value.append(code);
-    row.append(value);
+    cell.append(code);
+    row.append(cell);
     body.append(row);
   });
   table.append(head, body);
   scroll.append(table);
   playerResult.append(scroll);
-  if (value.columnsTruncated === true) {
+  if (value.columnsTruncated === true || columns.length < value.columns.length) {
     const warning = document.createElement('p');
     warning.className = 'warning-text';
     text(warning, 'Some stored values were omitted by the bounded, allow-listed inspection contract.');
@@ -768,11 +771,13 @@ async function traceVoteAcrossNodes() {
     results.forEach((result, index) => {
       if (result.status === 'fulfilled') {
         const {node, envelope} = result.value;
-        const listed = Array.isArray(envelope.result?.events)
-          ? envelope.result.events.slice(0, MAX_TRACE_EVENTS_PER_NODE) : [];
+        const received = Array.isArray(envelope.result?.events) ? envelope.result.events : [];
+        const listed = received.slice(0, MAX_TRACE_EVENTS_PER_NODE);
         const source = `${node.displayName} (${node.nodeId})`;
         sources.push(source);
-        if (envelope.result?.truncated === true) truncatedSources.push(source);
+        if (envelope.result?.truncated === true || received.length > MAX_TRACE_EVENTS_PER_NODE) {
+          truncatedSources.push(source);
+        }
         listed.forEach(event => {
           if (!event || typeof event !== 'object') return;
           const key = traceEventKey(event);
