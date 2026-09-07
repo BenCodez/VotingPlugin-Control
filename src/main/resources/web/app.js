@@ -1698,7 +1698,10 @@ function dashboardHealthContradictsOverview(overview, health) {
   const configured = finiteCount(overview.configuredVoteSites);
   const siteCountMatches = health.truncated === true || configured == null
     || Array.isArray(health.sites) && health.sites.length === configured;
-  return !flagsMatch || !siteCountMatches;
+  const enabled = finiteCount(overview.enabledVoteSites);
+  const enabledSiteCountMatches = health.truncated === true || enabled == null
+    || Array.isArray(health.sites) && health.sites.filter(site => site.enabled === true).length === enabled;
+  return !flagsMatch || !siteCountMatches || !enabledSiteCountMatches;
 }
 
 function normalizeDashboardCountRows(value, maximum, label) {
@@ -3781,6 +3784,13 @@ applyVoteLogging.addEventListener('click', () => applyDedicatedSetup('vote-loggi
 });
 
 async function refreshOverview(target = dataOverview) {
+  dashboardOverview = null;
+  dashboardVoteSiteHealth = null;
+  dashboardVoteSummary24h = null;
+  dashboardVoteSummary30d = null;
+  dashboardLoadedContext = '';
+  dashboardInspectionStatus = emptyDashboardInspectionStatus();
+  renderMetrics();
   try {
     const envelope = await runInspection('overview', {}, target);
     lastOverview = {...(lastOverview || {}), ...envelope.result};

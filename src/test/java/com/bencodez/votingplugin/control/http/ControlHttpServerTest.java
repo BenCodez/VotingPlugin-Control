@@ -259,6 +259,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("normalizeDashboardVoteSiteHealth"));
         assertTrue(script.body().contains("dashboardHealthContradictsOverview(dashboardOverview, health.result)"));
         assertTrue(script.body().contains("health.sites.length === configured"));
+        assertTrue(script.body().contains("health.sites.filter(site => site.enabled === true).length === enabled"));
         assertTrue(script.body().contains("['truncated', 'detectedUnconfiguredServicesTruncated'].forEach"));
         assertTrue(script.body().contains("typeof source[field] !== 'boolean' || source[field] === true"));
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
@@ -274,6 +275,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("entry.count > remaining"));
         assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));
         assertTrue(script.body().contains("lastOverview = null;\n  text(dataOverview, 'Refreshing server overview…');"));
+        assertTrue(script.body().contains("async function refreshOverview(target = dataOverview) {\n  dashboardOverview = null;"));
         assertTrue(script.body().contains(".result, 1);"));
         assertTrue(script.body().contains("hasCount && hasVotes && count !== legacyCount"));
         assertTrue(script.body().contains("days == null || days !== expectedDays || total == null"));
