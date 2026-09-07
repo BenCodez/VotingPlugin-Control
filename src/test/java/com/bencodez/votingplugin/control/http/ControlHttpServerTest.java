@@ -257,10 +257,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("['truncated', 'detectedUnconfiguredServicesTruncated'].forEach"));
         assertTrue(script.body().contains("typeof source[field] !== 'boolean' || source[field] === true"));
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
+        assertTrue(script.body().contains("countRowsExceedTotal(services.items, total)"));
+        assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
         assertTrue(script.body().contains("function normalizeDashboardCountRows(value, maximum, label)"));
         assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
         assertTrue(script.body().contains("immediate + cached !== total"));
-        assertTrue(script.body().contains("entry.count > total"));
+        assertTrue(script.body().contains("entry.count > remaining"));
         assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));
         assertTrue(script.body().contains("lastOverview = null;\n  text(dataOverview, 'Refreshing server overview…');"));
         assertTrue(script.body().contains(".result, 1);"));
@@ -282,6 +284,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("['vote sites', {tab: 'data', scrollTarget: 'site-health-card'}]"));
         assertTrue(script.body().contains("['network doctor', {tab: 'network', scrollTarget: 'network-doctor-card'}]"));
         assertTrue(script.body().contains("['configuration compare', {tab: 'configurations', configView: 'compare'"));
+        assertTrue(script.body().contains("openGlobalShortcut(GLOBAL_PAGE_SHORTCUTS.get('configuration compare'))"));
+        assertTrue(script.body().contains("globalSearchInput.value = '';\n  globalSearchOptions.replaceChildren();"));
         assertTrue(web.body().contains("data-tab=\"configurations\" data-config-shortcut=\"compare\""));
         assertTrue(script.body().contains("if (button.dataset.configShortcut) setConfigView(button.dataset.configShortcut);"));
         assertTrue(script.body().contains("if (setting) {\n    settingsFilter.value = query;"));

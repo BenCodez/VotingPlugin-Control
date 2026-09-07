@@ -1711,11 +1711,20 @@ function normalizeDashboardVoteSummary(value, expectedDays = 30) {
   if (total != null) {
     incomplete ||= immediate == null || cached == null || immediate + cached !== total
       || uniqueVoters == null || uniqueVoters > total;
-    incomplete ||= services.items.some(entry => entry.count > total)
-      || servers.items.some(entry => entry.count > total);
+    incomplete ||= countRowsExceedTotal(services.items, total)
+      || countRowsExceedTotal(servers.items, total);
   }
   return {result: {...source, days, total, immediate, cached, uniqueVoters,
     topServices: services.items, topServers: servers.items}, incomplete};
+}
+
+function countRowsExceedTotal(items, total) {
+  let remaining = total;
+  for (const entry of items) {
+    if (entry.count > remaining) return true;
+    remaining -= entry.count;
+  }
+  return false;
 }
 
 function issue(severity, title, detail, action, tab, scrollTarget = '', preset = '') {
@@ -2539,6 +2548,8 @@ function discardAuthenticationState(reason) {
   logout.hidden = true;
   sidebarToggle.hidden = true;
   globalSearch.hidden = true;
+  globalSearchInput.value = '';
+  globalSearchOptions.replaceChildren();
   headerAction.hidden = true;
   closeSidebar();
   appShell.hidden = true;
@@ -4409,7 +4420,9 @@ globalSearch.addEventListener('submit', event => {
   else if (normalized.includes('vote logging')) openWorkspace('quick-setup', 'quick-setup-card', 'vote-logging');
   else if (normalized.includes('doctor') || normalized.includes('diagnostic')) openWorkspace('network', 'network-doctor-card');
   else if (['proxy', 'routing', 'redis', 'mqtt', 'mysql', 'sockets', 'transport'].some(value => normalized.includes(value))) openWorkspace('network');
-  else if (normalized.includes('compare') || normalized.includes('drift') || normalized.includes('configuration')) openWorkspace('configurations');
+  else if (normalized.includes('compare') || normalized.includes('drift') || normalized.includes('configuration')) {
+    openGlobalShortcut(GLOBAL_PAGE_SHORTCUTS.get('configuration compare'));
+  }
   else if (normalized.includes('vote') || normalized.includes('data') || normalized.includes('log')) openWorkspace('data');
   else if (normalized.includes('activity') || normalized.includes('operation') || normalized.includes('history')) openWorkspace('activity');
   else if (normalized.includes('server') || normalized.includes('topology')) openWorkspace('servers');
