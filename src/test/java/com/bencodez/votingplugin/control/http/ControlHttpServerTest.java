@@ -158,8 +158,18 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Pending offline votes"));
         assertTrue(script.body().contains("Additional VoteSite history was omitted"));
         assertTrue(script.body().contains("VoteSite history is unavailable because the node returned malformed history data."));
+        assertTrue(script.body().contains("function validPlayerLastVote(lastVote)"));
+        assertTrue(script.body().contains("exactObjectKeys(lastVote, ['displayName', 'serviceSite', 'siteKey', 'time'])"));
+        assertTrue(script.body().contains("const limits = {siteKey: 64, displayName: 100, serviceSite: 64};"));
+        assertTrue(script.body().contains("receivedLastVotes.some(lastVote => !validPlayerLastVote(lastVote))"));
+        assertTrue(script.body().contains("const lastVotes = malformedLastVotes ? [] : receivedLastVotes.slice(0, MAX_PLAYER_LAST_VOTES);"));
         assertTrue(script.body().contains("function validPlayerColumn(column)"));
+        assertTrue(script.body().contains("const columnsOmittedForUnavailableStorage = value.storageRowAvailable === false && value.columns === undefined;"));
+        assertTrue(script.body().contains("if (columnsOmittedForUnavailableStorage) return;"));
         assertTrue(script.body().contains("fields outside the allow-listed column schema"));
+        assertTrue(script.body().contains("Saved; proxy restart required"));
+        assertTrue(script.body().contains("configuration saved; proxy restart required"));
+        assertTrue(script.body().contains("Restart the proxy before treating the saved proxy configuration as active."));
         assertTrue(script.body().contains("function validVoteTraceEvent(event, voteId)"));
         assertTrue(script.body().contains("received.some(event => !validVoteTraceEvent(event, voteId))"));
         assertTrue(script.body().contains("VOTE_LOG_STATUSES.has(event.status)"));

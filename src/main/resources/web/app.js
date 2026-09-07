@@ -402,6 +402,14 @@ function validPlayerColumn(column) {
   return Number.isInteger(number) && number >= -2147483648 && number <= 2147483647;
 }
 
+function validPlayerLastVote(lastVote) {
+  if (!exactObjectKeys(lastVote, ['displayName', 'serviceSite', 'siteKey', 'time'])
+      || !Number.isSafeInteger(lastVote.time) || lastVote.time < 0) return false;
+  const limits = {siteKey: 64, displayName: 100, serviceSite: 64};
+  return Object.entries(limits).every(([field, maximum]) => typeof lastVote[field] === 'string'
+    && lastVote[field].length <= maximum && !/[\u0000-\u001f\u007f-\u009f]/.test(lastVote[field]));
+}
+
 function validVoteTraceEvent(event, voteId) {
   const fields = ['cachedTotal', 'context', 'event', 'playerName', 'playerUuid', 'server', 'service', 'status',
     'voteId', 'voteTime'];
@@ -446,11 +454,8 @@ function renderPlayerData(value) {
   playerResult.append(profile);
   const receivedLastVotes = Array.isArray(value.lastVotes) ? value.lastVotes : [];
   const malformedLastVotes = value.lastVotes !== undefined
-    && (!Array.isArray(value.lastVotes)
-      || value.lastVotes.some(lastVote => !lastVote || typeof lastVote !== 'object' || Array.isArray(lastVote)));
-  const lastVotes = receivedLastVotes
-    .filter(lastVote => lastVote && typeof lastVote === 'object' && !Array.isArray(lastVote))
-    .slice(0, MAX_PLAYER_LAST_VOTES);
+    && (!Array.isArray(value.lastVotes) || receivedLastVotes.some(lastVote => !validPlayerLastVote(lastVote)));
+  const lastVotes = malformedLastVotes ? [] : receivedLastVotes.slice(0, MAX_PLAYER_LAST_VOTES);
   if (lastVotes.length) {
     const heading = text(document.createElement('h4'), 'VoteSite history');
     const scroll = document.createElement('div');
@@ -483,13 +488,16 @@ function renderPlayerData(value) {
     text(warning, `Additional VoteSite history was omitted by the ${MAX_PLAYER_LAST_VOTES}-row inspection limit.`);
     playerResult.append(warning);
   }
-  if (!Array.isArray(value.columns) || value.columns.some(column => !validPlayerColumn(column))) {
+  const columnsOmittedForUnavailableStorage = value.storageRowAvailable === false && value.columns === undefined;
+  if (!columnsOmittedForUnavailableStorage
+      && (!Array.isArray(value.columns) || value.columns.some(column => !validPlayerColumn(column)))) {
     const warning = document.createElement('p');
     warning.className = 'warning-text';
     text(warning, 'Stored values are unavailable because the node returned fields outside the allow-listed column schema.');
     playerResult.append(warning);
     return;
   }
+  if (columnsOmittedForUnavailableStorage) return;
   const columns = value.columns.slice(0, 100);
   const scroll = document.createElement('div');
   scroll.className = 'table-scroll';
@@ -867,6 +875,10 @@ async function traceVoteAcrossNodes() {
 }
 
 function operationPhase(operation) {
+  const proxyFileRestartRequired = operation.type === 'APPLY' && operation.state === 'SUCCEEDED'
+    && operation.configuration?.domain === 'file' && operation.configuration?.fileName === 'bungeeconfig.yml';
+  if (proxyFileRestartRequired) return operation.recovered
+    ? 'Recovered history · Saved; proxy restart required' : 'Saved; proxy restart required';
   if (operation.recovered && operation.state !== 'RUNNING') return `Recovered history · ${operation.state}`;
   if (operation.state === 'RUNNING') return 'Queued or running';
   if (operation.type === 'PREVIEW' && operation.state === 'SUCCEEDED') return 'Preview ready for approval';
@@ -2215,6 +2227,8 @@ function voteLoggingRestartRequired(nodeId = selectedServerId) {
 function operationSummary(operation) {
   const lines = [`${operation.type} · ${operation.state} · ${operation.operationId}`];
   const voteLoggingOperation = operation.configuration?.preset === 'vote-logging';
+  const proxyFileOperation = operation.configuration?.domain === 'file'
+    && operation.configuration?.fileName === 'bungeeconfig.yml';
   let voteLoggingRuntimeChange = false;
   let voteLoggingRestartWarning = false;
   Object.entries(operation.nodeStates).forEach(([node, state]) => {
@@ -2229,6 +2243,8 @@ function operationSummary(operation) {
     const successLabel = operation.type === 'READ' ? 'values read'
       : operation.type === 'PREVIEW' ? 'preview ready'
       : restartRequired ? 'configuration saved; backend restart required'
+      : proxyFileOperation && result?.success && operation.type === 'APPLY'
+        ? 'configuration saved; proxy restart required'
       : result?.reloaded ? 'saved and reloaded' : 'applied';
     lines.push(`${result?.success ? '✓' : result ? '✗' : '…'} ${node}: ${result
       ? `${result.success ? successLabel : result.code} — ${result.message}` : state.toLowerCase()}`);
@@ -2246,6 +2262,9 @@ function operationSummary(operation) {
     lines.push(operation.type === 'PREVIEW'
       ? 'Applying this preview requires restarting each changed backend; a plugin reload does not activate a new vote-log connection.'
       : 'Restart every successfully changed backend before treating the vote-logging runtime as live.');
+  }
+  if (proxyFileOperation && operation.type === 'APPLY' && operation.state === 'SUCCEEDED') {
+    lines.push('Restart the proxy before treating the saved proxy configuration as active.');
   }
   return lines.join('\n');
 }
