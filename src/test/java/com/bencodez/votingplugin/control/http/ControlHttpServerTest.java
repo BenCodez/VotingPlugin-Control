@@ -119,7 +119,7 @@ class ControlHttpServerTest {
                 "if (!Array.isArray(envelope.result?.events)) {\n          unavailable.push(`${source}: malformed vote-trace events`);"));
         assertTrue(script.body().contains(
                 "typeof envelope.result.voteId !== 'string' || envelope.result.voteId !== voteId"));
-        assertTrue(script.body().contains("typeof event.voteId !== 'string' || event.voteId !== voteId"));
+        assertTrue(script.body().contains("event.voteId !== voteId"));
         assertTrue(script.body().contains("const voteId = enteredVoteId.toLowerCase();"));
         assertTrue(script.body().contains("&& enteredVoteId === voteTraceId.value.trim()"));
         assertTrue(script.body().contains("columns.length < value.columns.length"));
@@ -158,6 +158,11 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Pending offline votes"));
         assertTrue(script.body().contains("Additional VoteSite history was omitted"));
         assertTrue(script.body().contains("VoteSite history is unavailable because the node returned malformed history data."));
+        assertTrue(script.body().contains("function validPlayerColumn(column)"));
+        assertTrue(script.body().contains("fields outside the allow-listed column schema"));
+        assertTrue(script.body().contains("function validVoteTraceEvent(event, voteId)"));
+        assertTrue(script.body().contains("received.some(event => !validVoteTraceEvent(event, voteId))"));
+        assertTrue(script.body().contains("VOTE_LOG_STATUSES.has(event.status)"));
         assertTrue(script.body().contains("Node result limit reached; this trace is incomplete"));
         assertFalse(script.body().contains("This is the complete retained trace"));
         assertTrue(script.body().contains("const traceReady = authenticated && connectedInspectionNodes().length > 0"));

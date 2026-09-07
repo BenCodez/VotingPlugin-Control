@@ -73,7 +73,9 @@ public final class InspectionOperations {
         if (stored == null) {
             throw new ValidationException("OPERATION_NOT_FOUND", "Inspection was not found", List.of());
         }
-        return view(stored);
+        InspectionView result = view(stored);
+        if ("COMPLETE".equals(stored.state)) stored.terminalResultObserved = true;
+        return result;
     }
 
     public synchronized InspectionTask claim(String nodeId, UUID sessionId) {
@@ -251,7 +253,7 @@ public final class InspectionOperations {
         Iterator<Map.Entry<UUID, StoredInspection>> iterator = inspections.entrySet().iterator();
         while (iterator.hasNext()) {
             StoredInspection stored = iterator.next().getValue();
-            if (!"COMPLETE".equals(stored.state)) continue;
+            if (!"COMPLETE".equals(stored.state) || !stored.terminalResultObserved) continue;
             append("INSPECTION_EVICTED", stored.id, stored.nodeId, stored.query.kind());
             iterator.remove();
             return;
@@ -279,6 +281,7 @@ public final class InspectionOperations {
         private Instant leasedAt;
         private UUID attemptId;
         private InspectionTaskResult result;
+        private boolean terminalResultObserved;
 
         private StoredInspection(UUID id, String nodeId, UUID targetSession, InspectionQuery query, Instant createdAt) {
             this.id = id;

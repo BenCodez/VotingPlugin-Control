@@ -205,6 +205,15 @@ const MAX_OPERATION_TARGETS = 100;
 const MAX_TRACE_NODES = 12;
 const MAX_TRACE_EVENTS_PER_NODE = 100;
 const MAX_PLAYER_LAST_VOTES = 100;
+const PLAYER_STRING_COLUMNS = new Set(['UUID', 'PlayerName', 'LastOnline', 'DayVoteStreakLastUpdate', 'VoteRemindersLast']);
+const PLAYER_BOOLEAN_COLUMNS = new Set(['TopVoterIgnore', 'Reminded', 'DisableBroadcast', 'CoolDownCheck']);
+const PLAYER_INTEGER_COLUMNS = new Set(['VotePartyVotes', 'MonthTotal', 'AllTimeTotal', 'DailyTotal', 'WeeklyTotal',
+  'Points', 'DayVoteStreak', 'BestDayVoteStreak', 'WeekVoteStreak', 'BestWeekVoteStreak', 'MonthVoteStreak',
+  'BestMonthVoteStreak', 'HighestDailyTotal', 'HighestMonthlyTotal', 'HighestWeeklyTotal', 'LastMonthTotal',
+  'LastWeeklyTotal', 'LastDailyTotal', 'AllSitesLast', 'AlmostAllSitesLast']);
+const VOTE_LOG_EVENTS = new Set(['VOTE_RECEIVED', 'VOTEMILESTONE', 'VOTE_STREAK_REWARD', 'TOP_VOTER_REWARD',
+  'VOTESHOP_PURCHASE']);
+const VOTE_LOG_STATUSES = new Set(['IMMEDIATE', 'CACHED']);
 const TRACE_DEADLINE_MS = 90_000;
 const MAX_REGISTRY_SCAN_ATTEMPTS = 3;
 let authenticated = false;
@@ -363,6 +372,49 @@ function formatEpoch(value) {
   return Number.isFinite(epoch) && epoch > 0 ? new Date(epoch).toLocaleString() : 'Unknown';
 }
 
+function plainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function exactObjectKeys(value, expected) {
+  if (!plainObject(value)) return false;
+  const keys = Object.keys(value).sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
+function validPlayerColumn(column) {
+  if (!exactObjectKeys(column, ['name', 'type', 'value'])) return false;
+  if (typeof column.name !== 'string' || typeof column.type !== 'string' || typeof column.value !== 'string'
+      || new TextEncoder().encode(column.value).length > 16 * 1024) return false;
+  const runtimeSuffix = '[A-Za-z0-9_-]{1,64}';
+  const runtimeString = new RegExp(`^CoolDownCheck(?:_${runtimeSuffix})?_Sites$`).test(column.name);
+  if (PLAYER_STRING_COLUMNS.has(column.name) || runtimeString) return column.type === 'STRING';
+  const runtimeBoolean = new RegExp(`^CoolDownCheck(?:_${runtimeSuffix})?$`).test(column.name);
+  if (PLAYER_BOOLEAN_COLUMNS.has(column.name) || runtimeBoolean) {
+    return column.type === 'BOOLEAN' && /^(?:true|false)$/.test(column.value)
+      || column.type === 'STRING' && /^(?:true|false)$/i.test(column.value);
+  }
+  const runtimeInteger = new RegExp(`^(?:AllSitesLast|AlmostAllSitesLast)(?:_${runtimeSuffix})?$`).test(column.name);
+  const integerName = PLAYER_INTEGER_COLUMNS.has(column.name) || runtimeInteger
+    || /^(?:MonthTotal-(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)-[0-9]{4}|VoteShopLimit[A-Za-z0-9_-]{1,64})$/.test(column.name);
+  if (!integerName || column.type !== 'INTEGER' || !/^-?(?:0|[1-9][0-9]*)$/.test(column.value)) return false;
+  const number = Number(column.value);
+  return Number.isInteger(number) && number >= -2147483648 && number <= 2147483647;
+}
+
+function validVoteTraceEvent(event, voteId) {
+  const fields = ['cachedTotal', 'context', 'event', 'playerName', 'playerUuid', 'server', 'service', 'status',
+    'voteId', 'voteTime'];
+  if (!exactObjectKeys(event, fields) || event.voteId !== voteId
+      || !Number.isSafeInteger(event.voteTime) || event.voteTime < 0
+      || !Number.isInteger(event.cachedTotal) || event.cachedTotal < -2147483648 || event.cachedTotal > 2147483647) return false;
+  const limits = {voteId: 36, playerUuid: 36, playerName: 16, service: 64, server: 64, event: 64, context: 255,
+    status: 16};
+  if (!Object.entries(limits).every(([field, maximum]) => typeof event[field] === 'string'
+      && event[field].length <= maximum && !/[\u0000-\u001f\u007f-\u009f]/.test(event[field]))) return false;
+  return VOTE_LOG_EVENTS.has(event.event) && VOTE_LOG_STATUSES.has(event.status);
+}
+
 function renderPlayerData(value) {
   playerResult.replaceChildren();
   if (!value || value.found !== true) {
@@ -431,9 +483,14 @@ function renderPlayerData(value) {
     text(warning, `Additional VoteSite history was omitted by the ${MAX_PLAYER_LAST_VOTES}-row inspection limit.`);
     playerResult.append(warning);
   }
-  if (!Array.isArray(value.columns)) return;
-  const columns = value.columns.filter(column => column && typeof column === 'object' && !Array.isArray(column))
-    .slice(0, 100);
+  if (!Array.isArray(value.columns) || value.columns.some(column => !validPlayerColumn(column))) {
+    const warning = document.createElement('p');
+    warning.className = 'warning-text';
+    text(warning, 'Stored values are unavailable because the node returned fields outside the allow-listed column schema.');
+    playerResult.append(warning);
+    return;
+  }
+  const columns = value.columns.slice(0, 100);
   const scroll = document.createElement('div');
   scroll.className = 'table-scroll';
   const table = document.createElement('table');
@@ -761,10 +818,13 @@ async function traceVoteAcrossNodes() {
           return;
         }
         const received = envelope.result.events;
-        if (typeof envelope.result.voteId !== 'string' || envelope.result.voteId !== voteId
-            || received.some(event => !event || typeof event !== 'object' || Array.isArray(event)
-              || typeof event.voteId !== 'string' || event.voteId !== voteId)) {
+        if (typeof envelope.result.voteId !== 'string' || envelope.result.voteId !== voteId) {
           unavailable.push(`${source}: vote-trace correlation did not match the requested vote`);
+          return;
+        }
+        if (typeof envelope.result.found !== 'boolean' || typeof envelope.result.truncated !== 'boolean'
+            || received.some(event => !validVoteTraceEvent(event, voteId))) {
+          unavailable.push(`${source}: malformed vote-trace events`);
           return;
         }
         const listed = received.slice(0, MAX_TRACE_EVENTS_PER_NODE);

@@ -238,7 +238,26 @@ class InspectionOperationsTest {
                 () -> operations.get(completed)).code());
     }
 
-    @Test void completedInspectionsYieldCapacityToNewRequests() {
+    @Test void observedCompletedInspectionsYieldCapacityToNewRequests() {
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        InspectionOperations operations = new InspectionOperations(registry, clock);
+        UUID oldest = null;
+        for (int index = 0; index < 100; index++) {
+            UUID inspection = operations.create("backend-a", new InspectionQuery("overview", Map.of())).inspectionId();
+            if (index == 0) oldest = inspection;
+            InspectionTask task = operations.claim("backend-a", session);
+            operations.complete(inspection, "backend-a",
+                    new InspectionTaskResult(session, true, "OK", "done", envelope("overview"), task.attemptId()));
+            operations.get(inspection);
+        }
+
+        assertNotNull(operations.create("backend-a", new InspectionQuery("overview", Map.of())));
+        UUID evicted = oldest;
+        assertEquals("OPERATION_NOT_FOUND", assertThrows(ValidationException.class,
+                () -> operations.get(evicted)).code());
+    }
+
+    @Test void unobservedCompletedInspectionsAreNotEvictedAtCapacity() {
         register(session, Set.of(InspectionQuery.CAPABILITY));
         InspectionOperations operations = new InspectionOperations(registry, clock);
         UUID oldest = null;
@@ -250,10 +269,9 @@ class InspectionOperationsTest {
                     new InspectionTaskResult(session, true, "OK", "done", envelope("overview"), task.attemptId()));
         }
 
-        assertNotNull(operations.create("backend-a", new InspectionQuery("overview", Map.of())));
-        UUID evicted = oldest;
-        assertEquals("OPERATION_NOT_FOUND", assertThrows(ValidationException.class,
-                () -> operations.get(evicted)).code());
+        assertEquals("OPERATION_LIMIT", assertThrows(ValidationException.class,
+                () -> operations.create("backend-a", new InspectionQuery("overview", Map.of()))).code());
+        assertEquals("SUCCEEDED", operations.get(oldest).state());
     }
 
     @Test void activeInspectionsStillEnforceCapacityLimit() {
