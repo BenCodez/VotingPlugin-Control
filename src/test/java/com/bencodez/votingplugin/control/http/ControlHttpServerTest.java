@@ -225,6 +225,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Configuration changed; refreshing server overview"));
         assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"));
         assertTrue(script.body().contains("!inspectionCapableNode() || dashboardLoading || inspectionInFlight"));
+        assertTrue(script.body().contains("runInspection('overview', {}, null, {manageBusy: false})"));
+        assertTrue(script.body().contains("inspectionInFlight = true;\n  dashboardLoadedContext = '';"));
         assertEquals(4, script.body().split(java.util.regex.Pattern.quote(
                 "if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');"),
                 -1).length - 1);
@@ -239,7 +241,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(
                 "configurations: ['Compare configuration', () => {\n      setConfigView('compare');\n      runDriftCheck.click();"));
         assertTrue(script.body().contains(
-                "dashboardLoadedContext = requestedContext;\n      dashboardInspectionStatus.overview = 'failed';"));
+                "dashboardLoadedContext = '';\n      dashboardInspectionStatus.overview = 'failed';"));
+        assertTrue(script.body().contains("if (requestedContext === dashboardContext() && complete)"));
         assertTrue(script.body().contains("disconnected from Control"));
         assertTrue(script.body().contains("document.createElement('progress')"));
         assertTrue(script.body().contains("const count = hasCount ? finiteCount(entry.count) : hasVotes ? finiteCount(entry.votes) : null;"));
@@ -254,6 +257,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("function normalizeDashboardCollection(value, maximum, normalize)"));
         assertTrue(script.body().contains("if (!Array.isArray(value)) return {items: [], incomplete: true};"));
         assertTrue(script.body().contains("normalizeDashboardVoteSiteHealth"));
+        assertTrue(script.body().contains("dashboardHealthContradictsOverview(dashboardOverview, health.result)"));
+        assertTrue(script.body().contains("health.sites.length === configured"));
         assertTrue(script.body().contains("['truncated', 'detectedUnconfiguredServicesTruncated'].forEach"));
         assertTrue(script.body().contains("typeof source[field] !== 'boolean' || source[field] === true"));
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));

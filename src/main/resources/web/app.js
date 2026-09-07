@@ -541,15 +541,18 @@ function downloadJson(name, value) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function runInspection(kind, filters = {}, statusElement = null) {
+async function runInspection(kind, filters = {}, statusElement = null, options = {}) {
   const node = inspectionCapableNode();
   if (!node) throw new Error('Choose a connected backend with data inspection support.');
-  if (inspectionInFlight) throw new Error('Another read-only inspection is still running.');
+  const manageBusy = options.manageBusy !== false;
+  if (manageBusy && inspectionInFlight) throw new Error('Another read-only inspection is still running.');
   const nodeId = node.nodeId;
   const sessionId = node.sessionId;
   const requestAuthenticationGeneration = authenticationGeneration;
-  inspectionInFlight = true;
-  updateExtendedButtons();
+  if (manageBusy) {
+    inspectionInFlight = true;
+    updateExtendedButtons();
+  }
   if (statusElement) text(statusElement, `Queued ${kind} inspection…`);
   try {
     const boundedFilters = {};
@@ -587,8 +590,10 @@ async function runInspection(kind, filters = {}, statusElement = null) {
     }
     return envelope;
   } finally {
-    inspectionInFlight = false;
-    updateExtendedButtons();
+    if (manageBusy) {
+      inspectionInFlight = false;
+      updateExtendedButtons();
+    }
   }
 }
 
@@ -1680,6 +1685,18 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
   return {result: {...source, days, ...Object.fromEntries(booleanFields.map(field =>
     [field, typeof source[field] === 'boolean' ? source[field] : undefined])), sites: sites.items,
     detectedUnconfiguredServices: detected.items, unmatchedLoggedServices: unmatched.items}, incomplete};
+}
+
+function dashboardHealthContradictsOverview(overview, health) {
+  if (!overview || !health) return false;
+  const flagsMatch = health.autoCreateVoteSites === overview.autoCreateVoteSites
+    && health.voteLoggingEnabled === overview.voteLoggingEnabled
+    && health.voteLoggingAvailable === overview.voteLogAvailable
+    && health.voteLogReadable === overview.voteLogReadable;
+  const configured = finiteCount(overview.configuredVoteSites);
+  const siteCountMatches = health.truncated === true || configured == null
+    || Array.isArray(health.sites) && health.sites.length === configured;
+  return !flagsMatch || !siteCountMatches;
 }
 
 function normalizeDashboardCountRows(value, maximum, label) {
@@ -3771,6 +3788,7 @@ async function refreshDashboard() {
   }
   const requestedContext = dashboardContext();
   dashboardLoading = true;
+  inspectionInFlight = true;
   dashboardLoadedContext = '';
   lastOverview = null;
   text(dataOverview, 'Refreshing server overview…');
@@ -3784,7 +3802,7 @@ async function refreshDashboard() {
   refreshDashboardButton.disabled = true;
   text(attentionFeed, 'Inspecting the selected VotingPlugin server…');
   try {
-    const overviewEnvelope = await runInspection('overview');
+    const overviewEnvelope = await runInspection('overview', {}, null, {manageBusy: false});
     if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
     const overview = normalizeDashboardOverview(overviewEnvelope.result);
     dashboardOverview = overview.result;
@@ -3793,11 +3811,13 @@ async function refreshDashboard() {
     renderJsonResult(dataOverview, dashboardOverview);
     updateSetupChecklist(lastOverview);
     try {
-      const healthEnvelope = await runInspection('vote-site-health', {days: '30'});
+      const healthEnvelope = await runInspection('vote-site-health', {days: '30'}, null, {manageBusy: false});
       if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
       const health = normalizeDashboardVoteSiteHealth(healthEnvelope.result);
       dashboardVoteSiteHealth = health.result;
-      dashboardInspectionStatus.voteSiteHealth = health.incomplete ? 'incomplete' : 'available';
+      const healthIncomplete = health.incomplete
+        || dashboardHealthContradictsOverview(dashboardOverview, health.result);
+      dashboardInspectionStatus.voteSiteHealth = healthIncomplete ? 'incomplete' : 'available';
     } catch (error) {
       if (requestedContext !== dashboardContext()) throw error;
       dashboardVoteSiteHealth = null;
@@ -3807,7 +3827,7 @@ async function refreshDashboard() {
       dashboardInspectionStatus.voteLog24h = 'loading';
       dashboardInspectionStatus.voteLog30d = 'loading';
       try {
-        const summaryEnvelope = await runInspection('vote-log-summary', {days: '1'});
+        const summaryEnvelope = await runInspection('vote-log-summary', {days: '1'}, null, {manageBusy: false});
         if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
         const summary = normalizeDashboardVoteSummary(summaryEnvelope.result, 1);
         dashboardVoteSummary24h = summary.result;
@@ -3818,7 +3838,7 @@ async function refreshDashboard() {
         dashboardInspectionStatus.voteLog24h = 'failed';
       }
       try {
-        const summaryEnvelope = await runInspection('vote-log-summary', {days: '30'});
+        const summaryEnvelope = await runInspection('vote-log-summary', {days: '30'}, null, {manageBusy: false});
         if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
         const summary = normalizeDashboardVoteSummary(summaryEnvelope.result);
         dashboardVoteSummary30d = summary.result;
@@ -3829,15 +3849,18 @@ async function refreshDashboard() {
         dashboardInspectionStatus.voteLog30d = 'failed';
       }
     }
-    if (requestedContext === dashboardContext()) dashboardLoadedContext = requestedContext;
+    const complete = Object.values(dashboardInspectionStatus)
+      .every(status => ['available', 'not-required'].includes(status));
+    if (requestedContext === dashboardContext() && complete) dashboardLoadedContext = requestedContext;
   } catch (error) {
     if (requestedContext === dashboardContext()) {
-      dashboardLoadedContext = requestedContext;
+      dashboardLoadedContext = '';
       dashboardInspectionStatus.overview = 'failed';
       text(attentionFeed, error.message || 'Dashboard inspection failed.');
     }
   } finally {
     dashboardLoading = false;
+    inspectionInFlight = false;
     renderMetrics();
     updateExtendedButtons();
     if (requestedContext !== dashboardContext() && tabFromHash() === 'overview') {
@@ -4048,7 +4071,10 @@ loadSiteHealth.addEventListener('click', async () => {
       (await runInspection('vote-site-health', {days: '30'}, siteHealthResult)).result);
     dashboardVoteSiteHealth = health.result;
     if (dashboardLoadedContext === dashboardContext()) {
-      dashboardInspectionStatus.voteSiteHealth = health.incomplete ? 'incomplete' : 'available';
+      const healthIncomplete = health.incomplete
+        || dashboardHealthContradictsOverview(dashboardOverview, health.result);
+      dashboardInspectionStatus.voteSiteHealth = healthIncomplete ? 'incomplete' : 'available';
+      if (dashboardInspectionStatus.voteSiteHealth === 'incomplete') dashboardLoadedContext = '';
     }
     renderSiteHealthResult(health.result);
     renderMetrics();
@@ -4067,6 +4093,7 @@ loadVoteLogSummary.addEventListener('click', async () => {
     dashboardVoteSummary30d = summary.result;
     if (dashboardLoadedContext === dashboardContext()) {
       dashboardInspectionStatus.voteLog30d = summary.incomplete ? 'incomplete' : 'available';
+      if (summary.incomplete) dashboardLoadedContext = '';
     }
     renderJsonResult(voteLogSummaryResult, summary.result);
     renderMetrics();
