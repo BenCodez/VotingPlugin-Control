@@ -214,6 +214,14 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("id=\"global-search-input\""));
         assertTrue(script.body().contains("async function refreshDashboard()"));
         assertTrue(script.body().contains("function dashboardIssues()"));
+        assertFalse(web.body().contains("data-search-term="));
+        assertTrue(script.body().contains("result.enabledVoteSites > result.configuredVoteSites"));
+        assertTrue(script.body().contains("renderJsonResult(dataOverview, dashboardOverview);"));
+        assertTrue(script.body().contains("const summary = {items: [], total: 0, actionable: 0"));
+        assertTrue(script.body().contains("if (summary.items.length < 30) summary.items.push(item);"));
+        assertTrue(script.body().contains("const actionable = issueSummary.actionable;"));
+        assertTrue(script.body().contains("!selected.online || !current || hasWarning"));
+        assertFalse(script.body().contains("return issues.slice(0, 30);"));
         assertTrue(script.body().contains(
                 "configurations: ['Compare configuration', () => {\n      setConfigView('compare');\n      runDriftCheck.click();"));
         assertTrue(script.body().contains(

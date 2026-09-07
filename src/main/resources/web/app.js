@@ -1600,6 +1600,8 @@ function normalizeDashboardOverview(value) {
     if (count == null || !Number.isSafeInteger(count)) incomplete = true;
     result[field] = count;
   });
+  if (result.configuredVoteSites != null && result.enabledVoteSites != null
+      && result.enabledVoteSites > result.configuredVoteSites) incomplete = true;
   ['autoCreateVoteSites', 'processRewards', 'voteLoggingEnabled', 'voteLogAvailable', 'voteLogReadable',
     'proxyMode', 'votifierDetected', 'configurationHealthy'].forEach(field => {
     if (typeof source[field] !== 'boolean') incomplete = true;
@@ -1664,13 +1666,20 @@ function issue(severity, title, detail, action, tab, scrollTarget = '', preset =
 }
 
 function dashboardIssues() {
-  const issues = [];
+  const summary = {items: [], total: 0, actionable: 0, hasCritical: false, hasWarning: false};
+  const issues = {push(item) {
+    summary.total += 1;
+    if (item.severity !== 'informational') summary.actionable += 1;
+    summary.hasCritical ||= item.severity === 'critical';
+    summary.hasWarning ||= item.severity === 'warning';
+    if (summary.items.length < 30) summary.items.push(item);
+  }};
   const selected = nodeIndex.get(selectedServerId);
   if (!selected) {
     issues.push(issue('informational', 'Choose a VotingPlugin server',
       'Server-specific health and administration actions need an explicit target.', 'Choose server', 'servers'));
   } else if (!selected.online) {
-    issues.push(issue('critical', `${selected.displayName} is disconnected from Control`,
+    issues.push(issue('warning', `${selected.displayName} is disconnected from Control`,
       'Minecraft presence is separate; reconnect the Control node before attempting changes.', 'View server', 'servers'));
   } else if (dashboardLoadedContext !== dashboardContext()) {
     issues.push(issue('informational', 'Detailed health has not been loaded',
@@ -1750,10 +1759,10 @@ function dashboardIssues() {
   operationHistoryItems.filter(operation => ['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state)).slice(0, 5)
     .forEach(operation => issues.push(issue('warning', `${operationLabel(operation)} needs review`,
       operationPhase(operation), 'View operation', 'activity')));
-  return issues.slice(0, 30);
+  return summary;
 }
 
-function renderAttention(issues) {
+function renderAttention(issues, total = issues.length) {
   attentionFeed.replaceChildren();
   if (issues.length === 0) {
     const empty = text(document.createElement('p'), 'No actionable problems were found in the currently loaded state.');
@@ -1776,7 +1785,7 @@ function renderAttention(issues) {
     row.append(indicator, copy, action);
     attentionFeed.append(row);
   });
-  if (issues.length > 8) attentionFeed.append(text(document.createElement('small'), `${issues.length - 8} additional issues are available in their related pages.`));
+  if (total > 8) attentionFeed.append(text(document.createElement('small'), `${total - 8} additional issues are available in their related pages.`));
 }
 
 function addQuickAction(label, tab, scrollTarget = '', preset = '') {
@@ -1866,15 +1875,16 @@ function renderOverviewActivity() {
 }
 
 function renderMetrics() {
-  const issues = dashboardIssues();
+  const issueSummary = dashboardIssues();
+  const issues = issueSummary.items;
   const selected = nodeIndex.get(selectedServerId);
   const current = dashboardLoadedContext === dashboardContext();
-  const hasCritical = issues.some(item => item.severity === 'critical');
-  const hasWarning = issues.some(item => item.severity === 'warning');
+  const hasCritical = issueSummary.hasCritical;
+  const hasWarning = issueSummary.hasWarning;
   const hasIncompleteInspection = Object.values(dashboardInspectionStatus)
     .some(status => ['failed', 'incomplete'].includes(status));
-  const state = !selected ? 'Unavailable' : !selected.online || hasCritical ? 'Critical'
-    : !current || hasWarning || hasIncompleteInspection ? 'Warning' : 'Healthy';
+  const state = !selected ? 'Unavailable' : hasCritical ? 'Critical'
+    : !selected.online || !current || hasWarning || hasIncompleteInspection ? 'Warning' : 'Healthy';
   text(metricHealth, state);
   text(metricHealthDetail, !selected ? 'Choose a server' : !selected.online ? 'Control disconnected'
     : !current ? 'Inspection not loaded' : hasCritical ? 'Immediate attention required'
@@ -1897,10 +1907,10 @@ function renderMetrics() {
     ? 'Proxy mode disabled' : proxyReportsFor(selectedServerId).length ? 'Proxy relationship reported' : 'No reporting proxy');
   const logged30d = current ? finiteCount(dashboardVoteSummary30d?.total) : null;
   text(metricLoggedEvents, logged30d == null ? '—' : logged30d);
-  const actionable = issues.filter(item => item.severity !== 'informational').length;
-  text(metricIssues, actionable >= 30 ? `${actionable}+` : actionable);
+  const actionable = issueSummary.actionable;
+  text(metricIssues, actionable);
   text(metricIssuesDetail, actionable ? `${actionable} actionable` : 'No observed problems');
-  renderAttention(issues);
+  renderAttention(issues, issueSummary.total);
   renderQuickActions();
   renderVoteActivity();
   renderOverviewActivity();
@@ -3700,6 +3710,7 @@ async function refreshDashboard() {
     dashboardOverview = overview.result;
     dashboardInspectionStatus.overview = overview.incomplete ? 'incomplete' : 'available';
     lastOverview = dashboardOverview;
+    renderJsonResult(dataOverview, dashboardOverview);
     updateSetupChecklist(lastOverview);
     try {
       const health = normalizeDashboardVoteSiteHealth(
