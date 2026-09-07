@@ -1641,7 +1641,7 @@ function normalizeDashboardOverview(value) {
 }
 
 function invalidVoteLoggingState(value) {
-  const available = value.voteLoggingAvailable ?? value.voteLogAvailable;
+  const available = Object.hasOwn(value, 'voteLogAvailable') ? value.voteLogAvailable : value.voteLoggingAvailable;
   return available === true && value.voteLoggingEnabled !== true
     || value.voteLogReadable === true && available !== true;
 }

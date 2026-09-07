@@ -267,6 +267,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
         assertTrue(script.body().contains("function normalizeDashboardCountRows(value, maximum, label)"));
         assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
+        assertTrue(script.body().contains("Object.hasOwn(value, 'voteLogAvailable') ? value.voteLogAvailable : value.voteLoggingAvailable"));
         assertTrue(script.body().contains("const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);"));
         assertTrue(script.body().contains("result.proxyMode === true && !proxyMethods.has(result.proxyMethod.toUpperCase())"));
         assertTrue(script.body().contains("immediate + cached !== total"));
