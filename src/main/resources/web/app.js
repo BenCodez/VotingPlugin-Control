@@ -204,6 +204,7 @@ const MAX_SYNC_TARGETS = 100;
 const MAX_OPERATION_TARGETS = 100;
 const MAX_TRACE_NODES = 12;
 const MAX_TRACE_EVENTS_PER_NODE = 100;
+const MAX_PLAYER_LAST_VOTES = 100;
 const TRACE_DEADLINE_MS = 90_000;
 const MAX_REGISTRY_SCAN_ATTEMPTS = 3;
 let authenticated = false;
@@ -393,7 +394,7 @@ function renderPlayerData(value) {
   playerResult.append(profile);
   const receivedLastVotes = Array.isArray(value.lastVotes) ? value.lastVotes : [];
   const lastVotes = receivedLastVotes
-    .filter(lastVote => lastVote && typeof lastVote === 'object').slice(0, 100);
+    .filter(lastVote => lastVote && typeof lastVote === 'object').slice(0, MAX_PLAYER_LAST_VOTES);
   if (lastVotes.length) {
     const heading = text(document.createElement('h4'), 'VoteSite history');
     const scroll = document.createElement('div');
@@ -415,10 +416,10 @@ function renderPlayerData(value) {
     scroll.append(table);
     playerResult.append(heading, scroll);
   }
-  if (value.lastVotesTruncated === true || receivedLastVotes.length > 100) {
+  if (value.lastVotesTruncated === true || receivedLastVotes.length > MAX_PLAYER_LAST_VOTES) {
     const warning = document.createElement('p');
     warning.className = 'warning-text';
-    text(warning, 'Additional VoteSite history was omitted by the 100-row inspection limit.');
+    text(warning, `Additional VoteSite history was omitted by the ${MAX_PLAYER_LAST_VOTES}-row inspection limit.`);
     playerResult.append(warning);
   }
   if (!Array.isArray(value.columns)) return;
