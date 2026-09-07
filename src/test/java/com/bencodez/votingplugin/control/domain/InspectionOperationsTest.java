@@ -238,6 +238,35 @@ class InspectionOperationsTest {
                 () -> operations.get(completed)).code());
     }
 
+    @Test void completedInspectionsYieldCapacityToNewRequests() {
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        InspectionOperations operations = new InspectionOperations(registry, clock);
+        UUID oldest = null;
+        for (int index = 0; index < 100; index++) {
+            UUID inspection = operations.create("backend-a", new InspectionQuery("overview", Map.of())).inspectionId();
+            if (index == 0) oldest = inspection;
+            InspectionTask task = operations.claim("backend-a", session);
+            operations.complete(inspection, "backend-a",
+                    new InspectionTaskResult(session, true, "OK", "done", envelope("overview"), task.attemptId()));
+        }
+
+        assertNotNull(operations.create("backend-a", new InspectionQuery("overview", Map.of())));
+        UUID evicted = oldest;
+        assertEquals("OPERATION_NOT_FOUND", assertThrows(ValidationException.class,
+                () -> operations.get(evicted)).code());
+    }
+
+    @Test void activeInspectionsStillEnforceCapacityLimit() {
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        InspectionOperations operations = new InspectionOperations(registry, clock);
+        for (int index = 0; index < 100; index++) {
+            operations.create("backend-a", new InspectionQuery("overview", Map.of()));
+        }
+
+        assertEquals("OPERATION_LIMIT", assertThrows(ValidationException.class,
+                () -> operations.create("backend-a", new InspectionQuery("overview", Map.of()))).code());
+    }
+
     private void register(UUID sessionId, Set<String> capabilities) {
         registry.register(new NodeRegistration("backend-a", sessionId, "Backend A", "BUKKIT", "test", 1,
                 capabilities, Set.of()));

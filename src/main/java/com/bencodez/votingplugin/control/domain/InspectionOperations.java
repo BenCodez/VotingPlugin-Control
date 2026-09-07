@@ -50,6 +50,7 @@ public final class InspectionOperations {
         if (!node.online() || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)) {
             throw new ValidationException("NODE_UNAVAILABLE", "Node cannot answer inspection queries", List.of(nodeId));
         }
+        evictOldestCompletedAtCapacity();
         if (inspections.size() >= MAX_INSPECTIONS) {
             throw new ValidationException("OPERATION_LIMIT", "Too many retained inspections", List.of());
         }
@@ -242,6 +243,18 @@ public final class InspectionOperations {
                 append("INSPECTION_EXPIRED", stored.id, stored.nodeId, stored.query.kind());
                 iterator.remove();
             }
+        }
+    }
+
+    private void evictOldestCompletedAtCapacity() {
+        if (inspections.size() < MAX_INSPECTIONS) return;
+        Iterator<Map.Entry<UUID, StoredInspection>> iterator = inspections.entrySet().iterator();
+        while (iterator.hasNext()) {
+            StoredInspection stored = iterator.next().getValue();
+            if (!"COMPLETE".equals(stored.state)) continue;
+            append("INSPECTION_EVICTED", stored.id, stored.nodeId, stored.query.kind());
+            iterator.remove();
+            return;
         }
     }
 

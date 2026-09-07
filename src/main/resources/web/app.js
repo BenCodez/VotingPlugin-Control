@@ -393,8 +393,12 @@ function renderPlayerData(value) {
   add('Last online', formatEpoch(value.lastOnline));
   playerResult.append(profile);
   const receivedLastVotes = Array.isArray(value.lastVotes) ? value.lastVotes : [];
+  const malformedLastVotes = value.lastVotes !== undefined
+    && (!Array.isArray(value.lastVotes)
+      || value.lastVotes.some(lastVote => !lastVote || typeof lastVote !== 'object' || Array.isArray(lastVote)));
   const lastVotes = receivedLastVotes
-    .filter(lastVote => lastVote && typeof lastVote === 'object').slice(0, MAX_PLAYER_LAST_VOTES);
+    .filter(lastVote => lastVote && typeof lastVote === 'object' && !Array.isArray(lastVote))
+    .slice(0, MAX_PLAYER_LAST_VOTES);
   if (lastVotes.length) {
     const heading = text(document.createElement('h4'), 'VoteSite history');
     const scroll = document.createElement('div');
@@ -416,7 +420,12 @@ function renderPlayerData(value) {
     scroll.append(table);
     playerResult.append(heading, scroll);
   }
-  if (value.lastVotesTruncated === true || receivedLastVotes.length > MAX_PLAYER_LAST_VOTES) {
+  if (malformedLastVotes) {
+    const warning = document.createElement('p');
+    warning.className = 'warning-text';
+    text(warning, 'VoteSite history is unavailable because the node returned malformed history data.');
+    playerResult.append(warning);
+  } else if (value.lastVotesTruncated === true || receivedLastVotes.length > MAX_PLAYER_LAST_VOTES) {
     const warning = document.createElement('p');
     warning.className = 'warning-text';
     text(warning, `Additional VoteSite history was omitted by the ${MAX_PLAYER_LAST_VOTES}-row inspection limit.`);
@@ -2202,10 +2211,12 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
     rememberOperation(operation);
   }
   rememberVoteLoggingRestart(operation);
-  if (operationContextCurrent(context) && operation.type === 'APPLY'
-      && Object.values(operation.results || {}).some(result => result?.success)) {
+  if (operation.type === 'APPLY' && Object.values(operation.results || {}).some(result => result?.success)) {
     fileReadCache.clear();
     lastFileReadOperation = null;
+  }
+  if (operationContextCurrent(context) && operation.type === 'APPLY'
+      && Object.values(operation.results || {}).some(result => result?.success)) {
     lastOverview = null;
     lastDiagnostics = null;
     updateExtendedButtons();
@@ -3274,6 +3285,7 @@ runDriftCheck.addEventListener('click', async () => {
     if (requestAuthenticationGeneration !== authenticationGeneration || requestInputGeneration !== inputGeneration
         || requestSelectedNodeId !== selectedServerId || requestSelectedSessionId !== nodeIndex.get(requestSelectedNodeId)?.sessionId
         || !targetsStillCurrent) {
+      text(driftResults, 'The selected targets or file changed while reading. Drift results were discarded; run the comparison again.');
       return;
     }
     const rows = nodeIds.map(nodeId => {

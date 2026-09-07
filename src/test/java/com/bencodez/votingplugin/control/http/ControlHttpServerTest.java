@@ -157,6 +157,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("enteredVoteId === voteTraceId.value.trim()"));
         assertTrue(script.body().contains("Pending offline votes"));
         assertTrue(script.body().contains("Additional VoteSite history was omitted"));
+        assertTrue(script.body().contains("VoteSite history is unavailable because the node returned malformed history data."));
         assertTrue(script.body().contains("Node result limit reached; this trace is incomplete"));
         assertFalse(script.body().contains("This is the complete retained trace"));
         assertTrue(script.body().contains("const traceReady = authenticated && connectedInspectionNodes().length > 0"));
@@ -167,6 +168,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("previewConfiguration.disabled = !routingDraftReady;"));
         assertTrue(script.body().contains("applyConfiguration.disabled = !routingDraftReady || !approvedPreview;"));
         assertTrue(script.body().contains("Your unsaved proxy-routing draft is retained"));
+        assertTrue(script.body().contains("fileReadCache.clear();\n    lastFileReadOperation = null;\n  }\n  if (operationContextCurrent(context)"),
+                "Every successful apply must invalidate cached reads even after the view context changes.");
+        assertTrue(script.body().contains("Drift results were discarded; run the comparison again."),
+                "A drift read completed for stale context must show an explicit discarded-result status.");
         assertTrue(script.body().contains("text(operationStatus, routingDraftStatus('The selected nodes changed during refresh."));
         assertTrue(script.body().contains("Your unsaved ${configurationFile.value} draft is retained"));
         assertTrue(script.body().contains("Discard unsaved routing changes and load current values?"));
