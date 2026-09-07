@@ -284,6 +284,7 @@ let dashboardVoteSummary30d = null;
 let dashboardLoadedContext = '';
 let dashboardInspectionStatus = emptyDashboardInspectionStatus();
 let dashboardTopologySignature = '';
+let dashboardConfigurationGeneration = 0;
 let dashboardLoading = false;
 let operationHistoryItems = [];
 let dedicatedSetupApprovals = new Map();
@@ -1287,7 +1288,7 @@ function updateHeaderAction(tab) {
   const [label, action] = actions[tab] || actions.overview;
   text(headerAction, label);
   headerAction.onclick = action;
-  const unavailable = tab === 'overview' ? !inspectionCapableNode() || dashboardLoading
+  const unavailable = tab === 'overview' ? !inspectionCapableNode() || dashboardLoading || inspectionInFlight
     : tab === 'network' ? runNetworkDoctor.disabled
     : tab === 'configurations' ? runDriftCheck.disabled
     : tab === 'data' ? refreshDataOverview.disabled
@@ -1395,6 +1396,16 @@ async function autoLoadTab(tab) {
   if (!authenticated) return;
   if (autoLoadInFlight.has(tab)) {
     autoLoadPending.add(tab);
+    return;
+  }
+  if (tab === 'overview' && inspectionCapableNode() && dashboardLoadedContext !== dashboardContext()
+      && (dashboardLoading || inspectionInFlight)) {
+    if (!autoLoadPending.has(tab)) {
+      autoLoadPending.add(tab);
+      window.setTimeout(() => {
+        if (autoLoadPending.delete(tab)) void autoLoadTab(tab);
+      }, 250);
+    }
     return;
   }
   if (tab === 'overview' && inspectionCapableNode() && dashboardLoadedContext !== dashboardContext()
@@ -1556,7 +1567,7 @@ function renderTopology() {
 
 function dashboardContext() {
   const node = nodeIndex.get(selectedServerId);
-  return node ? `${node.nodeId}|${node.sessionId}|${node.online}|${node.acceptedCapabilities.includes('data.inspect.v1')}|${dashboardTopologySignature}` : '';
+  return node ? `${node.nodeId}|${node.sessionId}|${node.online}|${node.acceptedCapabilities.includes('data.inspect.v1')}|${dashboardTopologySignature}|${dashboardConfigurationGeneration}` : '';
 }
 
 function topologySignature(items) {
@@ -2719,19 +2730,26 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
     rememberOperation(operation);
   }
   rememberVoteLoggingRestart(operation);
-  if (operationContextCurrent(context) && operation.type === 'APPLY'
-      && Object.values(operation.results || {}).some(result => result?.success)) {
+  const applied = operation.type === 'APPLY'
+    && Object.values(operation.results || {}).some(result => result?.success);
+  if (applied) {
     fileReadCache.clear();
     lastFileReadOperation = null;
     lastOverview = null;
     lastDiagnostics = null;
+    dashboardConfigurationGeneration++;
     dashboardOverview = null;
     dashboardVoteSiteHealth = null;
     dashboardVoteSummary24h = null;
     dashboardVoteSummary30d = null;
     dashboardLoadedContext = '';
     dashboardInspectionStatus = emptyDashboardInspectionStatus();
+    renderMetrics();
     updateExtendedButtons();
+    if (tabFromHash() === 'overview') {
+      text(dataOverview, 'Configuration changed; refreshing server overview…');
+      window.setTimeout(() => void autoLoadTab('overview'), 0);
+    }
   }
   return operation;
 }
@@ -3736,7 +3754,7 @@ async function refreshOverview(target = dataOverview) {
 }
 
 async function refreshDashboard() {
-  if (!inspectionCapableNode() || dashboardLoading) {
+  if (!inspectionCapableNode() || dashboardLoading || inspectionInFlight) {
     renderMetrics();
     return;
   }
@@ -3755,15 +3773,18 @@ async function refreshDashboard() {
   refreshDashboardButton.disabled = true;
   text(attentionFeed, 'Inspecting the selected VotingPlugin server…');
   try {
-    const overview = normalizeDashboardOverview((await runInspection('overview')).result);
+    const overviewEnvelope = await runInspection('overview');
+    if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
+    const overview = normalizeDashboardOverview(overviewEnvelope.result);
     dashboardOverview = overview.result;
     dashboardInspectionStatus.overview = overview.incomplete ? 'incomplete' : 'available';
     lastOverview = dashboardOverview;
     renderJsonResult(dataOverview, dashboardOverview);
     updateSetupChecklist(lastOverview);
     try {
-      const health = normalizeDashboardVoteSiteHealth(
-        (await runInspection('vote-site-health', {days: '30'})).result);
+      const healthEnvelope = await runInspection('vote-site-health', {days: '30'});
+      if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
+      const health = normalizeDashboardVoteSiteHealth(healthEnvelope.result);
       dashboardVoteSiteHealth = health.result;
       dashboardInspectionStatus.voteSiteHealth = health.incomplete ? 'incomplete' : 'available';
     } catch (error) {
@@ -3775,8 +3796,9 @@ async function refreshDashboard() {
       dashboardInspectionStatus.voteLog24h = 'loading';
       dashboardInspectionStatus.voteLog30d = 'loading';
       try {
-        const summary = normalizeDashboardVoteSummary(
-          (await runInspection('vote-log-summary', {days: '1'})).result, 1);
+        const summaryEnvelope = await runInspection('vote-log-summary', {days: '1'});
+        if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
+        const summary = normalizeDashboardVoteSummary(summaryEnvelope.result, 1);
         dashboardVoteSummary24h = summary.result;
         dashboardInspectionStatus.voteLog24h = summary.incomplete ? 'incomplete' : 'available';
       } catch (error) {
@@ -3785,8 +3807,9 @@ async function refreshDashboard() {
         dashboardInspectionStatus.voteLog24h = 'failed';
       }
       try {
-        const summary = normalizeDashboardVoteSummary(
-          (await runInspection('vote-log-summary', {days: '30'})).result);
+        const summaryEnvelope = await runInspection('vote-log-summary', {days: '30'});
+        if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
+        const summary = normalizeDashboardVoteSummary(summaryEnvelope.result);
         dashboardVoteSummary30d = summary.result;
         dashboardInspectionStatus.voteLog30d = summary.incomplete ? 'incomplete' : 'available';
       } catch (error) {

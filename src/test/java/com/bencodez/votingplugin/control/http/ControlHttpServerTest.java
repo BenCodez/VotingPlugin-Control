@@ -220,6 +220,14 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("Logged Votes · 30d"));
         assertTrue(script.body().contains("async function refreshDashboard()"));
         assertTrue(script.body().contains("function dashboardIssues()"));
+        assertTrue(script.body().contains("dashboardConfigurationGeneration++"));
+        assertTrue(script.body().contains("|${dashboardConfigurationGeneration}`"));
+        assertTrue(script.body().contains("Configuration changed; refreshing server overview"));
+        assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"));
+        assertTrue(script.body().contains("!inspectionCapableNode() || dashboardLoading || inspectionInFlight"));
+        assertEquals(4, script.body().split(java.util.regex.Pattern.quote(
+                "if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');"),
+                -1).length - 1);
         assertFalse(web.body().contains("data-search-term="));
         assertTrue(script.body().contains("result.enabledVoteSites > result.configuredVoteSites"));
         assertTrue(script.body().contains("renderJsonResult(dataOverview, dashboardOverview);"));
