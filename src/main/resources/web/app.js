@@ -391,8 +391,9 @@ function renderPlayerData(value) {
   add('Last vote', formatEpoch(value.lastVoteTime));
   add('Last online', formatEpoch(value.lastOnline));
   playerResult.append(profile);
-  const lastVotes = Array.isArray(value.lastVotes)
-    ? value.lastVotes.filter(lastVote => lastVote && typeof lastVote === 'object').slice(0, 100) : [];
+  const receivedLastVotes = Array.isArray(value.lastVotes) ? value.lastVotes : [];
+  const lastVotes = receivedLastVotes
+    .filter(lastVote => lastVote && typeof lastVote === 'object').slice(0, 100);
   if (lastVotes.length) {
     const heading = text(document.createElement('h4'), 'VoteSite history');
     const scroll = document.createElement('div');
@@ -414,7 +415,7 @@ function renderPlayerData(value) {
     scroll.append(table);
     playerResult.append(heading, scroll);
   }
-  if (value.lastVotesTruncated === true) {
+  if (value.lastVotesTruncated === true || receivedLastVotes.length > 100) {
     const warning = document.createElement('p');
     warning.className = 'warning-text';
     text(warning, 'Additional VoteSite history was omitted by the 100-row inspection limit.');
@@ -435,11 +436,11 @@ function renderPlayerData(value) {
     const row = document.createElement('tr');
     row.append(text(document.createElement('td'), column.name));
     row.append(text(document.createElement('td'), column.type));
-    const value = document.createElement('td');
+    const cell = document.createElement('td');
     const code = document.createElement('code');
     text(code, column.value);
-    value.append(code);
-    row.append(value);
+    cell.append(code);
+    row.append(cell);
     body.append(row);
   });
   table.append(head, body);

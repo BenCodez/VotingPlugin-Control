@@ -207,6 +207,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("preset: 'proxy-method'"));
         assertTrue(script.body().contains("proxyMethodButtons.forEach"));
         assertTrue(script.body().contains("handleEditorKeydown"));
+        assertTrue(script.body().contains("receivedLastVotes.length > 100"));
+        assertTrue(script.body().contains("const cell = document.createElement('td');"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
         HttpResponse<String> stylesheet = get("/app.css", null);
