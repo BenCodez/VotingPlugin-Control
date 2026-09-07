@@ -115,6 +115,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const MAX_PLAYER_LAST_VOTES = 100;"));
         assertTrue(script.body().contains(
                 "envelope.result?.truncated === true || received.length > MAX_TRACE_EVENTS_PER_NODE"));
+        assertTrue(script.body().contains(
+                "if (!Array.isArray(envelope.result?.events)) {\n          unavailable.push(`${source}: malformed vote-trace events`);"));
         assertTrue(script.body().contains("columns.length < value.columns.length"));
         assertTrue(script.body().contains("const traceAbortController = new AbortController();"));
         assertTrue(script.body().contains("await Promise.allSettled(candidates.map(async node => {"));

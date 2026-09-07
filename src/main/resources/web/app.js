@@ -745,9 +745,13 @@ async function traceVoteAcrossNodes() {
     results.forEach((result, index) => {
       if (result.status === 'fulfilled') {
         const {node, envelope} = result.value;
-        const received = Array.isArray(envelope.result?.events) ? envelope.result.events : [];
-        const listed = received.slice(0, MAX_TRACE_EVENTS_PER_NODE);
         const source = `${node.displayName} (${node.nodeId})`;
+        if (!Array.isArray(envelope.result?.events)) {
+          unavailable.push(`${source}: malformed vote-trace events`);
+          return;
+        }
+        const received = envelope.result.events;
+        const listed = received.slice(0, MAX_TRACE_EVENTS_PER_NODE);
         sources.push(source);
         if (envelope.result?.truncated === true || received.length > MAX_TRACE_EVENTS_PER_NODE) {
           truncatedSources.push(source);
