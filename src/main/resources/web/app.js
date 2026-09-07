@@ -1635,6 +1635,8 @@ function normalizeDashboardOverview(value) {
     incomplete ||= normalized.incomplete;
     result[field] = normalized.value;
   });
+  const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);
+  if (result.proxyMode === true && !proxyMethods.has(result.proxyMethod.toUpperCase())) incomplete = true;
   return {result, incomplete};
 }
 
@@ -1744,6 +1746,11 @@ function countRowsExceedTotal(items, total) {
   return false;
 }
 
+function dashboardVoteSummariesContradict(shortWindow, longWindow) {
+  return finiteCount(shortWindow?.total) != null && finiteCount(longWindow?.total) != null
+    && shortWindow.total > longWindow.total;
+}
+
 function issue(severity, title, detail, action, tab, scrollTarget = '', preset = '') {
   return {severity, title, detail, action, tab, scrollTarget, preset};
 }
@@ -1768,7 +1775,8 @@ function dashboardIssues() {
     issues.push(issue('informational', 'Detailed health has not been loaded',
       'Refresh the dashboard to inspect Vote Sites, VoteLog, configuration, and runtime state.', 'Refresh dashboard', 'overview'));
   }
-  if (dashboardLoadedContext === dashboardContext()) {
+  if (dashboardLoadedContext === dashboardContext() || Object.values(dashboardInspectionStatus)
+      .some(status => ['failed', 'incomplete'].includes(status))) {
     const labels = {overview: 'Overview', voteSiteHealth: 'Vote Site health',
       voteLog24h: '24-hour VoteLog summary', voteLog30d: '30-day VoteLog summary'};
     Object.entries(dashboardInspectionStatus).forEach(([inspection, status]) => {
@@ -3848,6 +3856,10 @@ async function refreshDashboard() {
         dashboardVoteSummary30d = null;
         dashboardInspectionStatus.voteLog30d = 'failed';
       }
+      if (dashboardVoteSummariesContradict(dashboardVoteSummary24h, dashboardVoteSummary30d)) {
+        dashboardInspectionStatus.voteLog24h = 'incomplete';
+        dashboardInspectionStatus.voteLog30d = 'incomplete';
+      }
     }
     const complete = Object.values(dashboardInspectionStatus)
       .every(status => ['available', 'not-required'].includes(status));
@@ -3919,6 +3931,7 @@ downloadNetworkDiagnostics.addEventListener('click', () => {
 });
 
 runDriftCheck.addEventListener('click', async () => {
+  setConfigView('compare');
   const nodeIds = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
   const selectedFile = driftFile.value;
   const requestAuthenticationGeneration = authenticationGeneration;
@@ -4092,8 +4105,13 @@ loadVoteLogSummary.addEventListener('click', async () => {
       (await runInspection('vote-log-summary', {days: '30'}, voteLogSummaryResult)).result);
     dashboardVoteSummary30d = summary.result;
     if (dashboardLoadedContext === dashboardContext()) {
-      dashboardInspectionStatus.voteLog30d = summary.incomplete ? 'incomplete' : 'available';
-      if (summary.incomplete) dashboardLoadedContext = '';
+      dashboardInspectionStatus.voteLog30d = summary.incomplete || dashboardVoteSummariesContradict(
+        dashboardVoteSummary24h, dashboardVoteSummary30d) ? 'incomplete' : 'available';
+      if (dashboardVoteSummariesContradict(dashboardVoteSummary24h, dashboardVoteSummary30d)) {
+        dashboardInspectionStatus.voteLog24h = 'incomplete';
+      }
+      if (summary.incomplete || dashboardVoteSummariesContradict(
+        dashboardVoteSummary24h, dashboardVoteSummary30d)) dashboardLoadedContext = '';
     }
     renderJsonResult(voteLogSummaryResult, summary.result);
     renderMetrics();

@@ -266,7 +266,11 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
         assertTrue(script.body().contains("function normalizeDashboardCountRows(value, maximum, label)"));
         assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
+        assertTrue(script.body().contains("const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);"));
+        assertTrue(script.body().contains("result.proxyMode === true && !proxyMethods.has(result.proxyMethod.toUpperCase())"));
         assertTrue(script.body().contains("immediate + cached !== total"));
+        assertTrue(script.body().contains("function dashboardVoteSummariesContradict(shortWindow, longWindow)"));
+        assertTrue(script.body().contains("dashboardInspectionStatus.voteLog24h = 'incomplete';\n        dashboardInspectionStatus.voteLog30d = 'incomplete';"));
         assertTrue(script.body().contains("entry.count > remaining"));
         assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));
         assertTrue(script.body().contains("lastOverview = null;\n  text(dataOverview, 'Refreshing server overview…');"));
@@ -280,6 +284,7 @@ class ControlHttpServerTest {
         assertFalse(script.body().contains("Number(dashboardOverview.configuredVoteSites) === 0"));
         assertTrue(script.body().contains("const siteCountsKnown = configured != null && enabled != null;"));
         assertTrue(script.body().contains("text(metricVoteSites, !siteCountsKnown ? '—'"));
+        assertTrue(script.body().contains("runDriftCheck.addEventListener('click', async () => {\n  setConfigView('compare');"));
         assertTrue(script.body().contains("voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0"));
         assertTrue(script.body().contains("voteSitesConfiguredKnown: configuredVoteSites != null"));
         int exactShortcut = script.body().indexOf("const exactShortcut = GLOBAL_PAGE_SHORTCUTS.get(normalized);");
