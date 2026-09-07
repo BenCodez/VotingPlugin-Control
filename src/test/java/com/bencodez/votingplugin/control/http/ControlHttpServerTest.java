@@ -117,6 +117,9 @@ class ControlHttpServerTest {
                 "envelope.result?.truncated === true || received.length > MAX_TRACE_EVENTS_PER_NODE"));
         assertTrue(script.body().contains(
                 "if (!Array.isArray(envelope.result?.events)) {\n          unavailable.push(`${source}: malformed vote-trace events`);"));
+        assertTrue(script.body().contains(
+                "typeof envelope.result.voteId !== 'string' || envelope.result.voteId !== voteId"));
+        assertTrue(script.body().contains("typeof event.voteId !== 'string' || event.voteId !== voteId"));
         assertTrue(script.body().contains("columns.length < value.columns.length"));
         assertTrue(script.body().contains("const traceAbortController = new AbortController();"));
         assertTrue(script.body().contains("await Promise.allSettled(candidates.map(async node => {"));
@@ -212,6 +215,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("handleEditorKeydown"));
         assertTrue(script.body().contains("receivedLastVotes.length > MAX_PLAYER_LAST_VOTES"));
         assertTrue(script.body().contains(".slice(0, MAX_PLAYER_LAST_VOTES)"));
+        assertTrue(script.body().contains("if (!automatic) text(fileOperationStatus, error.message);"));
         assertTrue(script.body().contains("const cell = document.createElement('td');"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));

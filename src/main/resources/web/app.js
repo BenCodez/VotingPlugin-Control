@@ -751,6 +751,12 @@ async function traceVoteAcrossNodes() {
           return;
         }
         const received = envelope.result.events;
+        if (typeof envelope.result.voteId !== 'string' || envelope.result.voteId !== voteId
+            || received.some(event => !event || typeof event !== 'object' || Array.isArray(event)
+              || typeof event.voteId !== 'string' || event.voteId !== voteId)) {
+          unavailable.push(`${source}: vote-trace correlation did not match the requested vote`);
+          return;
+        }
         const listed = received.slice(0, MAX_TRACE_EVENTS_PER_NODE);
         sources.push(source);
         if (envelope.result?.truncated === true || received.length > MAX_TRACE_EVENTS_PER_NODE) {
@@ -2690,7 +2696,9 @@ async function loadFileConfiguration(automatic = false) {
       updateConfigurationButtons();
       updateExtendedButtons();
     }
-  } catch (error) { text(fileOperationStatus, error.message); }
+  } catch (error) {
+    if (!automatic) text(fileOperationStatus, error.message);
+  }
 }
 
 readFileConfiguration.addEventListener('click', () => { void loadFileConfiguration(false); });
