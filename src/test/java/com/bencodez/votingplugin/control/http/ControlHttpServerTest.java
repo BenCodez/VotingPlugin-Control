@@ -217,6 +217,7 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("id=\"primary-navigation\""));
         assertTrue(web.body().contains("id=\"attention-feed\""));
         assertTrue(web.body().contains("id=\"global-search-input\""));
+        assertTrue(web.body().contains("Logged Votes · 30d"));
         assertTrue(script.body().contains("async function refreshDashboard()"));
         assertTrue(script.body().contains("function dashboardIssues()"));
         assertFalse(web.body().contains("data-search-term="));
@@ -233,7 +234,7 @@ class ControlHttpServerTest {
                 "dashboardLoadedContext = requestedContext;\n      dashboardInspectionStatus.overview = 'failed';"));
         assertTrue(script.body().contains("disconnected from Control"));
         assertTrue(script.body().contains("document.createElement('progress')"));
-        assertTrue(script.body().contains("const countSource = Object.hasOwn(entry, 'count') ? entry.count : entry.votes;"));
+        assertTrue(script.body().contains("const count = hasCount ? finiteCount(entry.count) : hasVotes ? finiteCount(entry.votes) : null;"));
         assertTrue(script.body().contains("Math.max(...services.map(service => service.count), 1)"));
         assertTrue(script.body().contains("track.value = service.count;"));
         assertFalse(script.body().contains("service.votes"));
@@ -245,7 +246,19 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("function normalizeDashboardCollection(value, maximum, normalize)"));
         assertTrue(script.body().contains("if (!Array.isArray(value)) return {items: [], incomplete: true};"));
         assertTrue(script.body().contains("normalizeDashboardVoteSiteHealth"));
+        assertTrue(script.body().contains("['truncated', 'detectedUnconfiguredServicesTruncated'].forEach"));
+        assertTrue(script.body().contains("typeof source[field] !== 'boolean' || source[field] === true"));
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
+        assertTrue(script.body().contains("function normalizeDashboardCountRows(value, maximum, label)"));
+        assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
+        assertTrue(script.body().contains("immediate + cached !== total"));
+        assertTrue(script.body().contains("entry.count > total"));
+        assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));
+        assertTrue(script.body().contains("lastOverview = null;\n  text(dataOverview, 'Refreshing server overview…');"));
+        assertTrue(script.body().contains(".result, 1);"));
+        assertTrue(script.body().contains("hasCount && hasVotes && count !== legacyCount"));
+        assertTrue(script.body().contains("days == null || days !== expectedDays || total == null"));
+        assertTrue(script.body().contains("topServices: services.items, topServers: servers.items"));
         assertTrue(script.body().contains("typeof value === 'number' && Number.isSafeInteger(value) && value >= 0"),
                 "Dashboard counts must reject null, booleans, whitespace strings, and fractional values.");
         assertFalse(script.body().contains("const count = Number(value);"));

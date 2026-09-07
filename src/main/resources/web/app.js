@@ -1612,6 +1612,7 @@ function normalizeDashboardOverview(value) {
     if (typeof source[field] !== 'boolean') incomplete = true;
     result[field] = typeof source[field] === 'boolean' ? source[field] : undefined;
   });
+  incomplete ||= invalidVoteLoggingState(result);
   [['pluginVersion', 80], ['platform', 32], ['serverSoftware', 80], ['serverVersion', 80],
     ['dataStorage', 32], ['proxyMethod', 32]].forEach(([field, maximum]) => {
     const normalized = boundedDashboardString(source[field], maximum, true);
@@ -1621,9 +1622,22 @@ function normalizeDashboardOverview(value) {
   return {result, incomplete};
 }
 
-function normalizeDashboardVoteSiteHealth(value) {
+function invalidVoteLoggingState(value) {
+  const available = value.voteLoggingAvailable ?? value.voteLogAvailable;
+  return available === true && value.voteLoggingEnabled !== true
+    || value.voteLogReadable === true && available !== true;
+}
+
+function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
   const source = dashboardRecord(value, 'Vote Site health inspection');
-  let incomplete = typeof source.autoCreateVoteSites !== 'boolean';
+  const days = finiteCount(source.days);
+  let incomplete = days == null || days !== expectedDays;
+  const booleanFields = ['voteLoggingEnabled', 'voteLoggingAvailable', 'voteLogReadable', 'autoCreateVoteSites'];
+  booleanFields.forEach(field => { if (typeof source[field] !== 'boolean') incomplete = true; });
+  incomplete ||= invalidVoteLoggingState(source);
+  ['truncated', 'detectedUnconfiguredServicesTruncated'].forEach(field => {
+    if (typeof source[field] !== 'boolean' || source[field] === true) incomplete = true;
+  });
   const allowedStatuses = new Set(['ACTIVE', 'DISABLED', 'SERVICE_SITE_MISSING', 'VOTE_LOG_UNAVAILABLE',
     'VOTE_LOG_UNREADABLE', 'NO_RECENT_VOTES']);
   const sites = normalizeDashboardCollection(source.sites, 100, entry => {
@@ -1631,9 +1645,16 @@ function normalizeDashboardVoteSiteHealth(value) {
     const status = boundedDashboardString(entry.status, 64);
     const key = boundedDashboardString(entry.key, 100, true);
     const displayName = boundedDashboardString(entry.displayName, 100, true);
-    if (status.incomplete || !allowedStatuses.has(status.value) || (!key.value && !displayName.value)) return null;
-    return {value: {...entry, status: status.value, key: key.value, displayName: displayName.value},
-      incomplete: key.incomplete || displayName.incomplete};
+    const serviceSite = boundedDashboardString(entry.serviceSite, 100, true);
+    if (status.incomplete || !allowedStatuses.has(status.value) || (!key.value && !displayName.value)
+        || typeof entry.enabled !== 'boolean' || serviceSite.incomplete) return null;
+    const expectedStatuses = entry.enabled === false ? new Set(['DISABLED']) : !serviceSite.value
+      ? new Set(['SERVICE_SITE_MISSING']) : source.voteLoggingAvailable !== true
+      ? new Set(['VOTE_LOG_UNAVAILABLE']) : source.voteLogReadable !== true
+      ? new Set(['VOTE_LOG_UNREADABLE']) : new Set(['ACTIVE', 'NO_RECENT_VOTES']);
+    if (!expectedStatuses.has(status.value)) return null;
+    return {value: {...entry, status: status.value, key: key.value, displayName: displayName.value,
+      serviceSite: serviceSite.value}, incomplete: key.incomplete || displayName.incomplete};
   });
   const detected = normalizeDashboardCollection(source.detectedUnconfiguredServices, 100, entry => {
     const service = boundedDashboardString(entry, 100);
@@ -1645,25 +1666,45 @@ function normalizeDashboardVoteSiteHealth(value) {
     return service.incomplete ? null : {value: {...entry, serviceSite: service.value}, incomplete: false};
   });
   incomplete ||= sites.incomplete || detected.incomplete || unmatched.incomplete;
-  return {result: {...source, autoCreateVoteSites: typeof source.autoCreateVoteSites === 'boolean'
-    ? source.autoCreateVoteSites : undefined, sites: sites.items,
+  return {result: {...source, days, ...Object.fromEntries(booleanFields.map(field =>
+    [field, typeof source[field] === 'boolean' ? source[field] : undefined])), sites: sites.items,
     detectedUnconfiguredServices: detected.items, unmatchedLoggedServices: unmatched.items}, incomplete};
 }
 
-function normalizeDashboardVoteSummary(value) {
-  const source = dashboardRecord(value, 'VoteLog summary inspection');
-  const total = finiteCount(source.total);
-  let incomplete = total == null || !Number.isSafeInteger(total);
-  const services = normalizeDashboardCollection(source.topServices, 20, entry => {
+function normalizeDashboardCountRows(value, maximum, label) {
+  return normalizeDashboardCollection(value, maximum, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-    const service = boundedDashboardString(entry.service, 100, true);
-    const countSource = Object.hasOwn(entry, 'count') ? entry.count : entry.votes;
-    const count = finiteCount(countSource);
-    if (service.incomplete || count == null || !Number.isSafeInteger(count)) return null;
-    return {value: {...entry, service: service.value || 'Unknown service', count}, incomplete: false};
+    const name = boundedDashboardString(entry[label], 100, true);
+    const hasCount = Object.hasOwn(entry, 'count');
+    const hasVotes = Object.hasOwn(entry, 'votes');
+    const count = hasCount ? finiteCount(entry.count) : hasVotes ? finiteCount(entry.votes) : null;
+    const legacyCount = hasVotes ? finiteCount(entry.votes) : null;
+    if (name.incomplete || count == null || hasVotes && legacyCount == null
+        || hasCount && hasVotes && count !== legacyCount) return null;
+    return {value: {...entry, [label]: name.value || `Unknown ${label}`, count}, incomplete: false};
   });
-  incomplete ||= services.incomplete;
-  return {result: {...source, total, topServices: services.items}, incomplete};
+}
+
+function normalizeDashboardVoteSummary(value, expectedDays = 30) {
+  const source = dashboardRecord(value, 'VoteLog summary inspection');
+  const days = finiteCount(source.days);
+  const total = finiteCount(source.total);
+  const immediate = finiteCount(source.immediate);
+  const cached = finiteCount(source.cached);
+  const uniqueVoters = finiteCount(source.uniqueVoters);
+  let incomplete = days == null || days !== expectedDays || total == null || immediate == null
+    || cached == null || uniqueVoters == null;
+  const services = normalizeDashboardCountRows(source.topServices, 20, 'service');
+  const servers = normalizeDashboardCountRows(source.topServers, 20, 'server');
+  incomplete ||= services.incomplete || servers.incomplete;
+  if (total != null) {
+    incomplete ||= immediate == null || cached == null || immediate + cached !== total
+      || uniqueVoters == null || uniqueVoters > total;
+    incomplete ||= services.items.some(entry => entry.count > total)
+      || servers.items.some(entry => entry.count > total);
+  }
+  return {result: {...source, days, total, immediate, cached, uniqueVoters,
+    topServices: services.items, topServers: servers.items}, incomplete};
 }
 
 function issue(severity, title, detail, action, tab, scrollTarget = '', preset = '') {
@@ -3702,6 +3743,9 @@ async function refreshDashboard() {
   const requestedContext = dashboardContext();
   dashboardLoading = true;
   dashboardLoadedContext = '';
+  lastOverview = null;
+  text(dataOverview, 'Refreshing server overview…');
+  updateSetupChecklist();
   dashboardOverview = null;
   dashboardVoteSiteHealth = null;
   dashboardVoteSummary24h = null;
@@ -3732,7 +3776,7 @@ async function refreshDashboard() {
       dashboardInspectionStatus.voteLog30d = 'loading';
       try {
         const summary = normalizeDashboardVoteSummary(
-          (await runInspection('vote-log-summary', {days: '1'})).result);
+          (await runInspection('vote-log-summary', {days: '1'})).result, 1);
         dashboardVoteSummary24h = summary.result;
         dashboardInspectionStatus.voteLog24h = summary.incomplete ? 'incomplete' : 'available';
       } catch (error) {
