@@ -274,6 +274,26 @@ class InspectionOperationsTest {
                 new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId())).state());
     }
 
+    @Test void legacyPlayerResultsWithoutAdditiveStorageMetadataRemainCompatible() {
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        InspectionOperations operations = new InspectionOperations(registry, clock);
+        UUID inspection = operations.create("backend-a", new InspectionQuery("player", Map.of("name", "Example")))
+                .inspectionId();
+        InspectionTask task = operations.claim("backend-a", session);
+        ObjectNode data = playerEnvelope(false);
+        ObjectNode result = (ObjectNode) data.path("result");
+        result.remove("storageRowAvailable");
+        result.put("storage", "SQLITE");
+
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(inspection, "backend-a",
+                        new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId()))).code());
+
+        result.remove("storage");
+        assertEquals("SUCCEEDED", operations.complete(inspection, "backend-a",
+                new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId())).state());
+    }
+
     @Test void abandonedAndCompletedInspectionsHaveSeparateRetentionWindows() {
         register(session, Set.of(InspectionQuery.CAPABILITY));
         InspectionOperations operations = new InspectionOperations(registry, clock);

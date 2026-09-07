@@ -492,8 +492,10 @@ function renderPlayerData(value) {
     text(warning, `Additional VoteSite history was omitted by the ${MAX_PLAYER_LAST_VOTES}-row inspection limit.`);
     playerResult.append(warning);
   }
+  const legacyStorageMetadata = value.storageRowAvailable === undefined && value.storage === undefined
+    && value.columns === undefined && value.columnsTruncated === undefined;
   const columnsOmittedForUnavailableStorage = value.storageRowAvailable === false && value.columns === undefined;
-  if (!columnsOmittedForUnavailableStorage
+  if (!legacyStorageMetadata && !columnsOmittedForUnavailableStorage
       && (!Array.isArray(value.columns) || value.columns.some(column => !validPlayerColumn(column)))) {
     const warning = document.createElement('p');
     warning.className = 'warning-text';
@@ -501,7 +503,7 @@ function renderPlayerData(value) {
     playerResult.append(warning);
     return;
   }
-  if (columnsOmittedForUnavailableStorage) return;
+  if (legacyStorageMetadata || columnsOmittedForUnavailableStorage) return;
   const columns = value.columns.slice(0, 100);
   const scroll = document.createElement('div');
   scroll.className = 'table-scroll';

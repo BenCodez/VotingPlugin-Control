@@ -165,8 +165,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const lastVotes = malformedLastVotes ? [] : receivedLastVotes.slice(0, MAX_PLAYER_LAST_VOTES);"));
         assertTrue(script.body().contains("function validPlayerColumn(column)"));
         assertTrue(script.body().contains("const runtimeSuffix = suffix => suffix.length > 0"));
+        assertTrue(script.body().contains("const legacyStorageMetadata = value.storageRowAvailable === undefined"));
         assertTrue(script.body().contains("const columnsOmittedForUnavailableStorage = value.storageRowAvailable === false && value.columns === undefined;"));
-        assertTrue(script.body().contains("if (columnsOmittedForUnavailableStorage) return;"));
+        assertTrue(script.body().contains("if (legacyStorageMetadata || columnsOmittedForUnavailableStorage) return;"));
         assertTrue(script.body().contains("fields outside the allow-listed column schema"));
         assertTrue(script.body().contains("Saved; proxy restart required"));
         assertTrue(script.body().contains("configuration saved; proxy restart required"));

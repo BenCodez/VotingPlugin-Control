@@ -42,8 +42,9 @@ public final class InspectionOperations {
             "AllSitesLast", "AlmostAllSitesLast");
     private static final Set<String> PLAYER_FOUND_FIELDS = Set.of("found", "uuid", "name", "lastOnline", "online",
             "totals", "points", "streaks", "lastVoteTime", "lastVotes", "lastVotesTruncated",
-            "pendingOfflineVotes", "storageRowAvailable");
-    private static final Set<String> PLAYER_OPTIONAL_STORAGE_FIELDS = Set.of("storage", "columns", "columnsTruncated");
+            "pendingOfflineVotes");
+    private static final Set<String> PLAYER_OPTIONAL_STORAGE_FIELDS = Set.of("storageRowAvailable", "storage", "columns",
+            "columnsTruncated");
     private static final Duration LEASE = Duration.ofMinutes(2);
     private static final Duration ACTIVE_RETENTION = Duration.ofMinutes(5);
     private static final Duration COMPLETE_RETENTION = Duration.ofMinutes(15);
@@ -263,10 +264,15 @@ public final class InspectionOperations {
                 || !validStreaks(value.path("streaks")) || !nonNegativeLong(value.path("lastVoteTime"))
                 || !validLastVotes(value.path("lastVotes")) || !value.path("lastVotesTruncated").isBoolean()
                 || !nonNegativeInt(value.path("pendingOfflineVotes"))
-                || value.path("pendingOfflineVotes").intValue() > 100_000
-                || !value.path("storageRowAvailable").isBoolean()) {
+                || value.path("pendingOfflineVotes").intValue() > 100_000) {
             return false;
         }
+        // data.inspect.v1 predates the additive storage metadata. Preserve exact legacy envelopes while still
+        // rejecting any storage fields unless their availability is explicitly declared by a newer node.
+        if (!value.has("storageRowAvailable")) {
+            return !value.has("storage") && !value.has("columns") && !value.has("columnsTruncated");
+        }
+        if (!value.path("storageRowAvailable").isBoolean()) return false;
         boolean storageAvailable = value.path("storageRowAvailable").booleanValue();
         if (!storageAvailable) {
             return !value.has("storage")
