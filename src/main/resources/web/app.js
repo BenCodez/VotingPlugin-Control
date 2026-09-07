@@ -699,10 +699,11 @@ async function traceVoteAcrossNodes() {
   const available = connectedInspectionNodes();
   const candidates = available.slice(0, MAX_TRACE_NODES);
   if (candidates.length === 0) throw new Error('No connected backend supports vote-log inspection.');
-  const voteId = voteTraceId.value.trim();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(voteId)) {
+  const enteredVoteId = voteTraceId.value.trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(enteredVoteId)) {
     throw new Error('Enter a canonical vote UUID.');
   }
+  const voteId = enteredVoteId.toLowerCase();
   const requestAuthenticationGeneration = authenticationGeneration;
   const requestInputGeneration = inputGeneration;
   const requestSelectedNodeId = selectedServerId;
@@ -713,7 +714,7 @@ async function traceVoteAcrossNodes() {
   const contextCurrent = () => requestAuthenticationGeneration === authenticationGeneration
     && requestInputGeneration === inputGeneration && requestSelectedNodeId === selectedServerId
     && requestSelectedSessionId === nodeIndex.get(requestSelectedNodeId)?.sessionId
-    && voteId === voteTraceId.value.trim() && days === String(voteLogDays.value)
+    && enteredVoteId === voteTraceId.value.trim() && days === String(voteLogDays.value)
     && candidates.every(node => {
       const current = nodeIndex.get(node.nodeId);
       return Boolean(current?.online) && candidateSessions.get(node.nodeId) === current.sessionId

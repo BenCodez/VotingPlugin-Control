@@ -120,6 +120,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(
                 "typeof envelope.result.voteId !== 'string' || envelope.result.voteId !== voteId"));
         assertTrue(script.body().contains("typeof event.voteId !== 'string' || event.voteId !== voteId"));
+        assertTrue(script.body().contains("const voteId = enteredVoteId.toLowerCase();"));
+        assertTrue(script.body().contains("&& enteredVoteId === voteTraceId.value.trim()"));
         assertTrue(script.body().contains("columns.length < value.columns.length"));
         assertTrue(script.body().contains("const traceAbortController = new AbortController();"));
         assertTrue(script.body().contains("await Promise.allSettled(candidates.map(async node => {"));
@@ -152,7 +154,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("retained.sessionId === readSessionId"));
         assertTrue(script.body().contains("operation.results?.[proxyId]?.sessionId !== proxySessionId"));
         assertTrue(script.body().contains("confirmDiscardUnsavedConfiguration('switching servers')"));
-        assertTrue(script.body().contains("voteId === voteTraceId.value.trim()"));
+        assertTrue(script.body().contains("enteredVoteId === voteTraceId.value.trim()"));
         assertTrue(script.body().contains("Pending offline votes"));
         assertTrue(script.body().contains("Additional VoteSite history was omitted"));
         assertTrue(script.body().contains("Node result limit reached; this trace is incomplete"));
