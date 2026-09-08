@@ -1932,7 +1932,8 @@ function normalizeDashboardVoteSummary(value, expectedDays = 30) {
   if (total != null) {
     incomplete ||= immediate == null || cached == null || immediate + cached !== total
       || uniqueVoters == null || uniqueVoters > total;
-    incomplete ||= total > 0 && (services.items.length === 0 || servers.items.length === 0);
+    incomplete ||= total > 0 && (services.items.length === 0 || servers.items.length === 0
+      || !countRowsArePositive(services.items) || !countRowsArePositive(servers.items));
     incomplete ||= countRowsExceedTotal(services.items, total)
       || countRowsExceedTotal(servers.items, total);
   }
@@ -1954,6 +1955,10 @@ function countRowsAreNonIncreasing(items) {
     if (items[index].count > items[index - 1].count) return false;
   }
   return true;
+}
+
+function countRowsArePositive(items) {
+  return items.every(entry => entry.count > 0);
 }
 
 function dashboardCountRowIdentity(entry, label) {

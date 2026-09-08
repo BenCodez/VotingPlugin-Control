@@ -355,8 +355,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
         assertTrue(script.body().contains("countRowsExceedTotal(services.items, total)"));
         assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
-        assertTrue(script.body().contains("total > 0 && (services.items.length === 0 || servers.items.length === 0)"),
+        assertTrue(script.body().contains("total > 0 && (services.items.length === 0 || servers.items.length === 0"),
                 "A nonempty VoteLog total must include at least one top service and server.");
+        assertTrue(script.body().contains("!countRowsArePositive(services.items) || !countRowsArePositive(servers.items)"),
+                "A positive VoteLog total must not include zero-count top-category rows.");
+        assertTrue(script.body().contains("function countRowsArePositive(items)"));
+        assertTrue(script.body().contains("return items.every(entry => entry.count > 0);"));
         assertTrue(script.body().contains("function countRowsAreNonIncreasing(items)"),
                 "VoteLog category rows must retain their descending-count order.");
         assertTrue(script.body().contains("if (items[index].count > items[index - 1].count) return false;"));
