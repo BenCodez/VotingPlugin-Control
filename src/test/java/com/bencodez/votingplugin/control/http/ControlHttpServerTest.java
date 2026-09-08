@@ -301,6 +301,10 @@ class ControlHttpServerTest {
                 "Clearing restart state after a failed history refresh must update the setup checklist.");
         assertTrue(script.body().contains("if (operationHistoryStatus === 'failed') issues.push(issue('warning'"),
                 "Unavailable operation history must downgrade dashboard health.");
+        assertTrue(script.body().contains("let enrollmentStatus = 'not-loaded';"));
+        assertTrue(script.body().contains("enrollmentStatus = 'failed';"));
+        assertTrue(script.body().contains("if (enrollmentStatus === 'failed') issues.push(issue('warning'"),
+                "Unavailable enrollment state must downgrade dashboard health.");
         assertTrue(script.body().contains("dashboardConfigurationGeneration++"));
         assertTrue(script.body().contains("|${dashboardConfigurationGeneration}`"));
         assertTrue(script.body().contains("Configuration changed; refreshing server overview"));

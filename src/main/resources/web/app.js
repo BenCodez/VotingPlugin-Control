@@ -299,6 +299,7 @@ let dashboardConfigurationGeneration = 0;
 let dashboardLoading = false;
 let operationHistoryItems = [];
 let operationHistoryStatus = 'not-loaded';
+let enrollmentStatus = 'not-loaded';
 let dedicatedSetupApprovals = new Map();
 let pendingDetectedVoteSite = null;
 let voteLoggingRestartPending = new Map();
@@ -1241,6 +1242,7 @@ function applyAuthenticatedSession(body) {
   dashboardTopologySignature = '';
   operationHistoryItems = [];
   operationHistoryStatus = 'not-loaded';
+  enrollmentStatus = 'not-loaded';
   dedicatedSetupApprovals.clear();
   voteLoggingRestartPending.clear();
   pendingDetectedVoteSite = null;
@@ -2141,6 +2143,9 @@ function dashboardIssues() {
   if (operationHistoryStatus === 'failed') issues.push(issue('warning', 'Operation history is unavailable',
     'Recent configuration failures could not be loaded, so dashboard health is incomplete.',
     'Retry activity', 'activity'));
+  if (enrollmentStatus === 'failed') issues.push(issue('warning', 'Enrollment state is unavailable',
+    'Recent enrollment state could not be loaded, so backend access health is incomplete.',
+    'Retry access', 'access'));
   return summary;
 }
 
@@ -2902,6 +2907,7 @@ function discardAuthenticationState(reason) {
   dashboardTopologySignature = '';
   operationHistoryItems = [];
   operationHistoryStatus = 'not-loaded';
+  enrollmentStatus = 'not-loaded';
   dedicatedSetupApprovals.clear();
   voteLoggingRestartPending.clear();
   pendingDetectedVoteSite = null;
@@ -3126,11 +3132,15 @@ async function loadEnrollments() {
     return;
   }
   enrollmentInFlight = true;
+  const enrollmentGeneration = authenticationGeneration;
+  enrollmentStatus = 'loading';
   refreshEnrollments.disabled = true;
   try {
     const body = await authorized('/api/v1/enrollments');
+    if (!authenticated || enrollmentGeneration !== authenticationGeneration) return;
     enrollmentIds = new Set(Array.isArray(body.nodeIds) ? body.nodeIds : []);
     enrollmentsLoaded = true;
+    enrollmentStatus = 'available';
     if (allNodeItems.length) renderNodeViews();
     enrollmentList.replaceChildren();
     if (!Array.isArray(body.nodeIds) || body.nodeIds.length === 0) {
@@ -3164,7 +3174,9 @@ async function loadEnrollments() {
       enrollmentList.append(item);
     });
   } catch (error) {
+    if (!authenticated || enrollmentGeneration !== authenticationGeneration) return;
     enrollmentsLoaded = false;
+    enrollmentStatus = 'failed';
     if (allNodeItems.length) renderNodeViews();
     text(enrollmentMessage, error.message || 'Enrollments could not be loaded.');
   } finally {
