@@ -350,6 +350,11 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
         assertTrue(script.body().contains("countRowsExceedTotal(services.items, total)"));
         assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
+        assertTrue(script.body().contains("function countRowsAreNonIncreasing(items)"),
+                "VoteLog category rows must retain their descending-count order.");
+        assertTrue(script.body().contains("if (items[index].count > items[index - 1].count) return false;"));
+        assertTrue(script.body().contains("!countRowsAreNonIncreasing(services.items)"));
+        assertTrue(script.body().contains("!countRowsAreNonIncreasing(servers.items)"));
         assertTrue(script.body().contains("function normalizeDashboardCountRows(value, maximum, label)"));
         assertTrue(script.body().contains("boundedDashboardString(entry[label], 100, false)"));
         assertTrue(script.body().contains("const identities = new Set();"));
@@ -376,7 +381,11 @@ class ControlHttpServerTest {
                 "VoteLog top-row comparisons must use the same normalized identity rules as row validation.");
         assertTrue(script.body().contains("function dashboardCountRowsContradict(shortRows, longRows, label)"));
         assertTrue(script.body().contains("longCounts.has(identity)"),
-                "Only identities present in both nested-window summaries may be compared.");
+                "Shared nested-window identities must be compared.");
+        assertTrue(script.body().contains("const widerWindowIsComplete = longRows.length < 20;"),
+                "An absent service/server is conclusive only when the wider top-row list is not truncated.");
+        assertTrue(script.body().contains("if (!longCounts.has(identity)) return widerWindowIsComplete;"),
+                "A 24-hour category omitted by an untruncated 30-day list must invalidate the summaries.");
         assertTrue(script.body().contains("shortCount > longCounts.get(identity)"),
                 "A larger 24-hour count for a shared service/server identity must invalidate the summaries.");
         assertTrue(script.body().contains(

@@ -1923,7 +1923,8 @@ function normalizeDashboardVoteSummary(value, expectedDays = 30) {
     || cached == null || uniqueVoters == null;
   const services = normalizeDashboardCountRows(source.topServices, 20, 'service');
   const servers = normalizeDashboardCountRows(source.topServers, 20, 'server');
-  incomplete ||= services.incomplete || servers.incomplete;
+  incomplete ||= services.incomplete || servers.incomplete
+    || !countRowsAreNonIncreasing(services.items) || !countRowsAreNonIncreasing(servers.items);
   if (total != null) {
     incomplete ||= immediate == null || cached == null || immediate + cached !== total
       || uniqueVoters == null || uniqueVoters > total;
@@ -1943,6 +1944,13 @@ function countRowsExceedTotal(items, total) {
   return false;
 }
 
+function countRowsAreNonIncreasing(items) {
+  for (let index = 1; index < items.length; index++) {
+    if (items[index].count > items[index - 1].count) return false;
+  }
+  return true;
+}
+
 function dashboardCountRowIdentity(entry, label) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
   const name = boundedDashboardString(entry[label], 100, false);
@@ -1951,6 +1959,7 @@ function dashboardCountRowIdentity(entry, label) {
 
 function dashboardCountRowsContradict(shortRows, longRows, label) {
   if (!Array.isArray(shortRows) || !Array.isArray(longRows)) return false;
+  const widerWindowIsComplete = longRows.length < 20;
   const longCounts = new Map();
   longRows.forEach(entry => {
     const identity = dashboardCountRowIdentity(entry, label);
@@ -1960,8 +1969,9 @@ function dashboardCountRowsContradict(shortRows, longRows, label) {
   return shortRows.some(entry => {
     const identity = dashboardCountRowIdentity(entry, label);
     const shortCount = finiteCount(entry?.count);
-    return identity != null && shortCount != null && longCounts.has(identity)
-      && shortCount > longCounts.get(identity);
+    if (identity == null || shortCount == null) return false;
+    if (!longCounts.has(identity)) return widerWindowIsComplete;
+    return shortCount > longCounts.get(identity);
   });
 }
 
