@@ -4,15 +4,18 @@ import com.bencodez.votingplugin.control.protocol.InspectionQuery;
 import com.bencodez.votingplugin.control.protocol.InspectionTask;
 import com.bencodez.votingplugin.control.protocol.InspectionTaskResult;
 import com.bencodez.votingplugin.control.protocol.NodeStatus;
+import com.fasterxml.jackson.databind.JsonNode;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -21,7 +24,27 @@ public final class InspectionOperations {
     public static final int MAX_DATA_BYTES = 512 * 1024;
     private static final int MAX_INSPECTIONS = 100;
     private static final int MAX_MESSAGE_BYTES = 4096;
+    private static final int MAX_PLAYER_ROWS = 100;
+    private static final int MAX_PLAYER_COLUMN_VALUE_BYTES = 16 * 1024;
     private static final Pattern NODE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
+    private static final Pattern PLAYER_NAME = Pattern.compile("[A-Za-z0-9_]{1,16}");
+    private static final Pattern PLAYER_MONTH_TOTAL = Pattern.compile(
+            "MonthTotal-(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)-[0-9]{4}");
+    private static final Pattern PLAYER_VOTE_SHOP_LIMIT = Pattern.compile("VoteShopLimit[A-Za-z0-9_-]{1,64}");
+    private static final Set<String> PLAYER_STRING_COLUMNS = Set.of("UUID", "PlayerName", "LastOnline",
+            "DayVoteStreakLastUpdate", "VoteRemindersLast");
+    private static final Set<String> PLAYER_BOOLEAN_COLUMNS = Set.of("TopVoterIgnore", "Reminded",
+            "DisableBroadcast", "CoolDownCheck");
+    private static final Set<String> PLAYER_INTEGER_COLUMNS = Set.of("VotePartyVotes", "MonthTotal", "AllTimeTotal",
+            "DailyTotal", "WeeklyTotal", "Points", "DayVoteStreak", "BestDayVoteStreak", "WeekVoteStreak",
+            "BestWeekVoteStreak", "MonthVoteStreak", "BestMonthVoteStreak", "HighestDailyTotal",
+            "HighestMonthlyTotal", "HighestWeeklyTotal", "LastMonthTotal", "LastWeeklyTotal", "LastDailyTotal",
+            "AllSitesLast", "AlmostAllSitesLast");
+    private static final Set<String> PLAYER_FOUND_FIELDS = Set.of("found", "uuid", "name", "lastOnline", "online",
+            "totals", "points", "streaks", "lastVoteTime", "lastVotes", "lastVotesTruncated",
+            "pendingOfflineVotes");
+    private static final Set<String> PLAYER_OPTIONAL_STORAGE_FIELDS = Set.of("storageRowAvailable", "storage", "columns",
+            "columnsTruncated");
     private static final Duration LEASE = Duration.ofMinutes(2);
     private static final Duration ACTIVE_RETENTION = Duration.ofMinutes(5);
     private static final Duration COMPLETE_RETENTION = Duration.ofMinutes(15);
@@ -50,6 +73,7 @@ public final class InspectionOperations {
         if (!node.online() || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)) {
             throw new ValidationException("NODE_UNAVAILABLE", "Node cannot answer inspection queries", List.of(nodeId));
         }
+        evictOldestCompletedAtCapacity();
         if (inspections.size() >= MAX_INSPECTIONS) {
             throw new ValidationException("OPERATION_LIMIT", "Too many retained inspections", List.of());
         }
@@ -72,7 +96,9 @@ public final class InspectionOperations {
         if (stored == null) {
             throw new ValidationException("OPERATION_NOT_FOUND", "Inspection was not found", List.of());
         }
-        return view(stored);
+        InspectionView result = view(stored);
+        if ("COMPLETE".equals(stored.state)) stored.terminalResultObserved = true;
+        return result;
     }
 
     public synchronized InspectionTask claim(String nodeId, UUID sessionId) {
@@ -193,7 +219,9 @@ public final class InspectionOperations {
             throw invalid("failed inspection result is invalid");
         }
         if (result.success() && (!result.data().isObject()
+                || !exactFields(result.data(), Set.of("schemaVersion", "kind", "generatedAt", "result"))
                 || !result.data().path("schemaVersion").isIntegralNumber()
+                || !result.data().path("schemaVersion").canConvertToInt()
                 || result.data().path("schemaVersion").intValue() != 1
                 || !expectedKind.equals(result.data().path("kind").asText())
                 || !result.data().path("generatedAt").isTextual()
@@ -206,6 +234,9 @@ public final class InspectionOperations {
             } catch (java.time.format.DateTimeParseException failure) {
                 throw invalid("inspection data generatedAt is invalid");
             }
+            if ("player".equals(expectedKind) && !validPlayerResult(result.data().path("result"))) {
+                throw invalid("player inspection data is invalid");
+            }
         }
         if (jsonBytes(result.data()) > MAX_DATA_BYTES || bytes(result.message()) > MAX_MESSAGE_BYTES) {
             throw invalid("inspection result exceeds retention limits");
@@ -214,6 +245,176 @@ public final class InspectionOperations {
 
     private static int jsonBytes(com.fasterxml.jackson.databind.JsonNode value) {
         return value == null ? 0 : value.toString().getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    /**
+     * Player data is the only inspection result that includes values read from a storage row. The node is remote, so
+     * enforce the same narrow column contract here before retaining a result for a browser GET.
+     */
+    private static boolean validPlayerResult(JsonNode value) {
+        if (!value.isObject() || !value.path("found").isBoolean()) return false;
+        if (!value.path("found").booleanValue()) {
+            return exactFields(value, Set.of("found", "entity")) && value.path("entity").isTextual()
+                    && "player".equals(value.path("entity").textValue());
+        }
+        if (!onlyFields(value, PLAYER_FOUND_FIELDS, PLAYER_OPTIONAL_STORAGE_FIELDS)
+                || !hasFields(value, PLAYER_FOUND_FIELDS)
+                || !canonicalUuid(value.path("uuid")) || !boundedText(value.path("name"), 16)
+                || !PLAYER_NAME.matcher(value.path("name").textValue()).matches()
+                || !nonNegativeLong(value.path("lastOnline")) || !value.path("online").isBoolean()
+                || !validTotals(value.path("totals")) || !signedInt(value.path("points"))
+                || !validStreaks(value.path("streaks")) || !nonNegativeLong(value.path("lastVoteTime"))
+                || !validLastVotes(value.path("lastVotes")) || !value.path("lastVotesTruncated").isBoolean()
+                || !nonNegativeInt(value.path("pendingOfflineVotes"))
+                || value.path("pendingOfflineVotes").intValue() > 100_000) {
+            return false;
+        }
+        // data.inspect.v1 predates the additive storage metadata. Preserve exact legacy envelopes while still
+        // rejecting any storage fields unless their availability is explicitly declared by a newer node.
+        if (!value.has("storageRowAvailable")) {
+            return !value.has("storage") && !value.has("columns") && !value.has("columnsTruncated");
+        }
+        if (!value.path("storageRowAvailable").isBoolean()) return false;
+        boolean storageAvailable = value.path("storageRowAvailable").booleanValue();
+        if (!storageAvailable) {
+            return !value.has("storage")
+                    && (!value.has("columns") || value.path("columns").isArray() && value.path("columns").isEmpty())
+                    && (!value.has("columnsTruncated") || value.path("columnsTruncated").isBoolean()
+                    && !value.path("columnsTruncated").booleanValue());
+        }
+        return boundedText(value.path("storage"), 32) && !value.path("storage").textValue().isBlank()
+                && validColumns(value.path("columns")) && value.path("columnsTruncated").isBoolean();
+    }
+
+    private static boolean validTotals(JsonNode value) {
+        return exactFields(value, Set.of("daily", "weekly", "monthly", "allTime"))
+                && nonNegativeInt(value.path("daily")) && nonNegativeInt(value.path("weekly"))
+                && nonNegativeInt(value.path("monthly")) && nonNegativeInt(value.path("allTime"));
+    }
+
+    private static boolean validStreaks(JsonNode value) {
+        return exactFields(value, Set.of("daily", "weekly", "monthly"))
+                && nonNegativeInt(value.path("daily")) && nonNegativeInt(value.path("weekly"))
+                && nonNegativeInt(value.path("monthly"));
+    }
+
+    private static boolean validLastVotes(JsonNode value) {
+        if (!value.isArray() || value.size() > MAX_PLAYER_ROWS) return false;
+        for (JsonNode row : value) {
+            if (!exactFields(row, Set.of("siteKey", "displayName", "serviceSite", "time"))
+                    || !boundedCharacters(row.path("siteKey"), 64) || !boundedCharacters(row.path("displayName"), 100)
+                    || !boundedCharacters(row.path("serviceSite"), 64) || !nonNegativeLong(row.path("time"))) return false;
+        }
+        return true;
+    }
+
+    private static boolean validColumns(JsonNode value) {
+        if (!value.isArray() || value.size() > MAX_PLAYER_ROWS) return false;
+        Set<String> names = new HashSet<>();
+        for (JsonNode column : value) {
+            if (!exactFields(column, Set.of("name", "type", "value")) || !column.path("name").isTextual()
+                    || !column.path("type").isTextual() || !column.path("value").isTextual()
+                    || !boundedCharacters(column.path("name"), 100)
+                    || !boundedText(column.path("value"), MAX_PLAYER_COLUMN_VALUE_BYTES)
+                    || !names.add(column.path("name").textValue())
+                    || !validPlayerColumn(column.path("name").textValue(), column.path("type").textValue(),
+                    column.path("value").textValue())) return false;
+        }
+        return true;
+    }
+
+    private static boolean validPlayerColumn(String name, String type, String rendered) {
+        if (PLAYER_STRING_COLUMNS.contains(name) || runtimeStringColumn(name)) return "STRING".equals(type);
+        if (PLAYER_BOOLEAN_COLUMNS.contains(name) || runtimeBooleanColumn(name)) {
+            return "BOOLEAN".equals(type) && ("true".equals(rendered) || "false".equals(rendered))
+                    || "STRING".equals(type) && rendered.matches("(?i:true|false)");
+        }
+        if (!(PLAYER_INTEGER_COLUMNS.contains(name) || runtimeIntegerColumn(name)
+                || PLAYER_MONTH_TOTAL.matcher(name).matches() || PLAYER_VOTE_SHOP_LIMIT.matcher(name).matches())
+                || !"INTEGER".equals(type) || !rendered.matches("-?(?:0|[1-9][0-9]*)")) return false;
+        try {
+            Integer.parseInt(rendered);
+            return true;
+        } catch (NumberFormatException failure) {
+            return false;
+        }
+    }
+
+    private static boolean runtimeStringColumn(String name) {
+        if (!name.startsWith("CoolDownCheck") || !name.endsWith("_Sites")) return false;
+        String middle = name.substring("CoolDownCheck".length(), name.length() - "_Sites".length());
+        return middle.isEmpty() || middle.startsWith("_") && validRuntimeSuffix(middle.substring(1));
+    }
+
+    private static boolean runtimeBooleanColumn(String name) {
+        if (!name.startsWith("CoolDownCheck")) return false;
+        String suffix = name.substring("CoolDownCheck".length());
+        return suffix.startsWith("_") && validRuntimeSuffix(suffix.substring(1));
+    }
+
+    private static boolean runtimeIntegerColumn(String name) {
+        for (String prefix : List.of("AllSitesLast", "AlmostAllSitesLast")) {
+            if (!name.startsWith(prefix)) continue;
+            String suffix = name.substring(prefix.length());
+            if (suffix.startsWith("_") && validRuntimeSuffix(suffix.substring(1))) return true;
+        }
+        return false;
+    }
+
+    private static boolean validRuntimeSuffix(String value) {
+        return !value.isEmpty() && value.length() <= 64 && !hasControlCharacter(value);
+    }
+
+    private static boolean canonicalUuid(JsonNode value) {
+        if (!boundedText(value, 36)) return false;
+        try {
+            return UUID.fromString(value.textValue()).toString().equals(value.textValue());
+        } catch (IllegalArgumentException failure) {
+            return false;
+        }
+    }
+
+    private static boolean boundedText(JsonNode value, int maximumBytes) {
+        return value.isTextual() && bytes(value.textValue()) <= maximumBytes && !hasControlCharacter(value.textValue());
+    }
+
+    private static boolean boundedCharacters(JsonNode value, int maximumCharacters) {
+        return value.isTextual() && value.textValue().length() <= maximumCharacters
+                && !hasControlCharacter(value.textValue());
+    }
+
+    private static boolean hasControlCharacter(String value) {
+        return value.codePoints().anyMatch(character -> character <= 0x1f || character >= 0x7f && character <= 0x9f);
+    }
+
+    private static boolean nonNegativeLong(JsonNode value) {
+        return value.isIntegralNumber() && value.canConvertToLong() && value.longValue() >= 0;
+    }
+
+    private static boolean nonNegativeInt(JsonNode value) {
+        return value.isIntegralNumber() && value.canConvertToInt() && value.intValue() >= 0;
+    }
+
+    private static boolean signedInt(JsonNode value) {
+        return value.isIntegralNumber() && value.canConvertToInt();
+    }
+
+    private static boolean exactFields(JsonNode value, Set<String> expected) {
+        return value.isObject() && value.size() == expected.size() && hasFields(value, expected)
+                && onlyFields(value, expected, Set.of());
+    }
+
+    private static boolean hasFields(JsonNode value, Set<String> expected) {
+        return expected.stream().allMatch(value::has);
+    }
+
+    private static boolean onlyFields(JsonNode value, Set<String> required, Set<String> optional) {
+        Iterator<String> fields = value.fieldNames();
+        while (fields.hasNext()) {
+            String field = fields.next();
+            if (!required.contains(field) && !optional.contains(field)) return false;
+        }
+        return true;
     }
 
     private static int bytes(String value) {
@@ -245,6 +446,18 @@ public final class InspectionOperations {
         }
     }
 
+    private void evictOldestCompletedAtCapacity() {
+        if (inspections.size() < MAX_INSPECTIONS) return;
+        Iterator<Map.Entry<UUID, StoredInspection>> iterator = inspections.entrySet().iterator();
+        while (iterator.hasNext()) {
+            StoredInspection stored = iterator.next().getValue();
+            if (!"COMPLETE".equals(stored.state) || !stored.terminalResultObserved) continue;
+            append("INSPECTION_EVICTED", stored.id, stored.nodeId, stored.query.kind());
+            iterator.remove();
+            return;
+        }
+    }
+
     private void append(String action, UUID id, String nodeId, String outcome) {
         if (audit != null) audit.append(action, id, nodeId, outcome);
     }
@@ -266,6 +479,7 @@ public final class InspectionOperations {
         private Instant leasedAt;
         private UUID attemptId;
         private InspectionTaskResult result;
+        private boolean terminalResultObserved;
 
         private StoredInspection(UUID id, String nodeId, UUID targetSession, InspectionQuery query, Instant createdAt) {
             this.id = id;

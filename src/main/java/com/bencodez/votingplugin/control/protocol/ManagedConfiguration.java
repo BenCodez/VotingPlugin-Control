@@ -125,7 +125,7 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
     public String capability() {
         return switch (domain) {
             case PROXY_ROUTING -> "config.proxy-routing.v1";
-            case FILE -> "config.files.v1";
+            case FILE -> "bungeeconfig.yml".equals(fileName) ? "config.proxy-files.v1" : "config.files.v1";
             case QUICK_SETUP -> VOTE_SITES_SYNC.equals(preset)
                     ? "config.vote-sites-sync.v1" : COMMUNICATION_TEST.equals(preset)
                     ? "config.transport-test.v1" : PROXY_METHOD.equals(preset)
@@ -161,7 +161,7 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
 
     private static void validateFileName(String value) {
         if (value == null || value.length() > 160
-                || !value.matches("(?:Config|VoteSites|SpecialRewards|GUI|Shop|BungeeSettings)\\.yml|VoteSites/[A-Za-z0-9._-]{1,100}\\.yml")) {
+                || !value.matches("(?:Config|VoteSites|SpecialRewards|GUI|Shop|BungeeSettings)\\.yml|bungeeconfig\\.yml|VoteSites/[A-Za-z0-9._-]{1,100}\\.yml")) {
             throw new IllegalArgumentException("configuration file name is not managed");
         }
     }

@@ -80,7 +80,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Control enrollment unavailable"));
         assertTrue(script.body().contains("Comments preserved for every target"));
         assertTrue(script.body().contains("Backend topology is truncated"));
-        assertTrue(script.body().contains("function resetServerConfigurationForms(status)"));
+        assertTrue(script.body().contains("function resetServerConfigurationForms(status, preserveDirtyDrafts = false)"));
         assertTrue(script.body().contains("Network data is unavailable. Refresh and load current values before continuing."));
         assertTrue(script.body().contains("backendTopologyTruncated = false;"));
         assertTrue(script.body().contains("nextPage.addEventListener"));
@@ -111,23 +111,97 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
         assertTrue(script.body().contains("previewGeneration === inputGeneration"));
         assertTrue(script.body().contains("let configurationContentPresent = false;"));
+        assertTrue(script.body().contains("const MAX_TRACE_EVENTS_PER_NODE = 100;"));
+        assertTrue(script.body().contains("const MAX_PLAYER_LAST_VOTES = 100;"));
         assertTrue(script.body().contains(
-                "previewFileConfiguration.disabled = !fileReady || !configurationContentPresent;"));
+                "envelope.result?.truncated === true || received.length > MAX_TRACE_EVENTS_PER_NODE"));
+        assertTrue(script.body().contains(
+                "if (!Array.isArray(envelope.result?.events)) {\n          unavailable.push(`${source}: malformed vote-trace events`);"));
+        assertTrue(script.body().contains(
+                "typeof envelope.result.voteId !== 'string' || envelope.result.voteId !== voteId"));
+        assertTrue(script.body().contains("event.voteId !== voteId"));
+        assertTrue(script.body().contains("const voteId = enteredVoteId.toLowerCase();"));
+        assertTrue(script.body().contains("&& enteredVoteId === voteTraceId.value.trim()"));
+        assertTrue(script.body().contains("columns.length < value.columns.length"));
+        assertTrue(script.body().contains("const traceAbortController = new AbortController();"));
+        assertTrue(script.body().contains("await Promise.allSettled(candidates.map(async node => {"));
+        assertTrue(script.body().contains("const response = await authorized(path, {...requestOptions, signal: options.signal});\n      ensureActive();"));
+        assertTrue(script.body().contains("current.acceptedCapabilities.includes('data.inspect.v1')"));
+        assertTrue(script.body().contains(
+                "signal: traceAbortController.signal, contextCurrent, manageBusy: false"));
+        assertTrue(script.body().contains("window.clearTimeout(deadlineTimer);"));
+        assertFalse(script.body().contains("for (const node of candidates)"));
+        assertTrue(script.body().contains("let configurationDraftNodeId = '';"));
+        assertTrue(script.body().contains("let configurationDraftSessionId = '';"));
+        assertTrue(script.body().contains("function fileDraftMatchesCurrentContext()"));
+        assertTrue(script.body().contains("if (configurationDirty) {\n      text(fileOperationStatus, fileDraftStatus("),
+                "Routine refresh must retain dirty drafts when the replacement has a different node role.");
+        assertTrue(script.body().contains("const fileDraftReady = fileReady && fileDraftMatchesCurrentContext();"));
+        assertTrue(script.body().contains(
+                "previewFileConfiguration.disabled = !fileDraftReady || !configurationContentPresent;"));
+        assertTrue(script.body().contains(
+                "applyFileConfiguration.disabled = !fileDraftReady || !approvedFilePreview;"));
         assertTrue(script.body().contains(
                 "configurationContent.value = document.content;\n          configurationContentPresent = true;"));
         assertTrue(script.body().contains(
-                "resetServerContextValues('A selected server reconnected. Load current values before continuing.');"));
+                "resetServerContextValues('A selected server reconnected. Load current values before continuing.', true);"));
         assertTrue(script.body().contains(
-                "configurationContent.addEventListener('input', () => {\n  configurationContentPresent = true;"));
+                "configurationContent.addEventListener('input', () => {\n  if (!configurationDirty) {\n    configurationDraftNodeId = selectedServerId;"));
         assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));
         assertTrue(script.body().contains("loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId"));
         assertTrue(script.body().contains("previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId"));
         assertTrue(script.body().contains("sessionId !== nodeIndex.get(nodeId)?.sessionId"));
+        assertTrue(script.body().contains("retained.sessionId === readSessionId"));
+        assertTrue(script.body().contains("operation.results?.[proxyId]?.sessionId !== proxySessionId"));
+        assertTrue(script.body().contains("confirmDiscardUnsavedConfiguration('switching servers')"));
+        assertTrue(script.body().contains("enteredVoteId === voteTraceId.value.trim()"));
+        assertTrue(script.body().contains("Pending offline votes"));
+        assertTrue(script.body().contains("Additional VoteSite history was omitted"));
+        assertTrue(script.body().contains("VoteSite history is unavailable because the node returned malformed history data."));
+        assertTrue(script.body().contains("function validPlayerLastVote(lastVote)"));
+        assertTrue(script.body().contains("exactObjectKeys(lastVote, ['displayName', 'serviceSite', 'siteKey', 'time'])"));
+        assertTrue(script.body().contains("const limits = {siteKey: 64, displayName: 100, serviceSite: 64};"));
+        assertTrue(script.body().contains("receivedLastVotes.some(lastVote => !validPlayerLastVote(lastVote))"));
+        assertTrue(script.body().contains("const lastVotes = malformedLastVotes ? [] : receivedLastVotes.slice(0, MAX_PLAYER_LAST_VOTES);"));
+        assertTrue(script.body().contains("function validPlayerColumn(column)"));
+        assertTrue(script.body().contains("suffix.length > 0 && suffix.length <= 64"));
+        assertTrue(script.body().contains("const legacyStorageMetadata = value.storageRowAvailable === undefined"));
+        assertTrue(script.body().contains("const columnsOmittedForUnavailableStorage = value.storageRowAvailable === false && value.columns === undefined;"));
+        assertTrue(script.body().contains("if (legacyStorageMetadata || columnsOmittedForUnavailableStorage) return;"));
+        assertTrue(script.body().contains("fields outside the allow-listed column schema"));
+        assertTrue(script.body().contains("Saved; proxy restart required"));
+        assertTrue(script.body().contains("configuration saved; proxy restart required"));
+        assertTrue(script.body().contains("Restart the proxy before treating the saved proxy configuration as active."));
+        assertTrue(script.body().contains("function validVoteTraceEvent(event, voteId)"));
+        assertTrue(script.body().contains("received.some(event => !validVoteTraceEvent(event, voteId))"));
+        assertTrue(script.body().contains("VOTE_LOG_STATUSES.has(event.status)"));
+        assertTrue(script.body().contains("Node result limit reached; this trace is incomplete"));
+        assertFalse(script.body().contains("This is the complete retained trace"));
+        assertTrue(script.body().contains("const traceReady = authenticated && connectedInspectionNodes().length > 0"));
+        assertTrue(script.body().contains("traceVote.disabled = !traceReady;"));
+        assertTrue(script.body().contains("const retainedRoutingDraft = preserveDirtyDrafts && routingDirty;"));
+        assertTrue(script.body().contains("routingDraftNodeId === selectedServerId"));
+        assertTrue(script.body().contains("readConfiguration.disabled = !routingReadReady;"));
+        assertTrue(script.body().contains("previewConfiguration.disabled = !routingDraftReady;"));
+        assertTrue(script.body().contains("applyConfiguration.disabled = !routingDraftReady || !approvedPreview;"));
+        assertTrue(script.body().contains("Your unsaved proxy-routing draft is retained"));
+        assertTrue(script.body().contains("fileReadCache.clear();\n    lastFileReadOperation = null;\n  }\n  if (operationContextCurrent(context)"),
+                "Every successful apply must invalidate cached reads even after the view context changes.");
+        assertTrue(script.body().contains("Drift results were discarded; run the comparison again."),
+                "A drift read completed for stale context must show an explicit discarded-result status.");
+        assertTrue(script.body().contains("text(operationStatus, routingDraftStatus('The selected nodes changed during refresh."));
+        assertTrue(script.body().contains(
+                "The apply completed, but newer unsaved proxy-routing edits remain. Preview again before applying them."));
+        assertTrue(script.body().contains("Your unsaved ${configurationFile.value} draft is retained"));
+        assertTrue(script.body().contains("Discard unsaved routing changes and load current values?"));
+        assertTrue(script.body().contains("Discard the unsaved ${configurationFile.value} draft and read/reload the current file for this server?"));
+        assertTrue(script.body().contains("window.addEventListener('beforeunload'"));
         assertTrue(script.body().contains("loadedQuickSetup = {nodeId, sessionId, preset, selector}"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
-        assertTrue(script.body().contains("approvedPreview = null;\n      inputGeneration++;"));
+        assertTrue(script.body().contains("if (selectedCapabilitiesChanged) {\n      approvedPreview = null;"));
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
         assertTrue(script.body().contains("selectedCapabilitiesChanged"));
+        assertTrue(script.body().contains("proxyFile ? !isProxy(restoreNode) : !isBackend(restoreNode)"));
         assertTrue(script.body().contains("discardAuthenticationState"));
         assertTrue(script.body().contains("text(operationStatus, '');"));
         assertTrue(script.body().contains("text(fileOperationStatus, '');"));
@@ -165,6 +239,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("preset: 'proxy-method'"));
         assertTrue(script.body().contains("proxyMethodButtons.forEach"));
         assertTrue(script.body().contains("handleEditorKeydown"));
+        assertTrue(script.body().contains("receivedLastVotes.length > MAX_PLAYER_LAST_VOTES"));
+        assertTrue(script.body().contains(".slice(0, MAX_PLAYER_LAST_VOTES)"));
+        assertTrue(script.body().contains("if (!automatic) text(fileOperationStatus, error.message);"));
+        assertTrue(script.body().contains("const cell = document.createElement('td');"));
+        assertTrue(script.body().contains("const applyGeneration = inputGeneration + 1;"));
+        assertTrue(script.body().contains("operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
         HttpResponse<String> stylesheet = get("/app.css", null);
@@ -281,7 +361,8 @@ class ControlHttpServerTest {
 
     @Test void inspectionRetryAndSnapshotRoutesAreEndToEnd() throws Exception {
         String capableRegistration = registration().replace("\"presence.snapshot\"]",
-                "\"presence.snapshot\",\"data.inspect.v1\",\"config.files.v1\"]");
+                "\"presence.snapshot\",\"data.inspect.v1\",\"config.files.v1\"]")
+                .replace("\"platform\":\"VELOCITY\"", "\"platform\":\"BUKKIT\"");
         assertEquals(201, send("POST", "/api/v1/nodes/register", capableRegistration, nodeToken).statusCode());
 
         HttpResponse<String> inspectionQueued = send("POST", "/api/v1/inspections",

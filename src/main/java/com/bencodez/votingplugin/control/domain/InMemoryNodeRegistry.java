@@ -27,6 +27,7 @@ import java.util.regex.Pattern;
 public final class InMemoryNodeRegistry implements NodeRegistry {
     public static final Set<String> SUPPORTED_CAPABILITIES = Set.of("discovery.read", "presence.snapshot",
             ConfigurationOperations.CAPABILITY, ConfigurationOperations.FILE_CAPABILITY,
+            ConfigurationOperations.PROXY_FILE_CAPABILITY,
             ConfigurationOperations.QUICK_SETUP_CAPABILITY, ConfigurationOperations.VOTE_SITES_SYNC_CAPABILITY,
             ConfigurationOperations.TRANSPORT_TEST_CAPABILITY, ConfigurationOperations.PROXY_METHOD_CAPABILITY,
             "config.file-comments.v1", InspectionQuery.CAPABILITY);

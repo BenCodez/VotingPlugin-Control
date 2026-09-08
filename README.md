@@ -170,7 +170,10 @@ Control records its own observation time; it does not trust remote wall-clock ti
 
 Configuration is split into independently negotiated capabilities. `config.proxy-routing.v1` exposes typed proxy routing.
 `config.files.v1` manages `Config.yml`, `VoteSites.yml`, `SpecialRewards.yml`, `GUI.yml`, `Shop.yml`, and
-`BungeeSettings.yml` on enrolled Bukkit nodes through a bounded YAML editor. `config.quick-setup.v1` supplies standalone,
+`BungeeSettings.yml` on enrolled Bukkit nodes through a bounded YAML editor. `config.proxy-files.v1` is separate and
+manages only an enrolled proxy's `bungeeconfig.yml`; it is not general proxy file access. The proxy file is strict,
+bounded, redacted YAML with safe preview/approval, atomic publication, and a local backup. General proxy-file settings
+are saved without a proxy reload, so the operation reports that a restart is needed to activate them. `config.quick-setup.v1` supplies standalone,
 proxy-backend, vote-site, easy-reward, common-settings, auto-create-vote-sites, vote-logging, vote-party, and typed
 reward-builder presets.
 The auto-create preset owns only `AutoCreateVoteSites`; the logging preset owns only enabled state, purge retention
@@ -198,8 +201,9 @@ explicitly included in configuration changes, so one slow secondary node does no
 `data.inspect.v1` is a separate read-only lane for overview, vote-site health (including persisted unconfigured service
 observations), exact-player data, bounded VoteLog summary/search/correlation trace, non-creating service-site resolution,
 no-side-effect reward simulation, and redacted diagnostics. It accepts only allow-listed string filters and bounded result
-schemas; there is no raw SQL, arbitrary player
-enumeration, command execution, generic file/database browsing, or write operation. VoteLog output is labeled **logged
+schemas; exact player results may include only a bounded allow-list of safe stored VotingPlugin fields when available.
+There is no raw SQL, arbitrary player enumeration or editing, command execution, generic file/database browsing, or write
+operation. VoteLog output is labeled **logged
 events**, not a complete network delivery trace. Overview/diagnostics expose a bounded `voteLogReadable` probe;
 summary/search/trace fail `UNAVAILABLE` when that probe fails, while vote-site health labels SQL data unavailable/unreadable
 instead of turning a query failure into “no recent votes.”
@@ -215,6 +219,13 @@ network-wide success. Proxies and Bukkit nodes create local backups, require ato
 backup if reload fails. The WebUI labels a rolled-back node as not saved and displays the bounded reload cause returned by
 the plugin. Bukkit reads normalize YAML; administrators should expect comments and formatting to be normalized
 when applying through the full editor.
+
+The `proxy-method` guided preset is intentionally different from a normal proxy configuration save. Following preview and
+approval, VotingPlugin preflights and persists the selected communication method across the reported network. Backends
+reload only their proxy communication handler. The proxy first acknowledges its durable result and then replaces its
+runtime, preventing teardown from losing the operation result. A persistence or backend handler reload failure restores
+the local backup; resolve the reported node failure and preview again rather than assuming a network-wide method change
+was committed.
 
 `configuration-audit.jsonl` records bounded, append-only, hash-chained operation metadata and rotates once at 5 MiB. A
 cross-process lifetime lock prevents two Control processes from forking the same audit chain. Both
