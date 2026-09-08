@@ -120,6 +120,14 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("loadEnrollments"));
         assertTrue(script.body().contains("enrollmentMutationInFlight"));
         assertTrue(script.body().contains("enrollmentRefreshRequested"));
+        assertTrue(script.body().contains("const enrollmentRefreshWaiters = [];"),
+                "Enrollment callers must be able to await a refresh queued behind an in-flight request.");
+        assertTrue(script.body().contains("return new Promise(resolve => enrollmentRefreshWaiters.push(resolve));"),
+                "A queued enrollment refresh must not let dashboard inspection proceed on stale enrollment state.");
+        assertTrue(script.body().contains("const reportedBackends = new Map();"),
+                "Node-level topology warnings must be aggregated before rendering attention items.");
+        assertTrue(script.body().contains("is unavailable to ${proxy.displayName}"),
+                "Availability warnings must remain distinct for every reporting proxy.");
         assertTrue(script.body().contains("await loadEnrollments()"));
         assertTrue(script.body().contains("enrollmentSubmit.disabled = true"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));

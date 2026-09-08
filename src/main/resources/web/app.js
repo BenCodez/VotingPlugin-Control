@@ -268,6 +268,7 @@ let loginInFlight = false;
 let setupRequired = false;
 let enrollmentInFlight = false;
 let enrollmentRefreshRequested = false;
+const enrollmentRefreshWaiters = [];
 let enrollmentMutationInFlight = false;
 let configurationOperationsInFlight = 0;
 let proxyMethodWorkflowInFlight = false;
@@ -2093,18 +2094,30 @@ function dashboardIssues() {
     issues.push(issue('informational', `${disconnectedNodes.length - 10} additional nodes are disconnected`,
       'Open Servers to inspect the complete registered-node state.', 'View servers', 'servers'));
   }
+  const reportedBackends = new Map();
   allNodeItems.filter(node => isProxy(node) && node.online).forEach(proxy => {
     (Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {
-      const registered = nodeIndex.get(backend.backendId);
-      if (!registered) issues.push(issue('warning', `${backend.displayName} is not registered with Control`,
-        `${proxy.displayName} reports this backend, but Control has no current node record.`, 'View servers', 'servers'));
-      if (enrollmentsLoaded && !enrollmentIds.has(backend.backendId)) {
-        issues.push(issue('warning', `${backend.displayName} is not enrolled`,
-          'Enroll the node before expecting authenticated Control connectivity.', 'Open access', 'access'));
+      if (!backend || typeof backend.backendId !== 'string' || !backend.backendId) return;
+      const current = reportedBackends.get(backend.backendId) || {
+        backend, proxies: new Set()
+      };
+      current.proxies.add(proxy.displayName);
+      if (backend.presenceKnown && !backend.available) {
+        issues.push(issue('warning', `${backend.displayName} is unavailable to ${proxy.displayName}`,
+          `Reported unavailable by ${proxy.displayName}.`, 'Test communication', 'network', 'transport-test-card'));
       }
-      if (backend.presenceKnown && !backend.available) issues.push(issue('warning', `${backend.displayName} is unavailable to the proxy`,
-        `${proxy.displayName} reported a known Minecraft availability failure.`, 'Test communication', 'network', 'transport-test-card'));
+      reportedBackends.set(backend.backendId, current);
     });
+  });
+  reportedBackends.forEach(({backend, proxies}) => {
+    const proxyNames = [...proxies].join(', ');
+    const registered = nodeIndex.get(backend.backendId);
+    if (!registered) issues.push(issue('warning', `${backend.displayName} is not registered with Control`,
+      `Reported by ${proxyNames}; Control has no current node record.`, 'View servers', 'servers'));
+    if (enrollmentsLoaded && !enrollmentIds.has(backend.backendId)) {
+      issues.push(issue('warning', `${backend.displayName} is not enrolled`,
+        'Enroll the node before expecting authenticated Control connectivity.', 'Open access', 'access'));
+    }
   });
   if (dashboardOverview && dashboardLoadedContext === dashboardContext()) {
     if (dashboardOverview.configurationHealthy === false) issues.push(issue('warning', 'VotingPlugin configuration needs attention',
@@ -3132,7 +3145,7 @@ async function loadEnrollments() {
   if (!authenticated) return;
   if (enrollmentInFlight) {
     enrollmentRefreshRequested = true;
-    return;
+    return new Promise(resolve => enrollmentRefreshWaiters.push(resolve));
   }
   enrollmentInFlight = true;
   const enrollmentGeneration = authenticationGeneration;
@@ -3188,6 +3201,7 @@ async function loadEnrollments() {
     const refreshAgain = enrollmentRefreshRequested && authenticated;
     enrollmentRefreshRequested = false;
     if (refreshAgain) await loadEnrollments();
+    enrollmentRefreshWaiters.splice(0).forEach(resolve => resolve());
   }
 }
 
