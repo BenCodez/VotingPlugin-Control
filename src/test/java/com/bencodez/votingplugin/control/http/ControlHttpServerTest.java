@@ -309,6 +309,7 @@ class ControlHttpServerTest {
 		assertTrue(script.body().contains("dashboardInspectionStatus.voteSiteHealth = 'failed';\n      dashboardLoadedContext = '';"));
         assertTrue(script.body().contains("dashboardInspectionStatus.voteLog24h = 'failed';"));
         assertTrue(script.body().contains("dashboardInspectionStatus.voteLog30d = 'failed';"));
+        assertTrue(script.body().contains("dashboardInspectionStatus.voteLog30d = 'failed';\n      dashboardLoadedContext = '';"));
         assertTrue(script.body().contains("Some dashboard checks could not be verified"));
         assertTrue(script.body().contains("!current || hasWarning || hasIncompleteInspection ? 'Warning' : 'Healthy'"));
         assertTrue(script.body().contains("function normalizeDashboardCollection(value, maximum, normalize)"));
@@ -336,10 +337,16 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (identities.has(identity)) return null;"));
         assertTrue(script.body().contains("function invalidateDashboardInspection()"));
         assertTrue(script.body().contains("lastOverview = diagnostics.result;\n    invalidateDashboardInspection();"));
+        assertTrue(script.body().contains("lastOverview = envelope.result;\n    invalidateDashboardInspection();"),
+                "Setup diagnostics must invalidate any cached dashboard evidence.");
         assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
         assertTrue(script.body().contains("Object.hasOwn(value, 'voteLogAvailable') ? value.voteLogAvailable : value.voteLoggingAvailable"));
         assertTrue(script.body().contains("const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);"));
         assertTrue(script.body().contains("result.proxyMode === true && !proxyMethods.has(result.proxyMethod.toUpperCase())"));
+        assertTrue(script.body().contains("const requiredStrings = new Set(['pluginVersion', 'platform', 'serverSoftware', 'serverVersion', 'dataStorage']);"));
+        assertTrue(script.body().contains("field === 'proxyMethod'"));
+        assertTrue(script.body().contains("const platforms = new Set(['BUKKIT']);"));
+        assertTrue(script.body().contains("const dataStorages = new Set(['SQLITE', 'MYSQL']);"));
         assertTrue(script.body().contains("immediate + cached !== total"));
         assertTrue(script.body().contains("function dashboardVoteSummariesContradict(shortWindow, longWindow)"));
         assertTrue(script.body().contains("dashboardInspectionStatus.voteLog24h = 'incomplete';\n        dashboardInspectionStatus.voteLog30d = 'incomplete';"));

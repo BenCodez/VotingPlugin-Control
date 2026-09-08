@@ -1770,12 +1770,19 @@ function normalizeDashboardOverview(value) {
     result[field] = typeof source[field] === 'boolean' ? source[field] : undefined;
   });
   incomplete ||= invalidVoteLoggingState(result);
+  const requiredStrings = new Set(['pluginVersion', 'platform', 'serverSoftware', 'serverVersion', 'dataStorage']);
   [['pluginVersion', 80], ['platform', 32], ['serverSoftware', 80], ['serverVersion', 80],
     ['dataStorage', 32], ['proxyMethod', 32]].forEach(([field, maximum]) => {
-    const normalized = boundedDashboardString(source[field], maximum, true);
+    const normalized = boundedDashboardString(source[field], maximum, field === 'proxyMethod');
     incomplete ||= normalized.incomplete;
+    if (requiredStrings.has(field) && !normalized.value) incomplete = true;
     result[field] = normalized.value;
   });
+  const platforms = new Set(['BUKKIT']);
+  const dataStorages = new Set(['SQLITE', 'MYSQL']);
+  if (!platforms.has(result.platform.toUpperCase()) || !dataStorages.has(result.dataStorage.toUpperCase())) {
+    incomplete = true;
+  }
   const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);
   if (result.proxyMode === true && !proxyMethods.has(result.proxyMethod.toUpperCase())) incomplete = true;
   return {result, incomplete};
@@ -4081,6 +4088,7 @@ refreshSetupChecklist.addEventListener('click', async () => {
   try {
     const envelope = await runInspection('diagnostics', {}, setupChecklistStatus);
     lastOverview = envelope.result;
+    invalidateDashboardInspection();
     updateSetupChecklist(envelope.result);
   } catch (error) { text(setupChecklistStatus, error.message); }
 });
@@ -4318,7 +4326,10 @@ loadVoteLogSummary.addEventListener('click', async () => {
     renderMetrics();
   }
   catch (error) {
-    if (dashboardLoadedContext === dashboardContext()) dashboardInspectionStatus.voteLog30d = 'failed';
+    if (dashboardLoadedContext === dashboardContext()) {
+      dashboardInspectionStatus.voteLog30d = 'failed';
+      dashboardLoadedContext = '';
+    }
     text(voteLogSummaryResult, error.message);
     renderMetrics();
   }
