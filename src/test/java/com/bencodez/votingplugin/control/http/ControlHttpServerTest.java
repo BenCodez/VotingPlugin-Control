@@ -327,6 +327,17 @@ class ControlHttpServerTest {
         assertFalse(script.body().contains("(!key.value && !displayName.value)"),
                 "A display name must not substitute for a missing vote-site key.");
         assertTrue(script.body().contains("voteSiteKeys.add(canonicalKey);"));
+        assertTrue(script.body().contains("const detectedServiceKeys = new Set();"));
+        assertTrue(script.body().contains("const configuredServiceKeys = new Set(sites.items.map(site => site.serviceSite.toLowerCase()));"));
+        assertTrue(script.body().contains("configuredServiceKeys.has(identity)"),
+                "Detected services must not duplicate a configured ServiceSite identity.");
+        assertTrue(script.body().contains("detectedServiceKeys.has(identity)"),
+                "Detected service identities must be rejected case-insensitively when duplicated.");
+        assertTrue(script.body().contains(
+                "if (source.voteLogReadable !== true && unmatched.items.length > 0) incomplete = true;"),
+                "Unmatched services must make unreadable VoteLog health data incomplete.");
+        assertTrue(script.body().contains("source.voteLogReadable === true ? unmatched.items : []"),
+                "Unreadable VoteLog data must not render non-authoritative unmatched services.");
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
         assertTrue(script.body().contains("countRowsExceedTotal(services.items, total)"));
         assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
@@ -349,6 +360,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const dataStorages = new Set(['SQLITE', 'MYSQL']);"));
         assertTrue(script.body().contains("immediate + cached !== total"));
         assertTrue(script.body().contains("function dashboardVoteSummariesContradict(shortWindow, longWindow)"));
+        assertTrue(script.body().contains(
+                "return ['total', 'immediate', 'cached', 'uniqueVoters'].some(field =>"),
+                "All shared VoteLog counters must be monotonic across nested windows.");
         assertTrue(script.body().contains("dashboardInspectionStatus.voteLog24h = 'incomplete';\n        dashboardInspectionStatus.voteLog30d = 'incomplete';"));
         assertTrue(script.body().contains("entry.count > remaining"));
         assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));

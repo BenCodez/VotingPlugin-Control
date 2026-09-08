@@ -1825,19 +1825,26 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
     return {value: {...entry, status: status.value, key: key.value, displayName: displayName.value,
       serviceSite: serviceSite.value}, incomplete: key.incomplete || displayName.incomplete};
   });
+	const configuredServiceKeys = new Set(sites.items.map(site => site.serviceSite.toLowerCase()));
+	const detectedServiceKeys = new Set();
   const detected = normalizeDashboardCollection(source.detectedUnconfiguredServices, 100, entry => {
     const service = boundedDashboardString(entry, 100);
-    return service.incomplete ? null : {value: service.value, incomplete: false};
+    const identity = service.value.toLowerCase();
+		if (service.incomplete || configuredServiceKeys.has(identity) || detectedServiceKeys.has(identity)) return null;
+    detectedServiceKeys.add(identity);
+    return {value: service.value, incomplete: false};
   });
-  const unmatched = normalizeDashboardCollection(source.unmatchedLoggedServices, 100, entry => {
+	const unmatched = normalizeDashboardCollection(source.unmatchedLoggedServices, 100, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const service = boundedDashboardString(entry.serviceSite, 100);
     return service.incomplete ? null : {value: {...entry, serviceSite: service.value}, incomplete: false};
-  });
-  incomplete ||= sites.incomplete || detected.incomplete || unmatched.incomplete;
-  return {result: {...source, days, ...Object.fromEntries(booleanFields.map(field =>
-    [field, typeof source[field] === 'boolean' ? source[field] : undefined])), sites: sites.items,
-    detectedUnconfiguredServices: detected.items, unmatchedLoggedServices: unmatched.items}, incomplete};
+	});
+	incomplete ||= sites.incomplete || detected.incomplete || unmatched.incomplete;
+	if (source.voteLogReadable !== true && unmatched.items.length > 0) incomplete = true;
+	const unmatchedItems = source.voteLogReadable === true ? unmatched.items : [];
+	return {result: {...source, days, ...Object.fromEntries(booleanFields.map(field =>
+		[field, typeof source[field] === 'boolean' ? source[field] : undefined])), sites: sites.items,
+		detectedUnconfiguredServices: detected.items, unmatchedLoggedServices: unmatchedItems}, incomplete};
 }
 
 function dashboardHealthContradictsOverview(overview, health) {
@@ -1905,8 +1912,9 @@ function countRowsExceedTotal(items, total) {
 }
 
 function dashboardVoteSummariesContradict(shortWindow, longWindow) {
-  return finiteCount(shortWindow?.total) != null && finiteCount(longWindow?.total) != null
-    && shortWindow.total > longWindow.total;
+  return ['total', 'immediate', 'cached', 'uniqueVoters'].some(field =>
+    finiteCount(shortWindow?.[field]) != null && finiteCount(longWindow?.[field]) != null
+      && shortWindow[field] > longWindow[field]);
 }
 
 function issue(severity, title, detail, action, tab, scrollTarget = '', preset = '') {
