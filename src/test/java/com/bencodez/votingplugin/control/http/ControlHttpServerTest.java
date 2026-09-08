@@ -386,6 +386,14 @@ class ControlHttpServerTest {
                 "ACTIVE Vote Site rows must contain at least one logged vote.");
         assertTrue(script.body().contains("status === 'NO_RECENT_VOTES' && loggedVotes !== 0"),
                 "NO_RECENT_VOTES rows must contain no logged votes.");
+        assertTrue(script.body().contains("function dashboardHealthContradictsVoteSummary(health, summary)"));
+        assertTrue(script.body().contains("[['loggedVotes', 'total'], ['immediateVotes', 'immediate'], ['cachedVotes', 'cached']]"),
+                "Each readable per-site VoteLog aggregate must be bounded by its corresponding 30-day summary total.");
+        assertTrue(script.body().contains("siteCount > summaryCount"),
+                "Sequentially inconsistent per-site and overall VoteLog reads must be treated as incomplete.");
+        assertTrue(script.body().contains("dashboardHealthContradictsVoteSummary(dashboardVoteSiteHealth, dashboardVoteSummary30d)"));
+        assertTrue(script.body().contains("dashboardInspectionStatus.voteSiteHealth = 'incomplete';\n        dashboardInspectionStatus.voteLog30d = 'incomplete';"),
+                "Conflicting 30-day health and summary evidence must make both dashboard inspections unhealthy.");
         assertTrue(script.body().contains("lastOverview = null;\n  text(dataOverview, 'Refreshing server overview…');"));
 		assertTrue(script.body().contains("async function refreshOverview(target = dataOverview) {\n  invalidateDashboardInspection();"));
         assertTrue(script.body().contains(".result, 1);"));

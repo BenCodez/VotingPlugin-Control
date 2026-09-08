@@ -1881,6 +1881,19 @@ function dashboardHealthContradictsOverview(overview, health) {
   return !flagsMatch || !siteCountMatches || !enabledSiteCountMatches;
 }
 
+function dashboardHealthContradictsVoteSummary(health, summary) {
+  if (!health || !summary || health.voteLogReadable !== true || !Array.isArray(health.sites)) return false;
+  return health.sites.some(site => {
+    if (!site || typeof site !== 'object' || Array.isArray(site)) return false;
+    return [['loggedVotes', 'total'], ['immediateVotes', 'immediate'], ['cachedVotes', 'cached']]
+      .some(([siteField, summaryField]) => {
+        const siteCount = finiteCount(site[siteField]);
+        const summaryCount = finiteCount(summary[summaryField]);
+        return siteCount != null && summaryCount != null && siteCount > summaryCount;
+      });
+  });
+}
+
 function normalizeDashboardCountRows(value, maximum, label) {
   const identities = new Set();
   return normalizeDashboardCollection(value, maximum, entry => {
@@ -4091,6 +4104,10 @@ async function refreshDashboard() {
         dashboardInspectionStatus.voteLog24h = 'incomplete';
         dashboardInspectionStatus.voteLog30d = 'incomplete';
       }
+      if (dashboardHealthContradictsVoteSummary(dashboardVoteSiteHealth, dashboardVoteSummary30d)) {
+        dashboardInspectionStatus.voteSiteHealth = 'incomplete';
+        dashboardInspectionStatus.voteLog30d = 'incomplete';
+      }
     }
     const complete = Object.values(dashboardInspectionStatus)
       .every(status => ['available', 'not-required'].includes(status));
@@ -4318,9 +4335,11 @@ loadSiteHealth.addEventListener('click', async () => {
       (await runInspection('vote-site-health', {days: '30'}, siteHealthResult)).result);
     dashboardVoteSiteHealth = health.result;
     if (dashboardLoadedContext === dashboardContext()) {
+      const healthContradictsSummary = dashboardHealthContradictsVoteSummary(health.result, dashboardVoteSummary30d);
       const healthIncomplete = health.incomplete
-        || dashboardHealthContradictsOverview(dashboardOverview, health.result);
+        || dashboardHealthContradictsOverview(dashboardOverview, health.result) || healthContradictsSummary;
       dashboardInspectionStatus.voteSiteHealth = healthIncomplete ? 'incomplete' : 'available';
+      if (healthContradictsSummary) dashboardInspectionStatus.voteLog30d = 'incomplete';
       if (dashboardInspectionStatus.voteSiteHealth === 'incomplete') dashboardLoadedContext = '';
     }
     renderSiteHealthResult(health.result);
@@ -4342,13 +4361,17 @@ loadVoteLogSummary.addEventListener('click', async () => {
       (await runInspection('vote-log-summary', {days: '30'}, voteLogSummaryResult)).result);
     dashboardVoteSummary30d = summary.result;
     if (dashboardLoadedContext === dashboardContext()) {
-      dashboardInspectionStatus.voteLog30d = summary.incomplete || dashboardVoteSummariesContradict(
-        dashboardVoteSummary24h, dashboardVoteSummary30d) ? 'incomplete' : 'available';
-      if (dashboardVoteSummariesContradict(dashboardVoteSummary24h, dashboardVoteSummary30d)) {
+      const summariesContradict = dashboardVoteSummariesContradict(
+        dashboardVoteSummary24h, dashboardVoteSummary30d);
+      const healthContradictsSummary = dashboardHealthContradictsVoteSummary(
+        dashboardVoteSiteHealth, dashboardVoteSummary30d);
+      dashboardInspectionStatus.voteLog30d = summary.incomplete || summariesContradict || healthContradictsSummary
+        ? 'incomplete' : 'available';
+      if (summariesContradict) {
         dashboardInspectionStatus.voteLog24h = 'incomplete';
       }
-      if (summary.incomplete || dashboardVoteSummariesContradict(
-        dashboardVoteSummary24h, dashboardVoteSummary30d)) dashboardLoadedContext = '';
+      if (healthContradictsSummary) dashboardInspectionStatus.voteSiteHealth = 'incomplete';
+      if (summary.incomplete || summariesContradict || healthContradictsSummary) dashboardLoadedContext = '';
     }
     renderJsonResult(voteLogSummaryResult, summary.result);
     renderMetrics();
