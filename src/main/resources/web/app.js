@@ -2232,10 +2232,11 @@ function renderOverviewActivity() {
     const item = document.createElement('article');
     item.className = 'activity-item';
     const results = Object.values(operation.results || {});
+    const targetCount = Object.keys(operation.nodeStates || {}).length || results.length;
     const successful = results.filter(result => result?.success).length;
     item.append(text(document.createElement('strong'), operationLabel(operation)));
     const when = operation.createdAt ? new Date(operation.createdAt).toLocaleString() : 'Time unavailable';
-    item.append(text(document.createElement('small'), `${operationPhase(operation)} · ${successful}/${results.length} targets successful · ${when}`));
+    item.append(text(document.createElement('small'), `${operationPhase(operation)} · ${successful}/${targetCount} targets successful · ${when}`));
     overviewActivity.append(item);
   });
 }
@@ -4111,12 +4112,20 @@ async function refreshOverview(target = dataOverview) {
 }
 
 async function refreshDashboard() {
-  if (!inspectionCapableNode() || dashboardLoading || inspectionInFlight) {
+  if (dashboardLoading || inspectionInFlight) {
     renderMetrics();
     return;
   }
-  const requestedContext = dashboardContext();
   dashboardLoading = true;
+  refreshDashboardButton.disabled = true;
+  await loadNodes();
+  if (!inspectionCapableNode()) {
+    dashboardLoading = false;
+    renderMetrics();
+    updateExtendedButtons();
+    return;
+  }
+  const requestedContext = dashboardContext();
   inspectionInFlight = true;
   dashboardLoadedContext = '';
   lastOverview = null;
@@ -4128,7 +4137,6 @@ async function refreshDashboard() {
   dashboardVoteSummary30d = null;
   dashboardInspectionStatus = {overview: 'loading', voteSiteHealth: 'loading',
     voteLog24h: 'not-required', voteLog30d: 'not-required'};
-  refreshDashboardButton.disabled = true;
   text(attentionFeed, 'Inspecting the selected VotingPlugin server…');
   try {
     const overviewEnvelope = await runInspection('overview', {}, null, {manageBusy: false});

@@ -287,7 +287,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("|${dashboardConfigurationGeneration}`"));
         assertTrue(script.body().contains("Configuration changed; refreshing server overview"));
         assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"));
-        assertTrue(script.body().contains("!inspectionCapableNode() || dashboardLoading || inspectionInFlight"));
+        assertTrue(script.body().contains("await loadNodes();\n  if (!inspectionCapableNode())"),
+                "Dashboard refresh must reload node connectivity before checking inspection capability.");
+        assertTrue(script.body().contains("Object.keys(operation.nodeStates || {}).length || results.length"),
+                "Running-operation progress must count all targets, not only completed results.");
         assertTrue(script.body().contains("runInspection('overview', {}, null, {manageBusy: false})"));
         assertTrue(script.body().contains("inspectionInFlight = true;\n  dashboardLoadedContext = '';"));
         assertEquals(4, script.body().split(java.util.regex.Pattern.quote(
