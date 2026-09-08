@@ -457,6 +457,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("entry.count > remaining"));
         assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));
         assertTrue(script.body().contains("function validDashboardVoteSiteAggregate(entry, status)"));
+        assertTrue(script.body().contains(
+                "aggregateFields.some(field => Object.hasOwn(entry, field))"),
+                "Unreadable VoteLog rows must reject non-authoritative aggregate fields.");
         assertTrue(script.body().contains("const loggedVotes = finiteCount(entry.loggedVotes);"),
                 "Readable Vote Site health rows must validate every aggregate as a nonnegative safe integer.");
         assertTrue(script.body().contains("immediateVotes + cachedVotes !== loggedVotes"),

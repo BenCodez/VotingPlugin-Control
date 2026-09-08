@@ -1843,6 +1843,9 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
     const aggregate = source.voteLogReadable === true
       ? validDashboardVoteSiteAggregate(entry, status.value) : null;
     if (source.voteLogReadable === true && !aggregate) return null;
+    const aggregateFields = ['loggedVotes', 'immediateVotes', 'cachedVotes', 'lastVoteTime'];
+    if (source.voteLogReadable !== true
+        && aggregateFields.some(field => Object.hasOwn(entry, field))) return null;
     voteSiteKeys.add(canonicalKey);
     return {value: {...entry, status: status.value, key: key.value, displayName: displayName.value,
       serviceSite: serviceSite.value, ...(aggregate || {})}, incomplete: key.incomplete || displayName.incomplete};
