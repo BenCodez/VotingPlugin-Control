@@ -305,6 +305,7 @@ let autoLoadInFlight = new Set();
 let autoLoadPending = new Set();
 let nodeLoadInFlight = null;
 let nodeLoadQueued = false;
+let suppressNodeAutoLoad = 0;
 let operationHistoryLoadInFlight = null;
 let operationHistoryLoadQueued = false;
 const appStylesheet = Array.from(document.styleSheets).find(sheet => sheet.href?.endsWith('/app.css'));
@@ -3303,7 +3304,7 @@ async function loadNodesOnce() {
     text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);
     previousPage.disabled = pageOffset === 0;
     nextPage.disabled = pageOffset + visibleNodeItems.length >= registry.items.length;
-    void autoLoadTab(tabFromHash());
+    if (suppressNodeAutoLoad === 0) void autoLoadTab(tabFromHash());
   } catch (error) {
     visibleNodeItems = [];
     allNodeItems = [];
@@ -4118,7 +4119,12 @@ async function refreshDashboard() {
   }
   dashboardLoading = true;
   refreshDashboardButton.disabled = true;
-  await loadNodes();
+  suppressNodeAutoLoad++;
+  try {
+    await loadNodes();
+  } finally {
+    suppressNodeAutoLoad--;
+  }
   if (!inspectionCapableNode()) {
     dashboardLoading = false;
     renderMetrics();
