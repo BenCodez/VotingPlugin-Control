@@ -120,10 +120,14 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("loadEnrollments"));
         assertTrue(script.body().contains("enrollmentMutationInFlight"));
         assertTrue(script.body().contains("enrollmentRefreshRequested"));
-        assertTrue(script.body().contains("const enrollmentRefreshWaiters = [];"),
+        assertTrue(script.body().contains("let enrollmentRefreshPromise = null;"),
                 "Enrollment callers must be able to await a refresh queued behind an in-flight request.");
-        assertTrue(script.body().contains("return new Promise(resolve => enrollmentRefreshWaiters.push(resolve));"),
+        assertTrue(script.body().contains("if (!enrollmentRefreshPromise) {"),
+                "Concurrent enrollment refresh callers must share one bounded waiter promise.");
+        assertTrue(script.body().contains("return enrollmentRefreshPromise;"),
                 "A queued enrollment refresh must not let dashboard inspection proceed on stale enrollment state.");
+        assertFalse(script.body().contains("enrollmentRefreshWaiters"),
+                "Enrollment refresh waiters must not grow without a bound.");
         assertTrue(script.body().contains("const reportedBackends = new Map();"),
                 "Node-level topology warnings must be aggregated before rendering attention items.");
         assertTrue(script.body().contains("is unavailable to ${proxy.displayName}"),
@@ -464,6 +468,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("dashboardInspectionStatus.voteLog24h = 'incomplete';\n        dashboardInspectionStatus.voteLog30d = 'incomplete';"));
         assertTrue(script.body().contains("entry.count > remaining"));
         assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));
+        assertTrue(script.body().contains("typeof entry.hasRewards !== 'boolean'"),
+                "Readable Vote Site rows must include a typed reward-presence field.");
         assertTrue(script.body().contains("function validDashboardVoteSiteAggregate(entry, status)"));
         assertTrue(script.body().contains(
                 "aggregateFields.some(field => Object.hasOwn(entry, field))"),
@@ -491,6 +497,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("return serviceIdentity.length >= 64;"),
                 "Duplicate ServiceSite values at the node serialization bound must remain unchecked as possibly truncated.");
         assertTrue(script.body().contains("aggregate += siteCount;"));
+        assertTrue(script.body().contains("const serviceAggregates = new Map();"),
+                "Aliases sharing a ServiceSite must be checked against the same aggregate snapshot.");
+        assertTrue(script.body().contains("function dashboardVoteSiteAggregatesMatch(left, right)"),
+                "ServiceSite aliases with contradictory aggregates must invalidate the health snapshot.");
+        assertTrue(script.body().contains("!dashboardVoteSiteAggregatesMatch(previousAggregate, aggregate)"),
+                "Contradictory ServiceSite aliases must not be silently deduplicated.");
         assertTrue(script.body().contains(
                 "dashboardHealthAggregateExceedsSummary(\n        health.sites, siteField, summaryCount)"));
         assertTrue(script.body().contains("dashboardHealthContradictsVoteSummary(dashboardVoteSiteHealth, dashboardVoteSummary30d)"));

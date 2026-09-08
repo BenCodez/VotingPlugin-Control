@@ -268,7 +268,8 @@ let loginInFlight = false;
 let setupRequired = false;
 let enrollmentInFlight = false;
 let enrollmentRefreshRequested = false;
-const enrollmentRefreshWaiters = [];
+let enrollmentRefreshPromise = null;
+let enrollmentRefreshResolve = null;
 let enrollmentMutationInFlight = false;
 let configurationOperationsInFlight = 0;
 let proxyMethodWorkflowInFlight = false;
@@ -1827,6 +1828,7 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
   const allowedStatuses = new Set(['ACTIVE', 'DISABLED', 'SERVICE_SITE_MISSING', 'VOTE_LOG_UNAVAILABLE',
     'VOTE_LOG_UNREADABLE', 'NO_RECENT_VOTES']);
   const voteSiteKeys = new Set();
+  const serviceAggregates = new Map();
   const sites = normalizeDashboardCollection(source.sites, 100, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const status = boundedDashboardString(entry.status, 64);
@@ -1835,7 +1837,7 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
     const serviceSite = boundedDashboardString(entry.serviceSite, 64, true);
     const canonicalKey = key.value.toLowerCase();
     if (status.incomplete || !allowedStatuses.has(status.value) || !key.value || voteSiteKeys.has(canonicalKey)
-        || typeof entry.enabled !== 'boolean' || serviceSite.incomplete) return null;
+        || typeof entry.enabled !== 'boolean' || typeof entry.hasRewards !== 'boolean' || serviceSite.incomplete) return null;
     const expectedStatuses = entry.enabled === false ? new Set(['DISABLED']) : !serviceSite.value
       ? new Set(['SERVICE_SITE_MISSING']) : source.voteLoggingAvailable !== true
       ? new Set(['VOTE_LOG_UNAVAILABLE']) : source.voteLogReadable !== true
@@ -1844,6 +1846,10 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
     const aggregate = source.voteLogReadable === true
       ? validDashboardVoteSiteAggregate(entry, status.value) : null;
     if (source.voteLogReadable === true && !aggregate) return null;
+    const serviceIdentity = serviceSite.value.toLowerCase();
+    const previousAggregate = serviceAggregates.get(serviceIdentity);
+    if (previousAggregate && !dashboardVoteSiteAggregatesMatch(previousAggregate, aggregate)) return null;
+    if (aggregate && serviceIdentity) serviceAggregates.set(serviceIdentity, aggregate);
     const aggregateFields = ['loggedVotes', 'immediateVotes', 'cachedVotes', 'lastVoteTime'];
     if (source.voteLogReadable !== true
         && aggregateFields.some(field => Object.hasOwn(entry, field))) return null;
@@ -1887,6 +1893,11 @@ function validDashboardVoteSiteAggregate(entry, status) {
   if (loggedVotes === 0 ? lastVoteTime !== 0 : lastVoteTime === 0) return null;
   if (status === 'ACTIVE' && loggedVotes === 0 || status === 'NO_RECENT_VOTES' && loggedVotes !== 0) return null;
   return {loggedVotes, immediateVotes, cachedVotes, lastVoteTime};
+}
+
+function dashboardVoteSiteAggregatesMatch(left, right) {
+  return left.loggedVotes === right.loggedVotes && left.immediateVotes === right.immediateVotes
+    && left.cachedVotes === right.cachedVotes && left.lastVoteTime === right.lastVoteTime;
 }
 
 function dashboardHealthContradictsOverview(overview, health) {
@@ -3145,7 +3156,10 @@ async function loadEnrollments() {
   if (!authenticated) return;
   if (enrollmentInFlight) {
     enrollmentRefreshRequested = true;
-    return new Promise(resolve => enrollmentRefreshWaiters.push(resolve));
+    if (!enrollmentRefreshPromise) {
+      enrollmentRefreshPromise = new Promise(resolve => { enrollmentRefreshResolve = resolve; });
+    }
+    return enrollmentRefreshPromise;
   }
   enrollmentInFlight = true;
   const enrollmentGeneration = authenticationGeneration;
@@ -3201,7 +3215,10 @@ async function loadEnrollments() {
     const refreshAgain = enrollmentRefreshRequested && authenticated;
     enrollmentRefreshRequested = false;
     if (refreshAgain) await loadEnrollments();
-    enrollmentRefreshWaiters.splice(0).forEach(resolve => resolve());
+    const resolveRefresh = enrollmentRefreshResolve;
+    enrollmentRefreshPromise = null;
+    enrollmentRefreshResolve = null;
+    if (resolveRefresh) resolveRefresh();
   }
 }
 
