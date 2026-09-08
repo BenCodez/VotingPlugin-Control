@@ -1910,7 +1910,12 @@ function dashboardHealthAggregateExceedsSummary(sites, siteField, summaryCount) 
   const countedServices = new Set();
   return sites.some(site => {
     const serviceIdentity = typeof site?.serviceSite === 'string' ? site.serviceSite.trim().toLowerCase() : '';
-    if (serviceIdentity && countedServices.has(serviceIdentity)) return false;
+    if (serviceIdentity && countedServices.has(serviceIdentity)) {
+      // The node bounds serialized ServiceSite values to 64 characters. A
+      // duplicate at that boundary may represent two distinct truncated names,
+      // so treat the aggregate as unchecked instead of silently deduplicating it.
+      return serviceIdentity.length >= 64;
+    }
     const siteCount = finiteCount(site?.[siteField]);
     if (siteCount == null) return false;
     if (serviceIdentity) countedServices.add(serviceIdentity);
@@ -2071,7 +2076,7 @@ function dashboardIssues() {
       'Open Servers to inspect the complete registered-node state.', 'View servers', 'servers'));
   }
   allNodeItems.filter(node => isProxy(node) && node.online).forEach(proxy => {
-    (Array.isArray(proxy.backends) ? proxy.backends : []).slice(0, 100).forEach(backend => {
+    (Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {
       const registered = nodeIndex.get(backend.backendId);
       if (!registered) issues.push(issue('warning', `${backend.displayName} is not registered with Control`,
         `${proxy.displayName} reports this backend, but Control has no current node record.`, 'View servers', 'servers'));

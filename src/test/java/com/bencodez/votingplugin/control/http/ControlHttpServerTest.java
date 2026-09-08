@@ -307,6 +307,12 @@ class ControlHttpServerTest {
                 "dashboardLoadedContext = '';\n      dashboardInspectionStatus.overview = 'failed';"));
         assertTrue(script.body().contains("if (requestedContext === dashboardContext() && complete)"));
         assertTrue(script.body().contains("disconnected from Control"));
+        assertTrue(script.body().contains(
+                "(Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {"),
+                "Dashboard topology health must inspect every backend returned by the bounded nodes API.");
+        assertFalse(script.body().contains(
+                "(Array.isArray(proxy.backends) ? proxy.backends : []).slice(0, 100).forEach(backend => {"),
+                "Dashboard topology health must not silently omit backend summaries after the first 100 rows.");
         assertTrue(script.body().contains("document.createElement('progress')"));
         assertTrue(script.body().contains("const count = hasCount ? finiteCount(entry.count) : hasVotes ? finiteCount(entry.votes) : null;"));
         assertTrue(script.body().contains("Math.max(...services.map(service => service.count), 1)"));
@@ -433,6 +439,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const countedServices = new Set();"));
         assertTrue(script.body().contains("countedServices.has(serviceIdentity)"),
                 "Aliases sharing a canonical ServiceSite must not double-count the same VoteLog aggregate.");
+        assertTrue(script.body().contains("return serviceIdentity.length >= 64;"),
+                "Duplicate ServiceSite values at the node serialization bound must remain unchecked as possibly truncated.");
         assertTrue(script.body().contains("aggregate += siteCount;"));
         assertTrue(script.body().contains(
                 "dashboardHealthAggregateExceedsSummary(\n        health.sites, siteField, summaryCount)"));
