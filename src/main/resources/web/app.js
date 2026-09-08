@@ -4125,6 +4125,7 @@ async function refreshDashboard() {
   } finally {
     suppressNodeAutoLoad--;
   }
+  await Promise.all([loadEnrollments(), loadOperationHistory()]);
   if (!inspectionCapableNode()) {
     dashboardLoading = false;
     renderMetrics();
