@@ -400,6 +400,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const platforms = new Set(['BUKKIT']);"));
         assertTrue(script.body().contains("const dataStorages = new Set(['SQLITE', 'MYSQL']);"));
         assertTrue(script.body().contains("immediate + cached !== total"));
+        assertTrue(script.body().contains("total > 0 && uniqueVoters <= 0"),
+                "A nonempty VoteLog summary must report at least one unique voter.");
         assertTrue(script.body().contains("function dashboardVoteSummariesContradict(shortWindow, longWindow)"));
         assertTrue(script.body().contains(
                 "const scalarContradiction = ['total', 'immediate', 'cached', 'uniqueVoters'].some(field =>"),

@@ -1958,7 +1958,7 @@ function normalizeDashboardVoteSummary(value, expectedDays = 30) {
   incomplete ||= !countRowsArePositive(services.items) || !countRowsArePositive(servers.items);
   if (total != null) {
     incomplete ||= immediate == null || cached == null || immediate + cached !== total
-      || uniqueVoters == null || uniqueVoters > total;
+      || uniqueVoters == null || total > 0 && uniqueVoters <= 0 || uniqueVoters > total;
     incomplete ||= total > 0 && (services.items.length === 0 || servers.items.length === 0);
     incomplete ||= countRowsExceedTotal(services.items, total)
       || countRowsExceedTotal(servers.items, total)
