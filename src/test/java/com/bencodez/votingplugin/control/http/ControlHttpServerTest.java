@@ -282,7 +282,25 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("id=\"global-search-input\""));
         assertTrue(web.body().contains("Logged Votes · 30d"));
         assertTrue(script.body().contains("async function refreshDashboard()"));
+        assertTrue(script.body().contains(
+                "refreshDashboardButton.disabled = !authenticated || inspectionInFlight || dashboardLoading;"),
+                "Dashboard refresh must remain available to rediscover a reconnected inspection-capable node.");
+        assertTrue(script.body().contains(
+                "const unavailable = tab === 'overview' ? dashboardLoading || inspectionInFlight"),
+                "The overview header refresh must not be gated by stale cached node capabilities.");
         assertTrue(script.body().contains("function dashboardIssues()"));
+        assertTrue(script.body().contains("operationHistoryStatus = 'failed';"));
+        assertTrue(script.body().contains("const historyGeneration = authenticationGeneration;"));
+        assertEquals(2, script.body().split(java.util.regex.Pattern.quote(
+                "if (!authenticated || historyGeneration !== authenticationGeneration) return;"), -1).length - 1,
+                "Delayed operation-history success and failure responses must not mutate a replaced session.");
+        assertTrue(script.body().contains("operationHistoryItems = [];\n    voteLoggingRestartPending = new Map();"),
+                "A failed history refresh must not leave stale operations or restart warnings on the dashboard.");
+        assertTrue(script.body().contains(
+                "text(operationHistory, error.message || 'Operation history could not be loaded.');\n    updateSetupChecklist();"),
+                "Clearing restart state after a failed history refresh must update the setup checklist.");
+        assertTrue(script.body().contains("if (operationHistoryStatus === 'failed') issues.push(issue('warning'"),
+                "Unavailable operation history must downgrade dashboard health.");
         assertTrue(script.body().contains("dashboardConfigurationGeneration++"));
         assertTrue(script.body().contains("|${dashboardConfigurationGeneration}`"));
         assertTrue(script.body().contains("Configuration changed; refreshing server overview"));

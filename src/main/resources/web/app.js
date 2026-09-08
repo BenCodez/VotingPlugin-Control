@@ -298,6 +298,7 @@ let dashboardTopologySignature = '';
 let dashboardConfigurationGeneration = 0;
 let dashboardLoading = false;
 let operationHistoryItems = [];
+let operationHistoryStatus = 'not-loaded';
 let dedicatedSetupApprovals = new Map();
 let pendingDetectedVoteSite = null;
 let voteLoggingRestartPending = new Map();
@@ -1048,8 +1049,11 @@ function renderOperationHistory() {
 
 async function loadOperationHistoryOnce() {
   if (!authenticated) return;
+  const historyGeneration = authenticationGeneration;
+  operationHistoryStatus = 'loading';
   try {
     const body = await authorized('/api/v1/operations');
+    if (!authenticated || historyGeneration !== authenticationGeneration) return;
     const retainedOperations = Array.isArray(body.items) ? body.items : [];
     operationHistoryItems = retainedOperations.slice(0, MAX_OPERATION_HISTORY).map(operation =>
       ({...operation, results: Object.fromEntries(Object.entries(operation.results || {}).map(([nodeId, result]) =>
@@ -1071,10 +1075,17 @@ async function loadOperationHistoryOnce() {
       });
     }
     voteLoggingRestartPending = pendingRestarts;
+    operationHistoryStatus = 'available';
     renderOperationHistory();
     updateSetupChecklist();
   } catch (error) {
+    if (!authenticated || historyGeneration !== authenticationGeneration) return;
+    operationHistoryItems = [];
+    voteLoggingRestartPending = new Map();
+    operationHistoryStatus = 'failed';
     text(operationHistory, error.message || 'Operation history could not be loaded.');
+    updateSetupChecklist();
+    renderMetrics();
   }
 }
 
@@ -1229,6 +1240,7 @@ function applyAuthenticatedSession(body) {
   dashboardInspectionStatus = emptyDashboardInspectionStatus();
   dashboardTopologySignature = '';
   operationHistoryItems = [];
+  operationHistoryStatus = 'not-loaded';
   dedicatedSetupApprovals.clear();
   voteLoggingRestartPending.clear();
   pendingDetectedVoteSite = null;
@@ -1440,7 +1452,7 @@ function updateHeaderAction(tab) {
   const [label, action] = actions[tab] || actions.overview;
   text(headerAction, label);
   headerAction.onclick = action;
-  const unavailable = tab === 'overview' ? !inspectionCapableNode() || dashboardLoading || inspectionInFlight
+  const unavailable = tab === 'overview' ? dashboardLoading || inspectionInFlight
     : tab === 'servers' ? nodeLoadInFlight != null
     : tab === 'network' ? runNetworkDoctor.disabled
     : tab === 'configurations' ? runDriftCheck.disabled
@@ -2126,6 +2138,9 @@ function dashboardIssues() {
   operationHistoryItems.filter(operation => ['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state)).slice(0, 5)
     .forEach(operation => issues.push(issue('warning', `${operationLabel(operation)} needs review`,
       operationPhase(operation), 'View operation', 'activity')));
+  if (operationHistoryStatus === 'failed') issues.push(issue('warning', 'Operation history is unavailable',
+    'Recent configuration failures could not be loaded, so dashboard health is incomplete.',
+    'Retry activity', 'activity'));
   return summary;
 }
 
@@ -2532,7 +2547,7 @@ function updateExtendedButtons() {
     && configurationOperationsInFlight === 0;
   const fileTargets = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
   const driftReady = authenticated && fileTargets.length >= 2 && configurationOperationsInFlight === 0;
-  refreshDashboardButton.disabled = !inspectionReady || dashboardLoading;
+  refreshDashboardButton.disabled = !authenticated || inspectionInFlight || dashboardLoading;
   runNetworkDoctor.disabled = !inspectionReady;
   downloadNetworkDiagnostics.disabled = !lastDiagnostics;
   refreshSetupChecklist.disabled = !inspectionReady;
@@ -2886,6 +2901,7 @@ function discardAuthenticationState(reason) {
   dashboardInspectionStatus = emptyDashboardInspectionStatus();
   dashboardTopologySignature = '';
   operationHistoryItems = [];
+  operationHistoryStatus = 'not-loaded';
   dedicatedSetupApprovals.clear();
   voteLoggingRestartPending.clear();
   pendingDetectedVoteSite = null;
