@@ -308,7 +308,7 @@ li span { color: var(--muted); font-size: .9rem; }
   .attention-item button { grid-column: 2; width: 100%; }
 }
 
-@media (max-width: 420px) {
+@media (max-width: 480px) {
   .topbar { gap: 8px; }
   .brand { display: none; }
   .server-picker select { width: min(50vw, 180px); }

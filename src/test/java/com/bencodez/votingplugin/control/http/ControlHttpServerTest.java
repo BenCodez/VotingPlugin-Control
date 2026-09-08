@@ -266,6 +266,8 @@ class ControlHttpServerTest {
         assertTrue(stylesheet.body().contains("top: calc(var(--topbar-height) + 24px)"));
         assertTrue(stylesheet.body().contains("max-height: calc(100vh - var(--topbar-height) - 44px)"));
 		assertTrue(stylesheet.body().contains("@media (max-width: 1360px) and (min-width: 921px)"));
+		assertTrue(stylesheet.body().contains("@media (max-width: 480px)"),
+		        "The compact header must hide the brand before the 430px overflow range.");
         assertTrue(stylesheet.body().contains(".topbar-actions { flex: 1 1 520px; min-width: 0; flex-wrap: wrap; }"));
         assertFalse(stylesheet.body().contains("attr(data-topbar-height"));
         assertTrue(stylesheet.body().contains("body::before { position: fixed; z-index: 25; top: var(--topbar-height)"));
@@ -331,6 +333,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const configuredServiceKeys = new Set(sites.items.map(site => site.serviceSite.toLowerCase()));"));
         assertTrue(script.body().contains("configuredServiceKeys.has(identity)"),
                 "Detected services must not duplicate a configured ServiceSite identity.");
+        assertTrue(script.body().contains(
+                "return service.incomplete || configuredServiceKeys.has(identity)"),
+                "Unmatched services must not duplicate a configured ServiceSite identity.");
         assertTrue(script.body().contains("detectedServiceKeys.has(identity)"),
                 "Detected service identities must be rejected case-insensitively when duplicated.");
         assertTrue(script.body().contains(
@@ -378,6 +383,9 @@ class ControlHttpServerTest {
         assertFalse(script.body().contains("Number(dashboardOverview.configuredVoteSites) === 0"));
         assertTrue(script.body().contains("const siteCountsKnown = configured != null && enabled != null;"));
         assertTrue(script.body().contains("text(metricVoteSites, !siteCountsKnown ? '—'"));
+        assertTrue(script.body().contains(
+                "+ dashboardVoteSiteHealth.unmatchedLoggedServices.length : null;"),
+                "Unmatched services must contribute to the Vote Sites warning count.");
         assertTrue(script.body().contains("runDriftCheck.addEventListener('click', async () => {\n  setConfigView('compare');"));
         assertTrue(script.body().contains("voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0"));
         assertTrue(script.body().contains("voteSitesConfiguredKnown: configuredVoteSites != null"));

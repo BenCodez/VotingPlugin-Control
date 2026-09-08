@@ -1837,7 +1837,9 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
 	const unmatched = normalizeDashboardCollection(source.unmatchedLoggedServices, 100, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const service = boundedDashboardString(entry.serviceSite, 100);
-    return service.incomplete ? null : {value: {...entry, serviceSite: service.value}, incomplete: false};
+    const identity = service.value.toLowerCase();
+    return service.incomplete || configuredServiceKeys.has(identity)
+      ? null : {value: {...entry, serviceSite: service.value}, incomplete: false};
 	});
 	incomplete ||= sites.incomplete || detected.incomplete || unmatched.incomplete;
 	if (source.voteLogReadable !== true && unmatched.items.length > 0) incomplete = true;
@@ -2154,7 +2156,8 @@ function renderMetrics() {
   const enabled = current ? finiteCount(dashboardOverview?.enabledVoteSites) : null;
   const siteWarnings = current && Array.isArray(dashboardVoteSiteHealth?.sites)
     ? dashboardVoteSiteHealth.sites.filter(site => site.status === 'SERVICE_SITE_MISSING').length
-      + dashboardVoteSiteHealth.detectedUnconfiguredServices.length : null;
+      + dashboardVoteSiteHealth.detectedUnconfiguredServices.length
+      + dashboardVoteSiteHealth.unmatchedLoggedServices.length : null;
   const siteCountsKnown = configured != null && enabled != null;
   text(metricVoteSites, !siteCountsKnown ? '—' : `${enabled}/${configured}`);
   text(metricVoteSitesDetail, !siteCountsKnown ? 'Counts unavailable'
