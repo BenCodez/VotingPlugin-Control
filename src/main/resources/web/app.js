@@ -1943,10 +1943,35 @@ function countRowsExceedTotal(items, total) {
   return false;
 }
 
+function dashboardCountRowIdentity(entry, label) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const name = boundedDashboardString(entry[label], 100, false);
+  return name.incomplete ? null : name.value.toLowerCase();
+}
+
+function dashboardCountRowsContradict(shortRows, longRows, label) {
+  if (!Array.isArray(shortRows) || !Array.isArray(longRows)) return false;
+  const longCounts = new Map();
+  longRows.forEach(entry => {
+    const identity = dashboardCountRowIdentity(entry, label);
+    const count = finiteCount(entry?.count);
+    if (identity != null && count != null) longCounts.set(identity, count);
+  });
+  return shortRows.some(entry => {
+    const identity = dashboardCountRowIdentity(entry, label);
+    const shortCount = finiteCount(entry?.count);
+    return identity != null && shortCount != null && longCounts.has(identity)
+      && shortCount > longCounts.get(identity);
+  });
+}
+
 function dashboardVoteSummariesContradict(shortWindow, longWindow) {
-  return ['total', 'immediate', 'cached', 'uniqueVoters'].some(field =>
+  const scalarContradiction = ['total', 'immediate', 'cached', 'uniqueVoters'].some(field =>
     finiteCount(shortWindow?.[field]) != null && finiteCount(longWindow?.[field]) != null
       && shortWindow[field] > longWindow[field]);
+  return scalarContradiction
+    || dashboardCountRowsContradict(shortWindow?.topServices, longWindow?.topServices, 'service')
+    || dashboardCountRowsContradict(shortWindow?.topServers, longWindow?.topServers, 'server');
 }
 
 function issue(severity, title, detail, action, tab, scrollTarget = '', preset = '') {

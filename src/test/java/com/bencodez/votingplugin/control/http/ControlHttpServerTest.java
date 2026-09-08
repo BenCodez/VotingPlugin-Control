@@ -370,8 +370,19 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("immediate + cached !== total"));
         assertTrue(script.body().contains("function dashboardVoteSummariesContradict(shortWindow, longWindow)"));
         assertTrue(script.body().contains(
-                "return ['total', 'immediate', 'cached', 'uniqueVoters'].some(field =>"),
+                "const scalarContradiction = ['total', 'immediate', 'cached', 'uniqueVoters'].some(field =>"),
                 "All shared VoteLog counters must be monotonic across nested windows.");
+        assertTrue(script.body().contains("function dashboardCountRowIdentity(entry, label)"),
+                "VoteLog top-row comparisons must use the same normalized identity rules as row validation.");
+        assertTrue(script.body().contains("function dashboardCountRowsContradict(shortRows, longRows, label)"));
+        assertTrue(script.body().contains("longCounts.has(identity)"),
+                "Only identities present in both nested-window summaries may be compared.");
+        assertTrue(script.body().contains("shortCount > longCounts.get(identity)"),
+                "A larger 24-hour count for a shared service/server identity must invalidate the summaries.");
+        assertTrue(script.body().contains(
+                "dashboardCountRowsContradict(shortWindow?.topServices, longWindow?.topServices, 'service')"));
+        assertTrue(script.body().contains(
+                "dashboardCountRowsContradict(shortWindow?.topServers, longWindow?.topServers, 'server')"));
         assertTrue(script.body().contains("dashboardInspectionStatus.voteLog24h = 'incomplete';\n        dashboardInspectionStatus.voteLog30d = 'incomplete';"));
         assertTrue(script.body().contains("entry.count > remaining"));
         assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));
