@@ -4291,7 +4291,10 @@ loadSiteHealth.addEventListener('click', async () => {
     renderMetrics();
   }
   catch (error) {
-    if (dashboardLoadedContext === dashboardContext()) dashboardInspectionStatus.voteSiteHealth = 'failed';
+    if (dashboardLoadedContext === dashboardContext()) {
+      dashboardInspectionStatus.voteSiteHealth = 'failed';
+      dashboardLoadedContext = '';
+    }
     text(siteHealthResult, error.message);
     renderMetrics();
   }

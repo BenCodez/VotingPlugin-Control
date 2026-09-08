@@ -265,7 +265,7 @@ class ControlHttpServerTest {
         assertTrue(stylesheet.body().contains("--topbar-height: 76px"));
         assertTrue(stylesheet.body().contains("top: calc(var(--topbar-height) + 24px)"));
         assertTrue(stylesheet.body().contains("max-height: calc(100vh - var(--topbar-height) - 44px)"));
-        assertTrue(stylesheet.body().contains("@media (max-width: 1120px) and (min-width: 921px)"));
+		assertTrue(stylesheet.body().contains("@media (max-width: 1360px) and (min-width: 921px)"));
         assertTrue(stylesheet.body().contains(".topbar-actions { flex: 1 1 520px; min-width: 0; flex-wrap: wrap; }"));
         assertFalse(stylesheet.body().contains("attr(data-topbar-height"));
         assertTrue(stylesheet.body().contains("body::before { position: fixed; z-index: 25; top: var(--topbar-height)"));
@@ -305,7 +305,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Math.max(...services.map(service => service.count), 1)"));
         assertTrue(script.body().contains("track.value = service.count;"));
         assertFalse(script.body().contains("service.votes"));
-        assertTrue(script.body().contains("dashboardInspectionStatus.voteSiteHealth = 'failed';"));
+		assertTrue(script.body().contains("dashboardInspectionStatus.voteSiteHealth = 'failed';"));
+		assertTrue(script.body().contains("dashboardInspectionStatus.voteSiteHealth = 'failed';\n      dashboardLoadedContext = '';"));
         assertTrue(script.body().contains("dashboardInspectionStatus.voteLog24h = 'failed';"));
         assertTrue(script.body().contains("dashboardInspectionStatus.voteLog30d = 'failed';"));
         assertTrue(script.body().contains("Some dashboard checks could not be verified"));
