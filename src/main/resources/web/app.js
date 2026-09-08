@@ -1821,9 +1821,12 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
       ? new Set(['VOTE_LOG_UNAVAILABLE']) : source.voteLogReadable !== true
       ? new Set(['VOTE_LOG_UNREADABLE']) : new Set(['ACTIVE', 'NO_RECENT_VOTES']);
     if (!expectedStatuses.has(status.value)) return null;
+    const aggregate = source.voteLogReadable === true
+      ? validDashboardVoteSiteAggregate(entry, status.value) : null;
+    if (source.voteLogReadable === true && !aggregate) return null;
     voteSiteKeys.add(canonicalKey);
     return {value: {...entry, status: status.value, key: key.value, displayName: displayName.value,
-      serviceSite: serviceSite.value}, incomplete: key.incomplete || displayName.incomplete};
+      serviceSite: serviceSite.value, ...(aggregate || {})}, incomplete: key.incomplete || displayName.incomplete};
   });
 	const configuredServiceKeys = new Set(sites.items.map(site => site.serviceSite.toLowerCase()));
 	const detectedServiceKeys = new Set();
@@ -1849,6 +1852,18 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
 	return {result: {...source, days, ...Object.fromEntries(booleanFields.map(field =>
 		[field, typeof source[field] === 'boolean' ? source[field] : undefined])), sites: sites.items,
 		detectedUnconfiguredServices: detected.items, unmatchedLoggedServices: unmatchedItems}, incomplete};
+}
+
+function validDashboardVoteSiteAggregate(entry, status) {
+  const loggedVotes = finiteCount(entry.loggedVotes);
+  const immediateVotes = finiteCount(entry.immediateVotes);
+  const cachedVotes = finiteCount(entry.cachedVotes);
+  const lastVoteTime = finiteCount(entry.lastVoteTime);
+  if (loggedVotes == null || immediateVotes == null || cachedVotes == null || lastVoteTime == null
+      || immediateVotes + cachedVotes !== loggedVotes) return null;
+  if (loggedVotes === 0 ? lastVoteTime !== 0 : lastVoteTime === 0) return null;
+  if (status === 'ACTIVE' && loggedVotes === 0 || status === 'NO_RECENT_VOTES' && loggedVotes !== 0) return null;
+  return {loggedVotes, immediateVotes, cachedVotes, lastVoteTime};
 }
 
 function dashboardHealthContradictsOverview(overview, health) {

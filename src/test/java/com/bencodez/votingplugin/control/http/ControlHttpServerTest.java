@@ -375,6 +375,17 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("dashboardInspectionStatus.voteLog24h = 'incomplete';\n        dashboardInspectionStatus.voteLog30d = 'incomplete';"));
         assertTrue(script.body().contains("entry.count > remaining"));
         assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));
+        assertTrue(script.body().contains("function validDashboardVoteSiteAggregate(entry, status)"));
+        assertTrue(script.body().contains("const loggedVotes = finiteCount(entry.loggedVotes);"),
+                "Readable Vote Site health rows must validate every aggregate as a nonnegative safe integer.");
+        assertTrue(script.body().contains("immediateVotes + cachedVotes !== loggedVotes"),
+                "Readable Vote Site health rows must preserve the logged/immediate/cached sum.");
+        assertTrue(script.body().contains("loggedVotes === 0 ? lastVoteTime !== 0 : lastVoteTime === 0"),
+                "A Vote Site last-vote timestamp must be zero exactly when its readable aggregate is empty.");
+        assertTrue(script.body().contains("status === 'ACTIVE' && loggedVotes === 0"),
+                "ACTIVE Vote Site rows must contain at least one logged vote.");
+        assertTrue(script.body().contains("status === 'NO_RECENT_VOTES' && loggedVotes !== 0"),
+                "NO_RECENT_VOTES rows must contain no logged votes.");
         assertTrue(script.body().contains("lastOverview = null;\n  text(dataOverview, 'Refreshing server overview…');"));
 		assertTrue(script.body().contains("async function refreshOverview(target = dataOverview) {\n  invalidateDashboardInspection();"));
         assertTrue(script.body().contains(".result, 1);"));
