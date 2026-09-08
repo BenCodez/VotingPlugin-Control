@@ -21,6 +21,8 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+/* Applies to desktop and the expanded mobile topbar after its dynamic height is measured. */
+[id] { scroll-margin-top: calc(var(--topbar-height) + 20px); }
 body { margin: 0; min-height: 100vh; background: #07101d radial-gradient(circle at 50% -20%, #17375e 0, transparent 42rem); }
 button, input, textarea, select { font: inherit; }
 button { padding: 11px 16px; border: 1px solid #4b9cff; border-radius: 9px; background: #3187ee; color: #fff; font-weight: 750; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; }

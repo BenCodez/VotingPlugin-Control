@@ -319,6 +319,12 @@ function syncTopbarOffset() {
   rootStyleRule?.['style'].setProperty('--topbar-height', `${height}px`);
 }
 
+function scrollToAnchor(target) {
+  if (!target) return;
+  syncTopbarOffset();
+  target.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
 syncTopbarOffset();
 if (typeof ResizeObserver === 'function') new ResizeObserver(syncTopbarOffset).observe(topbar);
 window.addEventListener('resize', syncTopbarOffset);
@@ -627,7 +633,7 @@ function renderSiteHealthResult(value) {
       updatePluginSuggestions();
       setActiveTab('quick-setup', true);
       text(quickOperationStatus, 'Detected service copied into the VoteSite setup. Load the generated key to confirm it is unused, complete the URL and delay, then preview before creating it.');
-      document.querySelector('#quick-setup-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+      scrollToAnchor(document.querySelector('#quick-setup-card'));
     });
     actions.append(button);
   });
@@ -1468,9 +1474,7 @@ function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = n
     navigationButtons.forEach(button => button.removeAttribute('aria-current'));
     navigationButton.setAttribute('aria-current', 'page');
   }
-  if (scrollTarget) window.requestAnimationFrame(() => {
-    document.getElementById(scrollTarget)?.scrollIntoView({behavior: 'smooth', block: 'start'});
-  });
+  if (scrollTarget) window.requestAnimationFrame(() => scrollToAnchor(document.getElementById(scrollTarget)));
 }
 
 function setConfigView(view) {
@@ -1928,6 +1932,7 @@ function normalizeDashboardVoteSummary(value, expectedDays = 30) {
   if (total != null) {
     incomplete ||= immediate == null || cached == null || immediate + cached !== total
       || uniqueVoters == null || uniqueVoters > total;
+    incomplete ||= total > 0 && (services.items.length === 0 || servers.items.length === 0);
     incomplete ||= countRowsExceedTotal(services.items, total)
       || countRowsExceedTotal(servers.items, total);
   }
@@ -4523,7 +4528,7 @@ copyRewardToSetup.addEventListener('click', () => {
   quickMessage.value = boundedLines(rewardMessages.value)[0] || '';
   updateQuickFields();
   clearApprovals();
-  document.querySelector('#quick-setup-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+  scrollToAnchor(document.querySelector('#quick-setup-card'));
 });
 
 settingsFilter.addEventListener('input', renderSettingsCatalog);

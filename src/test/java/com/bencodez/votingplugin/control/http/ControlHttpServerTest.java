@@ -83,6 +83,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("while (operationHistoryLoadQueued && authenticated)"));
         assertTrue(script.body().contains(": tab === 'servers' ? nodeLoadInFlight != null"));
         assertTrue(script.body().contains("rootStyleRule?.['style'].setProperty('--topbar-height', `${height}px`)"));
+        assertTrue(script.body().contains("function scrollToAnchor(target)"));
+        assertTrue(script.body().contains("syncTopbarOffset();\n  target.scrollIntoView({behavior: 'smooth', block: 'start'});"));
+        assertTrue(script.body().contains("window.requestAnimationFrame(() => scrollToAnchor(document.getElementById(scrollTarget)))"));
         assertTrue(script.body().contains("Math.max(topbarBounds.bottom, searchBounds.bottom)"));
         assertTrue(script.body().contains("globalSearch.hidden = false;\n  syncTopbarOffset();"));
         assertTrue(script.body().contains("MAX_REGISTRY_SCAN_ATTEMPTS"));
@@ -263,6 +266,8 @@ class ControlHttpServerTest {
         assertEquals(200, stylesheet.statusCode());
         assertTrue(stylesheet.body().contains(".sidebar"));
         assertTrue(stylesheet.body().contains("--topbar-height: 76px"));
+        assertTrue(stylesheet.body().contains("[id] { scroll-margin-top: calc(var(--topbar-height) + 20px); }"),
+                "Anchored shortcuts must clear the dynamically measured sticky header on desktop and mobile.");
         assertTrue(stylesheet.body().contains("top: calc(var(--topbar-height) + 24px)"));
         assertTrue(stylesheet.body().contains("max-height: calc(100vh - var(--topbar-height) - 44px)"));
 		assertTrue(stylesheet.body().contains("@media (max-width: 1360px) and (min-width: 921px)"));
@@ -350,6 +355,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
         assertTrue(script.body().contains("countRowsExceedTotal(services.items, total)"));
         assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
+        assertTrue(script.body().contains("total > 0 && (services.items.length === 0 || servers.items.length === 0)"),
+                "A nonempty VoteLog total must include at least one top service and server.");
         assertTrue(script.body().contains("function countRowsAreNonIncreasing(items)"),
                 "VoteLog category rows must retain their descending-count order.");
         assertTrue(script.body().contains("if (items[index].count > items[index - 1].count) return false;"));
