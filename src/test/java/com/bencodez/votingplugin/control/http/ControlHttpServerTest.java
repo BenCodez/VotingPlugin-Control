@@ -340,6 +340,8 @@ class ControlHttpServerTest {
         assertFalse(script.body().contains("(!key.value && !displayName.value)"),
                 "A display name must not substitute for a missing vote-site key.");
         assertTrue(script.body().contains("voteSiteKeys.add(canonicalKey);"));
+        assertTrue(script.body().contains("const serviceSite = boundedDashboardString(entry.serviceSite, 64, true);"),
+                "Vote-site health must enforce the node's 64-character ServiceSite wire bound.");
         assertTrue(script.body().contains("const detectedServiceKeys = new Set();"));
         assertTrue(script.body().contains("const configuredServiceKeys = new Set(sites.items.map(site => site.serviceSite.toLowerCase()));"));
         assertTrue(script.body().contains("configuredServiceKeys.has(identity)"),

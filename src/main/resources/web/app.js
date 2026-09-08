@@ -1816,7 +1816,7 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
     const status = boundedDashboardString(entry.status, 64);
     const key = boundedDashboardString(entry.key, 100, true);
     const displayName = boundedDashboardString(entry.displayName, 100, true);
-    const serviceSite = boundedDashboardString(entry.serviceSite, 100, true);
+    const serviceSite = boundedDashboardString(entry.serviceSite, 64, true);
     const canonicalKey = key.value.toLowerCase();
     if (status.incomplete || !allowedStatuses.has(status.value) || !key.value || voteSiteKeys.has(canonicalKey)
         || typeof entry.enabled !== 'boolean' || serviceSite.incomplete) return null;
