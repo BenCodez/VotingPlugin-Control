@@ -217,6 +217,14 @@ class InspectionOperationsTest {
                 () -> operations.complete(inspection, "backend-a", new InspectionTaskResult(session, true,
                         null, "done", envelope("diagnostics").put("schemaVersion", "1"),
                         task.attemptId()))).code());
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(inspection, "backend-a", new InspectionTaskResult(session, true,
+                        null, "done", envelope("diagnostics").put("schemaVersion", 4_294_967_297L),
+                        task.attemptId()))).code());
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(inspection, "backend-a", new InspectionTaskResult(session, true,
+                        null, "done", envelope("diagnostics").put("secret", "must not be retained"),
+                        task.attemptId()))).code());
     }
 
     @Test void playerResultsRejectColumnsOutsideTheServerAllowListBeforeRetention() {
@@ -229,7 +237,7 @@ class InspectionOperationsTest {
         ((ObjectNode) data.path("result").path("lastVotes").get(0)).put("displayName", "é".repeat(100));
         ObjectNode runtimeColumn = ((com.fasterxml.jackson.databind.node.ArrayNode) data.path("result").path("columns"))
                 .addObject();
-        runtimeColumn.put("name", "CoolDownCheck_lobby east");
+        runtimeColumn.put("name", "CoolDownCheck_" + "x".repeat(65));
         runtimeColumn.put("type", "BOOLEAN");
         runtimeColumn.put("value", "false");
         ((ObjectNode) ((com.fasterxml.jackson.databind.node.ArrayNode) data.path("result").path("columns"))
@@ -243,6 +251,7 @@ class InspectionOperationsTest {
 
         ((ObjectNode) ((com.fasterxml.jackson.databind.node.ArrayNode) data.path("result").path("columns"))
                 .get(0)).put("name", "Points");
+        runtimeColumn.put("name", "CoolDownCheck_lobby east");
         assertEquals("SUCCEEDED", operations.complete(inspection, "backend-a",
                 new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId())).state());
     }

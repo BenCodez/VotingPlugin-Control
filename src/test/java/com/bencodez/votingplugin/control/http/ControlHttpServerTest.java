@@ -164,7 +164,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("receivedLastVotes.some(lastVote => !validPlayerLastVote(lastVote))"));
         assertTrue(script.body().contains("const lastVotes = malformedLastVotes ? [] : receivedLastVotes.slice(0, MAX_PLAYER_LAST_VOTES);"));
         assertTrue(script.body().contains("function validPlayerColumn(column)"));
-        assertTrue(script.body().contains("const runtimeSuffix = suffix => suffix.length > 0"));
+        assertTrue(script.body().contains("suffix.length > 0 && suffix.length <= 64"));
         assertTrue(script.body().contains("const legacyStorageMetadata = value.storageRowAvailable === undefined"));
         assertTrue(script.body().contains("const columnsOmittedForUnavailableStorage = value.storageRowAvailable === false && value.columns === undefined;"));
         assertTrue(script.body().contains("if (legacyStorageMetadata || columnsOmittedForUnavailableStorage) return;"));
@@ -190,6 +190,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Drift results were discarded; run the comparison again."),
                 "A drift read completed for stale context must show an explicit discarded-result status.");
         assertTrue(script.body().contains("text(operationStatus, routingDraftStatus('The selected nodes changed during refresh."));
+        assertTrue(script.body().contains(
+                "The apply completed, but newer unsaved proxy-routing edits remain. Preview again before applying them."));
         assertTrue(script.body().contains("Your unsaved ${configurationFile.value} draft is retained"));
         assertTrue(script.body().contains("Discard unsaved routing changes and load current values?"));
         assertTrue(script.body().contains("Discard the unsaved ${configurationFile.value} draft and read/reload the current file for this server?"));

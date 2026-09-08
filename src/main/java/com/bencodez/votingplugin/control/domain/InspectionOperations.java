@@ -219,7 +219,9 @@ public final class InspectionOperations {
             throw invalid("failed inspection result is invalid");
         }
         if (result.success() && (!result.data().isObject()
+                || !exactFields(result.data(), Set.of("schemaVersion", "kind", "generatedAt", "result"))
                 || !result.data().path("schemaVersion").isIntegralNumber()
+                || !result.data().path("schemaVersion").canConvertToInt()
                 || result.data().path("schemaVersion").intValue() != 1
                 || !expectedKind.equals(result.data().path("kind").asText())
                 || !result.data().path("generatedAt").isTextual()
@@ -312,6 +314,7 @@ public final class InspectionOperations {
         for (JsonNode column : value) {
             if (!exactFields(column, Set.of("name", "type", "value")) || !column.path("name").isTextual()
                     || !column.path("type").isTextual() || !column.path("value").isTextual()
+                    || !boundedCharacters(column.path("name"), 100)
                     || !boundedText(column.path("value"), MAX_PLAYER_COLUMN_VALUE_BYTES)
                     || !names.add(column.path("name").textValue())
                     || !validPlayerColumn(column.path("name").textValue(), column.path("type").textValue(),
@@ -359,7 +362,7 @@ public final class InspectionOperations {
     }
 
     private static boolean validRuntimeSuffix(String value) {
-        return !value.isEmpty() && !hasControlCharacter(value);
+        return !value.isEmpty() && value.length() <= 64 && !hasControlCharacter(value);
     }
 
     private static boolean canonicalUuid(JsonNode value) {

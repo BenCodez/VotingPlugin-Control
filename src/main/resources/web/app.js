@@ -384,9 +384,11 @@ function exactObjectKeys(value, expected) {
 
 function validPlayerColumn(column) {
   if (!exactObjectKeys(column, ['name', 'type', 'value'])) return false;
-  if (typeof column.name !== 'string' || typeof column.type !== 'string' || typeof column.value !== 'string'
+  if (typeof column.name !== 'string' || column.name.length > 100
+      || typeof column.type !== 'string' || typeof column.value !== 'string'
       || new TextEncoder().encode(column.value).length > 16 * 1024) return false;
-  const runtimeSuffix = suffix => suffix.length > 0 && !/[\u0000-\u001f\u007f-\u009f]/.test(suffix);
+  const runtimeSuffix = suffix => suffix.length > 0 && suffix.length <= 64
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(suffix);
   const runtimeString = column.name === 'CoolDownCheck_Sites'
     || column.name.startsWith('CoolDownCheck_') && column.name.endsWith('_Sites')
       && runtimeSuffix(column.name.slice('CoolDownCheck_'.length, -'_Sites'.length));
@@ -2294,6 +2296,10 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
     operation = await authorized(`/api/v1/operations/${operation.operationId}`);
     if (operationContextCurrent(context)) text(statusElement, operationSummary(operation));
     rememberOperation(operation);
+  }
+  if (!operationContextCurrent(context) && statusElement === operationStatus
+      && operation.type === 'APPLY' && routingDirty) {
+    text(statusElement, `${operationSummary(operation)}\nThe apply completed, but newer unsaved proxy-routing edits remain. Preview again before applying them.`);
   }
   rememberVoteLoggingRestart(operation);
   if (operation.type === 'APPLY' && Object.values(operation.results || {}).some(result => result?.success)) {
