@@ -428,6 +428,14 @@ class ControlHttpServerTest {
                 "Each readable per-site VoteLog aggregate must be bounded by its corresponding 30-day summary total.");
         assertTrue(script.body().contains("siteCount > summaryCount"),
                 "Sequentially inconsistent per-site and overall VoteLog reads must be treated as incomplete.");
+        assertTrue(script.body().contains("function dashboardHealthAggregateExceedsSummary(sites, siteField, summaryCount)"),
+                "Retained readable VoteLog site aggregates must be bounded in aggregate by summary counters.");
+        assertTrue(script.body().contains("const countedServices = new Set();"));
+        assertTrue(script.body().contains("countedServices.has(serviceIdentity)"),
+                "Aliases sharing a canonical ServiceSite must not double-count the same VoteLog aggregate.");
+        assertTrue(script.body().contains("aggregate += siteCount;"));
+        assertTrue(script.body().contains(
+                "dashboardHealthAggregateExceedsSummary(\n        health.sites, siteField, summaryCount)"));
         assertTrue(script.body().contains("dashboardHealthContradictsVoteSummary(dashboardVoteSiteHealth, dashboardVoteSummary30d)"));
         assertTrue(script.body().contains("dashboardInspectionStatus.voteSiteHealth = 'incomplete';\n        dashboardInspectionStatus.voteLog30d = 'incomplete';"),
                 "Conflicting 30-day health and summary evidence must make both dashboard inspections unhealthy.");

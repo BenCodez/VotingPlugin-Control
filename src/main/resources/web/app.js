@@ -1887,7 +1887,7 @@ function dashboardHealthContradictsOverview(overview, health) {
 
 function dashboardHealthContradictsVoteSummary(health, summary) {
   if (!health || !summary || health.voteLogReadable !== true || !Array.isArray(health.sites)) return false;
-  return health.sites.some(site => {
+  const rowContradiction = health.sites.some(site => {
     if (!site || typeof site !== 'object' || Array.isArray(site)) return false;
     return [['loggedVotes', 'total'], ['immediateVotes', 'immediate'], ['cachedVotes', 'cached']]
       .some(([siteField, summaryField]) => {
@@ -1895,6 +1895,27 @@ function dashboardHealthContradictsVoteSummary(health, summary) {
         const summaryCount = finiteCount(summary[summaryField]);
         return siteCount != null && summaryCount != null && siteCount > summaryCount;
       });
+  });
+  if (rowContradiction) return true;
+  return [['loggedVotes', 'total'], ['immediateVotes', 'immediate'], ['cachedVotes', 'cached']]
+    .some(([siteField, summaryField]) => {
+      const summaryCount = finiteCount(summary[summaryField]);
+      return summaryCount != null && dashboardHealthAggregateExceedsSummary(
+        health.sites, siteField, summaryCount);
+    });
+}
+
+function dashboardHealthAggregateExceedsSummary(sites, siteField, summaryCount) {
+  let aggregate = 0;
+  const countedServices = new Set();
+  return sites.some(site => {
+    const serviceIdentity = typeof site?.serviceSite === 'string' ? site.serviceSite.trim().toLowerCase() : '';
+    if (serviceIdentity && countedServices.has(serviceIdentity)) return false;
+    const siteCount = finiteCount(site?.[siteField]);
+    if (siteCount == null) return false;
+    if (serviceIdentity) countedServices.add(serviceIdentity);
+    aggregate += siteCount;
+    return aggregate > summaryCount;
   });
 }
 
