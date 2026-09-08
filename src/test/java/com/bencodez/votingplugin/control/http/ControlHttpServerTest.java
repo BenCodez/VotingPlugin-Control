@@ -372,7 +372,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("total > 0 && (services.items.length === 0 || servers.items.length === 0"),
                 "A nonempty VoteLog total must include at least one top service and server.");
         assertTrue(script.body().contains("!countRowsArePositive(services.items) || !countRowsArePositive(servers.items)"),
-                "A positive VoteLog total must not include zero-count top-category rows.");
+                "VoteLog category rows must not include zero-count rows, including when the total is zero.");
+        assertFalse(script.body().contains("total > 0 && (services.items.length === 0 || servers.items.length === 0\n      || !countRowsArePositive(services.items)"),
+                "Zero-total VoteLog summaries must not bypass positive category-count validation.");
         assertTrue(script.body().contains("function countRowsArePositive(items)"));
         assertTrue(script.body().contains("return items.every(entry => entry.count > 0);"));
         assertTrue(script.body().contains("function countRowsAreNonIncreasing(items)"),

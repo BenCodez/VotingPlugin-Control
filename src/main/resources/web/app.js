@@ -1955,11 +1955,11 @@ function normalizeDashboardVoteSummary(value, expectedDays = 30) {
   const servers = normalizeDashboardCountRows(source.topServers, 20, 'server');
   incomplete ||= services.incomplete || servers.incomplete
     || !countRowsAreNonIncreasing(services.items) || !countRowsAreNonIncreasing(servers.items);
+  incomplete ||= !countRowsArePositive(services.items) || !countRowsArePositive(servers.items);
   if (total != null) {
     incomplete ||= immediate == null || cached == null || immediate + cached !== total
       || uniqueVoters == null || uniqueVoters > total;
-    incomplete ||= total > 0 && (services.items.length === 0 || servers.items.length === 0
-      || !countRowsArePositive(services.items) || !countRowsArePositive(servers.items));
+    incomplete ||= total > 0 && (services.items.length === 0 || servers.items.length === 0);
     incomplete ||= countRowsExceedTotal(services.items, total)
       || countRowsExceedTotal(servers.items, total)
       || !countRowsSumMatchesTotal(services.items, total)
