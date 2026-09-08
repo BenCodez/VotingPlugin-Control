@@ -299,6 +299,13 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("health.sites.filter(site => site.enabled === true).length === enabled"));
         assertTrue(script.body().contains("['truncated', 'detectedUnconfiguredServicesTruncated'].forEach"));
         assertTrue(script.body().contains("typeof source[field] !== 'boolean' || source[field] === true"));
+        assertTrue(script.body().contains("const voteSiteKeys = new Set();"));
+        assertTrue(script.body().contains("const canonicalKey = key.value.toLowerCase();"));
+        assertTrue(script.body().contains("|| !key.value || voteSiteKeys.has(canonicalKey)"),
+                "Vote-site health must reject empty and duplicate site keys as incomplete data.");
+        assertFalse(script.body().contains("(!key.value && !displayName.value)"),
+                "A display name must not substitute for a missing vote-site key.");
+        assertTrue(script.body().contains("voteSiteKeys.add(canonicalKey);"));
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
         assertTrue(script.body().contains("countRowsExceedTotal(services.items, total)"));
         assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));

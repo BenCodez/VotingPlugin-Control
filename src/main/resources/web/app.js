@@ -1759,19 +1759,22 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
   });
   const allowedStatuses = new Set(['ACTIVE', 'DISABLED', 'SERVICE_SITE_MISSING', 'VOTE_LOG_UNAVAILABLE',
     'VOTE_LOG_UNREADABLE', 'NO_RECENT_VOTES']);
+  const voteSiteKeys = new Set();
   const sites = normalizeDashboardCollection(source.sites, 100, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const status = boundedDashboardString(entry.status, 64);
     const key = boundedDashboardString(entry.key, 100, true);
     const displayName = boundedDashboardString(entry.displayName, 100, true);
     const serviceSite = boundedDashboardString(entry.serviceSite, 100, true);
-    if (status.incomplete || !allowedStatuses.has(status.value) || (!key.value && !displayName.value)
+    const canonicalKey = key.value.toLowerCase();
+    if (status.incomplete || !allowedStatuses.has(status.value) || !key.value || voteSiteKeys.has(canonicalKey)
         || typeof entry.enabled !== 'boolean' || serviceSite.incomplete) return null;
     const expectedStatuses = entry.enabled === false ? new Set(['DISABLED']) : !serviceSite.value
       ? new Set(['SERVICE_SITE_MISSING']) : source.voteLoggingAvailable !== true
       ? new Set(['VOTE_LOG_UNAVAILABLE']) : source.voteLogReadable !== true
       ? new Set(['VOTE_LOG_UNREADABLE']) : new Set(['ACTIVE', 'NO_RECENT_VOTES']);
     if (!expectedStatuses.has(status.value)) return null;
+    voteSiteKeys.add(canonicalKey);
     return {value: {...entry, status: status.value, key: key.value, displayName: displayName.value,
       serviceSite: serviceSite.value}, incomplete: key.incomplete || displayName.incomplete};
   });
