@@ -264,8 +264,10 @@ Successful `data` is a JSON object with a common envelope:
 `schemaVersion` must be the JSON integer `1` (not a string), `kind` must exactly match the assigned query,
 `generatedAt` must parse as an ISO-8601 instant, and `result` must be a JSON object. Control limits serialized data to
 512 KiB and the message to 4 KiB. There are at most 100 retained inspections. The task
-lease is two minutes; an unleased active inspection expires five minutes after creation and a complete inspection is
-pruned 15 minutes after creation. Retrying after a lost acknowledgement is safe because handlers are read-only.
+lease is two minutes; an unleased active inspection expires five minutes after creation and an unobserved complete
+inspection is pruned 15 minutes after creation. After an API client retrieves a terminal result, that acknowledged entry
+may be evicted early only when the 100-entry store needs capacity. Retrying after a lost acknowledgement is safe because
+handlers are read-only.
 
 Control audit records only the inspection kind. Filter values may contain a player identity or vote correlation ID and
 must never be copied into audit or ordinary application logs. Claim, completion, and capability-loss cancellation update

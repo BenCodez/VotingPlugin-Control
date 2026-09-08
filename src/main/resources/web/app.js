@@ -222,6 +222,16 @@ const MAX_SYNC_TARGETS = 100;
 const MAX_OPERATION_TARGETS = 100;
 const MAX_TRACE_NODES = 12;
 const MAX_TRACE_EVENTS_PER_NODE = 100;
+const MAX_PLAYER_LAST_VOTES = 100;
+const PLAYER_STRING_COLUMNS = new Set(['UUID', 'PlayerName', 'LastOnline', 'DayVoteStreakLastUpdate', 'VoteRemindersLast']);
+const PLAYER_BOOLEAN_COLUMNS = new Set(['TopVoterIgnore', 'Reminded', 'DisableBroadcast', 'CoolDownCheck']);
+const PLAYER_INTEGER_COLUMNS = new Set(['VotePartyVotes', 'MonthTotal', 'AllTimeTotal', 'DailyTotal', 'WeeklyTotal',
+  'Points', 'DayVoteStreak', 'BestDayVoteStreak', 'WeekVoteStreak', 'BestWeekVoteStreak', 'MonthVoteStreak',
+  'BestMonthVoteStreak', 'HighestDailyTotal', 'HighestMonthlyTotal', 'HighestWeeklyTotal', 'LastMonthTotal',
+  'LastWeeklyTotal', 'LastDailyTotal', 'AllSitesLast', 'AlmostAllSitesLast']);
+const VOTE_LOG_EVENTS = new Set(['VOTE_RECEIVED', 'VOTEMILESTONE', 'VOTE_STREAK_REWARD', 'TOP_VOTER_REWARD',
+  'VOTESHOP_PURCHASE']);
+const VOTE_LOG_STATUSES = new Set(['IMMEDIATE', 'CACHED']);
 const TRACE_DEADLINE_MS = 90_000;
 const MAX_REGISTRY_SCAN_ATTEMPTS = 3;
 let authenticated = false;
@@ -390,6 +400,63 @@ function formatEpoch(value) {
   return Number.isFinite(epoch) && epoch > 0 ? new Date(epoch).toLocaleString() : 'Unknown';
 }
 
+function plainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function exactObjectKeys(value, expected) {
+  if (!plainObject(value)) return false;
+  const keys = Object.keys(value).sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
+function validPlayerColumn(column) {
+  if (!exactObjectKeys(column, ['name', 'type', 'value'])) return false;
+  if (typeof column.name !== 'string' || column.name.length > 100
+      || typeof column.type !== 'string' || typeof column.value !== 'string'
+      || new TextEncoder().encode(column.value).length > 16 * 1024) return false;
+  const runtimeSuffix = suffix => suffix.length > 0 && suffix.length <= 64
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(suffix);
+  const runtimeString = column.name === 'CoolDownCheck_Sites'
+    || column.name.startsWith('CoolDownCheck_') && column.name.endsWith('_Sites')
+      && runtimeSuffix(column.name.slice('CoolDownCheck_'.length, -'_Sites'.length));
+  if (PLAYER_STRING_COLUMNS.has(column.name) || runtimeString) return column.type === 'STRING';
+  const runtimeBoolean = column.name.startsWith('CoolDownCheck_')
+    && runtimeSuffix(column.name.slice('CoolDownCheck_'.length));
+  if (PLAYER_BOOLEAN_COLUMNS.has(column.name) || runtimeBoolean) {
+    return column.type === 'BOOLEAN' && /^(?:true|false)$/.test(column.value)
+      || column.type === 'STRING' && /^(?:true|false)$/i.test(column.value);
+  }
+  const runtimeInteger = ['AllSitesLast_', 'AlmostAllSitesLast_'].some(prefix => column.name.startsWith(prefix)
+    && runtimeSuffix(column.name.slice(prefix.length)));
+  const integerName = PLAYER_INTEGER_COLUMNS.has(column.name) || runtimeInteger
+    || /^(?:MonthTotal-(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)-[0-9]{4}|VoteShopLimit[A-Za-z0-9_-]{1,64})$/.test(column.name);
+  if (!integerName || column.type !== 'INTEGER' || !/^-?(?:0|[1-9][0-9]*)$/.test(column.value)) return false;
+  const number = Number(column.value);
+  return Number.isInteger(number) && number >= -2147483648 && number <= 2147483647;
+}
+
+function validPlayerLastVote(lastVote) {
+  if (!exactObjectKeys(lastVote, ['displayName', 'serviceSite', 'siteKey', 'time'])
+      || !Number.isSafeInteger(lastVote.time) || lastVote.time < 0) return false;
+  const limits = {siteKey: 64, displayName: 100, serviceSite: 64};
+  return Object.entries(limits).every(([field, maximum]) => typeof lastVote[field] === 'string'
+    && lastVote[field].length <= maximum && !/[\u0000-\u001f\u007f-\u009f]/.test(lastVote[field]));
+}
+
+function validVoteTraceEvent(event, voteId) {
+  const fields = ['cachedTotal', 'context', 'event', 'playerName', 'playerUuid', 'server', 'service', 'status',
+    'voteId', 'voteTime'];
+  if (!exactObjectKeys(event, fields) || event.voteId !== voteId
+      || !Number.isSafeInteger(event.voteTime) || event.voteTime < 0
+      || !Number.isInteger(event.cachedTotal) || event.cachedTotal < -2147483648 || event.cachedTotal > 2147483647) return false;
+  const limits = {voteId: 36, playerUuid: 36, playerName: 16, service: 64, server: 64, event: 64, context: 255,
+    status: 16};
+  if (!Object.entries(limits).every(([field, maximum]) => typeof event[field] === 'string'
+      && event[field].length <= maximum && !/[\u0000-\u001f\u007f-\u009f]/.test(event[field]))) return false;
+  return VOTE_LOG_EVENTS.has(event.event) && VOTE_LOG_STATUSES.has(event.status);
+}
+
 function renderPlayerData(value) {
   playerResult.replaceChildren();
   if (!value || value.found !== true) {
@@ -420,8 +487,9 @@ function renderPlayerData(value) {
   add('Last online', formatEpoch(value.lastOnline));
   playerResult.append(profile);
   const receivedLastVotes = Array.isArray(value.lastVotes) ? value.lastVotes : [];
-  const lastVotes = receivedLastVotes
-    .filter(lastVote => lastVote && typeof lastVote === 'object').slice(0, 100);
+  const malformedLastVotes = value.lastVotes !== undefined
+    && (!Array.isArray(value.lastVotes) || receivedLastVotes.some(lastVote => !validPlayerLastVote(lastVote)));
+  const lastVotes = malformedLastVotes ? [] : receivedLastVotes.slice(0, MAX_PLAYER_LAST_VOTES);
   if (lastVotes.length) {
     const heading = text(document.createElement('h4'), 'VoteSite history');
     const scroll = document.createElement('div');
@@ -443,15 +511,30 @@ function renderPlayerData(value) {
     scroll.append(table);
     playerResult.append(heading, scroll);
   }
-  if (value.lastVotesTruncated === true || receivedLastVotes.length > 100) {
+  if (malformedLastVotes) {
     const warning = document.createElement('p');
     warning.className = 'warning-text';
-    text(warning, 'Additional VoteSite history was omitted by the 100-row inspection limit.');
+    text(warning, 'VoteSite history is unavailable because the node returned malformed history data.');
+    playerResult.append(warning);
+  } else if (value.lastVotesTruncated === true || receivedLastVotes.length > MAX_PLAYER_LAST_VOTES) {
+    const warning = document.createElement('p');
+    warning.className = 'warning-text';
+    text(warning, `Additional VoteSite history was omitted by the ${MAX_PLAYER_LAST_VOTES}-row inspection limit.`);
     playerResult.append(warning);
   }
-  if (!Array.isArray(value.columns)) return;
-  const columns = value.columns.filter(column => column && typeof column === 'object' && !Array.isArray(column))
-    .slice(0, 100);
+  const legacyStorageMetadata = value.storageRowAvailable === undefined && value.storage === undefined
+    && value.columns === undefined && value.columnsTruncated === undefined;
+  const columnsOmittedForUnavailableStorage = value.storageRowAvailable === false && value.columns === undefined;
+  if (!legacyStorageMetadata && !columnsOmittedForUnavailableStorage
+      && (!Array.isArray(value.columns) || value.columns.some(column => !validPlayerColumn(column)))) {
+    const warning = document.createElement('p');
+    warning.className = 'warning-text';
+    text(warning, 'Stored values are unavailable because the node returned fields outside the allow-listed column schema.');
+    playerResult.append(warning);
+    return;
+  }
+  if (legacyStorageMetadata || columnsOmittedForUnavailableStorage) return;
+  const columns = value.columns.slice(0, 100);
   const scroll = document.createElement('div');
   scroll.className = 'table-scroll';
   const table = document.createElement('table');
@@ -731,10 +814,11 @@ async function traceVoteAcrossNodes() {
   const available = connectedInspectionNodes();
   const candidates = available.slice(0, MAX_TRACE_NODES);
   if (candidates.length === 0) throw new Error('No connected backend supports vote-log inspection.');
-  const voteId = voteTraceId.value.trim();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(voteId)) {
+  const enteredVoteId = voteTraceId.value.trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(enteredVoteId)) {
     throw new Error('Enter a canonical vote UUID.');
   }
+  const voteId = enteredVoteId.toLowerCase();
   const requestAuthenticationGeneration = authenticationGeneration;
   const requestInputGeneration = inputGeneration;
   const requestSelectedNodeId = selectedServerId;
@@ -745,7 +829,7 @@ async function traceVoteAcrossNodes() {
   const contextCurrent = () => requestAuthenticationGeneration === authenticationGeneration
     && requestInputGeneration === inputGeneration && requestSelectedNodeId === selectedServerId
     && requestSelectedSessionId === nodeIndex.get(requestSelectedNodeId)?.sessionId
-    && voteId === voteTraceId.value.trim() && days === String(voteLogDays.value)
+    && enteredVoteId === voteTraceId.value.trim() && days === String(voteLogDays.value)
     && candidates.every(node => {
       const current = nodeIndex.get(node.nodeId);
       return Boolean(current?.online) && candidateSessions.get(node.nodeId) === current.sessionId
@@ -777,9 +861,22 @@ async function traceVoteAcrossNodes() {
     results.forEach((result, index) => {
       if (result.status === 'fulfilled') {
         const {node, envelope} = result.value;
-        const received = Array.isArray(envelope.result?.events) ? envelope.result.events : [];
-        const listed = received.slice(0, MAX_TRACE_EVENTS_PER_NODE);
         const source = `${node.displayName} (${node.nodeId})`;
+        if (!Array.isArray(envelope.result?.events)) {
+          unavailable.push(`${source}: malformed vote-trace events`);
+          return;
+        }
+        const received = envelope.result.events;
+        if (typeof envelope.result.voteId !== 'string' || envelope.result.voteId !== voteId) {
+          unavailable.push(`${source}: vote-trace correlation did not match the requested vote`);
+          return;
+        }
+        if (typeof envelope.result.found !== 'boolean' || typeof envelope.result.truncated !== 'boolean'
+            || received.some(event => !validVoteTraceEvent(event, voteId))) {
+          unavailable.push(`${source}: malformed vote-trace events`);
+          return;
+        }
+        const listed = received.slice(0, MAX_TRACE_EVENTS_PER_NODE);
         sources.push(source);
         if (envelope.result?.truncated === true || received.length > MAX_TRACE_EVENTS_PER_NODE) {
           truncatedSources.push(source);
@@ -819,6 +916,10 @@ async function traceVoteAcrossNodes() {
 }
 
 function operationPhase(operation) {
+  const proxyFileRestartRequired = operation.type === 'APPLY' && operation.state === 'SUCCEEDED'
+    && operation.configuration?.domain === 'file' && operation.configuration?.fileName === 'bungeeconfig.yml';
+  if (proxyFileRestartRequired) return operation.recovered
+    ? 'Recovered history · Saved; proxy restart required' : 'Saved; proxy restart required';
   if (operation.recovered && operation.state !== 'RUNNING') return `Recovered history · ${operation.state}`;
   if (operation.state === 'RUNNING') return 'Queued or running';
   if (operation.type === 'PREVIEW' && operation.state === 'SUCCEEDED') return 'Preview ready for approval';
@@ -2713,6 +2814,8 @@ function voteLoggingRestartRequired(nodeId = selectedServerId) {
 function operationSummary(operation) {
   const lines = [`${operation.type} · ${operation.state} · ${operation.operationId}`];
   const voteLoggingOperation = operation.configuration?.preset === 'vote-logging';
+  const proxyFileOperation = operation.configuration?.domain === 'file'
+    && operation.configuration?.fileName === 'bungeeconfig.yml';
   let voteLoggingRuntimeChange = false;
   let voteLoggingRestartWarning = false;
   Object.entries(operation.nodeStates).forEach(([node, state]) => {
@@ -2727,6 +2830,8 @@ function operationSummary(operation) {
     const successLabel = operation.type === 'READ' ? 'values read'
       : operation.type === 'PREVIEW' ? 'preview ready'
       : restartRequired ? 'configuration saved; backend restart required'
+      : proxyFileOperation && result?.success && operation.type === 'APPLY'
+        ? 'configuration saved; proxy restart required'
       : result?.reloaded ? 'saved and reloaded' : 'applied';
     lines.push(`${result?.success ? '✓' : result ? '✗' : '…'} ${node}: ${result
       ? `${result.success ? successLabel : result.code} — ${result.message}` : state.toLowerCase()}`);
@@ -2744,6 +2849,9 @@ function operationSummary(operation) {
     lines.push(operation.type === 'PREVIEW'
       ? 'Applying this preview requires restarting each changed backend; a plugin reload does not activate a new vote-log connection.'
       : 'Restart every successfully changed backend before treating the vote-logging runtime as live.');
+  }
+  if (proxyFileOperation && operation.type === 'APPLY' && operation.state === 'SUCCEEDED') {
+    lines.push('Restart the proxy before treating the saved proxy configuration as active.');
   }
   return lines.join('\n');
 }
@@ -2767,6 +2875,10 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
     operation = await authorized(`/api/v1/operations/${operation.operationId}`);
     if (operationContextCurrent(context)) text(statusElement, operationSummary(operation));
     rememberOperation(operation);
+  }
+  if (!operationContextCurrent(context) && statusElement === operationStatus
+      && operation.type === 'APPLY' && routingDirty) {
+    text(statusElement, `${operationSummary(operation)}\nThe apply completed, but newer unsaved proxy-routing edits remain. Preview again before applying them.`);
   }
   rememberVoteLoggingRestart(operation);
   const applied = operation.type === 'APPLY'
@@ -3209,12 +3321,12 @@ applyConfiguration.addEventListener('click', async () => {
   if (!approvedPreview || !window.confirm('Apply this exact preview to every selected proxy? Each node may still reject a stale revision.')) return;
   const approval = approvedPreview;
   approvedPreview = null;
-  inputGeneration++;
+  const applyGeneration = inputGeneration + 1;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     });
-    if (operation.state === 'SUCCEEDED') {
+    if (operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration) {
       routingDirty = false;
       routingDraftNodeId = '';
     }
@@ -3284,7 +3396,9 @@ async function loadFileConfiguration(automatic = false) {
       updateConfigurationButtons();
       updateExtendedButtons();
     }
-  } catch (error) { text(fileOperationStatus, error.message); }
+  } catch (error) {
+    if (!automatic) text(fileOperationStatus, error.message);
+  }
 }
 
 readFileConfiguration.addEventListener('click', () => { void loadFileConfiguration(false); });
@@ -3330,13 +3444,13 @@ applyFileConfiguration.addEventListener('click', async () => {
       || !window.confirm(`Apply this exact ${configurationFile.value} preview to ${fileTargetDescription()}?`)) return;
   const approval = approvedFilePreview;
   approvedFilePreview = null;
-  inputGeneration++;
+  const applyGeneration = inputGeneration + 1;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, fileOperationStatus);
     text(fileOperationStatus, operationSummary(operation));
-    if (operation.state === 'SUCCEEDED') {
+    if (operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration) {
       fileReadCache.clear();
       lastFileReadOperation = null;
       configurationDirty = false;
@@ -3961,6 +4075,7 @@ runDriftCheck.addEventListener('click', async () => {
     if (requestAuthenticationGeneration !== authenticationGeneration || requestInputGeneration !== inputGeneration
         || requestSelectedNodeId !== selectedServerId || requestSelectedSessionId !== nodeIndex.get(requestSelectedNodeId)?.sessionId
         || !targetsStillCurrent) {
+      text(driftResults, 'The selected targets or file changed while reading. Drift results were discarded; run the comparison again.');
       return;
     }
     const rows = nodeIds.map(nodeId => {
