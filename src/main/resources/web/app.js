@@ -1833,13 +1833,15 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
 		if (service.incomplete || configuredServiceKeys.has(identity) || detectedServiceKeys.has(identity)) return null;
     detectedServiceKeys.add(identity);
     return {value: service.value, incomplete: false};
-  });
+	});
+	const unmatchedServiceKeys = new Set();
 	const unmatched = normalizeDashboardCollection(source.unmatchedLoggedServices, 100, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const service = boundedDashboardString(entry.serviceSite, 100);
     const identity = service.value.toLowerCase();
-    return service.incomplete || configuredServiceKeys.has(identity)
-      ? null : {value: {...entry, serviceSite: service.value}, incomplete: false};
+    if (service.incomplete || configuredServiceKeys.has(identity) || unmatchedServiceKeys.has(identity)) return null;
+    unmatchedServiceKeys.add(identity);
+    return {value: {...entry, serviceSite: service.value}, incomplete: false};
 	});
 	incomplete ||= sites.incomplete || detected.incomplete || unmatched.incomplete;
 	if (source.voteLogReadable !== true && unmatched.items.length > 0) incomplete = true;

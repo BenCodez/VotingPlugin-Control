@@ -334,8 +334,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("configuredServiceKeys.has(identity)"),
                 "Detected services must not duplicate a configured ServiceSite identity.");
         assertTrue(script.body().contains(
-                "return service.incomplete || configuredServiceKeys.has(identity)"),
+                "if (service.incomplete || configuredServiceKeys.has(identity) || unmatchedServiceKeys.has(identity)) return null;"),
                 "Unmatched services must not duplicate a configured ServiceSite identity.");
+        assertTrue(script.body().contains("const unmatchedServiceKeys = new Set();"));
+        assertTrue(script.body().contains("unmatchedServiceKeys.has(identity)"),
+                "Unmatched service identities must be rejected case-insensitively when duplicated.");
+        assertTrue(script.body().contains("unmatchedServiceKeys.add(identity)"));
         assertTrue(script.body().contains("detectedServiceKeys.has(identity)"),
                 "Detected service identities must be rejected case-insensitively when duplicated.");
         assertTrue(script.body().contains(
