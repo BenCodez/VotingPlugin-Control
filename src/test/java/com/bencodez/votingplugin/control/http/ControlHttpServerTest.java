@@ -355,6 +355,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
         assertTrue(script.body().contains("countRowsExceedTotal(services.items, total)"));
         assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
+        assertTrue(script.body().contains("function countRowsSumMatchesTotal(items, total)"));
+        assertTrue(script.body().contains(
+                "return items.length >= 20 || items.reduce((sum, entry) => sum + entry.count, 0) === total;"),
+                "Untruncated VoteLog category lists must account for every vote while retaining truncated-list behavior.");
+        assertTrue(script.body().contains("!countRowsSumMatchesTotal(services.items, total)"));
+        assertTrue(script.body().contains("!countRowsSumMatchesTotal(servers.items, total)"));
         assertTrue(script.body().contains("total > 0 && (services.items.length === 0 || servers.items.length === 0"),
                 "A nonempty VoteLog total must include at least one top service and server.");
         assertTrue(script.body().contains("!countRowsArePositive(services.items) || !countRowsArePositive(servers.items)"),

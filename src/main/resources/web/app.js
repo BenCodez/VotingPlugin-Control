@@ -1935,7 +1935,9 @@ function normalizeDashboardVoteSummary(value, expectedDays = 30) {
     incomplete ||= total > 0 && (services.items.length === 0 || servers.items.length === 0
       || !countRowsArePositive(services.items) || !countRowsArePositive(servers.items));
     incomplete ||= countRowsExceedTotal(services.items, total)
-      || countRowsExceedTotal(servers.items, total);
+      || countRowsExceedTotal(servers.items, total)
+      || !countRowsSumMatchesTotal(services.items, total)
+      || !countRowsSumMatchesTotal(servers.items, total);
   }
   return {result: {...source, days, total, immediate, cached, uniqueVoters,
     topServices: services.items, topServers: servers.items}, incomplete};
@@ -1948,6 +1950,10 @@ function countRowsExceedTotal(items, total) {
     remaining -= entry.count;
   }
   return false;
+}
+
+function countRowsSumMatchesTotal(items, total) {
+  return items.length >= 20 || items.reduce((sum, entry) => sum + entry.count, 0) === total;
 }
 
 function countRowsAreNonIncreasing(items) {
