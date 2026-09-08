@@ -77,6 +77,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("let nodeLoadInFlight = null;"));
         assertTrue(script.body().contains("async function loadNodesOnce()"));
         assertTrue(script.body().contains("nodeLoadQueued = true;"));
+        assertTrue(script.body().contains("let operationHistoryLoadInFlight = null;"));
+        assertTrue(script.body().contains("let operationHistoryLoadQueued = false;"));
+        assertTrue(script.body().contains("async function loadOperationHistoryOnce()"));
+        assertTrue(script.body().contains("while (operationHistoryLoadQueued && authenticated)"));
         assertTrue(script.body().contains(": tab === 'servers' ? nodeLoadInFlight != null"));
         assertTrue(script.body().contains("rootStyleRule?.['style'].setProperty('--topbar-height', `${height}px`)"));
         assertTrue(script.body().contains("Math.max(topbarBounds.bottom, searchBounds.bottom)"));
@@ -259,6 +263,10 @@ class ControlHttpServerTest {
         assertEquals(200, stylesheet.statusCode());
         assertTrue(stylesheet.body().contains(".sidebar"));
         assertTrue(stylesheet.body().contains("--topbar-height: 76px"));
+        assertTrue(stylesheet.body().contains("top: calc(var(--topbar-height) + 24px)"));
+        assertTrue(stylesheet.body().contains("max-height: calc(100vh - var(--topbar-height) - 44px)"));
+        assertTrue(stylesheet.body().contains("@media (max-width: 1120px) and (min-width: 921px)"));
+        assertTrue(stylesheet.body().contains(".topbar-actions { flex: 1 1 520px; min-width: 0; flex-wrap: wrap; }"));
         assertFalse(stylesheet.body().contains("attr(data-topbar-height"));
         assertTrue(stylesheet.body().contains("body::before { position: fixed; z-index: 25; top: var(--topbar-height)"));
         assertTrue(stylesheet.body().contains(".sidebar { position: fixed; z-index: 30; top: var(--topbar-height)"));
@@ -321,6 +329,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("countRowsExceedTotal(services.items, total)"));
         assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
         assertTrue(script.body().contains("function normalizeDashboardCountRows(value, maximum, label)"));
+        assertTrue(script.body().contains("const identities = new Set();"));
+        assertTrue(script.body().contains("const identity = name.value.toLowerCase();"));
+        assertTrue(script.body().contains("if (identities.has(identity)) return null;"));
         assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
         assertTrue(script.body().contains("Object.hasOwn(value, 'voteLogAvailable') ? value.voteLogAvailable : value.voteLoggingAvailable"));
         assertTrue(script.body().contains("const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);"));

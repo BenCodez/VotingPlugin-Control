@@ -305,6 +305,8 @@ let autoLoadInFlight = new Set();
 let autoLoadPending = new Set();
 let nodeLoadInFlight = null;
 let nodeLoadQueued = false;
+let operationHistoryLoadInFlight = null;
+let operationHistoryLoadQueued = false;
 const appStylesheet = Array.from(document.styleSheets).find(sheet => sheet.href?.endsWith('/app.css'));
 const rootStyleRule = appStylesheet
   ? Array.from(appStylesheet.cssRules).find(rule => rule.selectorText === ':root')
@@ -1037,7 +1039,7 @@ function renderOperationHistory() {
   renderMetrics();
 }
 
-async function loadOperationHistory() {
+async function loadOperationHistoryOnce() {
   if (!authenticated) return;
   try {
     const body = await authorized('/api/v1/operations');
@@ -1067,6 +1069,24 @@ async function loadOperationHistory() {
   } catch (error) {
     text(operationHistory, error.message || 'Operation history could not be loaded.');
   }
+}
+
+function loadOperationHistory() {
+  if (!authenticated) return Promise.resolve();
+  if (operationHistoryLoadInFlight) {
+    operationHistoryLoadQueued = true;
+    return operationHistoryLoadInFlight;
+  }
+  const run = (async () => {
+    do {
+      operationHistoryLoadQueued = false;
+      await loadOperationHistoryOnce();
+    } while (operationHistoryLoadQueued && authenticated);
+  })();
+  operationHistoryLoadInFlight = run;
+  return run.finally(() => {
+    if (operationHistoryLoadInFlight === run) operationHistoryLoadInFlight = null;
+  });
 }
 
 function renderSettingsCatalog() {
@@ -1829,6 +1849,7 @@ function dashboardHealthContradictsOverview(overview, health) {
 }
 
 function normalizeDashboardCountRows(value, maximum, label) {
+  const identities = new Set();
   return normalizeDashboardCollection(value, maximum, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const name = boundedDashboardString(entry[label], 100, true);
@@ -1838,6 +1859,9 @@ function normalizeDashboardCountRows(value, maximum, label) {
     const legacyCount = hasVotes ? finiteCount(entry.votes) : null;
     if (name.incomplete || count == null || hasVotes && legacyCount == null
         || hasCount && hasVotes && count !== legacyCount) return null;
+    const identity = name.value.toLowerCase();
+    if (identities.has(identity)) return null;
+    identities.add(identity);
     return {value: {...entry, [label]: name.value || `Unknown ${label}`, count}, incomplete: false};
   });
 }
