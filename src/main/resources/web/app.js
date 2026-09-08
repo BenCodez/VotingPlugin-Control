@@ -1815,7 +1815,7 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
   const sites = normalizeDashboardCollection(source.sites, 100, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const status = boundedDashboardString(entry.status, 64);
-    const key = boundedDashboardString(entry.key, 100, true);
+    const key = boundedDashboardString(entry.key, 64, true);
     const displayName = boundedDashboardString(entry.displayName, 100, true);
     const serviceSite = boundedDashboardString(entry.serviceSite, 64, true);
     const canonicalKey = key.value.toLowerCase();
@@ -1929,7 +1929,7 @@ function normalizeDashboardCountRows(value, maximum, label) {
   const identities = new Set();
   return normalizeDashboardCollection(value, maximum, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-    const name = boundedDashboardString(entry[label], 100, false);
+    const name = boundedDashboardString(entry[label], 64, false);
     const hasCount = Object.hasOwn(entry, 'count');
     const hasVotes = Object.hasOwn(entry, 'votes');
     const count = hasCount ? finiteCount(entry.count) : hasVotes ? finiteCount(entry.votes) : null;

@@ -340,6 +340,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("typeof source[field] !== 'boolean' || source[field] === true"));
         assertTrue(script.body().contains("const voteSiteKeys = new Set();"));
         assertTrue(script.body().contains("const canonicalKey = key.value.toLowerCase();"));
+        assertTrue(script.body().contains("const key = boundedDashboardString(entry.key, 64, true);"),
+                "Vote-site health must reject keys beyond the 64-character wire limit.");
         assertTrue(script.body().contains("|| !key.value || voteSiteKeys.has(canonicalKey)"),
                 "Vote-site health must reject empty and duplicate site keys as incomplete data.");
         assertFalse(script.body().contains("(!key.value && !displayName.value)"),
@@ -388,7 +390,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("!countRowsAreNonIncreasing(services.items)"));
         assertTrue(script.body().contains("!countRowsAreNonIncreasing(servers.items)"));
         assertTrue(script.body().contains("function normalizeDashboardCountRows(value, maximum, label)"));
-        assertTrue(script.body().contains("boundedDashboardString(entry[label], 100, false)"));
+        assertTrue(script.body().contains("boundedDashboardString(entry[label], 64, false)"),
+                "VoteLog service and server identities must enforce the 64-character wire limit.");
         assertTrue(script.body().contains("const identities = new Set();"));
         assertTrue(script.body().contains("const identity = name.value.toLowerCase();"));
         assertTrue(script.body().contains("if (identities.has(identity)) return null;"));
