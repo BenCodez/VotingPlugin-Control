@@ -17,6 +17,7 @@ const welcome = document.querySelector('#welcome');
 const appShell = document.querySelector('#app-shell');
 const sidebarToggle = document.querySelector('#sidebar-toggle');
 const primaryNavigation = document.querySelector('#primary-navigation');
+const topbar = document.querySelector('.topbar');
 const globalSearch = document.querySelector('#global-search');
 const globalSearchInput = document.querySelector('#global-search-input');
 const globalSearchOptions = document.querySelector('#global-search-options');
@@ -302,6 +303,23 @@ let pendingDetectedVoteSite = null;
 let voteLoggingRestartPending = new Map();
 let autoLoadInFlight = new Set();
 let autoLoadPending = new Set();
+let nodeLoadInFlight = null;
+let nodeLoadQueued = false;
+const appStylesheet = Array.from(document.styleSheets).find(sheet => sheet.href?.endsWith('/app.css'));
+const rootStyleRule = appStylesheet
+  ? Array.from(appStylesheet.cssRules).find(rule => rule.selectorText === ':root')
+  : null;
+
+function syncTopbarOffset() {
+  const topbarBounds = topbar.getBoundingClientRect();
+  const searchBounds = globalSearch.hidden ? topbarBounds : globalSearch.getBoundingClientRect();
+  const height = Math.ceil(Math.max(topbarBounds.bottom, searchBounds.bottom));
+  rootStyleRule?.['style'].setProperty('--topbar-height', `${height}px`);
+}
+
+syncTopbarOffset();
+if (typeof ResizeObserver === 'function') new ResizeObserver(syncTopbarOffset).observe(topbar);
+window.addEventListener('resize', syncTopbarOffset);
 
 function text(element, value) {
   element.textContent = value;
@@ -1202,6 +1220,7 @@ function applyAuthenticatedSession(body) {
   logout.hidden = false;
   sidebarToggle.hidden = false;
   globalSearch.hidden = false;
+  syncTopbarOffset();
   headerAction.hidden = false;
   authCard.hidden = true;
   welcome.hidden = true;
@@ -1395,6 +1414,7 @@ function updateHeaderAction(tab) {
   text(headerAction, label);
   headerAction.onclick = action;
   const unavailable = tab === 'overview' ? !inspectionCapableNode() || dashboardLoading || inspectionInFlight
+    : tab === 'servers' ? nodeLoadInFlight != null
     : tab === 'network' ? runNetworkDoctor.disabled
     : tab === 'configurations' ? runDriftCheck.disabled
     : tab === 'data' ? refreshDataOverview.disabled
@@ -2680,6 +2700,7 @@ function discardAuthenticationState(reason) {
   logout.hidden = true;
   sidebarToggle.hidden = true;
   globalSearch.hidden = true;
+  syncTopbarOffset();
   globalSearchInput.value = '';
   globalSearchOptions.replaceChildren();
   headerAction.hidden = true;
@@ -3030,7 +3051,7 @@ async function loadAllNodes() {
   throw new Error('Node registry could not be loaded consistently. Try refreshing again.');
 }
 
-async function loadNodes() {
+async function loadNodesOnce() {
   if (!authenticated) return;
   refresh.disabled = true;
   previousPage.disabled = true;
@@ -3151,6 +3172,26 @@ async function loadNodes() {
     text(message, error.message || 'Control request failed.');
   } finally {
     refresh.disabled = false;
+  }
+}
+
+async function loadNodes() {
+  if (nodeLoadInFlight) {
+    nodeLoadQueued = true;
+    return nodeLoadInFlight;
+  }
+  const load = loadNodesOnce();
+  nodeLoadInFlight = load;
+  updateHeaderAction(tabFromHash());
+  try {
+    return await load;
+  } finally {
+    if (nodeLoadInFlight === load) nodeLoadInFlight = null;
+    updateHeaderAction(tabFromHash());
+    if (nodeLoadQueued) {
+      nodeLoadQueued = false;
+      void loadNodes();
+    }
   }
 }
 

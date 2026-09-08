@@ -74,6 +74,13 @@ class ControlHttpServerTest {
         assertEquals(200, script.statusCode());
 		assertTrue(script.body().contains("offset=${offset}&limit=${PAGE_SIZE}"));
         assertTrue(script.body().contains("async function loadAllNodes()"));
+        assertTrue(script.body().contains("let nodeLoadInFlight = null;"));
+        assertTrue(script.body().contains("async function loadNodesOnce()"));
+        assertTrue(script.body().contains("nodeLoadQueued = true;"));
+        assertTrue(script.body().contains(": tab === 'servers' ? nodeLoadInFlight != null"));
+        assertTrue(script.body().contains("rootStyleRule?.['style'].setProperty('--topbar-height', `${height}px`)"));
+        assertTrue(script.body().contains("Math.max(topbarBounds.bottom, searchBounds.bottom)"));
+        assertTrue(script.body().contains("globalSearch.hidden = false;\n  syncTopbarOffset();"));
         assertTrue(script.body().contains("MAX_REGISTRY_SCAN_ATTEMPTS"));
         assertTrue(script.body().contains("&revision=${revision}"));
         assertTrue(script.body().contains("enrollmentIds.has(backend.backendId)"));
@@ -251,6 +258,10 @@ class ControlHttpServerTest {
         HttpResponse<String> stylesheet = get("/app.css", null);
         assertEquals(200, stylesheet.statusCode());
         assertTrue(stylesheet.body().contains(".sidebar"));
+        assertTrue(stylesheet.body().contains("--topbar-height: 76px"));
+        assertFalse(stylesheet.body().contains("attr(data-topbar-height"));
+        assertTrue(stylesheet.body().contains("body::before { position: fixed; z-index: 25; top: var(--topbar-height)"));
+        assertTrue(stylesheet.body().contains(".sidebar { position: fixed; z-index: 30; top: var(--topbar-height)"));
         assertTrue(web.body().contains("id=\"primary-navigation\""));
         assertTrue(web.body().contains("id=\"attention-feed\""));
         assertTrue(web.body().contains("id=\"global-search-input\""));
