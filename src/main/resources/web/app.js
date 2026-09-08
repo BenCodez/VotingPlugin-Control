@@ -1852,7 +1852,7 @@ function normalizeDashboardCountRows(value, maximum, label) {
   const identities = new Set();
   return normalizeDashboardCollection(value, maximum, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-    const name = boundedDashboardString(entry[label], 100, true);
+    const name = boundedDashboardString(entry[label], 100, false);
     const hasCount = Object.hasOwn(entry, 'count');
     const hasVotes = Object.hasOwn(entry, 'votes');
     const count = hasCount ? finiteCount(entry.count) : hasVotes ? finiteCount(entry.votes) : null;
@@ -1862,7 +1862,7 @@ function normalizeDashboardCountRows(value, maximum, label) {
     const identity = name.value.toLowerCase();
     if (identities.has(identity)) return null;
     identities.add(identity);
-    return {value: {...entry, [label]: name.value || `Unknown ${label}`, count}, incomplete: false};
+    return {value: {...entry, [label]: name.value, count}, incomplete: false};
   });
 }
 
@@ -3965,7 +3965,7 @@ applyVoteLogging.addEventListener('click', () => applyDedicatedSetup('vote-loggi
   });
 });
 
-async function refreshOverview(target = dataOverview) {
+function invalidateDashboardInspection() {
   dashboardOverview = null;
   dashboardVoteSiteHealth = null;
   dashboardVoteSummary24h = null;
@@ -3973,6 +3973,10 @@ async function refreshOverview(target = dataOverview) {
   dashboardLoadedContext = '';
   dashboardInspectionStatus = emptyDashboardInspectionStatus();
   renderMetrics();
+}
+
+async function refreshOverview(target = dataOverview) {
+  invalidateDashboardInspection();
   try {
     const envelope = await runInspection('overview', {}, target);
     lastOverview = {...(lastOverview || {}), ...envelope.result};
@@ -4088,6 +4092,7 @@ runNetworkDoctor.addEventListener('click', async () => {
   try {
     const diagnostics = await runInspection('diagnostics', {}, networkDoctorResults);
     lastOverview = diagnostics.result;
+    invalidateDashboardInspection();
     const node = nodeIndex.get(selectedServerId);
     const voteLog = diagnostics.result.voteLoggingEnabled !== true
       ? {state: 'DISABLED', message: 'Vote logging is disabled; no retained logged-event history is expected.'}

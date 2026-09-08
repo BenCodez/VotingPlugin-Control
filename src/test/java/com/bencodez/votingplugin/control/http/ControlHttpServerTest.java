@@ -329,9 +329,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("countRowsExceedTotal(services.items, total)"));
         assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
         assertTrue(script.body().contains("function normalizeDashboardCountRows(value, maximum, label)"));
+        assertTrue(script.body().contains("boundedDashboardString(entry[label], 100, false)"));
         assertTrue(script.body().contains("const identities = new Set();"));
         assertTrue(script.body().contains("const identity = name.value.toLowerCase();"));
         assertTrue(script.body().contains("if (identities.has(identity)) return null;"));
+        assertTrue(script.body().contains("function invalidateDashboardInspection()"));
+        assertTrue(script.body().contains("lastOverview = diagnostics.result;\n    invalidateDashboardInspection();"));
         assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
         assertTrue(script.body().contains("Object.hasOwn(value, 'voteLogAvailable') ? value.voteLogAvailable : value.voteLoggingAvailable"));
         assertTrue(script.body().contains("const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);"));
@@ -342,7 +345,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("entry.count > remaining"));
         assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));
         assertTrue(script.body().contains("lastOverview = null;\n  text(dataOverview, 'Refreshing server overview…');"));
-        assertTrue(script.body().contains("async function refreshOverview(target = dataOverview) {\n  dashboardOverview = null;"));
+		assertTrue(script.body().contains("async function refreshOverview(target = dataOverview) {\n  invalidateDashboardInspection();"));
         assertTrue(script.body().contains(".result, 1);"));
         assertTrue(script.body().contains("hasCount && hasVotes && count !== legacyCount"));
         assertTrue(script.body().contains("days == null || days !== expectedDays || total == null"));
