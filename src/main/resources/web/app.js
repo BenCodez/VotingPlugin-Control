@@ -1960,7 +1960,9 @@ function dashboardHealthServicesContradictSummary(sites, topServices) {
       return serviceIdentity.length >= 64;
     }
     countedServices.add(serviceIdentity);
-    if (!topServiceCounts.has(serviceIdentity)) return topServicesComplete;
+    // A complete ranking intentionally omits services with no votes. Only a
+    // positive health aggregate can contradict that omission.
+    if (!topServiceCounts.has(serviceIdentity)) return loggedVotes > 0 && topServicesComplete;
     return loggedVotes > topServiceCounts.get(serviceIdentity);
   });
 }
@@ -2126,15 +2128,11 @@ function dashboardIssues() {
       'Control bounded the backend summaries, so omitted relationships are not classified as offline.', 'View servers', 'servers'));
   }
   const disconnectedNodes = allNodeItems.filter(node => !node.online && node.nodeId !== selectedServerId);
-  disconnectedNodes.slice(0, 10).forEach(node => {
+  disconnectedNodes.forEach(node => {
     issues.push(issue('warning', `${node.displayName} is disconnected from Control`,
       `The registered ${roleLabel(node).toLowerCase()} is not currently connected. Minecraft availability is separate.`,
       'View server', 'servers'));
   });
-  if (disconnectedNodes.length > 10) {
-    issues.push(issue('informational', `${disconnectedNodes.length - 10} additional nodes are disconnected`,
-      'Open Servers to inspect the complete registered-node state.', 'View servers', 'servers'));
-  }
   const reportedBackends = new Map();
   allNodeItems.filter(node => isProxy(node) && node.online).forEach(proxy => {
     (Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {

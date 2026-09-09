@@ -378,6 +378,10 @@ class ControlHttpServerTest {
                 "dashboardLoadedContext = '';\n      dashboardInspectionStatus.overview = 'failed';"));
         assertTrue(script.body().contains("if (requestedContext === dashboardContext() && complete)"));
         assertTrue(script.body().contains("disconnected from Control"));
+        assertTrue(script.body().contains("disconnectedNodes.forEach(node => {"),
+                "Every disconnected registered node must contribute to the actionable issue total.");
+        assertFalse(script.body().contains("disconnectedNodes.slice(0, 10)"),
+                "Disconnected-node issue totals must not stop at the first ten nodes.");
         assertTrue(script.body().contains(
                 "(Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {"),
                 "Dashboard topology health must inspect every backend returned by the bounded nodes API.");
@@ -520,8 +524,11 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const topServicesComplete = topServices.length < 20;"),
                 "A short top-services list is complete, so an omitted configured service is contradictory.");
         assertTrue(script.body().contains("const topServiceCounts = new Map();"));
-        assertTrue(script.body().contains("if (!topServiceCounts.has(serviceIdentity)) return topServicesComplete;"),
-                "A configured service omitted from a complete top-services list must invalidate the snapshot.");
+        assertTrue(script.body().contains("return loggedVotes > 0 && topServicesComplete;"),
+                "A zero-vote site may be omitted from a complete positive-count ranking.");
+        assertTrue(script.body().contains(
+                "if (!topServiceCounts.has(serviceIdentity)) return loggedVotes > 0 && topServicesComplete;"),
+                "A configured service with votes omitted from a complete top-services list must invalidate the snapshot.");
         assertTrue(script.body().contains("return loggedVotes > topServiceCounts.get(serviceIdentity);"),
                 "Per-service logged VoteLog counts must not exceed their 30-day ranking counts.");
         assertTrue(script.body().contains(
