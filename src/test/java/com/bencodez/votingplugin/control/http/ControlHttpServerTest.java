@@ -498,6 +498,18 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("status === 'NO_RECENT_VOTES' && loggedVotes !== 0"),
                 "NO_RECENT_VOTES rows must contain no logged votes.");
         assertTrue(script.body().contains("function dashboardHealthContradictsVoteSummary(health, summary)"));
+        assertTrue(script.body().contains("function dashboardHealthServicesContradictSummary(sites, topServices)"),
+                "Vote Site health must compare each normalized service aggregate with the 30-day ranking.");
+        assertTrue(script.body().contains("const topServicesComplete = topServices.length < 20;"),
+                "A short top-services list is complete, so an omitted configured service is contradictory.");
+        assertTrue(script.body().contains("const topServiceCounts = new Map();"));
+        assertTrue(script.body().contains("if (!topServiceCounts.has(serviceIdentity)) return topServicesComplete;"),
+                "A configured service omitted from a complete top-services list must invalidate the snapshot.");
+        assertTrue(script.body().contains("return loggedVotes > topServiceCounts.get(serviceIdentity);"),
+                "Per-service logged VoteLog counts must not exceed their 30-day ranking counts.");
+        assertTrue(script.body().contains(
+                "if (dashboardHealthServicesContradictSummary(health.sites, summary.topServices)) return true;"),
+                "Per-service health and 30-day summary contradictions must invalidate both inspections.");
         assertTrue(script.body().contains("[['loggedVotes', 'total'], ['immediateVotes', 'immediate'], ['cachedVotes', 'cached']]"),
                 "Each readable per-site VoteLog aggregate must be bounded by its corresponding 30-day summary total.");
         assertTrue(script.body().contains("siteCount > summaryCount"),

@@ -1920,6 +1920,7 @@ function dashboardHealthContradictsOverview(overview, health) {
 
 function dashboardHealthContradictsVoteSummary(health, summary) {
   if (!health || !summary || health.voteLogReadable !== true || !Array.isArray(health.sites)) return false;
+  if (dashboardHealthServicesContradictSummary(health.sites, summary.topServices)) return true;
   const rowContradiction = health.sites.some(site => {
     if (!site || typeof site !== 'object' || Array.isArray(site)) return false;
     return [['loggedVotes', 'total'], ['immediateVotes', 'immediate'], ['cachedVotes', 'cached']]
@@ -1936,6 +1937,32 @@ function dashboardHealthContradictsVoteSummary(health, summary) {
       return summaryCount != null && dashboardHealthAggregateExceedsSummary(
         health.sites, siteField, summaryCount);
     });
+}
+
+function dashboardHealthServicesContradictSummary(sites, topServices) {
+  if (!Array.isArray(sites) || !Array.isArray(topServices)) return false;
+  const topServicesComplete = topServices.length < 20;
+  const topServiceCounts = new Map();
+  topServices.forEach(entry => {
+    const identity = dashboardCountRowIdentity(entry, 'service');
+    const count = finiteCount(entry?.count);
+    if (identity != null && count != null) topServiceCounts.set(identity, count);
+  });
+  const countedServices = new Set();
+  return sites.some(site => {
+    const serviceIdentity = typeof site?.serviceSite === 'string'
+      ? site.serviceSite.trim().toLowerCase() : '';
+    const loggedVotes = finiteCount(site?.loggedVotes);
+    if (!serviceIdentity || loggedVotes == null) return false;
+    if (countedServices.has(serviceIdentity)) {
+      // A 64-character ServiceSite may be a truncated identity. Preserve the
+      // existing fail-closed behavior instead of silently merging aliases.
+      return serviceIdentity.length >= 64;
+    }
+    countedServices.add(serviceIdentity);
+    if (!topServiceCounts.has(serviceIdentity)) return topServicesComplete;
+    return loggedVotes > topServiceCounts.get(serviceIdentity);
+  });
 }
 
 function dashboardHealthAggregateExceedsSummary(sites, siteField, summaryCount) {
