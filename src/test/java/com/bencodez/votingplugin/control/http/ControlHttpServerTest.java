@@ -295,6 +295,9 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("Logged Votes · 30d"));
         assertTrue(script.body().contains("async function refreshDashboard()"));
         assertTrue(script.body().contains(
+                "dashboardLoading = true;\n  inspectionInFlight = true;\n  refreshDashboardButton.disabled = true;\n  updateExtendedButtons();\n  suppressNodeAutoLoad++"),
+                "Dashboard refresh must reserve the shared inspection lane before any awaited registry or metadata prefetch.");
+        assertTrue(script.body().contains(
                 "refreshDashboardButton.disabled = !authenticated || inspectionInFlight || dashboardLoading;"),
                 "Dashboard refresh must remain available to rediscover a reconnected inspection-capable node.");
         assertTrue(script.body().contains(
@@ -330,7 +333,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Object.keys(operation.nodeStates || {}).length || results.length"),
                 "Running-operation progress must count all targets, not only completed results.");
         assertTrue(script.body().contains("runInspection('overview', {}, null, {manageBusy: false})"));
-        assertTrue(script.body().contains("inspectionInFlight = true;\n  dashboardLoadedContext = '';"));
+        assertTrue(script.body().contains("inspectionInFlight = false;\n    renderMetrics();"),
+                "A dashboard refresh with no inspection-capable node must release the reserved lane.");
         assertEquals(4, script.body().split(java.util.regex.Pattern.quote(
                 "if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');"),
                 -1).length - 1);

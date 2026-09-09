@@ -4180,7 +4180,9 @@ async function refreshDashboard() {
     return;
   }
   dashboardLoading = true;
+  inspectionInFlight = true;
   refreshDashboardButton.disabled = true;
+  updateExtendedButtons();
   suppressNodeAutoLoad++;
   try {
     await loadNodes();
@@ -4190,12 +4192,12 @@ async function refreshDashboard() {
   await Promise.all([loadEnrollments(), loadOperationHistory()]);
   if (!inspectionCapableNode()) {
     dashboardLoading = false;
+    inspectionInFlight = false;
     renderMetrics();
     updateExtendedButtons();
     return;
   }
   const requestedContext = dashboardContext();
-  inspectionInFlight = true;
   dashboardLoadedContext = '';
   lastOverview = null;
   text(dataOverview, 'Refreshing server overview…');
