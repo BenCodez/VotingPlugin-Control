@@ -2351,11 +2351,13 @@ function renderMetrics() {
   text(metricVotesToday, votes24h == null ? '—' : votes24h);
   const configured = current ? finiteCount(dashboardOverview?.configuredVoteSites) : null;
   const enabled = current ? finiteCount(dashboardOverview?.enabledVoteSites) : null;
+  const siteCountsKnown = configured != null && enabled != null;
+  const allConfiguredSitesDisabled = siteCountsKnown && configured > 0 && enabled === 0;
   const siteWarnings = current && Array.isArray(dashboardVoteSiteHealth?.sites)
     ? dashboardVoteSiteHealth.sites.filter(site => site.status === 'SERVICE_SITE_MISSING').length
       + dashboardVoteSiteHealth.detectedUnconfiguredServices.length
-      + dashboardVoteSiteHealth.unmatchedLoggedServices.length : null;
-  const siteCountsKnown = configured != null && enabled != null;
+      + dashboardVoteSiteHealth.unmatchedLoggedServices.length
+      + (allConfiguredSitesDisabled ? 1 : 0) : null;
   text(metricVoteSites, !siteCountsKnown ? '—' : `${enabled}/${configured}`);
   text(metricVoteSitesDetail, !siteCountsKnown ? 'Counts unavailable'
     : `${enabled} enabled${siteWarnings == null ? '' : ` · ${siteWarnings} need attention`}`);

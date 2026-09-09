@@ -411,6 +411,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(
                 "else if (dashboardOverview.enabledVoteSites === 0) issues.push(issue('warning', 'All Vote Sites are disabled'"),
                 "A configured backend with every Vote Site disabled must not appear healthy.");
+        assertTrue(script.body().contains("const allConfiguredSitesDisabled = siteCountsKnown && configured > 0 && enabled === 0;"));
+        assertTrue(script.body().contains("+ (allConfiguredSitesDisabled ? 1 : 0)"),
+                "The Vote Sites summary must count the all-disabled warning as needing attention.");
         assertTrue(script.body().contains("sites.filter(site => site.status === 'SERVICE_SITE_MISSING')"),
                 "Individually disabled Vote Sites must remain quiet when another site is enabled.");
         assertTrue(script.body().contains("const voteSiteKeys = new Set();"));
@@ -577,7 +580,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const siteCountsKnown = configured != null && enabled != null;"));
         assertTrue(script.body().contains("text(metricVoteSites, !siteCountsKnown ? '—'"));
         assertTrue(script.body().contains(
-                "+ dashboardVoteSiteHealth.unmatchedLoggedServices.length : null;"),
+                "+ dashboardVoteSiteHealth.unmatchedLoggedServices.length"),
                 "Unmatched services must contribute to the Vote Sites warning count.");
         assertFalse(script.body().contains(
                 "SERVICE_SITE_MISSING').slice(0, 10)"),
