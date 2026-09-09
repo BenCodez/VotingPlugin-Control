@@ -408,6 +408,11 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("health.sites.filter(site => site.enabled === true).length === enabled"));
         assertTrue(script.body().contains("['truncated', 'detectedUnconfiguredServicesTruncated'].forEach"));
         assertTrue(script.body().contains("typeof source[field] !== 'boolean' || source[field] === true"));
+        assertTrue(script.body().contains(
+                "else if (dashboardOverview.enabledVoteSites === 0) issues.push(issue('warning', 'All Vote Sites are disabled'"),
+                "A configured backend with every Vote Site disabled must not appear healthy.");
+        assertTrue(script.body().contains("sites.filter(site => site.status === 'SERVICE_SITE_MISSING')"),
+                "Individually disabled Vote Sites must remain quiet when another site is enabled.");
         assertTrue(script.body().contains("const voteSiteKeys = new Set();"));
         assertTrue(script.body().contains("const canonicalKey = key.value.toLowerCase();"));
         assertTrue(script.body().contains("const key = boundedDashboardString(entry.key, 64, true);"),

@@ -2167,6 +2167,8 @@ function dashboardIssues() {
       'The selected backend cannot confirm the vote-listener prerequisite.', 'Diagnose', 'network', 'network-doctor-card'));
     if (dashboardOverview.configuredVoteSites === 0) issues.push(issue('warning', 'No Vote Sites are configured',
       'Add a reviewed VoteSites entry before expecting service matches.', 'Add Vote Site', 'quick-setup', 'quick-setup-card', 'vote-site'));
+    else if (dashboardOverview.enabledVoteSites === 0) issues.push(issue('warning', 'All Vote Sites are disabled',
+      'Enable at least one configured Vote Site before expecting votes.', 'Open Vote Sites', 'data', 'site-health-card'));
     if (dashboardOverview.processRewards === false) issues.push(issue('warning', 'Vote rewards are disabled on this backend',
       'ProcessRewards is off. Confirm that this is intentional for the selected topology.', 'Open setting', 'quick-setup', 'settings-catalog-card'));
     if (dashboardOverview.voteLoggingEnabled === true && dashboardOverview.voteLogReadable !== true) issues.push(issue('warning', 'VoteLog is unavailable',
