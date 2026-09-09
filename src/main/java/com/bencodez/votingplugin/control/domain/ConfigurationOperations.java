@@ -541,10 +541,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         long priorConfigurationGeneration = configurationGeneration;
         LinkedHashMap<String, UUID> priorRestartSessions = new LinkedHashMap<>(voteLoggingRestartSessions);
         try {
-            boolean successfulApplyAlreadyRecorded = "APPLY".equals(operation.type)
-                    && operation.results.values().stream().anyMatch(ConfigurationTaskResult::success);
             operation.results.put(nodeId, boundedResult(operation, result));
-            if ("APPLY".equals(operation.type) && result.success() && !successfulApplyAlreadyRecorded) {
+            if ("APPLY".equals(operation.type) && result.success()) {
                 configurationGeneration++;
             }
             if (requiresVoteLoggingRestart(operation, result)) {
