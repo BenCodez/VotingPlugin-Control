@@ -565,6 +565,15 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(
                 "+ dashboardVoteSiteHealth.unmatchedLoggedServices.length : null;"),
                 "Unmatched services must contribute to the Vote Sites warning count.");
+        assertFalse(script.body().contains(
+                "SERVICE_SITE_MISSING').slice(0, 10)"),
+                "All bounded missing ServiceSite entries must contribute to the health summary.");
+        assertFalse(script.body().contains(
+                "detectedUnconfiguredServices.slice(0, 10)"),
+                "All bounded detected-service entries must contribute to the health summary.");
+        assertFalse(script.body().contains(
+                "unmatchedLoggedServices.slice(0, 10)"),
+                "All bounded unmatched-service entries must contribute to the health summary.");
         assertTrue(script.body().contains("runDriftCheck.addEventListener('click', async () => {\n  setConfigView('compare');"));
         assertTrue(script.body().contains("voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0"));
         assertTrue(script.body().contains("voteSitesConfiguredKnown: configuredVoteSites != null"));
@@ -594,6 +603,12 @@ class ControlHttpServerTest {
         int openShortcutTab = script.body().indexOf("openWorkspace(destination.tab", globalShortcut);
         assertTrue(globalShortcut >= 0 && selectConfigView > globalShortcut && openShortcutTab > selectConfigView,
                 "Nested search shortcuts must establish their subview before tab autoload starts.");
+        int globalNodeSearch = script.body().indexOf("if (node) {");
+        int openServersForSearch = script.body().indexOf("openWorkspace('servers');", globalNodeSearch);
+        int selectServerForSearch = script.body().indexOf("selectPrimaryServer(node.nodeId);", globalNodeSearch);
+        assertTrue(globalNodeSearch >= 0 && openServersForSearch > globalNodeSearch
+                        && selectServerForSearch > openServersForSearch,
+                "Global server search must navigate to Servers before selecting a node, preventing an Overview autoload.");
         assertFalse(script.body().contains(".style."));
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         HttpResponse<String> health = get("/api/v1/health", null);

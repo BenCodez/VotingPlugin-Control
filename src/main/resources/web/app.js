@@ -2179,18 +2179,18 @@ function dashboardIssues() {
   }
   if (dashboardVoteSiteHealth && dashboardLoadedContext === dashboardContext()) {
     const sites = Array.isArray(dashboardVoteSiteHealth.sites) ? dashboardVoteSiteHealth.sites : [];
-    sites.filter(site => site.status === 'SERVICE_SITE_MISSING').slice(0, 10).forEach(site => {
+    sites.filter(site => site.status === 'SERVICE_SITE_MISSING').forEach(site => {
       issues.push(issue('warning', `${site.displayName || site.key} has no ServiceSite`,
         'Votes cannot be matched reliably until the service identifier is configured.', 'Open Vote Sites', 'data', 'site-health-card'));
     });
-    dashboardVoteSiteHealth.detectedUnconfiguredServices.slice(0, 10).forEach(service => {
+    dashboardVoteSiteHealth.detectedUnconfiguredServices.forEach(service => {
       issues.push(issue('warning', `Detected service is not configured: ${service}`,
         dashboardVoteSiteHealth.autoCreateVoteSites === false
           ? 'AutoCreateVoteSites is disabled; review and create this site explicitly.'
           : 'VotingPlugin observed this service but no configured ServiceSite matches it.',
         'Configure', 'quick-setup', 'quick-setup-card', 'vote-site'));
     });
-    dashboardVoteSiteHealth.unmatchedLoggedServices.slice(0, 10).forEach(service => {
+    dashboardVoteSiteHealth.unmatchedLoggedServices.forEach(service => {
       issues.push(issue('warning', `Logged service does not match a Vote Site: ${service.serviceSite || 'Unknown'}`,
         'A retained vote event used a service identifier with no configured match.', 'Open Vote Sites', 'data', 'site-health-card'));
     });
@@ -4923,8 +4923,8 @@ globalSearch.addEventListener('submit', event => {
     || allNodeItems.find(item => item.nodeId.toLowerCase().includes(normalized)
       || item.displayName.toLowerCase().includes(normalized));
   if (node) {
-    selectPrimaryServer(node.nodeId);
     openWorkspace('servers');
+    selectPrimaryServer(node.nodeId);
     globalSearchInput.value = '';
     return;
   }
