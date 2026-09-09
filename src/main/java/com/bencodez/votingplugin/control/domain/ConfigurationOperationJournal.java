@@ -89,7 +89,7 @@ public final class ConfigurationOperationJournal {
     }
 
     public synchronized State loadState() throws IOException {
-        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return new State(List.of(), Map.of());
+        if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return new State(List.of(), Map.of(), 0L);
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file)
                 || Files.size(file) > MAX_BYTES) {
             throw new IOException("Configuration operation journal is invalid");
@@ -117,15 +117,22 @@ public final class ConfigurationOperationJournal {
         }
         result.sort(Comparator.comparing(Entry::createdAt));
         Map<String, UUID> restartSessions = validateRestartSessions(stored.voteLoggingRestartSessions());
-        return new State(List.copyOf(result), restartSessions);
+        if (stored.configurationGeneration() < 0) throw new IOException("Configuration operation journal is invalid");
+        return new State(List.copyOf(result), restartSessions, stored.configurationGeneration());
     }
 
     public synchronized void save(List<Entry> entries) throws IOException {
-        save(entries, Map.of());
+        save(entries, Map.of(), 0L);
     }
 
     public synchronized void save(List<Entry> entries, Map<String, UUID> voteLoggingRestartSessions) throws IOException {
+        save(entries, voteLoggingRestartSessions, 0L);
+    }
+
+    public synchronized void save(List<Entry> entries, Map<String, UUID> voteLoggingRestartSessions,
+                                  long configurationGeneration) throws IOException {
         if (entries == null) throw new IOException("Configuration operation journal is invalid");
+        if (configurationGeneration < 0) throw new IOException("Configuration operation journal is invalid");
         Map<String, UUID> restartSessions = validateRestartSessions(voteLoggingRestartSessions);
         Instant cutoff = clock.instant().minus(RETENTION);
         List<Entry> filtered = entries.stream().filter(entry -> !entry.createdAt().isBefore(cutoff))
@@ -139,14 +146,16 @@ public final class ConfigurationOperationJournal {
                 throw new IOException("Configuration operation journal is invalid");
             }
         }
-        byte[] bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained, restartSessions));
+        byte[] bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained, restartSessions,
+                configurationGeneration));
         while (bytes.length > MAX_BYTES && retained.size() > 1) {
             int removable = 0;
             for (int index = 0; index < retained.size(); index++) {
                 if (!isVoteLogging(retained.get(index))) { removable = index; break; }
             }
             retained.remove(removable);
-            bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained, restartSessions));
+            bytes = json.writeValueAsBytes(new JournalFile(SCHEMA_VERSION, retained, restartSessions,
+                    configurationGeneration));
         }
         if (bytes.length > MAX_BYTES) throw new IOException("Configuration operation journal exceeds its bound");
 
@@ -244,8 +253,13 @@ public final class ConfigurationOperationJournal {
     public record NodeResult(String nodeId, UUID sessionId, boolean complete, Boolean success, String code, String revision,
                              boolean reloaded, boolean rolledBack) { }
 
-    public record State(List<Entry> operations, Map<String, UUID> voteLoggingRestartSessions) { }
+    public record State(List<Entry> operations, Map<String, UUID> voteLoggingRestartSessions,
+                        long configurationGeneration) {
+        public State(List<Entry> operations, Map<String, UUID> voteLoggingRestartSessions) {
+            this(operations, voteLoggingRestartSessions, 0L);
+        }
+    }
 
     private record JournalFile(int schemaVersion, List<Entry> operations,
-                               Map<String, UUID> voteLoggingRestartSessions) { }
+                               Map<String, UUID> voteLoggingRestartSessions, long configurationGeneration) { }
 }

@@ -956,6 +956,24 @@ class ConfigurationOperationsTest {
         assertEquals("DEPENDENCY_CHANGED", result.results().get("proxy-a").code());
     }
 
+    @Test void eachSuccessfulApplyTargetAdvancesConfigurationGeneration() throws Exception {
+        ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofMinutes(5));
+        ManagedConfiguration method = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "REDIS"));
+
+        ConfigurationTask backendApply = fixture.operations().claim("lobby", fixture.backendSession());
+        fixture.operations().complete(fixture.applyId(), "lobby", new ConfigurationTaskResult(
+                fixture.backendSession(), true, "OK", "applied", "c".repeat(64), method, List.of(), false, false,
+                backendApply.attemptId()));
+        assertEquals(1L, fixture.operations().listView().configurationGeneration());
+
+        ConfigurationTask proxyApply = fixture.operations().claim("proxy-a", fixture.proxySession());
+        fixture.operations().complete(fixture.applyId(), "proxy-a", new ConfigurationTaskResult(
+                fixture.proxySession(), true, "OK", "applied", "d".repeat(64), method, List.of(), false, false,
+                proxyApply.attemptId()));
+        assertEquals(2L, fixture.operations().listView().configurationGeneration());
+    }
+
     @Test void proxyMethodApplyRejectsAChangedTargetRole() throws Exception {
         ProxyMethodFixture fixture = proxyMethodApplyFixture(Duration.ofMinutes(5));
         ConfigurationTask backendApply = fixture.operations().claim("lobby", fixture.backendSession());
@@ -1412,9 +1430,11 @@ class ConfigurationOperationsTest {
         ConfigurationTask secondApply = operations.claim("backend-b", second);
         operations.complete(apply.operationId(), "backend-a", new ConfigurationTaskResult(first, true, "OK",
                 "applied", "c".repeat(64), proposal, List.of(), true, false, firstApply.attemptId()));
+        assertEquals(1L, operations.listView().configurationGeneration());
         apply = operations.complete(apply.operationId(), "backend-b", new ConfigurationTaskResult(second, false,
                 "WRITE_FAILED", "failed", null, (ManagedConfiguration) null, List.of(), false, true,
                 secondApply.attemptId()));
+        assertEquals(1L, operations.listView().configurationGeneration());
 
         ConfigurationOperations.OperationView retry = operations.retry(apply.operationId());
 

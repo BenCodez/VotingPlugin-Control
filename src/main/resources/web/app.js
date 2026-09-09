@@ -15,16 +15,35 @@ const logout = document.querySelector('#logout');
 const message = document.querySelector('#message');
 const welcome = document.querySelector('#welcome');
 const appShell = document.querySelector('#app-shell');
+const sidebarToggle = document.querySelector('#sidebar-toggle');
+const primaryNavigation = document.querySelector('#primary-navigation');
+const topbar = document.querySelector('.topbar');
+const globalSearch = document.querySelector('#global-search');
+const globalSearchInput = document.querySelector('#global-search-input');
+const globalSearchOptions = document.querySelector('#global-search-options');
+const headerAction = document.querySelector('#header-action');
 const serverPickerLabel = document.querySelector('#server-picker-label');
 const serverPicker = document.querySelector('#server-picker');
 const tabButtons = [...document.querySelectorAll('[data-tab]')];
+const navigationButtons = [...primaryNavigation.querySelectorAll('button')];
 const tabPanels = [...document.querySelectorAll('[data-panel]')];
 const configViewButtons = [...document.querySelectorAll('[data-config-view]')];
 const configViewPanels = [...document.querySelectorAll('[data-config-panel]')];
-const metricNodes = document.querySelector('#metric-nodes');
-const metricOnline = document.querySelector('#metric-online');
-const metricBackends = document.querySelector('#metric-backends');
+const metricHealth = document.querySelector('#metric-health');
+const metricHealthDetail = document.querySelector('#metric-health-detail');
+const metricVotesToday = document.querySelector('#metric-votes-today');
+const metricVoteSites = document.querySelector('#metric-vote-sites');
+const metricVoteSitesDetail = document.querySelector('#metric-vote-sites-detail');
+const metricProxy = document.querySelector('#metric-proxy');
+const metricProxyDetail = document.querySelector('#metric-proxy-detail');
+const metricLoggedEvents = document.querySelector('#metric-logged-events');
 const metricIssues = document.querySelector('#metric-issues');
+const metricIssuesDetail = document.querySelector('#metric-issues-detail');
+const refreshDashboardButton = document.querySelector('#refresh-dashboard');
+const attentionFeed = document.querySelector('#attention-feed');
+const overviewQuickActions = document.querySelector('#overview-quick-actions');
+const voteActivity = document.querySelector('#vote-activity');
+const overviewActivity = document.querySelector('#overview-activity');
 const selectedServerName = document.querySelector('#selected-server-name');
 const selectedServerState = document.querySelector('#selected-server-state');
 const selectedServerSummary = document.querySelector('#selected-server-summary');
@@ -223,6 +242,7 @@ let selectedNodes = new Set();
 let selectedServerId = '';
 let visibleNodeItems = [];
 let allNodeItems = [];
+let nodePageMetadata = new Map();
 let nodeIndex = new Map();
 let enrollmentIds = new Set();
 let enrollmentsLoaded = false;
@@ -249,6 +269,8 @@ let loginInFlight = false;
 let setupRequired = false;
 let enrollmentInFlight = false;
 let enrollmentRefreshRequested = false;
+let enrollmentRefreshPromise = null;
+let enrollmentRefreshResolve = null;
 let enrollmentMutationInFlight = false;
 let configurationOperationsInFlight = 0;
 let proxyMethodWorkflowInFlight = false;
@@ -269,11 +291,53 @@ let configurationFileSelection = configurationFile.value;
 let inspectionInFlight = false;
 let lastDiagnostics = null;
 let lastOverview = null;
+let dashboardOverview = null;
+let dashboardVoteSiteHealth = null;
+let dashboardVoteSummary24h = null;
+let dashboardVoteSummary30d = null;
+let dashboardLoadedContext = '';
+let dashboardInspectionStatus = emptyDashboardInspectionStatus();
+let dashboardTopologySignature = '';
+let dashboardConfigurationGeneration = 0;
+let dashboardLoading = false;
 let operationHistoryItems = [];
+let observedServerConfigurationGeneration = null;
+let operationHistoryStatus = 'not-loaded';
+let enrollmentStatus = 'not-loaded';
 let dedicatedSetupApprovals = new Map();
 let pendingDetectedVoteSite = null;
 let voteLoggingRestartPending = new Map();
 let autoLoadInFlight = new Set();
+let autoLoadPending = new Set();
+let nodeLoadInFlight = null;
+let nodeLoadQueued = false;
+let nodeLoadQueuedPromise = null;
+let nodeLoadQueuedResolve = null;
+let nodeLoadQueuedReject = null;
+let suppressNodeAutoLoad = 0;
+let operationHistoryLoadInFlight = null;
+let operationHistoryLoadQueued = false;
+const appStylesheet = Array.from(document.styleSheets).find(sheet => sheet.href?.endsWith('/app.css'));
+const rootStyleRule = appStylesheet
+  ? Array.from(appStylesheet.cssRules).find(rule => rule.selectorText === ':root')
+  : null;
+
+function syncTopbarOffset() {
+  const topbarBounds = topbar.getBoundingClientRect();
+  const searchBounds = globalSearch.hidden ? topbarBounds : globalSearch.getBoundingClientRect();
+  const height = Math.ceil(Math.max(topbarBounds.bottom, searchBounds.bottom));
+  rootStyleRule?.['style'].setProperty('--topbar-height', `${height}px`);
+}
+
+function scrollToAnchor(target) {
+  if (!target) return;
+  syncTopbarOffset();
+  target.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+syncTopbarOffset();
+if (typeof ResizeObserver === 'function') new ResizeObserver(syncTopbarOffset).observe(topbar);
+window.addEventListener('resize', syncTopbarOffset);
 
 function text(element, value) {
   element.textContent = value;
@@ -579,7 +643,7 @@ function renderSiteHealthResult(value) {
       updatePluginSuggestions();
       setActiveTab('quick-setup', true);
       text(quickOperationStatus, 'Detected service copied into the VoteSite setup. Load the generated key to confirm it is unused, complete the URL and delay, then preview before creating it.');
-      document.querySelector('#quick-setup-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+      scrollToAnchor(document.querySelector('#quick-setup-card'));
     });
     actions.append(button);
   });
@@ -596,15 +660,18 @@ function downloadJson(name, value) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function runInspection(kind, filters = {}, statusElement = null) {
+async function runInspection(kind, filters = {}, statusElement = null, options = {}) {
   const node = inspectionCapableNode();
   if (!node) throw new Error('Choose a connected backend with data inspection support.');
-  if (inspectionInFlight) throw new Error('Another read-only inspection is still running.');
+  const manageBusy = options.manageBusy !== false;
+  if (manageBusy && inspectionInFlight) throw new Error('Another read-only inspection is still running.');
   const nodeId = node.nodeId;
   const sessionId = node.sessionId;
   const requestAuthenticationGeneration = authenticationGeneration;
-  inspectionInFlight = true;
-  updateExtendedButtons();
+  if (manageBusy) {
+    inspectionInFlight = true;
+    updateExtendedButtons();
+  }
   if (statusElement) text(statusElement, `Queued ${kind} inspection…`);
   try {
     const boundedFilters = {};
@@ -642,8 +709,10 @@ async function runInspection(kind, filters = {}, statusElement = null) {
     }
     return envelope;
   } finally {
-    inspectionInFlight = false;
-    updateExtendedButtons();
+    if (manageBusy) {
+      inspectionInFlight = false;
+      updateExtendedButtons();
+    }
   }
 }
 
@@ -909,6 +978,7 @@ function renderOperationHistory() {
   operationHistory.replaceChildren();
   if (operationHistoryItems.length === 0) {
     text(operationHistory, 'No retained configuration operations.');
+    renderMetrics();
     return;
   }
   operationHistoryItems.forEach(operation => {
@@ -982,16 +1052,31 @@ function renderOperationHistory() {
     item.append(heading, detail);
     operationHistory.append(item);
   });
+  renderMetrics();
 }
 
-async function loadOperationHistory() {
+async function loadOperationHistoryOnce() {
   if (!authenticated) return;
+  const historyGeneration = authenticationGeneration;
+  operationHistoryStatus = 'loading';
   try {
     const body = await authorized('/api/v1/operations');
+    if (!authenticated || historyGeneration !== authenticationGeneration) return;
     const retainedOperations = Array.isArray(body.items) ? body.items : [];
+    const serverConfigurationGeneration = finiteCount(body.configurationGeneration);
+    const observedSuccessfulApply = serverConfigurationGeneration != null
+      && (observedServerConfigurationGeneration == null
+        ? serverConfigurationGeneration > 0 && dashboardLoadedContext === dashboardContext()
+        : serverConfigurationGeneration > observedServerConfigurationGeneration);
+    if (serverConfigurationGeneration != null) {
+      observedServerConfigurationGeneration = observedServerConfigurationGeneration == null
+        ? serverConfigurationGeneration
+        : Math.max(observedServerConfigurationGeneration, serverConfigurationGeneration);
+    }
     operationHistoryItems = retainedOperations.slice(0, MAX_OPERATION_HISTORY).map(operation =>
       ({...operation, results: Object.fromEntries(Object.entries(operation.results || {}).map(([nodeId, result]) =>
         [nodeId, result ? {...result, configuration: null} : result]))}));
+    if (observedSuccessfulApply) invalidateConfigurationReads();
     const pendingRestarts = new Map();
     const restartSessions = body.voteLoggingRestartSessions;
     if (restartSessions && typeof restartSessions === 'object' && !Array.isArray(restartSessions)) {
@@ -1009,11 +1094,36 @@ async function loadOperationHistory() {
       });
     }
     voteLoggingRestartPending = pendingRestarts;
+    operationHistoryStatus = 'available';
     renderOperationHistory();
     updateSetupChecklist();
   } catch (error) {
+    if (!authenticated || historyGeneration !== authenticationGeneration) return;
+    operationHistoryItems = [];
+    voteLoggingRestartPending = new Map();
+    operationHistoryStatus = 'failed';
     text(operationHistory, error.message || 'Operation history could not be loaded.');
+    updateSetupChecklist();
+    renderMetrics();
   }
+}
+
+function loadOperationHistory() {
+  if (!authenticated) return Promise.resolve();
+  if (operationHistoryLoadInFlight) {
+    operationHistoryLoadQueued = true;
+    return operationHistoryLoadInFlight;
+  }
+  const run = (async () => {
+    do {
+      operationHistoryLoadQueued = false;
+      await loadOperationHistoryOnce();
+    } while (operationHistoryLoadQueued && authenticated);
+  })();
+  operationHistoryLoadInFlight = run;
+  return run.finally(() => {
+    if (operationHistoryLoadInFlight === run) operationHistoryLoadInFlight = null;
+  });
 }
 
 function renderSettingsCatalog() {
@@ -1141,7 +1251,17 @@ function applyAuthenticatedSession(body) {
   lastFileReadOperation = null;
   lastDiagnostics = null;
   lastOverview = null;
+  dashboardOverview = null;
+  dashboardVoteSiteHealth = null;
+  dashboardVoteSummary24h = null;
+  dashboardVoteSummary30d = null;
+  dashboardLoadedContext = '';
+  dashboardInspectionStatus = emptyDashboardInspectionStatus();
+  dashboardTopologySignature = '';
   operationHistoryItems = [];
+  observedServerConfigurationGeneration = null;
+  operationHistoryStatus = 'not-loaded';
+  enrollmentStatus = 'not-loaded';
   dedicatedSetupApprovals.clear();
   voteLoggingRestartPending.clear();
   pendingDetectedVoteSite = null;
@@ -1155,8 +1275,13 @@ function applyAuthenticatedSession(body) {
   routingDraftNodeId = '';
   configurationFileSelection = configurationFile.value;
   autoLoadInFlight.clear();
+  autoLoadPending.clear();
   inputGeneration++;
   logout.hidden = false;
+  sidebarToggle.hidden = false;
+  globalSearch.hidden = false;
+  syncTopbarOffset();
+  headerAction.hidden = false;
   authCard.hidden = true;
   welcome.hidden = true;
   appShell.hidden = false;
@@ -1322,12 +1447,68 @@ function tabFromHash() {
   return tabPanels.some(panel => panel.dataset.panel === requested) ? requested : 'overview';
 }
 
+function closeSidebar() {
+  const restoreFocus = window.matchMedia('(max-width: 920px)').matches
+    && primaryNavigation.contains(document.activeElement);
+  document.body.classList.remove('sidebar-open');
+  sidebarToggle.setAttribute('aria-expanded', 'false');
+  sidebarToggle.setAttribute('aria-label', 'Open navigation');
+  if (restoreFocus) sidebarToggle.focus();
+}
+
+function updateHeaderAction(tab) {
+  const actions = {
+    overview: ['Refresh dashboard', () => refreshDashboard()],
+    servers: ['Refresh servers', () => loadNodes()],
+    network: ['Run Network Doctor', () => runNetworkDoctor.click()],
+    configurations: ['Compare configuration', () => {
+      setConfigView('compare');
+      runDriftCheck.click();
+    }],
+    'quick-setup': ['Add Vote Site', () => openWorkspace('quick-setup', 'quick-setup-card', 'vote-site')],
+    data: ['Refresh server overview', () => refreshDataOverview.click()],
+    activity: ['Refresh activity', () => loadOperationHistory()],
+    access: ['Refresh access', () => loadEnrollments()]
+  };
+  const [label, action] = actions[tab] || actions.overview;
+  text(headerAction, label);
+  headerAction.onclick = action;
+  const unavailable = tab === 'overview' ? dashboardLoading || inspectionInFlight
+    : tab === 'servers' ? nodeLoadInFlight != null
+    : tab === 'network' ? runNetworkDoctor.disabled
+    : tab === 'configurations' ? runDriftCheck.disabled
+    : tab === 'data' ? refreshDataOverview.disabled
+    : tab === 'quick-setup' ? !nodeCapabilities.get(selectedServerId)?.includes('config.quick-setup.v1')
+    : false;
+  headerAction.disabled = !authenticated || unavailable;
+}
+
 function setActiveTab(tab, updateHash = false) {
   if (!tabPanels.some(panel => panel.dataset.panel === tab)) tab = 'overview';
-  tabButtons.forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === tab)));
+  navigationButtons.forEach(button => button.removeAttribute('aria-current'));
+  tabButtons.forEach(button => {
+    if (button.dataset.tab === tab) button.setAttribute('aria-current', 'page');
+  });
   tabPanels.forEach(panel => { panel.hidden = panel.dataset.panel !== tab; });
   if (updateHash && window.location.hash !== `#${tab}`) window.history.replaceState(null, '', `#${tab}`);
+  closeSidebar();
+  updateHeaderAction(tab);
   void autoLoadTab(tab);
+}
+
+function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = null) {
+  if (preset) {
+    quickPreset.value = preset;
+    loadedQuickSetup = null;
+    updateQuickFields();
+    clearApprovals();
+  }
+  setActiveTab(tab, true);
+  if (navigationButton && primaryNavigation.contains(navigationButton)) {
+    navigationButtons.forEach(button => button.removeAttribute('aria-current'));
+    navigationButton.setAttribute('aria-current', 'page');
+  }
+  if (scrollTarget) window.requestAnimationFrame(() => scrollToAnchor(document.getElementById(scrollTarget)));
 }
 
 function setConfigView(view) {
@@ -1390,13 +1571,38 @@ function syncFileSelection() {
   }
 }
 
+function finishAutoLoad(tab) {
+  autoLoadInFlight.delete(tab);
+  if (autoLoadPending.delete(tab)) void autoLoadTab(tab);
+}
+
 async function autoLoadTab(tab) {
-  if (!authenticated || autoLoadInFlight.has(tab)) return;
+  if (!authenticated) return;
+  if (autoLoadInFlight.has(tab)) {
+    autoLoadPending.add(tab);
+    return;
+  }
+  if (tab === 'overview' && inspectionCapableNode() && dashboardLoadedContext !== dashboardContext()
+      && (dashboardLoading || inspectionInFlight)) {
+    if (!autoLoadPending.has(tab)) {
+      autoLoadPending.add(tab);
+      window.setTimeout(() => {
+        if (autoLoadPending.delete(tab)) void autoLoadTab(tab);
+      }, 250);
+    }
+    return;
+  }
+  if (tab === 'overview' && inspectionCapableNode() && dashboardLoadedContext !== dashboardContext()
+      && !dashboardLoading && !inspectionInFlight) {
+    autoLoadInFlight.add(tab);
+    try { await refreshDashboard(); } finally { finishAutoLoad(tab); }
+    return;
+  }
   if (tab === 'configurations') {
     const yamlVisible = configViewPanels.some(panel => panel.dataset.configPanel === 'yaml' && !panel.hidden);
     if (!yamlVisible || configurationDirty || configurationContentPresent || !fileTargetsForSelection().length) return;
     autoLoadInFlight.add(tab);
-    try { await loadFileConfiguration(true); } finally { autoLoadInFlight.delete(tab); }
+    try { await loadFileConfiguration(true); } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'network' && !proxyMethodWorkflowInFlight) {
@@ -1404,18 +1610,18 @@ async function autoLoadTab(tab) {
     try {
       await Promise.all([proxyMethodCurrentValue ? Promise.resolve() : loadProxyMethod(true),
         routingDirty || approvedPreview ? Promise.resolve() : loadProxyRouting(true)]);
-    } finally { autoLoadInFlight.delete(tab); }
+    } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'quick-setup' && quickPresetReadable() && !loadedQuickSetup
       && !approvedQuickPreview && !configurationOperationsInFlight) {
     autoLoadInFlight.add(tab);
-    try { await loadQuickSetupValues(true); } finally { autoLoadInFlight.delete(tab); }
+    try { await loadQuickSetupValues(true); } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'data' && inspectionCapableNode() && !inspectionInFlight && !lastOverview) {
     autoLoadInFlight.add(tab);
-    try { await refreshOverview(dataOverview); } finally { autoLoadInFlight.delete(tab); }
+    try { await refreshOverview(dataOverview); } finally { finishAutoLoad(tab); }
   }
 }
 
@@ -1445,6 +1651,7 @@ function renderServerPicker() {
     }
   }
   serverPicker.value = selectedServerId;
+  populateGlobalSearch();
 }
 
 function renderSelectedServer() {
@@ -1542,23 +1749,647 @@ function renderTopology() {
   }
 }
 
-function renderMetrics() {
-  const backendIds = new Set(allNodeItems.filter(isProxy).flatMap(node =>
-    (Array.isArray(node.backends) ? node.backends : []).map(backend => backend.backendId)));
-  const issueIds = new Set(allNodeItems.filter(node => !node.online).map(node => node.nodeId));
-  backendIds.forEach(backendId => { if (!nodeIndex.has(backendId)) issueIds.add(backendId); });
-  if (enrollmentsLoaded) {
-    backendIds.forEach(backendId => { if (!enrollmentIds.has(backendId)) issueIds.add(backendId); });
+function dashboardContext() {
+  const node = nodeIndex.get(selectedServerId);
+  return node ? `${node.nodeId}|${node.sessionId}|${node.online}|${node.acceptedCapabilities.includes('data.inspect.v1')}|${dashboardTopologySignature}|${dashboardConfigurationGeneration}` : '';
+}
+
+function topologySignature(items) {
+  return items.filter(isProxy).map(proxy => `${proxy.nodeId}|${proxy.sessionId}|${proxy.online}|${proxy.snapshotSequence}`).join(';');
+}
+
+function emptyDashboardInspectionStatus() {
+  return {overview: 'not-loaded', voteSiteHealth: 'not-loaded', voteLog24h: 'not-required', voteLog30d: 'not-required'};
+}
+
+function dashboardRecord(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} returned malformed data.`);
   }
-  allNodeItems.filter(node => isProxy(node) && node.online).forEach(proxy =>
+  return value;
+}
+
+function boundedDashboardString(value, maximum, allowEmpty = false) {
+  if (typeof value !== 'string') return {value: '', incomplete: true};
+  const normalized = value.trim();
+  if (!allowEmpty && !normalized) return {value: '', incomplete: true};
+  return {value: normalized.slice(0, maximum), incomplete: normalized.length > maximum};
+}
+
+function normalizeDashboardCollection(value, maximum, normalize) {
+  if (!Array.isArray(value)) return {items: [], incomplete: true};
+  let incomplete = value.length > maximum;
+  const items = [];
+  value.slice(0, maximum).forEach(entry => {
+    const normalized = normalize(entry);
+    if (!normalized) incomplete = true;
+    else {
+      items.push(normalized.value);
+      incomplete ||= normalized.incomplete;
+    }
+  });
+  return {items, incomplete};
+}
+
+function normalizeDashboardOverview(value) {
+  const source = dashboardRecord(value, 'Overview inspection');
+  const result = {...source};
+  let incomplete = false;
+  ['configuredVoteSites', 'enabledVoteSites'].forEach(field => {
+    const count = finiteCount(source[field]);
+    if (count == null || !Number.isSafeInteger(count)) incomplete = true;
+    result[field] = count;
+  });
+  if (result.configuredVoteSites != null && result.enabledVoteSites != null
+      && result.enabledVoteSites > result.configuredVoteSites) incomplete = true;
+  ['autoCreateVoteSites', 'processRewards', 'voteLoggingEnabled', 'voteLogAvailable', 'voteLogReadable',
+    'proxyMode', 'votifierDetected', 'configurationHealthy'].forEach(field => {
+    if (typeof source[field] !== 'boolean') incomplete = true;
+    result[field] = typeof source[field] === 'boolean' ? source[field] : undefined;
+  });
+  incomplete ||= invalidVoteLoggingState(result);
+  const requiredStrings = new Set(['pluginVersion', 'platform', 'serverSoftware', 'serverVersion', 'dataStorage']);
+  [['pluginVersion', 80], ['platform', 32], ['serverSoftware', 80], ['serverVersion', 80],
+    ['dataStorage', 32], ['proxyMethod', 32]].forEach(([field, maximum]) => {
+    const normalized = boundedDashboardString(source[field], maximum, field === 'proxyMethod');
+    incomplete ||= normalized.incomplete;
+    if (requiredStrings.has(field) && !normalized.value) incomplete = true;
+    result[field] = normalized.value;
+  });
+  const platforms = new Set(['BUKKIT']);
+  const dataStorages = new Set(['SQLITE', 'MYSQL']);
+  if (!platforms.has(result.platform.toUpperCase()) || !dataStorages.has(result.dataStorage.toUpperCase())) {
+    incomplete = true;
+  }
+  const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);
+  if (result.proxyMode === true && !proxyMethods.has(result.proxyMethod.toUpperCase())) incomplete = true;
+  return {result, incomplete};
+}
+
+function invalidVoteLoggingState(value) {
+  const available = Object.hasOwn(value, 'voteLogAvailable') ? value.voteLogAvailable : value.voteLoggingAvailable;
+  return available === true && value.voteLoggingEnabled !== true
+    || value.voteLogReadable === true && available !== true;
+}
+
+function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
+  const source = dashboardRecord(value, 'Vote Site health inspection');
+  const days = finiteCount(source.days);
+  let incomplete = days == null || days !== expectedDays;
+  const booleanFields = ['voteLoggingEnabled', 'voteLoggingAvailable', 'voteLogReadable', 'autoCreateVoteSites'];
+  booleanFields.forEach(field => { if (typeof source[field] !== 'boolean') incomplete = true; });
+  incomplete ||= invalidVoteLoggingState(source);
+  ['truncated', 'detectedUnconfiguredServicesTruncated'].forEach(field => {
+    if (typeof source[field] !== 'boolean' || source[field] === true) incomplete = true;
+  });
+  const allowedStatuses = new Set(['ACTIVE', 'DISABLED', 'SERVICE_SITE_MISSING', 'VOTE_LOG_UNAVAILABLE',
+    'VOTE_LOG_UNREADABLE', 'NO_RECENT_VOTES']);
+  const voteSiteKeys = new Set();
+  const serviceAggregates = new Map();
+  const sites = normalizeDashboardCollection(source.sites, 100, entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const status = boundedDashboardString(entry.status, 64);
+    const key = boundedDashboardString(entry.key, 64, true);
+    const displayName = boundedDashboardString(entry.displayName, 100, true);
+    const serviceSite = boundedDashboardString(entry.serviceSite, 64, true);
+    const canonicalKey = key.value.toLowerCase();
+    if (status.incomplete || !allowedStatuses.has(status.value) || !key.value || voteSiteKeys.has(canonicalKey)
+        || typeof entry.enabled !== 'boolean' || typeof entry.hasRewards !== 'boolean' || serviceSite.incomplete) return null;
+    const expectedStatuses = entry.enabled === false ? new Set(['DISABLED']) : !serviceSite.value
+      ? new Set(['SERVICE_SITE_MISSING']) : source.voteLoggingAvailable !== true
+      ? new Set(['VOTE_LOG_UNAVAILABLE']) : source.voteLogReadable !== true
+      ? new Set(['VOTE_LOG_UNREADABLE']) : new Set(['ACTIVE', 'NO_RECENT_VOTES']);
+    if (!expectedStatuses.has(status.value)) return null;
+    const aggregate = source.voteLogReadable === true
+      ? validDashboardVoteSiteAggregate(entry, status.value) : null;
+    if (source.voteLogReadable === true && !aggregate) return null;
+    const serviceIdentity = serviceSite.value.toLowerCase();
+    const previousAggregate = serviceAggregates.get(serviceIdentity);
+    if (previousAggregate && !dashboardVoteSiteAggregatesMatch(previousAggregate, aggregate)) return null;
+    if (aggregate && serviceIdentity) serviceAggregates.set(serviceIdentity, aggregate);
+    const aggregateFields = ['loggedVotes', 'immediateVotes', 'cachedVotes', 'lastVoteTime'];
+    if (source.voteLogReadable !== true
+        && aggregateFields.some(field => Object.hasOwn(entry, field))) return null;
+    voteSiteKeys.add(canonicalKey);
+    return {value: {...entry, status: status.value, key: key.value, displayName: displayName.value,
+      serviceSite: serviceSite.value, ...(aggregate || {})}, incomplete: key.incomplete || displayName.incomplete};
+  });
+	const configuredServiceKeys = new Set(sites.items.map(site => site.serviceSite.toLowerCase()));
+	const detectedServiceKeys = new Set();
+  const detected = normalizeDashboardCollection(source.detectedUnconfiguredServices, 100, entry => {
+    const service = boundedDashboardString(entry, 100);
+    const identity = service.value.toLowerCase();
+		if (service.incomplete || configuredServiceKeys.has(identity) || detectedServiceKeys.has(identity)) return null;
+    detectedServiceKeys.add(identity);
+    return {value: service.value, incomplete: false};
+	});
+	const unmatchedServiceKeys = new Set();
+	const unmatched = normalizeDashboardCollection(source.unmatchedLoggedServices, 100, entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+		const service = boundedDashboardString(entry.serviceSite, 64);
+    const identity = service.value.toLowerCase();
+    if (service.incomplete || configuredServiceKeys.has(identity) || unmatchedServiceKeys.has(identity)) return null;
+    unmatchedServiceKeys.add(identity);
+    return {value: {...entry, serviceSite: service.value}, incomplete: false};
+	});
+	incomplete ||= sites.incomplete || detected.incomplete || unmatched.incomplete;
+	if (source.voteLogReadable !== true && unmatched.items.length > 0) incomplete = true;
+	const unmatchedItems = source.voteLogReadable === true ? unmatched.items : [];
+	return {result: {...source, days, ...Object.fromEntries(booleanFields.map(field =>
+		[field, typeof source[field] === 'boolean' ? source[field] : undefined])), sites: sites.items,
+		detectedUnconfiguredServices: detected.items, unmatchedLoggedServices: unmatchedItems}, incomplete};
+}
+
+function validDashboardVoteSiteAggregate(entry, status) {
+  const loggedVotes = finiteCount(entry.loggedVotes);
+  const immediateVotes = finiteCount(entry.immediateVotes);
+  const cachedVotes = finiteCount(entry.cachedVotes);
+  const lastVoteTime = finiteCount(entry.lastVoteTime);
+  if (loggedVotes == null || immediateVotes == null || cachedVotes == null || lastVoteTime == null
+      || immediateVotes + cachedVotes !== loggedVotes) return null;
+  if (loggedVotes === 0 ? lastVoteTime !== 0 : lastVoteTime === 0) return null;
+  if (status === 'ACTIVE' && loggedVotes === 0 || status === 'NO_RECENT_VOTES' && loggedVotes !== 0) return null;
+  return {loggedVotes, immediateVotes, cachedVotes, lastVoteTime};
+}
+
+function dashboardVoteSiteAggregatesMatch(left, right) {
+  return left.loggedVotes === right.loggedVotes && left.immediateVotes === right.immediateVotes
+    && left.cachedVotes === right.cachedVotes && left.lastVoteTime === right.lastVoteTime;
+}
+
+function dashboardHealthContradictsOverview(overview, health) {
+  if (!overview || !health) return false;
+  const flagsMatch = health.autoCreateVoteSites === overview.autoCreateVoteSites
+    && health.voteLoggingEnabled === overview.voteLoggingEnabled
+    && health.voteLoggingAvailable === overview.voteLogAvailable
+    && health.voteLogReadable === overview.voteLogReadable;
+  const configured = finiteCount(overview.configuredVoteSites);
+  const siteCountMatches = health.truncated === true || configured == null
+    || Array.isArray(health.sites) && health.sites.length === configured;
+  const enabled = finiteCount(overview.enabledVoteSites);
+  const enabledSiteCountMatches = health.truncated === true || enabled == null
+    || Array.isArray(health.sites) && health.sites.filter(site => site.enabled === true).length === enabled;
+  return !flagsMatch || !siteCountMatches || !enabledSiteCountMatches;
+}
+
+function dashboardHealthContradictsVoteSummary(health, summary) {
+  if (!health || !summary || health.voteLogReadable !== true || !Array.isArray(health.sites)) return false;
+  if (dashboardHealthServicesContradictSummary(health.sites, summary.topServices)) return true;
+  const rowContradiction = health.sites.some(site => {
+    if (!site || typeof site !== 'object' || Array.isArray(site)) return false;
+    return [['loggedVotes', 'total'], ['immediateVotes', 'immediate'], ['cachedVotes', 'cached']]
+      .some(([siteField, summaryField]) => {
+        const siteCount = finiteCount(site[siteField]);
+        const summaryCount = finiteCount(summary[summaryField]);
+        return siteCount != null && summaryCount != null && siteCount > summaryCount;
+      });
+  });
+  if (rowContradiction) return true;
+  return [['loggedVotes', 'total'], ['immediateVotes', 'immediate'], ['cachedVotes', 'cached']]
+    .some(([siteField, summaryField]) => {
+      const summaryCount = finiteCount(summary[summaryField]);
+      return summaryCount != null && dashboardHealthAggregateExceedsSummary(
+        health.sites, siteField, summaryCount);
+    });
+}
+
+function dashboardHealthServicesContradictSummary(sites, topServices) {
+  if (!Array.isArray(sites) || !Array.isArray(topServices)) return false;
+  const topServicesComplete = topServices.length < 20;
+  const topServiceCounts = new Map();
+  topServices.forEach(entry => {
+    const identity = dashboardCountRowIdentity(entry, 'service');
+    const count = finiteCount(entry?.count);
+    if (identity != null && count != null) topServiceCounts.set(identity, count);
+  });
+  const countedServices = new Set();
+  return sites.some(site => {
+    const serviceIdentity = typeof site?.serviceSite === 'string'
+      ? site.serviceSite.trim().toLowerCase() : '';
+    const loggedVotes = finiteCount(site?.loggedVotes);
+    if (!serviceIdentity || loggedVotes == null) return false;
+    if (countedServices.has(serviceIdentity)) {
+      // A 64-character ServiceSite may be a truncated identity. Preserve the
+      // existing fail-closed behavior instead of silently merging aliases.
+      return serviceIdentity.length >= 64;
+    }
+    countedServices.add(serviceIdentity);
+    // A complete ranking intentionally omits services with no votes. Only a
+    // positive health aggregate can contradict that omission.
+    if (!topServiceCounts.has(serviceIdentity)) return loggedVotes > 0 && topServicesComplete;
+    return loggedVotes > topServiceCounts.get(serviceIdentity);
+  });
+}
+
+function dashboardHealthAggregateExceedsSummary(sites, siteField, summaryCount) {
+  let aggregate = 0;
+  const countedServices = new Set();
+  return sites.some(site => {
+    const serviceIdentity = typeof site?.serviceSite === 'string' ? site.serviceSite.trim().toLowerCase() : '';
+    if (serviceIdentity && countedServices.has(serviceIdentity)) {
+      // The node bounds serialized ServiceSite values to 64 characters. A
+      // duplicate at that boundary may represent two distinct truncated names,
+      // so treat the aggregate as unchecked instead of silently deduplicating it.
+      return serviceIdentity.length >= 64;
+    }
+    const siteCount = finiteCount(site?.[siteField]);
+    if (siteCount == null) return false;
+    if (serviceIdentity) countedServices.add(serviceIdentity);
+    aggregate += siteCount;
+    return aggregate > summaryCount;
+  });
+}
+
+function normalizeDashboardCountRows(value, maximum, label) {
+  const identities = new Set();
+  return normalizeDashboardCollection(value, maximum, entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const name = boundedDashboardString(entry[label], 64, false);
+    const hasCount = Object.hasOwn(entry, 'count');
+    const hasVotes = Object.hasOwn(entry, 'votes');
+    const count = hasCount ? finiteCount(entry.count) : hasVotes ? finiteCount(entry.votes) : null;
+    const legacyCount = hasVotes ? finiteCount(entry.votes) : null;
+    if (name.incomplete || count == null || hasVotes && legacyCount == null
+        || hasCount && hasVotes && count !== legacyCount) return null;
+    const identity = name.value.toLowerCase();
+    if (identities.has(identity)) return null;
+    identities.add(identity);
+    return {value: {...entry, [label]: name.value, count}, incomplete: false};
+  });
+}
+
+function normalizeDashboardVoteSummary(value, expectedDays = 30) {
+  const source = dashboardRecord(value, 'VoteLog summary inspection');
+  const days = finiteCount(source.days);
+  const total = finiteCount(source.total);
+  const immediate = finiteCount(source.immediate);
+  const cached = finiteCount(source.cached);
+  const uniqueVoters = finiteCount(source.uniqueVoters);
+  let incomplete = days == null || days !== expectedDays || total == null || immediate == null
+    || cached == null || uniqueVoters == null;
+  const services = normalizeDashboardCountRows(source.topServices, 20, 'service');
+  const servers = normalizeDashboardCountRows(source.topServers, 20, 'server');
+  incomplete ||= services.incomplete || servers.incomplete
+    || !countRowsAreNonIncreasing(services.items) || !countRowsAreNonIncreasing(servers.items);
+  incomplete ||= !countRowsArePositive(services.items) || !countRowsArePositive(servers.items);
+  if (total != null) {
+    incomplete ||= immediate == null || cached == null || immediate + cached !== total
+      || uniqueVoters == null || total > 0 && uniqueVoters <= 0 || uniqueVoters > total;
+    incomplete ||= total > 0 && (services.items.length === 0 || servers.items.length === 0);
+    incomplete ||= countRowsExceedTotal(services.items, total)
+      || countRowsExceedTotal(servers.items, total)
+      || !countRowsSumMatchesTotal(services.items, total)
+      || !countRowsSumMatchesTotal(servers.items, total);
+  }
+  return {result: {...source, days, total, immediate, cached, uniqueVoters,
+    topServices: services.items, topServers: servers.items}, incomplete};
+}
+
+function countRowsExceedTotal(items, total) {
+  let remaining = total;
+  for (const entry of items) {
+    if (entry.count > remaining) return true;
+    remaining -= entry.count;
+  }
+  return false;
+}
+
+function countRowsSumMatchesTotal(items, total) {
+  return items.length >= 20 || items.reduce((sum, entry) => sum + entry.count, 0) === total;
+}
+
+function countRowsAreNonIncreasing(items) {
+  for (let index = 1; index < items.length; index++) {
+    if (items[index].count > items[index - 1].count) return false;
+  }
+  return true;
+}
+
+function countRowsArePositive(items) {
+  return items.every(entry => entry.count > 0);
+}
+
+function dashboardCountRowIdentity(entry, label) {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  const name = boundedDashboardString(entry[label], 100, false);
+  return name.incomplete ? null : name.value.toLowerCase();
+}
+
+function dashboardCountRowsContradict(shortRows, longRows, label) {
+  if (!Array.isArray(shortRows) || !Array.isArray(longRows)) return false;
+  const widerWindowIsComplete = longRows.length < 20;
+  const longCounts = new Map();
+  longRows.forEach(entry => {
+    const identity = dashboardCountRowIdentity(entry, label);
+    const count = finiteCount(entry?.count);
+    if (identity != null && count != null) longCounts.set(identity, count);
+  });
+  return shortRows.some(entry => {
+    const identity = dashboardCountRowIdentity(entry, label);
+    const shortCount = finiteCount(entry?.count);
+    if (identity == null || shortCount == null) return false;
+    if (!longCounts.has(identity)) return widerWindowIsComplete;
+    return shortCount > longCounts.get(identity);
+  });
+}
+
+function dashboardVoteSummariesContradict(shortWindow, longWindow) {
+  const scalarContradiction = ['total', 'immediate', 'cached', 'uniqueVoters'].some(field =>
+    finiteCount(shortWindow?.[field]) != null && finiteCount(longWindow?.[field]) != null
+      && shortWindow[field] > longWindow[field]);
+  return scalarContradiction
+    || dashboardCountRowsContradict(shortWindow?.topServices, longWindow?.topServices, 'service')
+    || dashboardCountRowsContradict(shortWindow?.topServers, longWindow?.topServers, 'server');
+}
+
+function issue(severity, title, detail, action, tab, scrollTarget = '', preset = '', onAction = null) {
+  return {severity, title, detail, action, tab, scrollTarget, preset, onAction};
+}
+
+function dashboardIssues() {
+  const summary = {items: [], total: 0, actionable: 0, hasCritical: false, hasWarning: false};
+  const issues = {push(item) {
+    summary.total += 1;
+    if (item.severity !== 'informational') summary.actionable += 1;
+    summary.hasCritical ||= item.severity === 'critical';
+    summary.hasWarning ||= item.severity === 'warning';
+    if (summary.items.length < 30) summary.items.push(item);
+  }};
+  const selected = nodeIndex.get(selectedServerId);
+  if (!selected) {
+    issues.push(issue('informational', 'Choose a VotingPlugin server',
+      'Server-specific health and administration actions need an explicit target.', 'Choose server', 'servers'));
+  } else if (!selected.online) {
+    issues.push(issue('warning', `${selected.displayName} is disconnected from Control`,
+      'Minecraft presence is separate; reconnect the Control node before attempting changes.', 'View server', 'servers'));
+  } else if (dashboardLoadedContext !== dashboardContext()) {
+    issues.push(issue('informational', 'Detailed health has not been loaded',
+      'Refresh the dashboard to inspect Vote Sites, VoteLog, configuration, and runtime state.', 'Refresh dashboard', 'overview'));
+  }
+  if (dashboardLoadedContext === dashboardContext() || Object.values(dashboardInspectionStatus)
+      .some(status => ['failed', 'incomplete'].includes(status))) {
+    const labels = {overview: 'Overview', voteSiteHealth: 'Vote Site health',
+      voteLog24h: '24-hour VoteLog summary', voteLog30d: '30-day VoteLog summary'};
+    Object.entries(dashboardInspectionStatus).forEach(([inspection, status]) => {
+      if (!['failed', 'incomplete'].includes(status)) return;
+      issues.push(issue('warning', `${labels[inspection]} is ${status === 'failed' ? 'unavailable' : 'incomplete'}`,
+        'Some dashboard checks could not be verified, so this server is not reported as fully healthy.',
+        'Refresh dashboard', 'overview'));
+    });
+  }
+  if (backendTopologyTruncated) {
+    issues.push(issue('informational', 'Topology view is incomplete',
+      'Control bounded the backend summaries, so omitted relationships are not classified as offline.', 'View servers', 'servers'));
+  }
+  const disconnectedNodes = allNodeItems.filter(node => !node.online && node.nodeId !== selectedServerId);
+  disconnectedNodes.forEach(node => {
+    issues.push(issue('warning', `${node.displayName} is disconnected from Control`,
+      `The registered ${roleLabel(node).toLowerCase()} is not currently connected. Minecraft availability is separate.`,
+      'View server', 'servers'));
+  });
+  const reportedBackends = new Map();
+  allNodeItems.filter(node => isProxy(node) && node.online).forEach(proxy => {
     (Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {
-      if (backend.presenceKnown && !backend.available) issueIds.add(backend.backendId);
+      if (!backend || typeof backend.backendId !== 'string' || !backend.backendId) return;
+      const current = reportedBackends.get(backend.backendId) || {
+        backend, proxies: new Set()
+      };
+      current.proxies.add(proxy.displayName);
+      if (backend.presenceKnown && !backend.available) {
+        issues.push(issue('warning', `${backend.displayName} is unavailable to ${proxy.displayName}`,
+          `Reported unavailable by ${proxy.displayName}.`, 'Test communication', 'network', 'transport-test-card'));
+      }
+      reportedBackends.set(backend.backendId, current);
+    });
+  });
+  reportedBackends.forEach(({backend, proxies}) => {
+    const proxyNames = [...proxies].join(', ');
+    const registered = nodeIndex.get(backend.backendId);
+    const registeredBukkitBackend = registered?.platform === 'BUKKIT';
+    if (!registeredBukkitBackend) issues.push(issue('warning', `${backend.displayName} is not registered as a Bukkit backend`,
+      `Reported by ${proxyNames}; Control has no current Bukkit backend record.`, 'View servers', 'servers'));
+    if (enrollmentsLoaded && registeredBukkitBackend && !enrollmentIds.has(backend.backendId)) {
+      issues.push(issue('warning', `${backend.displayName} is not enrolled`,
+        'Enroll the node before expecting authenticated Control connectivity.', 'Open access', 'access'));
+    }
+  });
+  if (dashboardOverview && dashboardLoadedContext === dashboardContext()) {
+    if (dashboardOverview.configurationHealthy === false) issues.push(issue('warning', 'VotingPlugin configuration needs attention',
+      'The selected backend reported an unhealthy configuration state.', 'Open configuration', 'configurations'));
+    if (dashboardOverview.votifierDetected === false) issues.push(issue('warning', 'Votifier was not detected',
+      'The selected backend cannot confirm the vote-listener prerequisite.', 'Diagnose', 'network', 'network-doctor-card'));
+    if (dashboardOverview.configuredVoteSites === 0) issues.push(issue('warning', 'No Vote Sites are configured',
+      'Add a reviewed VoteSites entry before expecting service matches.', 'Add Vote Site', 'quick-setup', 'quick-setup-card', 'vote-site'));
+    else if (dashboardOverview.enabledVoteSites === 0) issues.push(issue('warning', 'All Vote Sites are disabled',
+      'Enable at least one configured Vote Site before expecting votes.', 'Open Vote Sites', 'data', 'site-health-card'));
+    if (dashboardOverview.processRewards === false) issues.push(issue('warning', 'Vote rewards are disabled on this backend',
+      'ProcessRewards is off. Confirm that this is intentional for the selected topology.', 'Open setting', 'quick-setup', 'settings-catalog-card'));
+    if (dashboardOverview.voteLoggingEnabled === true && dashboardOverview.voteLogReadable !== true) issues.push(issue('warning', 'VoteLog is unavailable',
+      'Logging is enabled, but retained logged-event history is not readable.', 'Open Vote Logs', 'data', 'vote-log-summary-result'));
+    if (voteLoggingRestartRequired()) issues.push(issue('warning', `Restart required on ${selected?.displayName || selectedServerId}`,
+      'Vote logging configuration was saved but is not live until the backend restarts and reconnects.', 'Open setup', 'quick-setup'));
+    if (dashboardOverview.proxyMode === true && proxyReportsFor(selectedServerId).length === 0) issues.push(issue('warning', 'No proxy reports this backend',
+      'Proxy mode is enabled, but no connected proxy currently reports the selected backend ID.', 'Open routing', 'network'));
+  }
+  if (dashboardVoteSiteHealth && dashboardLoadedContext === dashboardContext()) {
+    const sites = Array.isArray(dashboardVoteSiteHealth.sites) ? dashboardVoteSiteHealth.sites : [];
+    sites.filter(site => site.status === 'SERVICE_SITE_MISSING').forEach(site => {
+      issues.push(issue('warning', `${site.displayName || site.key} has no ServiceSite`,
+        'Votes cannot be matched reliably until the service identifier is configured.', 'Open Vote Sites', 'data', 'site-health-card'));
+    });
+    dashboardVoteSiteHealth.detectedUnconfiguredServices.forEach(service => {
+      issues.push(issue('warning', `Detected service is not configured: ${service}`,
+        dashboardVoteSiteHealth.autoCreateVoteSites === false
+          ? 'AutoCreateVoteSites is disabled; review and create this site explicitly.'
+          : 'VotingPlugin observed this service but no configured ServiceSite matches it.',
+        'Configure', 'quick-setup', 'quick-setup-card', 'vote-site'));
+    });
+    dashboardVoteSiteHealth.unmatchedLoggedServices.forEach(service => {
+      issues.push(issue('warning', `Logged service does not match a Vote Site: ${service.serviceSite || 'Unknown'}`,
+        'A retained vote event used a service identifier with no configured match.', 'Open Vote Sites', 'data', 'site-health-card'));
+    });
+  }
+  operationHistoryItems.filter(operation => ['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state))
+    .forEach(operation => issues.push(issue('warning', `${operationLabel(operation)} needs review`,
+      operationPhase(operation), 'View operation', 'activity')));
+  if (operationHistoryStatus === 'failed') issues.push(issue('warning', 'Operation history is unavailable',
+    'Recent configuration failures could not be loaded, so dashboard health is incomplete.',
+    'Retry activity', 'activity', '', '', () => {
+      openWorkspace('activity');
+      return loadOperationHistory();
     }));
-  text(metricNodes, allNodeItems.length);
-  text(metricOnline, allNodeItems.filter(node => node.online).length);
-  text(metricBackends, backendTopologyTruncated ? `${backendIds.size}+` : backendIds.size);
-  const issueCount = issueIds.size;
-  text(metricIssues, backendTopologyTruncated ? `${issueCount}+` : issueCount);
+  if (enrollmentStatus === 'failed') issues.push(issue('warning', 'Enrollment state is unavailable',
+    'Recent enrollment state could not be loaded, so backend access health is incomplete.',
+    'Retry access', 'access', '', '', () => {
+      openWorkspace('access');
+      return loadEnrollments();
+    }));
+  return summary;
+}
+
+function renderAttention(issues, total = issues.length) {
+  attentionFeed.replaceChildren();
+  if (issues.length === 0) {
+    const empty = text(document.createElement('p'), 'No actionable problems were found in the currently loaded state.');
+    empty.className = 'attention-empty';
+    attentionFeed.append(empty);
+    return;
+  }
+  issues.slice(0, 8).forEach(item => {
+    const row = document.createElement('article');
+    row.className = `attention-item ${item.severity}`;
+    const indicator = document.createElement('span');
+    indicator.className = 'attention-indicator';
+    indicator.setAttribute('aria-label', item.severity);
+    const copy = document.createElement('div');
+    copy.append(text(document.createElement('strong'), item.title), text(document.createElement('small'), item.detail));
+    const action = text(document.createElement('button'), item.action);
+    action.type = 'button';
+    action.className = 'secondary compact';
+    action.addEventListener('click', () => {
+      if (item.onAction) void item.onAction();
+      else openWorkspace(item.tab, item.scrollTarget, item.preset);
+    });
+    row.append(indicator, copy, action);
+    attentionFeed.append(row);
+  });
+  if (total > 8) attentionFeed.append(text(document.createElement('small'), `${total - 8} additional issues are available in their related pages.`));
+}
+
+function addQuickAction(label, tab, scrollTarget = '', preset = '') {
+  const button = text(document.createElement('button'), label);
+  button.type = 'button';
+  button.className = 'secondary';
+  button.addEventListener('click', () => openWorkspace(tab, scrollTarget, preset));
+  overviewQuickActions.append(button);
+}
+
+function renderQuickActions() {
+  overviewQuickActions.replaceChildren();
+  const selected = nodeIndex.get(selectedServerId);
+  if (selected?.online && isBackend(selected) && selected.acceptedCapabilities.includes('config.quick-setup.v1')) {
+    addQuickAction('Add Vote Site', 'quick-setup', 'quick-setup-card', 'vote-site');
+    addQuickAction('Build Reward', 'quick-setup', 'reward-builder-card');
+  }
+  const syncSources = syncSourceCandidates();
+  const syncTargets = syncTargetCandidates();
+  if (syncSources.some(source => syncTargets.some(target => target.nodeId !== source.nodeId))) {
+    addQuickAction('Sync Vote Sites', 'quick-setup', 'quick-setup-card', 'sync-vote-sites');
+  }
+  if (inspectionCapableNode()) addQuickAction('Run Network Doctor', 'network', 'network-doctor-card');
+  if (transportTestProxies().length) addQuickAction('Test Communication', 'network', 'transport-test-card');
+  if (inspectionCapableNode()) addQuickAction('View Logged Events', 'data', 'vote-log-summary-result');
+  if (overviewQuickActions.childElementCount === 0) {
+    addQuickAction(allNodeItems.length ? 'View Servers' : 'Refresh Servers', 'servers');
+  }
+}
+
+function renderVoteActivity() {
+  voteActivity.replaceChildren();
+  if (!authenticated || !inspectionCapableNode() || dashboardLoadedContext !== dashboardContext()) {
+    text(voteActivity, 'No current retained VoteLog service summary is loaded.');
+    return;
+  }
+  const services = Array.isArray(dashboardVoteSummary30d?.topServices)
+    ? dashboardVoteSummary30d.topServices.slice(0, 6) : [];
+  if (services.length === 0) {
+    text(voteActivity, dashboardOverview?.voteLoggingEnabled === false
+      ? 'Vote logging is disabled; no retained event chart is expected.' : 'No readable retained VoteLog service summary is loaded.');
+    return;
+  }
+  const maximum = Math.max(...services.map(service => service.count), 1);
+  services.forEach(service => {
+    const row = document.createElement('div');
+    row.className = 'activity-bar-row';
+    row.append(text(document.createElement('strong'), service.service || 'Unknown service'));
+    const track = document.createElement('progress');
+    track.className = 'activity-bar-track';
+    track.max = maximum;
+    track.value = service.count;
+    track.setAttribute('aria-label', `${service.service || 'Unknown service'} logged votes`);
+    row.append(track, text(document.createElement('span'), service.count));
+    voteActivity.append(row);
+  });
+}
+
+function operationLabel(operation) {
+  const configuration = operation.configuration || {};
+  if (configuration.domain === 'quick-setup') {
+    return ({'vote-site': 'Vote Site change', 'sync-vote-sites': 'Vote Site synchronization',
+      'reward-builder': 'Reward update', 'proxy-method': 'Proxy method change',
+      'vote-logging': 'Vote logging change'}[configuration.preset] || 'Guided setup change');
+  }
+  if (configuration.domain === 'file') return `${configuration.fileName || 'Configuration'} change`;
+  if (configuration.domain === 'proxy-routing') return 'Proxy routing change';
+  return 'Configuration operation';
+}
+
+function renderOverviewActivity() {
+  overviewActivity.replaceChildren();
+  if (operationHistoryItems.length === 0) {
+    text(overviewActivity, 'No retained configuration operations.');
+    return;
+  }
+  operationHistoryItems.slice(0, 5).forEach(operation => {
+    const item = document.createElement('article');
+    item.className = 'activity-item';
+    const results = Object.values(operation.results || {});
+    const targetCount = Object.keys(operation.nodeStates || {}).length || results.length;
+    const successful = results.filter(result => result?.success).length;
+    item.append(text(document.createElement('strong'), operationLabel(operation)));
+    const when = operation.createdAt ? new Date(operation.createdAt).toLocaleString() : 'Time unavailable';
+    item.append(text(document.createElement('small'), `${operationPhase(operation)} · ${successful}/${targetCount} targets successful · ${when}`));
+    overviewActivity.append(item);
+  });
+}
+
+function renderMetrics() {
+  const issueSummary = dashboardIssues();
+  const issues = issueSummary.items;
+  const selected = nodeIndex.get(selectedServerId);
+  const current = dashboardLoadedContext === dashboardContext();
+  const hasCritical = issueSummary.hasCritical;
+  const hasWarning = issueSummary.hasWarning;
+  const hasIncompleteInspection = Object.values(dashboardInspectionStatus)
+    .some(status => ['failed', 'incomplete'].includes(status));
+  const state = !selected ? 'Unavailable' : hasCritical ? 'Critical'
+    : !selected.online || !current || hasWarning || hasIncompleteInspection ? 'Warning' : 'Healthy';
+  text(metricHealth, state);
+  text(metricHealthDetail, !selected ? 'Choose a server' : !selected.online ? 'Control disconnected'
+    : !current ? 'Inspection not loaded' : hasCritical ? 'Immediate attention required'
+    : hasIncompleteInspection ? 'Dashboard data incomplete'
+    : hasWarning ? 'Review observed warnings' : 'No observed problems');
+  metricHealth.closest('article').className = selected ? state.toLowerCase() : '';
+  const votes24h = current ? finiteCount(dashboardVoteSummary24h?.total) : null;
+  text(metricVotesToday, votes24h == null ? '—' : votes24h);
+  const configured = current ? finiteCount(dashboardOverview?.configuredVoteSites) : null;
+  const enabled = current ? finiteCount(dashboardOverview?.enabledVoteSites) : null;
+  const siteCountsKnown = configured != null && enabled != null;
+  const allConfiguredSitesDisabled = siteCountsKnown && configured > 0 && enabled === 0;
+  const siteWarnings = current && Array.isArray(dashboardVoteSiteHealth?.sites)
+    ? dashboardVoteSiteHealth.sites.filter(site => site.status === 'SERVICE_SITE_MISSING').length
+      + dashboardVoteSiteHealth.detectedUnconfiguredServices.length
+      + dashboardVoteSiteHealth.unmatchedLoggedServices.length
+      + (allConfiguredSitesDisabled ? 1 : 0) : null;
+  text(metricVoteSites, !siteCountsKnown ? '—' : `${enabled}/${configured}`);
+  text(metricVoteSitesDetail, !siteCountsKnown ? 'Counts unavailable'
+    : `${enabled} enabled${siteWarnings == null ? '' : ` · ${siteWarnings} need attention`}`);
+  text(metricProxy, !current ? '—' : dashboardOverview?.proxyMode === false ? 'Standalone' : dashboardOverview?.proxyMethod || 'Unknown');
+  text(metricProxyDetail, !current ? 'Method unavailable' : dashboardOverview?.proxyMode === false
+    ? 'Proxy mode disabled' : proxyReportsFor(selectedServerId).length ? 'Proxy relationship reported' : 'No reporting proxy');
+  const logged30d = current ? finiteCount(dashboardVoteSummary30d?.total) : null;
+  text(metricLoggedEvents, logged30d == null ? '—' : logged30d);
+  const actionable = issueSummary.actionable;
+  text(metricIssues, actionable);
+  text(metricIssuesDetail, actionable ? `${actionable} actionable` : 'No observed problems');
+  renderAttention(issues, issueSummary.total);
+  renderQuickActions();
+  renderVoteActivity();
+  renderOverviewActivity();
+}
+
+function finiteCount(value) {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function syncSourceCandidates() {
@@ -1771,7 +2602,7 @@ function updateSetupChecklist(overview = lastOverview) {
   const states = [
     Boolean(node?.online && isBackend(node)),
     Boolean(overview && typeof overview.proxyMode === 'boolean'),
-    Boolean(overview && Number.isFinite(Number(overview.configuredVoteSites))),
+    Boolean(overview && Number.isSafeInteger(overview.configuredVoteSites) && overview.configuredVoteSites >= 0),
     Boolean(overview?.processRewards),
     Boolean(overview?.dataStorage && !loggingRestartPending
       && (!overview.voteLoggingEnabled || overview.voteLogReadable === true)),
@@ -1804,6 +2635,7 @@ function updateExtendedButtons() {
     && configurationOperationsInFlight === 0;
   const fileTargets = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
   const driftReady = authenticated && fileTargets.length >= 2 && configurationOperationsInFlight === 0;
+  refreshDashboardButton.disabled = !authenticated || inspectionInFlight || dashboardLoading;
   runNetworkDoctor.disabled = !inspectionReady;
   downloadNetworkDiagnostics.disabled = !lastDiagnostics;
   refreshSetupChecklist.disabled = !inspectionReady;
@@ -1837,6 +2669,7 @@ function updateExtendedButtons() {
   rewardSimulationCapability.className = `pill ${rewardReady ? 'online' : 'neutral'}`;
   text(driftCapability, driftReady ? `${fileTargets.length} selected nodes ready` : 'Select at least two readable nodes');
   driftCapability.className = `pill ${driftReady ? 'online' : 'neutral'}`;
+  updateHeaderAction(tabFromHash());
   updateSetupChecklist();
 }
 
@@ -1855,6 +2688,21 @@ function renderNodeViews() {
   renderTransportTest();
   renderProxyMethod();
   updateExtendedButtons();
+}
+
+function selectNodePage(offset) {
+  pageOffset = Math.max(0, offset);
+  visibleNodeItems = allNodeItems.slice(pageOffset, pageOffset + PAGE_SIZE);
+  const first = visibleNodeItems.length === 0 ? 0 : pageOffset + 1;
+  const last = pageOffset + visibleNodeItems.length;
+  const pageMeta = nodePageMetadata.get(pageOffset);
+  const backendLimit = pageMeta?.backendItemsTruncated
+    ? ` Backend summaries are limited to ${pageMeta.backendItemsReturned} entries on this page.` : '';
+  text(message, visibleNodeItems.length === 0 ? 'No nodes on this page.'
+    : `Showing nodes ${first}–${last}.${backendLimit}`);
+  text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);
+  previousPage.disabled = pageOffset === 0;
+  nextPage.disabled = pageOffset + visibleNodeItems.length >= allNodeItems.length;
 }
 
 function routingDraftStatus(status) {
@@ -1898,6 +2746,13 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   lastFileReadOperation = null;
   lastDiagnostics = null;
   lastOverview = null;
+  dashboardOverview = null;
+  dashboardVoteSiteHealth = null;
+  dashboardVoteSummary24h = null;
+  dashboardVoteSummary30d = null;
+  dashboardLoadedContext = '';
+  dashboardInspectionStatus = emptyDashboardInspectionStatus();
+  dashboardTopologySignature = '';
   downloadNetworkDiagnostics.disabled = true;
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
@@ -1928,10 +2783,15 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   quickPreset.value = preset;
   updateQuickFields();
   text(quickOperationStatus, reason);
+  renderMetrics();
 }
 
 function selectPrimaryServer(nodeId) {
   if (nodeId && !nodeIndex.has(nodeId)) return;
+  if (nodeId && nodeId === selectedServerId) {
+    serverPicker.value = selectedServerId;
+    return;
+  }
   if (nodeId !== selectedServerId && !confirmDiscardUnsavedConfiguration('switching servers')) {
     serverPicker.value = selectedServerId;
     return;
@@ -1943,6 +2803,7 @@ function selectPrimaryServer(nodeId) {
   resetServerContextValues('Server changed. Load current values before continuing.');
   updatePluginSuggestions();
   renderNodeViews();
+  void autoLoadTab(tabFromHash());
 }
 
 function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 || proxyMethodWorkflowInFlight) {
@@ -2110,6 +2971,13 @@ function discardAuthenticationState(reason) {
   loadedQuickSetup = null;
   inputGeneration++;
   logout.hidden = true;
+  sidebarToggle.hidden = true;
+  globalSearch.hidden = true;
+  syncTopbarOffset();
+  globalSearchInput.value = '';
+  globalSearchOptions.replaceChildren();
+  headerAction.hidden = true;
+  closeSidebar();
   appShell.hidden = true;
   serverPickerLabel.hidden = true;
   welcome.hidden = false;
@@ -2132,7 +3000,17 @@ function discardAuthenticationState(reason) {
   lastFileReadOperation = null;
   lastDiagnostics = null;
   lastOverview = null;
+  dashboardOverview = null;
+  dashboardVoteSiteHealth = null;
+  dashboardVoteSummary24h = null;
+  dashboardVoteSummary30d = null;
+  dashboardLoadedContext = '';
+  dashboardInspectionStatus = emptyDashboardInspectionStatus();
+  dashboardTopologySignature = '';
   operationHistoryItems = [];
+  observedServerConfigurationGeneration = null;
+  operationHistoryStatus = 'not-loaded';
+  enrollmentStatus = 'not-loaded';
   dedicatedSetupApprovals.clear();
   voteLoggingRestartPending.clear();
   pendingDetectedVoteSite = null;
@@ -2157,6 +3035,7 @@ function discardAuthenticationState(reason) {
   routingDirty = false;
   routingDraftNodeId = '';
   autoLoadInFlight.clear();
+  autoLoadPending.clear();
   quickSetupForm.reset();
   resetDedicatedSetupValues();
   rewardSimulationForm.reset();
@@ -2288,6 +3167,23 @@ function operationContextCurrent(context) {
     && context.selectedSessionId === nodeIndex.get(context.selectedServerId)?.sessionId;
 }
 
+function invalidateConfigurationReads() {
+  fileReadCache.clear();
+  lastFileReadOperation = null;
+  clearApprovals();
+  loadedQuickSetup = null;
+  if (!configurationDirty) {
+    configurationContent.value = '';
+    configurationContentPresent = false;
+    text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');
+  }
+  lastOverview = null;
+  lastDiagnostics = null;
+  dashboardConfigurationGeneration++;
+  invalidateDashboardInspection();
+  updateExtendedButtons();
+}
+
 async function waitForOperation(operation, statusElement = operationStatus, context = operationContext()) {
   if (operationContextCurrent(context)) text(statusElement, operationSummary(operation));
   rememberOperation(operation);
@@ -2302,21 +3198,21 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
     text(statusElement, `${operationSummary(operation)}\nThe apply completed, but newer unsaved proxy-routing edits remain. Preview again before applying them.`);
   }
   rememberVoteLoggingRestart(operation);
-  if (operation.type === 'APPLY' && Object.values(operation.results || {}).some(result => result?.success)) {
-    fileReadCache.clear();
-    lastFileReadOperation = null;
-  }
-  if (operationContextCurrent(context) && operation.type === 'APPLY'
-      && Object.values(operation.results || {}).some(result => result?.success)) {
-    lastOverview = null;
-    lastDiagnostics = null;
-    updateExtendedButtons();
+  const applied = operation.type === 'APPLY'
+    && Object.values(operation.results || {}).some(result => result?.success);
+  if (applied) {
+    invalidateConfigurationReads();
+    if (tabFromHash() === 'overview') {
+      text(dataOverview, 'Configuration changed; refreshing server overview…');
+      window.setTimeout(() => void autoLoadTab('overview'), 0);
+    }
   }
   return operation;
 }
 
 async function startConfigurationOperation(path, body, statusElement = operationStatus) {
-  if (path.endsWith('/apply')) {
+  const applyOperation = path.endsWith('/apply');
+  if (applyOperation) {
     approvedPreview = null;
     approvedFilePreview = null;
     approvedQuickPreview = null;
@@ -2342,14 +3238,21 @@ async function loadEnrollments() {
   if (!authenticated) return;
   if (enrollmentInFlight) {
     enrollmentRefreshRequested = true;
-    return;
+    if (!enrollmentRefreshPromise) {
+      enrollmentRefreshPromise = new Promise(resolve => { enrollmentRefreshResolve = resolve; });
+    }
+    return enrollmentRefreshPromise;
   }
   enrollmentInFlight = true;
+  const enrollmentGeneration = authenticationGeneration;
+  enrollmentStatus = 'loading';
   refreshEnrollments.disabled = true;
   try {
     const body = await authorized('/api/v1/enrollments');
+    if (!authenticated || enrollmentGeneration !== authenticationGeneration) return;
     enrollmentIds = new Set(Array.isArray(body.nodeIds) ? body.nodeIds : []);
     enrollmentsLoaded = true;
+    enrollmentStatus = 'available';
     if (allNodeItems.length) renderNodeViews();
     enrollmentList.replaceChildren();
     if (!Array.isArray(body.nodeIds) || body.nodeIds.length === 0) {
@@ -2383,7 +3286,9 @@ async function loadEnrollments() {
       enrollmentList.append(item);
     });
   } catch (error) {
+    if (!authenticated || enrollmentGeneration !== authenticationGeneration) return;
     enrollmentsLoaded = false;
+    enrollmentStatus = 'failed';
     if (allNodeItems.length) renderNodeViews();
     text(enrollmentMessage, error.message || 'Enrollments could not be loaded.');
   } finally {
@@ -2392,6 +3297,10 @@ async function loadEnrollments() {
     const refreshAgain = enrollmentRefreshRequested && authenticated;
     enrollmentRefreshRequested = false;
     if (refreshAgain) await loadEnrollments();
+    const resolveRefresh = enrollmentRefreshResolve;
+    enrollmentRefreshPromise = null;
+    enrollmentRefreshResolve = null;
+    if (resolveRefresh) resolveRefresh();
   }
 }
 
@@ -2437,7 +3346,7 @@ async function loadAllNodes() {
   throw new Error('Node registry could not be loaded consistently. Try refreshing again.');
 }
 
-async function loadNodes() {
+async function loadNodesOnce() {
   if (!authenticated) return;
   refresh.disabled = true;
   previousPage.disabled = true;
@@ -2446,8 +3355,10 @@ async function loadNodes() {
   try {
     const registry = await loadAllNodes();
     const previousNodeIndex = nodeIndex;
-    visibleNodeItems = registry.items.slice(pageOffset, pageOffset + PAGE_SIZE);
     allNodeItems = registry.items;
+    nodePageMetadata = registry.pageMetadata;
+    selectNodePage(pageOffset);
+    dashboardTopologySignature = topologySignature(registry.items);
     backendTopologyTruncated = registry.truncated;
     backendTopologyTruncatedNodeIds = registry.truncatedNodeIds;
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
@@ -2474,6 +3385,12 @@ async function loadNodes() {
       dedicatedSetupApprovals.clear();
       lastOverview = null;
       lastDiagnostics = null;
+      dashboardOverview = null;
+      dashboardVoteSiteHealth = null;
+      dashboardVoteSummary24h = null;
+      dashboardVoteSummary30d = null;
+      dashboardLoadedContext = '';
+      dashboardInspectionStatus = emptyDashboardInspectionStatus();
       inputGeneration++;
       text(operationStatus, routingDraftStatus('A selected node changed capabilities during refresh. Preview again before apply.'));
     }
@@ -2522,20 +3439,11 @@ async function loadNodes() {
     renderNodeViews();
     updatePluginSuggestions();
     updateConfigurationButtons();
-    const first = visibleNodeItems.length === 0 ? 0 : pageOffset + 1;
-    const last = pageOffset + visibleNodeItems.length;
-    const pageMeta = registry.pageMetadata.get(pageOffset);
-    const backendLimit = pageMeta?.backendItemsTruncated
-      ? ` Backend summaries are limited to ${pageMeta.backendItemsReturned} entries on this page.` : '';
-    text(message, visibleNodeItems.length === 0 ? 'No nodes on this page.'
-      : `Showing nodes ${first}–${last}.${backendLimit}`);
-    text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);
-    previousPage.disabled = pageOffset === 0;
-    nextPage.disabled = pageOffset + visibleNodeItems.length >= registry.items.length;
-    void autoLoadTab(tabFromHash());
+    if (suppressNodeAutoLoad === 0) void autoLoadTab(tabFromHash());
   } catch (error) {
     visibleNodeItems = [];
     allNodeItems = [];
+    nodePageMetadata = new Map();
     backendTopologyTruncated = false;
     nodeIndex.clear();
     nodeCapabilities.clear();
@@ -2551,6 +3459,37 @@ async function loadNodes() {
     text(message, error.message || 'Control request failed.');
   } finally {
     refresh.disabled = false;
+  }
+}
+
+async function loadNodes() {
+  if (nodeLoadInFlight) {
+    nodeLoadQueued = true;
+    if (!nodeLoadQueuedPromise) {
+      nodeLoadQueuedPromise = new Promise((resolve, reject) => {
+        nodeLoadQueuedResolve = resolve;
+        nodeLoadQueuedReject = reject;
+      });
+    }
+    return nodeLoadQueuedPromise;
+  }
+  const load = loadNodesOnce();
+  nodeLoadInFlight = load;
+  updateHeaderAction(tabFromHash());
+  try {
+    return await load;
+  } finally {
+    if (nodeLoadInFlight === load) nodeLoadInFlight = null;
+    updateHeaderAction(tabFromHash());
+    if (nodeLoadQueued) {
+      nodeLoadQueued = false;
+      const resolveQueued = nodeLoadQueuedResolve;
+      const rejectQueued = nodeLoadQueuedReject;
+      nodeLoadQueuedPromise = null;
+      nodeLoadQueuedResolve = null;
+      nodeLoadQueuedReject = null;
+      loadNodes().then(resolveQueued, rejectQueued);
+    }
   }
 }
 
@@ -2724,12 +3663,13 @@ applyConfiguration.addEventListener('click', async () => {
   if (!approvedPreview || !window.confirm('Apply this exact preview to every selected proxy? Each node may still reject a stale revision.')) return;
   const approval = approvedPreview;
   approvedPreview = null;
-  const applyGeneration = inputGeneration + 1;
+  const submittedProposal = JSON.stringify({proposal: proposal(), nodeIds: approval.nodeIds});
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     });
-    if (operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration) {
+    const currentProposal = JSON.stringify({proposal: proposal(), nodeIds: targets('config.proxy-routing.v1')});
+    if (operation.state === 'SUCCEEDED' && submittedProposal === currentProposal) {
       routingDirty = false;
       routingDraftNodeId = '';
     }
@@ -2847,13 +3787,17 @@ applyFileConfiguration.addEventListener('click', async () => {
       || !window.confirm(`Apply this exact ${configurationFile.value} preview to ${fileTargetDescription()}?`)) return;
   const approval = approvedFilePreview;
   approvedFilePreview = null;
-  const applyGeneration = inputGeneration + 1;
+  const submittedFile = JSON.stringify({content: configurationContent.value, fileName: approval.fileName,
+    nodeIds: approval.nodeIds, sessions: approval.nodeIds.map(nodeId => approval.sessions.get(nodeId))});
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, fileOperationStatus);
-    text(fileOperationStatus, operationSummary(operation));
-    if (operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration) {
+    const currentFileTargets = fileTargetsForSelection(configurationFile.value);
+    const currentFile = JSON.stringify({content: configurationContent.value, fileName: configurationFile.value,
+      nodeIds: currentFileTargets, sessions: currentFileTargets.map(nodeId => nodeIndex.get(nodeId)?.sessionId)});
+    if (operation.state === 'SUCCEEDED' && submittedFile === currentFile) {
+      text(fileOperationStatus, operationSummary(operation));
       fileReadCache.clear();
       lastFileReadOperation = null;
       configurationDirty = false;
@@ -2861,6 +3805,10 @@ applyFileConfiguration.addEventListener('click', async () => {
       configurationDraftSessionId = '';
       configurationDraftFileName = '';
       updateExtendedButtons();
+    } else if (operation.state === 'SUCCEEDED') {
+      text(fileOperationStatus, `${operationSummary(operation)}\nThe apply completed, but newer unsaved file edits remain. Preview again before applying them.`);
+    } else {
+      text(fileOperationStatus, operationSummary(operation));
     }
   } catch (error) { text(fileOperationStatus, error.message); }
 });
@@ -3031,12 +3979,18 @@ applyQuickSetup.addEventListener('click', async () => {
   if (!approvedQuickPreview || !window.confirm(confirmation)) return;
   const approval = approvedQuickPreview;
   approvedQuickPreview = null;
-  inputGeneration++;
+  const submittedQuickSetup = JSON.stringify({preset: quickPreset.value, options: quickOptions(),
+    nodeIds: approval.nodeIds, sourceId: approval.sourceId || ''});
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, quickOperationStatus);
-    text(quickOperationStatus, operationSummary(operation));
+    const currentNodeIds = sync ? selectedVoteSitesTargets() : targets('config.quick-setup.v1');
+    const currentQuickSetup = JSON.stringify({preset: quickPreset.value, options: quickOptions(),
+      nodeIds: currentNodeIds, sourceId: sync ? voteSitesSourceId : ''});
+    text(quickOperationStatus, operation.state === 'SUCCEEDED' && submittedQuickSetup !== currentQuickSetup
+      ? `${operationSummary(operation)}\nThe apply completed, but newer guided setup edits remain. Preview again before applying them.`
+      : operationSummary(operation));
   } catch (error) { text(quickOperationStatus, error.message); }
 });
 
@@ -3226,6 +4180,7 @@ async function loadDedicatedSetup(preset) {
 async function previewDedicatedSetup(preset) {
   dedicatedSetupApprovals.delete(preset);
   const elements = dedicatedSetupElements(preset);
+  const previewGeneration = inputGeneration;
   try {
     const nodeIds = backendQuickTargets();
     const options = dedicatedSetupOptions(preset);
@@ -3233,7 +4188,8 @@ async function previewDedicatedSetup(preset) {
     const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
       nodeIds, configuration: {domain: 'quick-setup', preset, options}
     }, elements.status);
-    if (signature !== JSON.stringify({nodeIds: backendQuickTargets(), options: dedicatedSetupOptions(preset)})) {
+    if (previewGeneration !== inputGeneration
+        || signature !== JSON.stringify({nodeIds: backendQuickTargets(), options: dedicatedSetupOptions(preset)})) {
       text(elements.status, 'The target scope or setup value changed while previewing. Preview again.');
     } else if (operation.state === 'SUCCEEDED' && operation.approvalToken) {
       dedicatedSetupApprovals.set(preset, {operationId: operation.operationId,
@@ -3250,11 +4206,16 @@ async function applyDedicatedSetup(preset) {
   if (!approval || !window.confirm(`Apply the exact ${preset} preview to every selected Bukkit node?${restart}`)) return;
   dedicatedSetupApprovals.delete(preset);
   const elements = dedicatedSetupElements(preset);
+  const submittedOptions = JSON.stringify(dedicatedSetupOptions(preset));
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, elements.status);
-    if (operation.state === 'SUCCEEDED') {
+    const currentTargets = backendQuickTargets();
+    const inputsCurrent = submittedOptions === JSON.stringify(dedicatedSetupOptions(preset))
+      && currentTargets.length === approval.nodeIds.length
+      && approval.nodeIds.every(nodeId => currentTargets.includes(nodeId));
+    if (operation.state === 'SUCCEEDED' && inputsCurrent) {
       fileReadCache.clear();
       if (preset === 'auto-create-vote-sites') {
         text(elements.state, autoSitesEnabled.checked ? 'Enabled on selected' : 'Disabled on selected');
@@ -3264,6 +4225,8 @@ async function applyDedicatedSetup(preset) {
         elements.state.className = 'pill neutral';
       }
       lastOverview = null;
+    } else if (operation.state === 'SUCCEEDED') {
+      text(elements.status, `${operationSummary(operation)}\nThe apply completed, but newer setup edits remain. Preview again before applying them.`);
     }
   } catch (error) { text(elements.status, error.message); }
   updateExtendedButtons();
@@ -3296,11 +4259,23 @@ applyVoteLogging.addEventListener('click', () => applyDedicatedSetup('vote-loggi
 [autoSitesEnabled, voteLoggingEnabled, voteLoggingDays, voteLoggingMainMysql].forEach(field => {
   field.addEventListener('input', () => {
     dedicatedSetupApprovals.delete(field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging');
+    inputGeneration++;
     updateExtendedButtons();
   });
 });
 
+function invalidateDashboardInspection() {
+  dashboardOverview = null;
+  dashboardVoteSiteHealth = null;
+  dashboardVoteSummary24h = null;
+  dashboardVoteSummary30d = null;
+  dashboardLoadedContext = '';
+  dashboardInspectionStatus = emptyDashboardInspectionStatus();
+  renderMetrics();
+}
+
 async function refreshOverview(target = dataOverview) {
+  invalidateDashboardInspection();
   try {
     const envelope = await runInspection('overview', {}, target);
     lastOverview = {...(lastOverview || {}), ...envelope.result};
@@ -3309,10 +4284,122 @@ async function refreshOverview(target = dataOverview) {
   } catch (error) { text(target, error.message); }
 }
 
+async function refreshDashboard() {
+  if (dashboardLoading || inspectionInFlight) {
+    renderMetrics();
+    return;
+  }
+  dashboardLoading = true;
+  inspectionInFlight = true;
+  refreshDashboardButton.disabled = true;
+  updateExtendedButtons();
+  suppressNodeAutoLoad++;
+  try {
+    await loadNodes();
+  } finally {
+    suppressNodeAutoLoad--;
+  }
+  await Promise.all([loadEnrollments(), loadOperationHistory()]);
+  if (!inspectionCapableNode()) {
+    dashboardLoading = false;
+    inspectionInFlight = false;
+    renderMetrics();
+    updateExtendedButtons();
+    return;
+  }
+  const requestedContext = dashboardContext();
+  dashboardLoadedContext = '';
+  lastOverview = null;
+  text(dataOverview, 'Refreshing server overview…');
+  updateSetupChecklist();
+  dashboardOverview = null;
+  dashboardVoteSiteHealth = null;
+  dashboardVoteSummary24h = null;
+  dashboardVoteSummary30d = null;
+  dashboardInspectionStatus = {overview: 'loading', voteSiteHealth: 'loading',
+    voteLog24h: 'not-required', voteLog30d: 'not-required'};
+  text(attentionFeed, 'Inspecting the selected VotingPlugin server…');
+  try {
+    const overviewEnvelope = await runInspection('overview', {}, null, {manageBusy: false});
+    if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
+    const overview = normalizeDashboardOverview(overviewEnvelope.result);
+    dashboardOverview = overview.result;
+    dashboardInspectionStatus.overview = overview.incomplete ? 'incomplete' : 'available';
+    lastOverview = dashboardOverview;
+    renderJsonResult(dataOverview, dashboardOverview);
+    updateSetupChecklist(lastOverview);
+    try {
+      const healthEnvelope = await runInspection('vote-site-health', {days: '30'}, null, {manageBusy: false});
+      if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
+      const health = normalizeDashboardVoteSiteHealth(healthEnvelope.result);
+      dashboardVoteSiteHealth = health.result;
+      const healthIncomplete = health.incomplete
+        || dashboardHealthContradictsOverview(dashboardOverview, health.result);
+      dashboardInspectionStatus.voteSiteHealth = healthIncomplete ? 'incomplete' : 'available';
+    } catch (error) {
+      if (requestedContext !== dashboardContext()) throw error;
+      dashboardVoteSiteHealth = null;
+      dashboardInspectionStatus.voteSiteHealth = 'failed';
+    }
+    if (dashboardOverview.voteLogReadable === true) {
+      dashboardInspectionStatus.voteLog24h = 'loading';
+      dashboardInspectionStatus.voteLog30d = 'loading';
+      try {
+        const summaryEnvelope = await runInspection('vote-log-summary', {days: '1'}, null, {manageBusy: false});
+        if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
+        const summary = normalizeDashboardVoteSummary(summaryEnvelope.result, 1);
+        dashboardVoteSummary24h = summary.result;
+        dashboardInspectionStatus.voteLog24h = summary.incomplete ? 'incomplete' : 'available';
+      } catch (error) {
+        if (requestedContext !== dashboardContext()) throw error;
+        dashboardVoteSummary24h = null;
+        dashboardInspectionStatus.voteLog24h = 'failed';
+      }
+      try {
+        const summaryEnvelope = await runInspection('vote-log-summary', {days: '30'}, null, {manageBusy: false});
+        if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');
+        const summary = normalizeDashboardVoteSummary(summaryEnvelope.result);
+        dashboardVoteSummary30d = summary.result;
+        dashboardInspectionStatus.voteLog30d = summary.incomplete ? 'incomplete' : 'available';
+      } catch (error) {
+        if (requestedContext !== dashboardContext()) throw error;
+        dashboardVoteSummary30d = null;
+        dashboardInspectionStatus.voteLog30d = 'failed';
+      }
+      if (dashboardVoteSummariesContradict(dashboardVoteSummary24h, dashboardVoteSummary30d)) {
+        dashboardInspectionStatus.voteLog24h = 'incomplete';
+        dashboardInspectionStatus.voteLog30d = 'incomplete';
+      }
+      if (dashboardHealthContradictsVoteSummary(dashboardVoteSiteHealth, dashboardVoteSummary30d)) {
+        dashboardInspectionStatus.voteSiteHealth = 'incomplete';
+        dashboardInspectionStatus.voteLog30d = 'incomplete';
+      }
+    }
+    const complete = Object.values(dashboardInspectionStatus)
+      .every(status => ['available', 'not-required'].includes(status));
+    if (requestedContext === dashboardContext() && complete) dashboardLoadedContext = requestedContext;
+  } catch (error) {
+    if (requestedContext === dashboardContext()) {
+      dashboardLoadedContext = '';
+      dashboardInspectionStatus.overview = 'failed';
+      text(attentionFeed, error.message || 'Dashboard inspection failed.');
+    }
+  } finally {
+    dashboardLoading = false;
+    inspectionInFlight = false;
+    renderMetrics();
+    updateExtendedButtons();
+    if (requestedContext !== dashboardContext() && tabFromHash() === 'overview') {
+      window.setTimeout(() => void autoLoadTab('overview'), 0);
+    }
+  }
+}
+
 refreshSetupChecklist.addEventListener('click', async () => {
   try {
     const envelope = await runInspection('diagnostics', {}, setupChecklistStatus);
     lastOverview = envelope.result;
+    invalidateDashboardInspection();
     updateSetupChecklist(envelope.result);
   } catch (error) { text(setupChecklistStatus, error.message); }
 });
@@ -3324,17 +4411,20 @@ runNetworkDoctor.addEventListener('click', async () => {
   try {
     const diagnostics = await runInspection('diagnostics', {}, networkDoctorResults);
     lastOverview = diagnostics.result;
+    invalidateDashboardInspection();
     const node = nodeIndex.get(selectedServerId);
     const voteLog = diagnostics.result.voteLoggingEnabled !== true
       ? {state: 'DISABLED', message: 'Vote logging is disabled; no retained logged-event history is expected.'}
       : diagnostics.result.voteLogReadable === true
       ? {state: 'READABLE', message: 'Retained logged-event history is readable. It is not a guaranteed record of every internal vote-delivery hop.'}
       : {state: 'UNREADABLE', message: 'Vote logging is enabled, but retained logged-event history is not currently readable.'};
+    const configuredVoteSites = finiteCount(diagnostics.result.configuredVoteSites);
     const checks = {
       controlConnected: Boolean(node?.online),
       configurationHealthy: diagnostics.result.configurationHealthy,
       votifierDetected: diagnostics.result.votifierDetected,
-      voteSitesConfigured: Number(diagnostics.result.configuredVoteSites) > 0,
+      voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0,
+      voteSitesConfiguredKnown: configuredVoteSites != null,
       processRewards: diagnostics.result.processRewards,
       voteLogging: voteLog,
       topologyReported: isBackend(node) ? proxyReportsFor(node.nodeId).length > 0 || !diagnostics.result.proxyMode : true
@@ -3357,6 +4447,7 @@ downloadNetworkDiagnostics.addEventListener('click', () => {
 });
 
 runDriftCheck.addEventListener('click', async () => {
+  setConfigView('compare');
   const nodeIds = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
   const selectedFile = driftFile.value;
   const requestAuthenticationGeneration = authenticationGeneration;
@@ -3505,14 +4596,60 @@ playerLookupForm.addEventListener('submit', async event => {
 });
 
 loadSiteHealth.addEventListener('click', async () => {
-  try { renderSiteHealthResult((await runInspection('vote-site-health', {days: '30'}, siteHealthResult)).result); }
-  catch (error) { text(siteHealthResult, error.message); }
+  try {
+    const health = normalizeDashboardVoteSiteHealth(
+      (await runInspection('vote-site-health', {days: '30'}, siteHealthResult)).result);
+    dashboardVoteSiteHealth = health.result;
+    if (dashboardLoadedContext === dashboardContext()) {
+      const healthContradictsSummary = dashboardHealthContradictsVoteSummary(health.result, dashboardVoteSummary30d);
+      const healthIncomplete = health.incomplete
+        || dashboardHealthContradictsOverview(dashboardOverview, health.result) || healthContradictsSummary;
+      dashboardInspectionStatus.voteSiteHealth = healthIncomplete ? 'incomplete' : 'available';
+      if (healthContradictsSummary) dashboardInspectionStatus.voteLog30d = 'incomplete';
+      if (dashboardInspectionStatus.voteSiteHealth === 'incomplete') dashboardLoadedContext = '';
+    }
+    renderSiteHealthResult(health.result);
+    renderMetrics();
+  }
+  catch (error) {
+    if (dashboardLoadedContext === dashboardContext()) {
+      dashboardInspectionStatus.voteSiteHealth = 'failed';
+      dashboardLoadedContext = '';
+    }
+    text(siteHealthResult, error.message);
+    renderMetrics();
+  }
 });
 
 loadVoteLogSummary.addEventListener('click', async () => {
-  try { renderJsonResult(voteLogSummaryResult,
-    (await runInspection('vote-log-summary', {days: '30'}, voteLogSummaryResult)).result); }
-  catch (error) { text(voteLogSummaryResult, error.message); }
+  try {
+    const summary = normalizeDashboardVoteSummary(
+      (await runInspection('vote-log-summary', {days: '30'}, voteLogSummaryResult)).result);
+    dashboardVoteSummary30d = summary.result;
+    if (dashboardLoadedContext === dashboardContext()) {
+      const summariesContradict = dashboardVoteSummariesContradict(
+        dashboardVoteSummary24h, dashboardVoteSummary30d);
+      const healthContradictsSummary = dashboardHealthContradictsVoteSummary(
+        dashboardVoteSiteHealth, dashboardVoteSummary30d);
+      dashboardInspectionStatus.voteLog30d = summary.incomplete || summariesContradict || healthContradictsSummary
+        ? 'incomplete' : 'available';
+      if (summariesContradict) {
+        dashboardInspectionStatus.voteLog24h = 'incomplete';
+      }
+      if (healthContradictsSummary) dashboardInspectionStatus.voteSiteHealth = 'incomplete';
+      if (summary.incomplete || summariesContradict || healthContradictsSummary) dashboardLoadedContext = '';
+    }
+    renderJsonResult(voteLogSummaryResult, summary.result);
+    renderMetrics();
+  }
+  catch (error) {
+    if (dashboardLoadedContext === dashboardContext()) {
+      dashboardInspectionStatus.voteLog30d = 'failed';
+      dashboardLoadedContext = '';
+    }
+    text(voteLogSummaryResult, error.message);
+    renderMetrics();
+  }
 });
 
 voteLogFilterType.addEventListener('change', () => {
@@ -3570,6 +4707,7 @@ rewardSimulationForm.addEventListener('submit', async event => {
 });
 previewReward.addEventListener('click', async () => {
   dedicatedSetupApprovals.delete('reward-builder');
+  const previewGeneration = inputGeneration;
   try {
     const proposal = JSON.stringify(rewardProposal());
     if (new TextEncoder().encode(proposal).length > 64 * 1024) throw new Error('Reward proposal exceeds the 64 KiB limit.');
@@ -3579,7 +4717,8 @@ previewReward.addEventListener('click', async () => {
       nodeIds,
       configuration: {domain: 'quick-setup', preset: 'reward-builder', options: {proposal}}
     }, rewardSimulationResult);
-    if (signature !== JSON.stringify({nodeIds: backendQuickTargets(), proposal: JSON.stringify(rewardProposal())})) {
+    if (previewGeneration !== inputGeneration
+        || signature !== JSON.stringify({nodeIds: backendQuickTargets(), proposal: JSON.stringify(rewardProposal())})) {
       text(rewardSimulationResult, 'The target scope or reward changed while previewing. Preview again.');
     } else if (operation.state === 'SUCCEEDED' && operation.approvalToken) {
       dedicatedSetupApprovals.set('reward-builder', {operationId: operation.operationId,
@@ -3592,17 +4731,24 @@ applyReward.addEventListener('click', async () => {
   const approval = dedicatedSetupApprovals.get('reward-builder');
   if (!approval || !window.confirm('Apply this exact reward preview to every selected Bukkit node? It replaces the selected Rewards subtree; sibling sites, scopes, and settings remain unchanged.')) return;
   dedicatedSetupApprovals.delete('reward-builder');
+  const submittedReward = JSON.stringify({proposal: rewardProposal(), nodeIds: approval.nodeIds});
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, rewardSimulationResult);
-    if (operation.state === 'SUCCEEDED') fileReadCache.clear();
+    const currentReward = JSON.stringify({proposal: rewardProposal(), nodeIds: backendQuickTargets()});
+    if (operation.state === 'SUCCEEDED' && submittedReward === currentReward) {
+      fileReadCache.clear();
+    } else if (operation.state === 'SUCCEEDED') {
+      text(rewardSimulationResult, `${operationSummary(operation)}\nThe apply completed, but newer reward edits remain. Preview again before applying them.`);
+    }
   } catch (error) { text(rewardSimulationResult, error.message); }
   updateExtendedButtons();
 });
 [rewardScope, rewardSite, rewardChance, rewardMoney, rewardCommands, rewardMessages, rewardBroadcasts,
   rewardPermissions, rewardItems, rewardOnlineOnly].forEach(field => field.addEventListener('input', () => {
     dedicatedSetupApprovals.delete('reward-builder');
+    inputGeneration++;
     copyRewardToSetup.disabled = boundedLines(rewardCommands.value).length === 0;
     updateExtendedButtons();
   }));
@@ -3617,7 +4763,7 @@ copyRewardToSetup.addEventListener('click', () => {
   quickMessage.value = boundedLines(rewardMessages.value)[0] || '';
   updateQuickFields();
   clearApprovals();
-  document.querySelector('#quick-setup-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+  scrollToAnchor(document.querySelector('#quick-setup-card'));
 });
 
 settingsFilter.addEventListener('input', renderSettingsCatalog);
@@ -3741,10 +4887,13 @@ quickPreset.addEventListener('input', () => {
   }
 });
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
-tabButtons.forEach(button => button.addEventListener('click', () => setActiveTab(button.dataset.tab, true)));
+tabButtons.forEach(button => button.addEventListener('click', () => {
+  if (button.dataset.configShortcut) setConfigView(button.dataset.configShortcut);
+  setActiveTab(button.dataset.tab, true);
+}));
 configViewButtons.forEach(button => button.addEventListener('click', () => setConfigView(button.dataset.configView)));
 document.querySelectorAll('[data-open-tab]').forEach(button => button.addEventListener('click', () => {
-  setActiveTab(button.dataset.openTab, true);
+  openWorkspace(button.dataset.openTab, button.dataset.scrollTarget, button.dataset.quickPreset, button);
 }));
 document.querySelectorAll('[data-open-config-view]').forEach(button => button.addEventListener('click', () => {
   setActiveTab('configurations', true);
@@ -3755,12 +4904,131 @@ document.querySelectorAll('[data-open-config-view]').forEach(button => button.ad
   }
 }));
 window.addEventListener('hashchange', () => setActiveTab(tabFromHash()));
+sidebarToggle.addEventListener('click', () => {
+  const open = document.body.classList.toggle('sidebar-open');
+  sidebarToggle.setAttribute('aria-expanded', String(open));
+  sidebarToggle.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+  if (open) primaryNavigation.querySelector('button')?.focus();
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.body.classList.contains('sidebar-open')) {
+    closeSidebar();
+    sidebarToggle.focus();
+    return;
+  }
+  if (event.key === 'Tab' && document.body.classList.contains('sidebar-open')
+      && window.matchMedia('(max-width: 920px)').matches) {
+    const focusable = navigationButtons.filter(button => !button.disabled);
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first?.focus();
+    }
+  }
+});
+document.addEventListener('click', event => {
+  if (!document.body.classList.contains('sidebar-open') || primaryNavigation.contains(event.target)
+      || sidebarToggle.contains(event.target)) return;
+  closeSidebar();
+});
+
+function populateGlobalSearch() {
+  const values = ['Add Vote Site', 'Vote Sites', 'Rewards', 'Setup', 'Settings', 'Vote logging',
+    'Servers', 'Proxy & Routing', 'Sync Vote Sites', 'Votes & Data', 'Activity', 'Network Doctor',
+    'Configuration Compare', 'Access', ...SETTINGS_SCHEMA.map(setting => setting.key),
+    ...allNodeItems.flatMap(node => [node.displayName, node.nodeId])];
+  const unique = [...new Set(values.filter(Boolean))].slice(0, 300);
+  globalSearchOptions.replaceChildren(...unique.map(value => {
+    const option = document.createElement('option');
+    option.value = value;
+    return option;
+  }));
+}
+
+const GLOBAL_PAGE_SHORTCUTS = new Map([
+  ['add vote site', {tab: 'quick-setup', scrollTarget: 'quick-setup-card', preset: 'vote-site'}],
+  ['vote sites', {tab: 'data', scrollTarget: 'site-health-card'}],
+  ['rewards', {tab: 'quick-setup', scrollTarget: 'reward-builder-card'}],
+  ['setup', {tab: 'quick-setup', scrollTarget: 'quick-setup-card'}],
+  ['settings', {tab: 'quick-setup', scrollTarget: 'settings-catalog-card'}],
+  ['vote logging', {tab: 'quick-setup', scrollTarget: 'quick-setup-card', preset: 'vote-logging'}],
+  ['servers', {tab: 'servers'}],
+  ['proxy & routing', {tab: 'network'}],
+  ['sync vote sites', {tab: 'quick-setup', scrollTarget: 'quick-setup-card', preset: 'sync-vote-sites'}],
+  ['votes & data', {tab: 'data'}],
+  ['activity', {tab: 'activity'}],
+  ['network doctor', {tab: 'network', scrollTarget: 'network-doctor-card'}],
+  ['configuration compare', {tab: 'configurations', configView: 'compare', scrollTarget: 'drift-results'}],
+  ['access', {tab: 'access'}]
+]);
+
+function openGlobalShortcut(destination) {
+  if (destination.configView) setConfigView(destination.configView);
+  openWorkspace(destination.tab, destination.scrollTarget || '', destination.preset || '');
+}
+
+globalSearch.addEventListener('submit', event => {
+  event.preventDefault();
+  const query = globalSearchInput.value.trim();
+  const normalized = query.toLowerCase();
+  if (!normalized) return;
+  const exactShortcut = GLOBAL_PAGE_SHORTCUTS.get(normalized);
+  if (exactShortcut) {
+    openGlobalShortcut(exactShortcut);
+    globalSearchInput.value = '';
+    return;
+  }
+  const node = allNodeItems.find(item => item.nodeId.toLowerCase() === normalized
+    || item.displayName.toLowerCase() === normalized)
+    || allNodeItems.find(item => item.nodeId.toLowerCase().includes(normalized)
+      || item.displayName.toLowerCase().includes(normalized));
+  if (node) {
+    const nodePosition = allNodeItems.indexOf(node);
+    selectNodePage(Math.floor(nodePosition / PAGE_SIZE) * PAGE_SIZE);
+    openWorkspace('servers');
+    selectPrimaryServer(node.nodeId);
+    // The same-server fast path intentionally avoids resetting drafts and does
+    // not render. Always paint the newly selected page slice after navigation.
+    renderNodeViews();
+    globalSearchInput.value = '';
+    return;
+  }
+  const setting = SETTINGS_SCHEMA.find(item => Object.values(item).join(' ').toLowerCase().includes(normalized));
+  if (setting) {
+    settingsFilter.value = query;
+    renderSettingsCatalog();
+    openWorkspace('quick-setup', 'settings-catalog-card');
+  } else if (normalized.includes('sync')) openWorkspace('quick-setup', 'quick-setup-card', 'sync-vote-sites');
+  else if (normalized.includes('reward')) openWorkspace('quick-setup', 'reward-builder-card');
+  else if (normalized.includes('vote site') || normalized.includes('service') || normalized.includes('planet')) openWorkspace('data', 'site-health-card');
+  else if (normalized.includes('vote logging')) openWorkspace('quick-setup', 'quick-setup-card', 'vote-logging');
+  else if (normalized.includes('doctor') || normalized.includes('diagnostic')) openWorkspace('network', 'network-doctor-card');
+  else if (['proxy', 'routing', 'redis', 'mqtt', 'mysql', 'sockets', 'transport'].some(value => normalized.includes(value))) openWorkspace('network');
+  else if (normalized.includes('compare') || normalized.includes('drift') || normalized.includes('configuration')) {
+    openGlobalShortcut(GLOBAL_PAGE_SHORTCUTS.get('configuration compare'));
+  }
+  else if (normalized.includes('vote') || normalized.includes('data') || normalized.includes('log')) openWorkspace('data');
+  else if (normalized.includes('activity') || normalized.includes('operation') || normalized.includes('history')) openWorkspace('activity');
+  else if (normalized.includes('server') || normalized.includes('topology')) openWorkspace('servers');
+  else if (normalized.includes('access') || normalized.includes('enroll')) openWorkspace('access');
+  else if (normalized.includes('setup')) openWorkspace('quick-setup');
+  else {
+    text(message, `No Control page or setting matched “${query}”.`);
+    return;
+  }
+  globalSearchInput.value = '';
+});
 window.addEventListener('beforeunload', event => {
   if (!configurationDirty && !routingDirty) return;
   event.preventDefault();
   event.returnValue = '';
 });
 refresh.addEventListener('click', loadNodes);
+refreshDashboardButton.addEventListener('click', () => refreshDashboard());
 previousPage.addEventListener('click', () => {
   pageOffset = Math.max(0, pageOffset - PAGE_SIZE);
   loadNodes();
@@ -3776,6 +5044,7 @@ async function initialize() {
   updateQuickFields();
   updatePluginSuggestions();
   renderSettingsCatalog();
+  populateGlobalSearch();
   populateProfilePicker();
   rewardSiteLabel.hidden = rewardScope.value !== 'site';
   updateExtendedButtons();

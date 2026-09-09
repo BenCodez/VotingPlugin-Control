@@ -74,6 +74,25 @@ class ControlHttpServerTest {
         assertEquals(200, script.statusCode());
 		assertTrue(script.body().contains("offset=${offset}&limit=${PAGE_SIZE}"));
         assertTrue(script.body().contains("async function loadAllNodes()"));
+        assertTrue(script.body().contains("let nodeLoadInFlight = null;"));
+        assertTrue(script.body().contains("async function loadNodesOnce()"));
+        assertTrue(script.body().contains("nodeLoadQueued = true;"));
+        assertTrue(script.body().contains("let nodeLoadQueuedPromise = null;"));
+        assertTrue(script.body().contains("return nodeLoadQueuedPromise;"),
+                "A queued registry refresh must remain awaitable by its caller.");
+        assertTrue(script.body().contains("loadNodes().then(resolveQueued, rejectQueued);"),
+                "A queued registry refresh must settle only after the follow-up pass completes.");
+        assertTrue(script.body().contains("let operationHistoryLoadInFlight = null;"));
+        assertTrue(script.body().contains("let operationHistoryLoadQueued = false;"));
+        assertTrue(script.body().contains("async function loadOperationHistoryOnce()"));
+        assertTrue(script.body().contains("while (operationHistoryLoadQueued && authenticated)"));
+        assertTrue(script.body().contains(": tab === 'servers' ? nodeLoadInFlight != null"));
+        assertTrue(script.body().contains("rootStyleRule?.['style'].setProperty('--topbar-height', `${height}px`)"));
+        assertTrue(script.body().contains("function scrollToAnchor(target)"));
+        assertTrue(script.body().contains("syncTopbarOffset();\n  target.scrollIntoView({behavior: 'smooth', block: 'start'});"));
+        assertTrue(script.body().contains("window.requestAnimationFrame(() => scrollToAnchor(document.getElementById(scrollTarget)))"));
+        assertTrue(script.body().contains("Math.max(topbarBounds.bottom, searchBounds.bottom)"));
+        assertTrue(script.body().contains("globalSearch.hidden = false;\n  syncTopbarOffset();"));
         assertTrue(script.body().contains("MAX_REGISTRY_SCAN_ATTEMPTS"));
         assertTrue(script.body().contains("&revision=${revision}"));
         assertTrue(script.body().contains("enrollmentIds.has(backend.backendId)"));
@@ -106,6 +125,35 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("loadEnrollments"));
         assertTrue(script.body().contains("enrollmentMutationInFlight"));
         assertTrue(script.body().contains("enrollmentRefreshRequested"));
+        assertTrue(script.body().contains("let enrollmentRefreshPromise = null;"),
+                "Enrollment callers must be able to await a refresh queued behind an in-flight request.");
+        assertTrue(script.body().contains("if (!enrollmentRefreshPromise) {"),
+                "Concurrent enrollment refresh callers must share one bounded waiter promise.");
+        assertTrue(script.body().contains("return enrollmentRefreshPromise;"),
+                "A queued enrollment refresh must not let dashboard inspection proceed on stale enrollment state.");
+        assertFalse(script.body().contains("enrollmentRefreshWaiters"),
+                "Enrollment refresh waiters must not grow without a bound.");
+        assertTrue(script.body().contains("const reportedBackends = new Map();"),
+                "Node-level topology warnings must be aggregated before rendering attention items.");
+        assertTrue(script.body().contains("is unavailable to ${proxy.displayName}"),
+                "Availability warnings must remain distinct for every reporting proxy.");
+        assertTrue(script.body().contains(
+                "if (nodeId && nodeId === selectedServerId) {\n    serverPicker.value = selectedServerId;\n    return;\n  }"),
+                "Selecting the current server again must not reset unsaved YAML or routing drafts.");
+        int primarySelector = script.body().indexOf("function selectPrimaryServer(nodeId)");
+        int sameServerGuard = script.body().indexOf(
+                "if (nodeId && nodeId === selectedServerId)", primarySelector);
+        assertTrue(primarySelector >= 0 && sameServerGuard > primarySelector
+                        && sameServerGuard < script.body().indexOf(
+                                "confirmDiscardUnsavedConfiguration('switching servers')", sameServerGuard)
+                        && sameServerGuard < script.body().indexOf("resetServerContextValues(", sameServerGuard),
+                "The same-server guard must run before any draft-discard confirmation or context reset.");
+        assertTrue(script.body().contains(
+                "const registeredBukkitBackend = registered?.platform === 'BUKKIT';"),
+                "A proxy or non-Bukkit registry node must not satisfy a proxy backend report.");
+        assertTrue(script.body().contains(
+                "if (enrollmentsLoaded && registeredBukkitBackend && !enrollmentIds.has(backend.backendId))"),
+                "Enrollment health must only be evaluated for a registered Bukkit backend.");
         assertTrue(script.body().contains("await loadEnrollments()"));
         assertTrue(script.body().contains("enrollmentSubmit.disabled = true"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
@@ -185,8 +233,53 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("previewConfiguration.disabled = !routingDraftReady;"));
         assertTrue(script.body().contains("applyConfiguration.disabled = !routingDraftReady || !approvedPreview;"));
         assertTrue(script.body().contains("Your unsaved proxy-routing draft is retained"));
-        assertTrue(script.body().contains("fileReadCache.clear();\n    lastFileReadOperation = null;\n  }\n  if (operationContextCurrent(context)"),
-                "Every successful apply must invalidate cached reads even after the view context changes.");
+        assertTrue(script.body().contains("function invalidateConfigurationReads() {\n  fileReadCache.clear();\n"
+                        + "  lastFileReadOperation = null;\n  clearApprovals();\n  loadedQuickSetup = null;\n"
+                        + "  if (!configurationDirty) {\n"
+                        + "    configurationContent.value = '';\n    configurationContentPresent = false;\n"
+                        + "    text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');\n"
+                        + "  }\n  lastOverview = null;\n  lastDiagnostics = null;\n"
+                        + "  dashboardConfigurationGeneration++;\n  invalidateDashboardInspection();"),
+                "Every successful apply must invalidate file and dashboard reads even after the view context changes.");
+        assertTrue(script.body().contains("function clearApprovals() {\n  approvedPreview = null;\n"
+                        + "  approvedFilePreview = null;\n  approvedQuickPreview = null;\n"
+                        + "  dedicatedSetupApprovals.clear();\n  inputGeneration++;\n  updateConfigurationButtons();"),
+                "External applies must invalidate every approval and fence delayed configuration responses.");
+        assertTrue(script.body().contains("const serverConfigurationGeneration = finiteCount(body.configurationGeneration);"));
+        assertTrue(script.body().contains("serverConfigurationGeneration > observedServerConfigurationGeneration"));
+        assertTrue(script.body().contains("Math.max(observedServerConfigurationGeneration, serverConfigurationGeneration)"),
+                "A delayed older response must not move the observed server generation backwards.");
+        assertTrue(script.body().contains("if (observedSuccessfulApply) invalidateConfigurationReads();"),
+                "Activity refreshes must invalidate cached health after observing an external successful apply.");
+        assertTrue(script.body().contains("if (applied) {\n    invalidateConfigurationReads();"),
+                "Locally completed applies must use the same cache invalidation path.");
+        assertTrue(script.body().contains("const submittedFile = JSON.stringify({content: configurationContent.value, fileName: approval.fileName,"));
+        assertTrue(script.body().contains("const currentFile = JSON.stringify({content: configurationContent.value, fileName: configurationFile.value,"));
+        assertTrue(script.body().contains("submittedFile === currentFile"),
+                "File apply completion must compare content, target scope, file, and node sessions.");
+        assertTrue(script.body().contains("The apply completed, but newer unsaved file edits remain. Preview again before applying them."),
+                "A file apply must not label edits made during polling as already saved.");
+        assertTrue(script.body().contains("const previewGeneration = inputGeneration;\n  try {\n    const nodeIds = backendQuickTargets();"));
+        assertTrue(script.body().contains("if (previewGeneration !== inputGeneration\n"
+                        + "        || signature !== JSON.stringify"),
+                "Dedicated previews completed after another apply must not restore stale approvals.");
+        assertTrue(script.body().contains("dedicatedSetupApprovals.delete(field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging');\n"
+                        + "    inputGeneration++;\n    updateExtendedButtons();"),
+                "Dedicated setup edits must fence delayed reads before they can overwrite newer input.");
+        assertTrue(script.body().contains("const submittedOptions = JSON.stringify(dedicatedSetupOptions(preset));"));
+        assertTrue(script.body().contains("const inputsCurrent = submittedOptions === JSON.stringify(dedicatedSetupOptions(preset))"));
+        assertTrue(script.body().contains("The apply completed, but newer setup edits remain. Preview again before applying them."),
+                "Dedicated apply results must not label newer form values as saved.");
+        assertTrue(script.body().contains("The apply completed, but newer guided setup edits remain. Preview again before applying them."));
+        assertTrue(script.body().contains("const submittedQuickSetup = JSON.stringify"));
+        assertTrue(script.body().contains("The apply completed, but newer reward edits remain. Preview again before applying them."));
+        assertTrue(script.body().contains("const submittedReward = JSON.stringify"));
+        assertTrue(script.body().contains("dedicatedSetupApprovals.delete('reward-builder');\n    inputGeneration++;"),
+                "Reward edits must fence delayed preview and apply results.");
+        assertTrue(script.body().contains("previewReward.addEventListener('click', async () => {\n"
+                        + "  dedicatedSetupApprovals.delete('reward-builder');\n"
+                        + "  const previewGeneration = inputGeneration;"),
+                "Reward previews must also be fenced when another apply invalidates their base revision.");
         assertTrue(script.body().contains("Drift results were discarded; run the comparison again."),
                 "A drift read completed for stale context must show an explicit discarded-result status.");
         assertTrue(script.body().contains("text(operationStatus, routingDraftStatus('The selected nodes changed during refresh."));
@@ -243,13 +336,358 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(".slice(0, MAX_PLAYER_LAST_VOTES)"));
         assertTrue(script.body().contains("if (!automatic) text(fileOperationStatus, error.message);"));
         assertTrue(script.body().contains("const cell = document.createElement('td');"));
-        assertTrue(script.body().contains("const applyGeneration = inputGeneration + 1;"));
-        assertTrue(script.body().contains("operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration"));
+        assertTrue(script.body().contains("const submittedProposal = JSON.stringify({proposal: proposal(), nodeIds: approval.nodeIds});"));
+        assertTrue(script.body().contains("const currentProposal = JSON.stringify({proposal: proposal(), nodeIds: targets('config.proxy-routing.v1')});"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
         HttpResponse<String> stylesheet = get("/app.css", null);
         assertEquals(200, stylesheet.statusCode());
-        assertTrue(stylesheet.body().contains(".tabs"));
+        assertTrue(stylesheet.body().contains(".sidebar"));
+        assertTrue(stylesheet.body().contains("--topbar-height: 76px"));
+        assertTrue(stylesheet.body().contains("[id] { scroll-margin-top: calc(var(--topbar-height) + 20px); }"),
+                "Anchored shortcuts must clear the dynamically measured sticky header on desktop and mobile.");
+        assertTrue(stylesheet.body().contains("top: calc(var(--topbar-height) + 24px)"));
+        assertTrue(stylesheet.body().contains("max-height: calc(100vh - var(--topbar-height) - 44px)"));
+		assertTrue(stylesheet.body().contains("@media (max-width: 1360px) and (min-width: 921px)"));
+		assertTrue(stylesheet.body().contains("@media (max-width: 480px)"),
+		        "The compact header must hide the brand before the 430px overflow range.");
+        assertTrue(stylesheet.body().contains(".topbar-actions { flex: 1 1 520px; min-width: 0; flex-wrap: wrap; }"));
+        assertFalse(stylesheet.body().contains("attr(data-topbar-height"));
+        assertTrue(stylesheet.body().contains("body::before { position: fixed; z-index: 25; top: var(--topbar-height)"));
+        assertTrue(stylesheet.body().contains(".sidebar { position: fixed; z-index: 30; top: var(--topbar-height)"));
+        assertTrue(web.body().contains("id=\"primary-navigation\""));
+        assertTrue(web.body().contains("id=\"attention-feed\""));
+        assertTrue(web.body().contains("id=\"global-search-input\""));
+        assertTrue(web.body().contains("Logged Votes · 30d"));
+        assertTrue(script.body().contains("async function refreshDashboard()"));
+        assertTrue(script.body().contains(
+                "dashboardLoading = true;\n  inspectionInFlight = true;\n  refreshDashboardButton.disabled = true;\n  updateExtendedButtons();\n  suppressNodeAutoLoad++"),
+                "Dashboard refresh must reserve the shared inspection lane before any awaited registry or metadata prefetch.");
+        assertTrue(script.body().contains(
+                "refreshDashboardButton.disabled = !authenticated || inspectionInFlight || dashboardLoading;"),
+                "Dashboard refresh must remain available to rediscover a reconnected inspection-capable node.");
+        assertTrue(script.body().contains(
+                "const unavailable = tab === 'overview' ? dashboardLoading || inspectionInFlight"),
+                "The overview header refresh must not be gated by stale cached node capabilities.");
+        assertTrue(script.body().contains("function dashboardIssues()"));
+        assertTrue(script.body().contains("operationHistoryStatus = 'failed';"));
+        assertTrue(script.body().contains("const historyGeneration = authenticationGeneration;"));
+        assertEquals(2, script.body().split(java.util.regex.Pattern.quote(
+                "if (!authenticated || historyGeneration !== authenticationGeneration) return;"), -1).length - 1,
+                "Delayed operation-history success and failure responses must not mutate a replaced session.");
+        assertTrue(script.body().contains("operationHistoryItems = [];\n    voteLoggingRestartPending = new Map();"),
+                "A failed history refresh must not leave stale operations or restart warnings on the dashboard.");
+        assertTrue(script.body().contains(
+                "text(operationHistory, error.message || 'Operation history could not be loaded.');\n    updateSetupChecklist();"),
+                "Clearing restart state after a failed history refresh must update the setup checklist.");
+        assertTrue(script.body().contains("if (operationHistoryStatus === 'failed') issues.push(issue('warning'"),
+                "Unavailable operation history must downgrade dashboard health.");
+        assertTrue(script.body().contains("let enrollmentStatus = 'not-loaded';"));
+        assertTrue(script.body().contains("enrollmentStatus = 'failed';"));
+        assertTrue(script.body().contains("if (enrollmentStatus === 'failed') issues.push(issue('warning'"),
+                "Unavailable enrollment state must downgrade dashboard health.");
+        assertTrue(script.body().contains("openWorkspace('activity');\n      return loadOperationHistory();"),
+                "Retry activity must reload operation history after navigating to its page.");
+        assertTrue(script.body().contains("openWorkspace('access');\n      return loadEnrollments();"),
+                "Retry access must reload enrollments after navigating to its page.");
+        assertTrue(script.body().contains("dashboardConfigurationGeneration++"));
+        assertTrue(script.body().contains("|${dashboardConfigurationGeneration}`"));
+        assertTrue(script.body().contains("Configuration changed; refreshing server overview"));
+        assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"));
+		assertTrue(script.body().contains("await loadNodes();\n  } finally {\n    suppressNodeAutoLoad--;\n  }\n  await Promise.all([loadEnrollments(), loadOperationHistory()]);\n  if (!inspectionCapableNode())"),
+				"Dashboard refresh must reload node connectivity before reloading metadata and checking inspection capability.");
+		assertTrue(script.body().contains("if (suppressNodeAutoLoad === 0) void autoLoadTab(tabFromHash());"),
+				"An internal dashboard registry refresh must not recursively queue another dashboard load.");
+		assertTrue(script.body().contains("await Promise.all([loadEnrollments(), loadOperationHistory()]);\n  if (!inspectionCapableNode()"),
+				"An explicit dashboard refresh must reload enrollments and operation history before inspections.");
+        assertTrue(script.body().contains("Object.keys(operation.nodeStates || {}).length || results.length"),
+                "Running-operation progress must count all targets, not only completed results.");
+        assertTrue(script.body().contains("runInspection('overview', {}, null, {manageBusy: false})"));
+        assertTrue(script.body().contains("inspectionInFlight = false;\n    renderMetrics();"),
+                "A dashboard refresh with no inspection-capable node must release the reserved lane.");
+        assertEquals(4, script.body().split(java.util.regex.Pattern.quote(
+                "if (requestedContext !== dashboardContext()) throw new Error('Dashboard context changed while inspecting.');"),
+                -1).length - 1);
+        assertFalse(web.body().contains("data-search-term="));
+        assertTrue(script.body().contains("result.enabledVoteSites > result.configuredVoteSites"));
+        assertTrue(script.body().contains("renderJsonResult(dataOverview, dashboardOverview);"));
+        assertTrue(script.body().contains("const summary = {items: [], total: 0, actionable: 0"));
+        assertTrue(script.body().contains("if (summary.items.length < 30) summary.items.push(item);"));
+        assertTrue(script.body().contains("const actionable = issueSummary.actionable;"));
+        assertTrue(script.body().contains("!selected.online || !current || hasWarning"));
+        assertFalse(script.body().contains("return issues.slice(0, 30);"));
+        assertTrue(script.body().contains(
+                "configurations: ['Compare configuration', () => {\n      setConfigView('compare');\n      runDriftCheck.click();"));
+        assertTrue(script.body().contains(
+                "dashboardLoadedContext = '';\n      dashboardInspectionStatus.overview = 'failed';"));
+        assertTrue(script.body().contains("if (requestedContext === dashboardContext() && complete)"));
+        assertTrue(script.body().contains("disconnected from Control"));
+        assertTrue(script.body().contains("disconnectedNodes.forEach(node => {"),
+                "Every disconnected registered node must contribute to the actionable issue total.");
+        assertFalse(script.body().contains("disconnectedNodes.slice(0, 10)"),
+                "Disconnected-node issue totals must not stop at the first ten nodes.");
+        assertTrue(script.body().contains(
+                "(Array.isArray(proxy.backends) ? proxy.backends : []).forEach(backend => {"),
+                "Dashboard topology health must inspect every backend returned by the bounded nodes API.");
+        assertFalse(script.body().contains(
+                "(Array.isArray(proxy.backends) ? proxy.backends : []).slice(0, 100).forEach(backend => {"),
+                "Dashboard topology health must not silently omit backend summaries after the first 100 rows.");
+        assertTrue(script.body().contains("document.createElement('progress')"));
+        assertTrue(script.body().contains("const count = hasCount ? finiteCount(entry.count) : hasVotes ? finiteCount(entry.votes) : null;"));
+        assertTrue(script.body().contains("Math.max(...services.map(service => service.count), 1)"));
+        assertTrue(script.body().contains("track.value = service.count;"));
+        assertFalse(script.body().contains("service.votes"));
+		assertTrue(script.body().contains("dashboardInspectionStatus.voteSiteHealth = 'failed';"));
+		assertTrue(script.body().contains("dashboardInspectionStatus.voteSiteHealth = 'failed';\n      dashboardLoadedContext = '';"));
+        assertTrue(script.body().contains("dashboardInspectionStatus.voteLog24h = 'failed';"));
+        assertTrue(script.body().contains("dashboardInspectionStatus.voteLog30d = 'failed';"));
+        assertTrue(script.body().contains("dashboardInspectionStatus.voteLog30d = 'failed';\n      dashboardLoadedContext = '';"));
+        assertTrue(script.body().contains("Some dashboard checks could not be verified"));
+        assertTrue(script.body().contains("!current || hasWarning || hasIncompleteInspection ? 'Warning' : 'Healthy'"));
+        assertTrue(script.body().contains("function normalizeDashboardCollection(value, maximum, normalize)"));
+        assertTrue(script.body().contains("if (!Array.isArray(value)) return {items: [], incomplete: true};"));
+        assertTrue(script.body().contains("normalizeDashboardVoteSiteHealth"));
+        assertTrue(script.body().contains("dashboardHealthContradictsOverview(dashboardOverview, health.result)"));
+        assertTrue(script.body().contains("health.sites.length === configured"));
+        assertTrue(script.body().contains("health.sites.filter(site => site.enabled === true).length === enabled"));
+        assertTrue(script.body().contains("['truncated', 'detectedUnconfiguredServicesTruncated'].forEach"));
+        assertTrue(script.body().contains("typeof source[field] !== 'boolean' || source[field] === true"));
+        assertTrue(script.body().contains(
+                "else if (dashboardOverview.enabledVoteSites === 0) issues.push(issue('warning', 'All Vote Sites are disabled'"),
+                "A configured backend with every Vote Site disabled must not appear healthy.");
+        assertTrue(script.body().contains("const allConfiguredSitesDisabled = siteCountsKnown && configured > 0 && enabled === 0;"));
+        assertTrue(script.body().contains("+ (allConfiguredSitesDisabled ? 1 : 0)"),
+                "The Vote Sites summary must count the all-disabled warning as needing attention.");
+        assertTrue(script.body().contains("sites.filter(site => site.status === 'SERVICE_SITE_MISSING')"),
+                "Individually disabled Vote Sites must remain quiet when another site is enabled.");
+        assertTrue(script.body().contains("const voteSiteKeys = new Set();"));
+        assertTrue(script.body().contains("const canonicalKey = key.value.toLowerCase();"));
+        assertTrue(script.body().contains("const key = boundedDashboardString(entry.key, 64, true);"),
+                "Vote-site health must reject keys beyond the 64-character wire limit.");
+        assertTrue(script.body().contains("|| !key.value || voteSiteKeys.has(canonicalKey)"),
+                "Vote-site health must reject empty and duplicate site keys as incomplete data.");
+        assertFalse(script.body().contains("(!key.value && !displayName.value)"),
+                "A display name must not substitute for a missing vote-site key.");
+        assertTrue(script.body().contains("voteSiteKeys.add(canonicalKey);"));
+        assertTrue(script.body().contains("const serviceSite = boundedDashboardString(entry.serviceSite, 64, true);"),
+                "Vote-site health must enforce the node's 64-character ServiceSite wire bound.");
+        assertTrue(script.body().contains("const detectedServiceKeys = new Set();"));
+        assertTrue(script.body().contains("const configuredServiceKeys = new Set(sites.items.map(site => site.serviceSite.toLowerCase()));"));
+        assertTrue(script.body().contains("configuredServiceKeys.has(identity)"),
+                "Detected services must not duplicate a configured ServiceSite identity.");
+        assertTrue(script.body().contains(
+                "if (service.incomplete || configuredServiceKeys.has(identity) || unmatchedServiceKeys.has(identity)) return null;"),
+                "Unmatched services must not duplicate a configured ServiceSite identity.");
+        assertTrue(script.body().contains("const unmatchedServiceKeys = new Set();"));
+        assertTrue(script.body().contains("const service = boundedDashboardString(entry.serviceSite, 64);"),
+                "Unmatched VoteLog identities must use the same 64-character wire limit as other service values.");
+        assertTrue(script.body().contains("unmatchedServiceKeys.has(identity)"),
+                "Unmatched service identities must be rejected case-insensitively when duplicated.");
+        assertTrue(script.body().contains("unmatchedServiceKeys.add(identity)"));
+        assertTrue(script.body().contains("detectedServiceKeys.has(identity)"),
+                "Detected service identities must be rejected case-insensitively when duplicated.");
+        assertTrue(script.body().contains(
+                "if (source.voteLogReadable !== true && unmatched.items.length > 0) incomplete = true;"),
+                "Unmatched services must make unreadable VoteLog health data incomplete.");
+        assertTrue(script.body().contains("source.voteLogReadable === true ? unmatched.items : []"),
+                "Unreadable VoteLog data must not render non-authoritative unmatched services.");
+        assertTrue(script.body().contains("normalizeDashboardVoteSummary"));
+        assertTrue(script.body().contains("countRowsExceedTotal(services.items, total)"));
+        assertTrue(script.body().contains("countRowsExceedTotal(servers.items, total)"));
+        assertTrue(script.body().contains("function countRowsSumMatchesTotal(items, total)"));
+        assertTrue(script.body().contains(
+                "return items.length >= 20 || items.reduce((sum, entry) => sum + entry.count, 0) === total;"),
+                "Untruncated VoteLog category lists must account for every vote while retaining truncated-list behavior.");
+        assertTrue(script.body().contains("!countRowsSumMatchesTotal(services.items, total)"));
+        assertTrue(script.body().contains("!countRowsSumMatchesTotal(servers.items, total)"));
+        assertTrue(script.body().contains("total > 0 && (services.items.length === 0 || servers.items.length === 0"),
+                "A nonempty VoteLog total must include at least one top service and server.");
+        assertTrue(script.body().contains("!countRowsArePositive(services.items) || !countRowsArePositive(servers.items)"),
+                "VoteLog category rows must not include zero-count rows, including when the total is zero.");
+        assertFalse(script.body().contains("total > 0 && (services.items.length === 0 || servers.items.length === 0\n      || !countRowsArePositive(services.items)"),
+                "Zero-total VoteLog summaries must not bypass positive category-count validation.");
+        assertTrue(script.body().contains("function countRowsArePositive(items)"));
+        assertTrue(script.body().contains("return items.every(entry => entry.count > 0);"));
+        assertTrue(script.body().contains("function countRowsAreNonIncreasing(items)"),
+                "VoteLog category rows must retain their descending-count order.");
+        assertTrue(script.body().contains("if (items[index].count > items[index - 1].count) return false;"));
+        assertTrue(script.body().contains("!countRowsAreNonIncreasing(services.items)"));
+        assertTrue(script.body().contains("!countRowsAreNonIncreasing(servers.items)"));
+        assertTrue(script.body().contains("function normalizeDashboardCountRows(value, maximum, label)"));
+        assertTrue(script.body().contains("boundedDashboardString(entry[label], 64, false)"),
+                "VoteLog service and server identities must enforce the 64-character wire limit.");
+        assertTrue(script.body().contains("const identities = new Set();"));
+        assertTrue(script.body().contains("const identity = name.value.toLowerCase();"));
+        assertTrue(script.body().contains("if (identities.has(identity)) return null;"));
+        assertTrue(script.body().contains("function invalidateDashboardInspection()"));
+        assertTrue(script.body().contains("lastOverview = diagnostics.result;\n    invalidateDashboardInspection();"));
+        assertTrue(script.body().contains("lastOverview = envelope.result;\n    invalidateDashboardInspection();"),
+                "Setup diagnostics must invalidate any cached dashboard evidence.");
+        assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
+        assertTrue(script.body().contains("Object.hasOwn(value, 'voteLogAvailable') ? value.voteLogAvailable : value.voteLoggingAvailable"));
+        assertTrue(script.body().contains("const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);"));
+        assertTrue(script.body().contains("result.proxyMode === true && !proxyMethods.has(result.proxyMethod.toUpperCase())"));
+        assertTrue(script.body().contains("const requiredStrings = new Set(['pluginVersion', 'platform', 'serverSoftware', 'serverVersion', 'dataStorage']);"));
+        assertTrue(script.body().contains("field === 'proxyMethod'"));
+        assertTrue(script.body().contains("const platforms = new Set(['BUKKIT']);"));
+        assertTrue(script.body().contains("const dataStorages = new Set(['SQLITE', 'MYSQL']);"));
+        assertTrue(script.body().contains("immediate + cached !== total"));
+        assertTrue(script.body().contains("total > 0 && uniqueVoters <= 0"),
+                "A nonempty VoteLog summary must report at least one unique voter.");
+        assertTrue(script.body().contains("function dashboardVoteSummariesContradict(shortWindow, longWindow)"));
+        assertTrue(script.body().contains(
+                "const scalarContradiction = ['total', 'immediate', 'cached', 'uniqueVoters'].some(field =>"),
+                "All shared VoteLog counters must be monotonic across nested windows.");
+        assertTrue(script.body().contains("function dashboardCountRowIdentity(entry, label)"),
+                "VoteLog top-row comparisons must use the same normalized identity rules as row validation.");
+        assertTrue(script.body().contains("function dashboardCountRowsContradict(shortRows, longRows, label)"));
+        assertTrue(script.body().contains("longCounts.has(identity)"),
+                "Shared nested-window identities must be compared.");
+        assertTrue(script.body().contains("const widerWindowIsComplete = longRows.length < 20;"),
+                "An absent service/server is conclusive only when the wider top-row list is not truncated.");
+        assertTrue(script.body().contains("if (!longCounts.has(identity)) return widerWindowIsComplete;"),
+                "A 24-hour category omitted by an untruncated 30-day list must invalidate the summaries.");
+        assertTrue(script.body().contains("shortCount > longCounts.get(identity)"),
+                "A larger 24-hour count for a shared service/server identity must invalidate the summaries.");
+        assertTrue(script.body().contains(
+                "dashboardCountRowsContradict(shortWindow?.topServices, longWindow?.topServices, 'service')"));
+        assertTrue(script.body().contains(
+                "dashboardCountRowsContradict(shortWindow?.topServers, longWindow?.topServers, 'server')"));
+        assertTrue(script.body().contains("dashboardInspectionStatus.voteLog24h = 'incomplete';\n        dashboardInspectionStatus.voteLog30d = 'incomplete';"));
+        assertTrue(script.body().contains("entry.count > remaining"));
+        assertTrue(script.body().contains("const expectedStatuses = entry.enabled === false"));
+        assertTrue(script.body().contains("typeof entry.hasRewards !== 'boolean'"),
+                "Readable Vote Site rows must include a typed reward-presence field.");
+        assertTrue(script.body().contains("function validDashboardVoteSiteAggregate(entry, status)"));
+        assertTrue(script.body().contains(
+                "aggregateFields.some(field => Object.hasOwn(entry, field))"),
+                "Unreadable VoteLog rows must reject non-authoritative aggregate fields.");
+        assertTrue(script.body().contains("const loggedVotes = finiteCount(entry.loggedVotes);"),
+                "Readable Vote Site health rows must validate every aggregate as a nonnegative safe integer.");
+        assertTrue(script.body().contains("immediateVotes + cachedVotes !== loggedVotes"),
+                "Readable Vote Site health rows must preserve the logged/immediate/cached sum.");
+        assertTrue(script.body().contains("loggedVotes === 0 ? lastVoteTime !== 0 : lastVoteTime === 0"),
+                "A Vote Site last-vote timestamp must be zero exactly when its readable aggregate is empty.");
+        assertTrue(script.body().contains("status === 'ACTIVE' && loggedVotes === 0"),
+                "ACTIVE Vote Site rows must contain at least one logged vote.");
+        assertTrue(script.body().contains("status === 'NO_RECENT_VOTES' && loggedVotes !== 0"),
+                "NO_RECENT_VOTES rows must contain no logged votes.");
+        assertTrue(script.body().contains("function dashboardHealthContradictsVoteSummary(health, summary)"));
+        assertTrue(script.body().contains("function dashboardHealthServicesContradictSummary(sites, topServices)"),
+                "Vote Site health must compare each normalized service aggregate with the 30-day ranking.");
+        assertTrue(script.body().contains("const topServicesComplete = topServices.length < 20;"),
+                "A short top-services list is complete, so an omitted configured service is contradictory.");
+        assertTrue(script.body().contains("const topServiceCounts = new Map();"));
+        assertTrue(script.body().contains("return loggedVotes > 0 && topServicesComplete;"),
+                "A zero-vote site may be omitted from a complete positive-count ranking.");
+        assertTrue(script.body().contains(
+                "if (!topServiceCounts.has(serviceIdentity)) return loggedVotes > 0 && topServicesComplete;"),
+                "A configured service with votes omitted from a complete top-services list must invalidate the snapshot.");
+        assertTrue(script.body().contains("return loggedVotes > topServiceCounts.get(serviceIdentity);"),
+                "Per-service logged VoteLog counts must not exceed their 30-day ranking counts.");
+        assertTrue(script.body().contains(
+                "if (dashboardHealthServicesContradictSummary(health.sites, summary.topServices)) return true;"),
+                "Per-service health and 30-day summary contradictions must invalidate both inspections.");
+        assertTrue(script.body().contains("[['loggedVotes', 'total'], ['immediateVotes', 'immediate'], ['cachedVotes', 'cached']]"),
+                "Each readable per-site VoteLog aggregate must be bounded by its corresponding 30-day summary total.");
+        assertTrue(script.body().contains("siteCount > summaryCount"),
+                "Sequentially inconsistent per-site and overall VoteLog reads must be treated as incomplete.");
+        assertTrue(script.body().contains("function dashboardHealthAggregateExceedsSummary(sites, siteField, summaryCount)"),
+                "Retained readable VoteLog site aggregates must be bounded in aggregate by summary counters.");
+        assertTrue(script.body().contains("const countedServices = new Set();"));
+        assertTrue(script.body().contains("countedServices.has(serviceIdentity)"),
+                "Aliases sharing a canonical ServiceSite must not double-count the same VoteLog aggregate.");
+        assertTrue(script.body().contains("return serviceIdentity.length >= 64;"),
+                "Duplicate ServiceSite values at the node serialization bound must remain unchecked as possibly truncated.");
+        assertTrue(script.body().contains("aggregate += siteCount;"));
+        assertTrue(script.body().contains("const serviceAggregates = new Map();"),
+                "Aliases sharing a ServiceSite must be checked against the same aggregate snapshot.");
+        assertTrue(script.body().contains("function dashboardVoteSiteAggregatesMatch(left, right)"),
+                "ServiceSite aliases with contradictory aggregates must invalidate the health snapshot.");
+        assertTrue(script.body().contains("!dashboardVoteSiteAggregatesMatch(previousAggregate, aggregate)"),
+                "Contradictory ServiceSite aliases must not be silently deduplicated.");
+        assertTrue(script.body().contains(
+                "dashboardHealthAggregateExceedsSummary(\n        health.sites, siteField, summaryCount)"));
+        assertTrue(script.body().contains("dashboardHealthContradictsVoteSummary(dashboardVoteSiteHealth, dashboardVoteSummary30d)"));
+        assertTrue(script.body().contains("dashboardInspectionStatus.voteSiteHealth = 'incomplete';\n        dashboardInspectionStatus.voteLog30d = 'incomplete';"),
+                "Conflicting 30-day health and summary evidence must make both dashboard inspections unhealthy.");
+        assertTrue(script.body().contains("lastOverview = null;\n  text(dataOverview, 'Refreshing server overview…');"));
+		assertTrue(script.body().contains("async function refreshOverview(target = dataOverview) {\n  invalidateDashboardInspection();"));
+        assertTrue(script.body().contains(".result, 1);"));
+        assertTrue(script.body().contains("hasCount && hasVotes && count !== legacyCount"));
+        assertTrue(script.body().contains("days == null || days !== expectedDays || total == null"));
+        assertTrue(script.body().contains("topServices: services.items, topServers: servers.items"));
+        assertTrue(script.body().contains("typeof value === 'number' && Number.isSafeInteger(value) && value >= 0"),
+                "Dashboard counts must reject null, booleans, whitespace strings, and fractional values.");
+        assertFalse(script.body().contains("const count = Number(value);"));
+        assertFalse(script.body().contains("Number(dashboardOverview.configuredVoteSites) === 0"));
+        assertTrue(script.body().contains("const siteCountsKnown = configured != null && enabled != null;"));
+        assertTrue(script.body().contains("text(metricVoteSites, !siteCountsKnown ? '—'"));
+        assertTrue(script.body().contains(
+                "+ dashboardVoteSiteHealth.unmatchedLoggedServices.length"),
+                "Unmatched services must contribute to the Vote Sites warning count.");
+        assertFalse(script.body().contains(
+                "SERVICE_SITE_MISSING').slice(0, 10)"),
+                "All bounded missing ServiceSite entries must contribute to the health summary.");
+        assertFalse(script.body().contains(
+                "detectedUnconfiguredServices.slice(0, 10)"),
+                "All bounded detected-service entries must contribute to the health summary.");
+        assertFalse(script.body().contains(
+                "unmatchedLoggedServices.slice(0, 10)"),
+                "All bounded unmatched-service entries must contribute to the health summary.");
+        assertFalse(script.body().contains(
+                "['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state)).slice(0, 5)"),
+                "All bounded failed operations must contribute to the dashboard issue total.");
+        assertTrue(script.body().contains("runDriftCheck.addEventListener('click', async () => {\n  setConfigView('compare');"));
+        assertTrue(script.body().contains("voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0"));
+        assertTrue(script.body().contains("voteSitesConfiguredKnown: configuredVoteSites != null"));
+        int exactShortcut = script.body().indexOf("const exactShortcut = GLOBAL_PAGE_SHORTCUTS.get(normalized);");
+        int fuzzySetting = script.body().indexOf("const setting = SETTINGS_SCHEMA.find");
+        assertTrue(exactShortcut >= 0 && exactShortcut < fuzzySetting);
+        assertTrue(script.body().contains("['rewards', {tab: 'quick-setup', scrollTarget: 'reward-builder-card'}]"));
+        assertTrue(script.body().contains("['vote sites', {tab: 'data', scrollTarget: 'site-health-card'}]"));
+        assertTrue(script.body().contains("['network doctor', {tab: 'network', scrollTarget: 'network-doctor-card'}]"));
+        assertTrue(script.body().contains("['configuration compare', {tab: 'configurations', configView: 'compare'"));
+        assertTrue(script.body().contains("openGlobalShortcut(GLOBAL_PAGE_SHORTCUTS.get('configuration compare'))"));
+        assertTrue(script.body().contains("globalSearchInput.value = '';\n  globalSearchOptions.replaceChildren();"));
+        assertTrue(web.body().contains("data-tab=\"configurations\" data-config-shortcut=\"compare\""));
+        assertTrue(script.body().contains("if (button.dataset.configShortcut) setConfigView(button.dataset.configShortcut);"));
+        assertTrue(script.body().contains("if (setting) {\n    settingsFilter.value = query;"));
+        int openWorkspace = script.body().indexOf("function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = null)");
+        int presetBeforeTab = script.body().indexOf("quickPreset.value = preset;", openWorkspace);
+        int activateAfterPreset = script.body().indexOf("setActiveTab(tab, true);", openWorkspace);
+        assertTrue(openWorkspace >= 0 && presetBeforeTab > openWorkspace && activateAfterPreset > presetBeforeTab,
+                "Nested shortcuts must establish their preset before tab autoload starts.");
+        assertTrue(script.body().contains("if (autoLoadInFlight.has(tab)) {\n    autoLoadPending.add(tab);"));
+        assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"),
+                "A preset change during an older read must queue a fresh autoload.");
+        assertTrue(script.body().contains("autoLoadPending.clear();"));
+        int globalShortcut = script.body().indexOf("function openGlobalShortcut(destination)");
+        int selectConfigView = script.body().indexOf("setConfigView(destination.configView);", globalShortcut);
+        int openShortcutTab = script.body().indexOf("openWorkspace(destination.tab", globalShortcut);
+        assertTrue(globalShortcut >= 0 && selectConfigView > globalShortcut && openShortcutTab > selectConfigView,
+                "Nested search shortcuts must establish their subview before tab autoload starts.");
+        int globalNodeSearch = script.body().indexOf("if (node) {");
+        int locateNodePage = script.body().indexOf(
+                "selectNodePage(Math.floor(nodePosition / PAGE_SIZE) * PAGE_SIZE);", globalNodeSearch);
+        int openServersForSearch = script.body().indexOf("openWorkspace('servers');", globalNodeSearch);
+        int selectServerForSearch = script.body().indexOf("selectPrimaryServer(node.nodeId);", globalNodeSearch);
+        int renderSearchedPage = script.body().indexOf("renderNodeViews();", selectServerForSearch);
+        assertTrue(globalNodeSearch >= 0 && locateNodePage > globalNodeSearch
+                        && openServersForSearch > locateNodePage
+                        && selectServerForSearch > openServersForSearch && renderSearchedPage > selectServerForSearch,
+                "Global server search must show the matching page, then navigate before selecting the node.");
+        int selectNodePage = script.body().indexOf("function selectNodePage(offset)");
+        assertTrue(selectNodePage >= 0
+                        && script.body().indexOf("text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);",
+                                selectNodePage) > selectNodePage
+                        && script.body().indexOf("previousPage.disabled = pageOffset === 0;", selectNodePage)
+                                > selectNodePage
+                        && script.body().indexOf(
+                                "nextPage.disabled = pageOffset + visibleNodeItems.length >= allNodeItems.length;",
+                                selectNodePage) > selectNodePage,
+                "Changing pages must keep the node range, page label, and navigation controls synchronized.");
+        assertFalse(script.body().contains(".style."));
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         HttpResponse<String> health = get("/api/v1/health", null);
         assertEquals(200, health.statusCode());
@@ -258,6 +696,8 @@ class ControlHttpServerTest {
         JsonNode operations = json.readTree(get("/api/v1/operations", adminToken).body());
         assertTrue(operations.get("items").isArray());
         assertTrue(operations.get("voteLoggingRestartSessions").isObject());
+        assertTrue(operations.get("configurationGeneration").canConvertToLong());
+        assertTrue(operations.get("configurationGeneration").asLong() >= 0);
         assertError(get("/api/v1/health/anything", null), 404, "NOT_FOUND");
         assertError(get("/api/v1/nodes/register/anything", null), 404, "NOT_FOUND");
         HttpResponse<String> method = send("POST", "/api/v1/health", "{}", null);
