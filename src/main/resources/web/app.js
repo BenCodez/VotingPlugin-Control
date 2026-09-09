@@ -4933,6 +4933,9 @@ globalSearch.addEventListener('submit', event => {
     selectNodePage(Math.floor(nodePosition / PAGE_SIZE) * PAGE_SIZE);
     openWorkspace('servers');
     selectPrimaryServer(node.nodeId);
+    // The same-server fast path intentionally avoids resetting drafts and does
+    // not render. Always paint the newly selected page slice after navigation.
+    renderNodeViews();
     globalSearchInput.value = '';
     return;
   }

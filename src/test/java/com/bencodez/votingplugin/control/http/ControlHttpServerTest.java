@@ -618,9 +618,10 @@ class ControlHttpServerTest {
                 "selectNodePage(Math.floor(nodePosition / PAGE_SIZE) * PAGE_SIZE);", globalNodeSearch);
         int openServersForSearch = script.body().indexOf("openWorkspace('servers');", globalNodeSearch);
         int selectServerForSearch = script.body().indexOf("selectPrimaryServer(node.nodeId);", globalNodeSearch);
+        int renderSearchedPage = script.body().indexOf("renderNodeViews();", selectServerForSearch);
         assertTrue(globalNodeSearch >= 0 && locateNodePage > globalNodeSearch
                         && openServersForSearch > locateNodePage
-                        && selectServerForSearch > openServersForSearch,
+                        && selectServerForSearch > openServersForSearch && renderSearchedPage > selectServerForSearch,
                 "Global server search must show the matching page, then navigate before selecting the node.");
         int selectNodePage = script.body().indexOf("function selectNodePage(offset)");
         assertTrue(selectNodePage >= 0
