@@ -2153,9 +2153,10 @@ function dashboardIssues() {
   reportedBackends.forEach(({backend, proxies}) => {
     const proxyNames = [...proxies].join(', ');
     const registered = nodeIndex.get(backend.backendId);
-    if (!registered) issues.push(issue('warning', `${backend.displayName} is not registered with Control`,
-      `Reported by ${proxyNames}; Control has no current node record.`, 'View servers', 'servers'));
-    if (enrollmentsLoaded && !enrollmentIds.has(backend.backendId)) {
+    const registeredBukkitBackend = registered?.platform === 'BUKKIT';
+    if (!registeredBukkitBackend) issues.push(issue('warning', `${backend.displayName} is not registered as a Bukkit backend`,
+      `Reported by ${proxyNames}; Control has no current Bukkit backend record.`, 'View servers', 'servers'));
+    if (enrollmentsLoaded && registeredBukkitBackend && !enrollmentIds.has(backend.backendId)) {
       issues.push(issue('warning', `${backend.displayName} is not enrolled`,
         'Enroll the node before expecting authenticated Control connectivity.', 'Open access', 'access'));
     }
@@ -2756,6 +2757,10 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
 
 function selectPrimaryServer(nodeId) {
   if (nodeId && !nodeIndex.has(nodeId)) return;
+  if (nodeId && nodeId === selectedServerId) {
+    serverPicker.value = selectedServerId;
+    return;
+  }
   if (nodeId !== selectedServerId && !confirmDiscardUnsavedConfiguration('switching servers')) {
     serverPicker.value = selectedServerId;
     return;

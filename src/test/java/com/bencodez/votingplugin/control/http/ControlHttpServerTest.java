@@ -137,6 +137,23 @@ class ControlHttpServerTest {
                 "Node-level topology warnings must be aggregated before rendering attention items.");
         assertTrue(script.body().contains("is unavailable to ${proxy.displayName}"),
                 "Availability warnings must remain distinct for every reporting proxy.");
+        assertTrue(script.body().contains(
+                "if (nodeId && nodeId === selectedServerId) {\n    serverPicker.value = selectedServerId;\n    return;\n  }"),
+                "Selecting the current server again must not reset unsaved YAML or routing drafts.");
+        int primarySelector = script.body().indexOf("function selectPrimaryServer(nodeId)");
+        int sameServerGuard = script.body().indexOf(
+                "if (nodeId && nodeId === selectedServerId)", primarySelector);
+        assertTrue(primarySelector >= 0 && sameServerGuard > primarySelector
+                        && sameServerGuard < script.body().indexOf(
+                                "confirmDiscardUnsavedConfiguration('switching servers')", sameServerGuard)
+                        && sameServerGuard < script.body().indexOf("resetServerContextValues(", sameServerGuard),
+                "The same-server guard must run before any draft-discard confirmation or context reset.");
+        assertTrue(script.body().contains(
+                "const registeredBukkitBackend = registered?.platform === 'BUKKIT';"),
+                "A proxy or non-Bukkit registry node must not satisfy a proxy backend report.");
+        assertTrue(script.body().contains(
+                "if (enrollmentsLoaded && registeredBukkitBackend && !enrollmentIds.has(backend.backendId))"),
+                "Enrollment health must only be evaluated for a registered Bukkit backend.");
         assertTrue(script.body().contains("await loadEnrollments()"));
         assertTrue(script.body().contains("enrollmentSubmit.disabled = true"));
         assertTrue(script.body().contains("filteredSelection.size !== selectedNodes.size"));
