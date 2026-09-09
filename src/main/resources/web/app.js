@@ -1873,7 +1873,7 @@ function normalizeDashboardVoteSiteHealth(value, expectedDays = 30) {
 	const unmatchedServiceKeys = new Set();
 	const unmatched = normalizeDashboardCollection(source.unmatchedLoggedServices, 100, entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-    const service = boundedDashboardString(entry.serviceSite, 100);
+		const service = boundedDashboardString(entry.serviceSite, 64);
     const identity = service.value.toLowerCase();
     if (service.incomplete || configuredServiceKeys.has(identity) || unmatchedServiceKeys.has(identity)) return null;
     unmatchedServiceKeys.add(identity);

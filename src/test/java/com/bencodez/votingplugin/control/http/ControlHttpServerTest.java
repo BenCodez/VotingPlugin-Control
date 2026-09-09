@@ -427,6 +427,8 @@ class ControlHttpServerTest {
                 "if (service.incomplete || configuredServiceKeys.has(identity) || unmatchedServiceKeys.has(identity)) return null;"),
                 "Unmatched services must not duplicate a configured ServiceSite identity.");
         assertTrue(script.body().contains("const unmatchedServiceKeys = new Set();"));
+        assertTrue(script.body().contains("const service = boundedDashboardString(entry.serviceSite, 64);"),
+                "Unmatched VoteLog identities must use the same 64-character wire limit as other service values.");
         assertTrue(script.body().contains("unmatchedServiceKeys.has(identity)"),
                 "Unmatched service identities must be rejected case-insensitively when duplicated.");
         assertTrue(script.body().contains("unmatchedServiceKeys.add(identity)"));
