@@ -77,6 +77,20 @@ class ConfigurationOperationJournalTest {
 
         assertEquals(1, state.operations().size());
         assertTrue(state.voteLoggingRestartSessions().isEmpty());
+        assertEquals(0L, state.configurationGeneration());
+    }
+
+    @Test void preservesConfigurationGenerationAcrossRestart() throws Exception {
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(directory, clock);
+        journal.save(List.of(), Map.of(), 17L);
+
+        assertEquals(17L, journal.loadState().configurationGeneration());
+    }
+
+    @Test void rejectsNegativeConfigurationGeneration() throws Exception {
+        ConfigurationOperationJournal journal = new ConfigurationOperationJournal(directory, clock);
+
+        assertThrows(IOException.class, () -> journal.save(List.of(), Map.of(), -1L));
     }
 
     @Test void rejectsMalformedOversizedAndUnsafeJournalFiles() throws Exception {

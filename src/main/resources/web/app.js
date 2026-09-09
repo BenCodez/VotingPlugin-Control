@@ -301,6 +301,7 @@ let dashboardTopologySignature = '';
 let dashboardConfigurationGeneration = 0;
 let dashboardLoading = false;
 let operationHistoryItems = [];
+let observedServerConfigurationGeneration = null;
 let operationHistoryStatus = 'not-loaded';
 let enrollmentStatus = 'not-loaded';
 let dedicatedSetupApprovals = new Map();
@@ -1062,9 +1063,20 @@ async function loadOperationHistoryOnce() {
     const body = await authorized('/api/v1/operations');
     if (!authenticated || historyGeneration !== authenticationGeneration) return;
     const retainedOperations = Array.isArray(body.items) ? body.items : [];
+    const serverConfigurationGeneration = finiteCount(body.configurationGeneration);
+    const observedSuccessfulApply = serverConfigurationGeneration != null
+      && (observedServerConfigurationGeneration == null
+        ? serverConfigurationGeneration > 0 && dashboardLoadedContext === dashboardContext()
+        : serverConfigurationGeneration > observedServerConfigurationGeneration);
+    if (serverConfigurationGeneration != null) {
+      observedServerConfigurationGeneration = observedServerConfigurationGeneration == null
+        ? serverConfigurationGeneration
+        : Math.max(observedServerConfigurationGeneration, serverConfigurationGeneration);
+    }
     operationHistoryItems = retainedOperations.slice(0, MAX_OPERATION_HISTORY).map(operation =>
       ({...operation, results: Object.fromEntries(Object.entries(operation.results || {}).map(([nodeId, result]) =>
         [nodeId, result ? {...result, configuration: null} : result]))}));
+    if (observedSuccessfulApply) invalidateConfigurationReads();
     const pendingRestarts = new Map();
     const restartSessions = body.voteLoggingRestartSessions;
     if (restartSessions && typeof restartSessions === 'object' && !Array.isArray(restartSessions)) {
@@ -1247,6 +1259,7 @@ function applyAuthenticatedSession(body) {
   dashboardInspectionStatus = emptyDashboardInspectionStatus();
   dashboardTopologySignature = '';
   operationHistoryItems = [];
+  observedServerConfigurationGeneration = null;
   operationHistoryStatus = 'not-loaded';
   enrollmentStatus = 'not-loaded';
   dedicatedSetupApprovals.clear();
@@ -2995,6 +3008,7 @@ function discardAuthenticationState(reason) {
   dashboardInspectionStatus = emptyDashboardInspectionStatus();
   dashboardTopologySignature = '';
   operationHistoryItems = [];
+  observedServerConfigurationGeneration = null;
   operationHistoryStatus = 'not-loaded';
   enrollmentStatus = 'not-loaded';
   dedicatedSetupApprovals.clear();
@@ -3153,6 +3167,23 @@ function operationContextCurrent(context) {
     && context.selectedSessionId === nodeIndex.get(context.selectedServerId)?.sessionId;
 }
 
+function invalidateConfigurationReads() {
+  fileReadCache.clear();
+  lastFileReadOperation = null;
+  clearApprovals();
+  loadedQuickSetup = null;
+  if (!configurationDirty) {
+    configurationContent.value = '';
+    configurationContentPresent = false;
+    text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');
+  }
+  lastOverview = null;
+  lastDiagnostics = null;
+  dashboardConfigurationGeneration++;
+  invalidateDashboardInspection();
+  updateExtendedButtons();
+}
+
 async function waitForOperation(operation, statusElement = operationStatus, context = operationContext()) {
   if (operationContextCurrent(context)) text(statusElement, operationSummary(operation));
   rememberOperation(operation);
@@ -3170,19 +3201,7 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
   const applied = operation.type === 'APPLY'
     && Object.values(operation.results || {}).some(result => result?.success);
   if (applied) {
-    fileReadCache.clear();
-    lastFileReadOperation = null;
-    lastOverview = null;
-    lastDiagnostics = null;
-    dashboardConfigurationGeneration++;
-    dashboardOverview = null;
-    dashboardVoteSiteHealth = null;
-    dashboardVoteSummary24h = null;
-    dashboardVoteSummary30d = null;
-    dashboardLoadedContext = '';
-    dashboardInspectionStatus = emptyDashboardInspectionStatus();
-    renderMetrics();
-    updateExtendedButtons();
+    invalidateConfigurationReads();
     if (tabFromHash() === 'overview') {
       text(dataOverview, 'Configuration changed; refreshing server overview…');
       window.setTimeout(() => void autoLoadTab('overview'), 0);
@@ -3192,7 +3211,8 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
 }
 
 async function startConfigurationOperation(path, body, statusElement = operationStatus) {
-  if (path.endsWith('/apply')) {
+  const applyOperation = path.endsWith('/apply');
+  if (applyOperation) {
     approvedPreview = null;
     approvedFilePreview = null;
     approvedQuickPreview = null;
@@ -3643,12 +3663,13 @@ applyConfiguration.addEventListener('click', async () => {
   if (!approvedPreview || !window.confirm('Apply this exact preview to every selected proxy? Each node may still reject a stale revision.')) return;
   const approval = approvedPreview;
   approvedPreview = null;
-  const applyGeneration = inputGeneration + 1;
+  const submittedProposal = JSON.stringify({proposal: proposal(), nodeIds: approval.nodeIds});
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     });
-    if (operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration) {
+    const currentProposal = JSON.stringify({proposal: proposal(), nodeIds: targets('config.proxy-routing.v1')});
+    if (operation.state === 'SUCCEEDED' && submittedProposal === currentProposal) {
       routingDirty = false;
       routingDraftNodeId = '';
     }
@@ -3766,13 +3787,17 @@ applyFileConfiguration.addEventListener('click', async () => {
       || !window.confirm(`Apply this exact ${configurationFile.value} preview to ${fileTargetDescription()}?`)) return;
   const approval = approvedFilePreview;
   approvedFilePreview = null;
-  const applyGeneration = inputGeneration + 1;
+  const submittedFile = JSON.stringify({content: configurationContent.value, fileName: approval.fileName,
+    nodeIds: approval.nodeIds, sessions: approval.nodeIds.map(nodeId => approval.sessions.get(nodeId))});
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, fileOperationStatus);
-    text(fileOperationStatus, operationSummary(operation));
-    if (operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration) {
+    const currentFileTargets = fileTargetsForSelection(configurationFile.value);
+    const currentFile = JSON.stringify({content: configurationContent.value, fileName: configurationFile.value,
+      nodeIds: currentFileTargets, sessions: currentFileTargets.map(nodeId => nodeIndex.get(nodeId)?.sessionId)});
+    if (operation.state === 'SUCCEEDED' && submittedFile === currentFile) {
+      text(fileOperationStatus, operationSummary(operation));
       fileReadCache.clear();
       lastFileReadOperation = null;
       configurationDirty = false;
@@ -3780,6 +3805,10 @@ applyFileConfiguration.addEventListener('click', async () => {
       configurationDraftSessionId = '';
       configurationDraftFileName = '';
       updateExtendedButtons();
+    } else if (operation.state === 'SUCCEEDED') {
+      text(fileOperationStatus, `${operationSummary(operation)}\nThe apply completed, but newer unsaved file edits remain. Preview again before applying them.`);
+    } else {
+      text(fileOperationStatus, operationSummary(operation));
     }
   } catch (error) { text(fileOperationStatus, error.message); }
 });
@@ -3950,12 +3979,18 @@ applyQuickSetup.addEventListener('click', async () => {
   if (!approvedQuickPreview || !window.confirm(confirmation)) return;
   const approval = approvedQuickPreview;
   approvedQuickPreview = null;
-  inputGeneration++;
+  const submittedQuickSetup = JSON.stringify({preset: quickPreset.value, options: quickOptions(),
+    nodeIds: approval.nodeIds, sourceId: approval.sourceId || ''});
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, quickOperationStatus);
-    text(quickOperationStatus, operationSummary(operation));
+    const currentNodeIds = sync ? selectedVoteSitesTargets() : targets('config.quick-setup.v1');
+    const currentQuickSetup = JSON.stringify({preset: quickPreset.value, options: quickOptions(),
+      nodeIds: currentNodeIds, sourceId: sync ? voteSitesSourceId : ''});
+    text(quickOperationStatus, operation.state === 'SUCCEEDED' && submittedQuickSetup !== currentQuickSetup
+      ? `${operationSummary(operation)}\nThe apply completed, but newer guided setup edits remain. Preview again before applying them.`
+      : operationSummary(operation));
   } catch (error) { text(quickOperationStatus, error.message); }
 });
 
@@ -4145,6 +4180,7 @@ async function loadDedicatedSetup(preset) {
 async function previewDedicatedSetup(preset) {
   dedicatedSetupApprovals.delete(preset);
   const elements = dedicatedSetupElements(preset);
+  const previewGeneration = inputGeneration;
   try {
     const nodeIds = backendQuickTargets();
     const options = dedicatedSetupOptions(preset);
@@ -4152,7 +4188,8 @@ async function previewDedicatedSetup(preset) {
     const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
       nodeIds, configuration: {domain: 'quick-setup', preset, options}
     }, elements.status);
-    if (signature !== JSON.stringify({nodeIds: backendQuickTargets(), options: dedicatedSetupOptions(preset)})) {
+    if (previewGeneration !== inputGeneration
+        || signature !== JSON.stringify({nodeIds: backendQuickTargets(), options: dedicatedSetupOptions(preset)})) {
       text(elements.status, 'The target scope or setup value changed while previewing. Preview again.');
     } else if (operation.state === 'SUCCEEDED' && operation.approvalToken) {
       dedicatedSetupApprovals.set(preset, {operationId: operation.operationId,
@@ -4169,11 +4206,16 @@ async function applyDedicatedSetup(preset) {
   if (!approval || !window.confirm(`Apply the exact ${preset} preview to every selected Bukkit node?${restart}`)) return;
   dedicatedSetupApprovals.delete(preset);
   const elements = dedicatedSetupElements(preset);
+  const submittedOptions = JSON.stringify(dedicatedSetupOptions(preset));
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, elements.status);
-    if (operation.state === 'SUCCEEDED') {
+    const currentTargets = backendQuickTargets();
+    const inputsCurrent = submittedOptions === JSON.stringify(dedicatedSetupOptions(preset))
+      && currentTargets.length === approval.nodeIds.length
+      && approval.nodeIds.every(nodeId => currentTargets.includes(nodeId));
+    if (operation.state === 'SUCCEEDED' && inputsCurrent) {
       fileReadCache.clear();
       if (preset === 'auto-create-vote-sites') {
         text(elements.state, autoSitesEnabled.checked ? 'Enabled on selected' : 'Disabled on selected');
@@ -4183,6 +4225,8 @@ async function applyDedicatedSetup(preset) {
         elements.state.className = 'pill neutral';
       }
       lastOverview = null;
+    } else if (operation.state === 'SUCCEEDED') {
+      text(elements.status, `${operationSummary(operation)}\nThe apply completed, but newer setup edits remain. Preview again before applying them.`);
     }
   } catch (error) { text(elements.status, error.message); }
   updateExtendedButtons();
@@ -4215,6 +4259,7 @@ applyVoteLogging.addEventListener('click', () => applyDedicatedSetup('vote-loggi
 [autoSitesEnabled, voteLoggingEnabled, voteLoggingDays, voteLoggingMainMysql].forEach(field => {
   field.addEventListener('input', () => {
     dedicatedSetupApprovals.delete(field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging');
+    inputGeneration++;
     updateExtendedButtons();
   });
 });
@@ -4662,6 +4707,7 @@ rewardSimulationForm.addEventListener('submit', async event => {
 });
 previewReward.addEventListener('click', async () => {
   dedicatedSetupApprovals.delete('reward-builder');
+  const previewGeneration = inputGeneration;
   try {
     const proposal = JSON.stringify(rewardProposal());
     if (new TextEncoder().encode(proposal).length > 64 * 1024) throw new Error('Reward proposal exceeds the 64 KiB limit.');
@@ -4671,7 +4717,8 @@ previewReward.addEventListener('click', async () => {
       nodeIds,
       configuration: {domain: 'quick-setup', preset: 'reward-builder', options: {proposal}}
     }, rewardSimulationResult);
-    if (signature !== JSON.stringify({nodeIds: backendQuickTargets(), proposal: JSON.stringify(rewardProposal())})) {
+    if (previewGeneration !== inputGeneration
+        || signature !== JSON.stringify({nodeIds: backendQuickTargets(), proposal: JSON.stringify(rewardProposal())})) {
       text(rewardSimulationResult, 'The target scope or reward changed while previewing. Preview again.');
     } else if (operation.state === 'SUCCEEDED' && operation.approvalToken) {
       dedicatedSetupApprovals.set('reward-builder', {operationId: operation.operationId,
@@ -4684,17 +4731,24 @@ applyReward.addEventListener('click', async () => {
   const approval = dedicatedSetupApprovals.get('reward-builder');
   if (!approval || !window.confirm('Apply this exact reward preview to every selected Bukkit node? It replaces the selected Rewards subtree; sibling sites, scopes, and settings remain unchanged.')) return;
   dedicatedSetupApprovals.delete('reward-builder');
+  const submittedReward = JSON.stringify({proposal: rewardProposal(), nodeIds: approval.nodeIds});
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, rewardSimulationResult);
-    if (operation.state === 'SUCCEEDED') fileReadCache.clear();
+    const currentReward = JSON.stringify({proposal: rewardProposal(), nodeIds: backendQuickTargets()});
+    if (operation.state === 'SUCCEEDED' && submittedReward === currentReward) {
+      fileReadCache.clear();
+    } else if (operation.state === 'SUCCEEDED') {
+      text(rewardSimulationResult, `${operationSummary(operation)}\nThe apply completed, but newer reward edits remain. Preview again before applying them.`);
+    }
   } catch (error) { text(rewardSimulationResult, error.message); }
   updateExtendedButtons();
 });
 [rewardScope, rewardSite, rewardChance, rewardMoney, rewardCommands, rewardMessages, rewardBroadcasts,
   rewardPermissions, rewardItems, rewardOnlineOnly].forEach(field => field.addEventListener('input', () => {
     dedicatedSetupApprovals.delete('reward-builder');
+    inputGeneration++;
     copyRewardToSetup.disabled = boundedLines(rewardCommands.value).length === 0;
     updateExtendedButtons();
   }));

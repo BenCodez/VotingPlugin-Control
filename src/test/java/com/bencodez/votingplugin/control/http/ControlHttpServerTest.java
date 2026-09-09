@@ -233,9 +233,53 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("previewConfiguration.disabled = !routingDraftReady;"));
         assertTrue(script.body().contains("applyConfiguration.disabled = !routingDraftReady || !approvedPreview;"));
         assertTrue(script.body().contains("Your unsaved proxy-routing draft is retained"));
-        assertTrue(script.body().contains("if (applied) {\n    fileReadCache.clear();\n    lastFileReadOperation = null;\n"
-                        + "    lastOverview = null;\n    lastDiagnostics = null;\n    dashboardConfigurationGeneration++;"),
+        assertTrue(script.body().contains("function invalidateConfigurationReads() {\n  fileReadCache.clear();\n"
+                        + "  lastFileReadOperation = null;\n  clearApprovals();\n  loadedQuickSetup = null;\n"
+                        + "  if (!configurationDirty) {\n"
+                        + "    configurationContent.value = '';\n    configurationContentPresent = false;\n"
+                        + "    text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');\n"
+                        + "  }\n  lastOverview = null;\n  lastDiagnostics = null;\n"
+                        + "  dashboardConfigurationGeneration++;\n  invalidateDashboardInspection();"),
                 "Every successful apply must invalidate file and dashboard reads even after the view context changes.");
+        assertTrue(script.body().contains("function clearApprovals() {\n  approvedPreview = null;\n"
+                        + "  approvedFilePreview = null;\n  approvedQuickPreview = null;\n"
+                        + "  dedicatedSetupApprovals.clear();\n  inputGeneration++;\n  updateConfigurationButtons();"),
+                "External applies must invalidate every approval and fence delayed configuration responses.");
+        assertTrue(script.body().contains("const serverConfigurationGeneration = finiteCount(body.configurationGeneration);"));
+        assertTrue(script.body().contains("serverConfigurationGeneration > observedServerConfigurationGeneration"));
+        assertTrue(script.body().contains("Math.max(observedServerConfigurationGeneration, serverConfigurationGeneration)"),
+                "A delayed older response must not move the observed server generation backwards.");
+        assertTrue(script.body().contains("if (observedSuccessfulApply) invalidateConfigurationReads();"),
+                "Activity refreshes must invalidate cached health after observing an external successful apply.");
+        assertTrue(script.body().contains("if (applied) {\n    invalidateConfigurationReads();"),
+                "Locally completed applies must use the same cache invalidation path.");
+        assertTrue(script.body().contains("const submittedFile = JSON.stringify({content: configurationContent.value, fileName: approval.fileName,"));
+        assertTrue(script.body().contains("const currentFile = JSON.stringify({content: configurationContent.value, fileName: configurationFile.value,"));
+        assertTrue(script.body().contains("submittedFile === currentFile"),
+                "File apply completion must compare content, target scope, file, and node sessions.");
+        assertTrue(script.body().contains("The apply completed, but newer unsaved file edits remain. Preview again before applying them."),
+                "A file apply must not label edits made during polling as already saved.");
+        assertTrue(script.body().contains("const previewGeneration = inputGeneration;\n  try {\n    const nodeIds = backendQuickTargets();"));
+        assertTrue(script.body().contains("if (previewGeneration !== inputGeneration\n"
+                        + "        || signature !== JSON.stringify"),
+                "Dedicated previews completed after another apply must not restore stale approvals.");
+        assertTrue(script.body().contains("dedicatedSetupApprovals.delete(field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging');\n"
+                        + "    inputGeneration++;\n    updateExtendedButtons();"),
+                "Dedicated setup edits must fence delayed reads before they can overwrite newer input.");
+        assertTrue(script.body().contains("const submittedOptions = JSON.stringify(dedicatedSetupOptions(preset));"));
+        assertTrue(script.body().contains("const inputsCurrent = submittedOptions === JSON.stringify(dedicatedSetupOptions(preset))"));
+        assertTrue(script.body().contains("The apply completed, but newer setup edits remain. Preview again before applying them."),
+                "Dedicated apply results must not label newer form values as saved.");
+        assertTrue(script.body().contains("The apply completed, but newer guided setup edits remain. Preview again before applying them."));
+        assertTrue(script.body().contains("const submittedQuickSetup = JSON.stringify"));
+        assertTrue(script.body().contains("The apply completed, but newer reward edits remain. Preview again before applying them."));
+        assertTrue(script.body().contains("const submittedReward = JSON.stringify"));
+        assertTrue(script.body().contains("dedicatedSetupApprovals.delete('reward-builder');\n    inputGeneration++;"),
+                "Reward edits must fence delayed preview and apply results.");
+        assertTrue(script.body().contains("previewReward.addEventListener('click', async () => {\n"
+                        + "  dedicatedSetupApprovals.delete('reward-builder');\n"
+                        + "  const previewGeneration = inputGeneration;"),
+                "Reward previews must also be fenced when another apply invalidates their base revision.");
         assertTrue(script.body().contains("Drift results were discarded; run the comparison again."),
                 "A drift read completed for stale context must show an explicit discarded-result status.");
         assertTrue(script.body().contains("text(operationStatus, routingDraftStatus('The selected nodes changed during refresh."));
@@ -292,8 +336,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(".slice(0, MAX_PLAYER_LAST_VOTES)"));
         assertTrue(script.body().contains("if (!automatic) text(fileOperationStatus, error.message);"));
         assertTrue(script.body().contains("const cell = document.createElement('td');"));
-        assertTrue(script.body().contains("const applyGeneration = inputGeneration + 1;"));
-        assertTrue(script.body().contains("operation.state === 'SUCCEEDED' && applyGeneration === inputGeneration"));
+        assertTrue(script.body().contains("const submittedProposal = JSON.stringify({proposal: proposal(), nodeIds: approval.nodeIds});"));
+        assertTrue(script.body().contains("const currentProposal = JSON.stringify({proposal: proposal(), nodeIds: targets('config.proxy-routing.v1')});"));
         assertFalse(script.body().contains("'No backends reported.'"));
         assertFalse(script.body().contains("'No Bukkit plugin inventory reported.'"));
         HttpResponse<String> stylesheet = get("/app.css", null);
@@ -652,6 +696,8 @@ class ControlHttpServerTest {
         JsonNode operations = json.readTree(get("/api/v1/operations", adminToken).body());
         assertTrue(operations.get("items").isArray());
         assertTrue(operations.get("voteLoggingRestartSessions").isObject());
+        assertTrue(operations.get("configurationGeneration").canConvertToLong());
+        assertTrue(operations.get("configurationGeneration").asLong() >= 0);
         assertError(get("/api/v1/health/anything", null), 404, "NOT_FOUND");
         assertError(get("/api/v1/nodes/register/anything", null), 404, "NOT_FOUND");
         HttpResponse<String> method = send("POST", "/api/v1/health", "{}", null);

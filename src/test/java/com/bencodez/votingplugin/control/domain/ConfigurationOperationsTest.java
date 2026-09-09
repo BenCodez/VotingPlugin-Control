@@ -1412,9 +1412,11 @@ class ConfigurationOperationsTest {
         ConfigurationTask secondApply = operations.claim("backend-b", second);
         operations.complete(apply.operationId(), "backend-a", new ConfigurationTaskResult(first, true, "OK",
                 "applied", "c".repeat(64), proposal, List.of(), true, false, firstApply.attemptId()));
+        assertEquals(1L, operations.listView().configurationGeneration());
         apply = operations.complete(apply.operationId(), "backend-b", new ConfigurationTaskResult(second, false,
                 "WRITE_FAILED", "failed", null, (ManagedConfiguration) null, List.of(), false, true,
                 secondApply.attemptId()));
+        assertEquals(1L, operations.listView().configurationGeneration());
 
         ConfigurationOperations.OperationView retry = operations.retry(apply.operationId());
 

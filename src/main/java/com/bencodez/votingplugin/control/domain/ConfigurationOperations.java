@@ -50,6 +50,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     private final SecureRandom random = new SecureRandom();
     private final LinkedHashMap<UUID, StoredOperation> operations = new LinkedHashMap<>();
     private final LinkedHashMap<String, UUID> voteLoggingRestartSessions = new LinkedHashMap<>();
+    private long configurationGeneration;
     private long retainedChangeBytes;
     private long retainedMessageBytes;
     private long retainedFileBytes;
@@ -163,7 +164,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         List<OperationView> result = new ArrayList<>(operations.values().stream()
                 .skip(Math.max(0, operations.size() - MAX_LISTED_OPERATIONS)).map(this::summaryView).toList());
         Collections.reverse(result);
-        return new OperationListView(List.copyOf(result), Map.copyOf(voteLoggingRestartSessions));
+        return new OperationListView(List.copyOf(result), Map.copyOf(voteLoggingRestartSessions),
+                configurationGeneration);
     }
 
     /** Reissues safe work without repeating nodes that already applied successfully. */
@@ -377,6 +379,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         long priorChanges = retainedChangeBytes;
         long priorMessages = retainedMessageBytes;
         long priorFiles = retainedFileBytes;
+        long priorConfigurationGeneration = configurationGeneration;
         LinkedHashMap<String, UUID> priorRestartSessions = new LinkedHashMap<>(voteLoggingRestartSessions);
         try {
             if (priorResult != null) releaseResultDetails(priorResult);
@@ -389,7 +392,8 @@ public final class ConfigurationOperations implements AutoCloseable {
             audit.append("TASK_CANCELLED", operation.id, nodeId, auditOutcome);
         } catch (RuntimeException failure) {
             restoreTransition(operation, nodeId, priorState, priorResult, priorLease, priorAttempt,
-                    priorChanges, priorMessages, priorFiles, priorRestartSessions, failure);
+                    priorChanges, priorMessages, priorFiles, priorConfigurationGeneration,
+                    priorRestartSessions, failure);
             throw failure;
         }
     }
@@ -397,6 +401,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     private void restoreTransition(StoredOperation operation, String nodeId, String priorState,
                                      ConfigurationTaskResult priorResult, Instant priorLease, UUID priorAttempt,
                                      long priorChanges, long priorMessages, long priorFiles,
+                                     long priorConfigurationGeneration,
                                      Map<String, UUID> priorRestartSessions, RuntimeException failure) {
         ConfigurationTaskResult current = operation.results.get(nodeId);
         if (current != null && current != priorResult) releaseResultDetails(current);
@@ -407,6 +412,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         retainedChangeBytes = priorChanges;
         retainedMessageBytes = priorMessages;
         retainedFileBytes = priorFiles;
+        configurationGeneration = priorConfigurationGeneration;
         voteLoggingRestartSessions.clear();
         voteLoggingRestartSessions.putAll(priorRestartSessions);
         try {
@@ -532,9 +538,15 @@ public final class ConfigurationOperations implements AutoCloseable {
         long priorChanges = retainedChangeBytes;
         long priorMessages = retainedMessageBytes;
         long priorFiles = retainedFileBytes;
+        long priorConfigurationGeneration = configurationGeneration;
         LinkedHashMap<String, UUID> priorRestartSessions = new LinkedHashMap<>(voteLoggingRestartSessions);
         try {
+            boolean successfulApplyAlreadyRecorded = "APPLY".equals(operation.type)
+                    && operation.results.values().stream().anyMatch(ConfigurationTaskResult::success);
             operation.results.put(nodeId, boundedResult(operation, result));
+            if ("APPLY".equals(operation.type) && result.success() && !successfulApplyAlreadyRecorded) {
+                configurationGeneration++;
+            }
             if (requiresVoteLoggingRestart(operation, result)) {
                 reclaimStaleRestartSessions(nodeId);
                 voteLoggingRestartSessions.remove(nodeId);
@@ -547,7 +559,8 @@ public final class ConfigurationOperations implements AutoCloseable {
             audit.append("TASK_COMPLETED", operation.id, nodeId, result.success() ? "SUCCESS" : result.code());
         } catch (RuntimeException failure) {
             restoreTransition(operation, nodeId, priorState, priorResult, priorLease, priorAttempt,
-                    priorChanges, priorMessages, priorFiles, priorRestartSessions, failure);
+                    priorChanges, priorMessages, priorFiles, priorConfigurationGeneration,
+                    priorRestartSessions, failure);
             throw failure;
         }
         return view(operation);
@@ -786,6 +799,7 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     private void restore(ConfigurationOperationJournal.State state) {
         voteLoggingRestartSessions.putAll(state.voteLoggingRestartSessions());
+        configurationGeneration = state.configurationGeneration();
         for (ConfigurationOperationJournal.Entry entry : state.operations()) {
             ManagedConfiguration configuration = switch (entry.domain()) {
                 case ManagedConfiguration.PROXY_ROUTING -> ManagedConfiguration.proxy(
@@ -839,7 +853,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                     operation.sourceOperationId, List.copyOf(nodes)));
         }
         try {
-            journal.save(entries, voteLoggingRestartSessions);
+            journal.save(entries, voteLoggingRestartSessions, configurationGeneration);
         } catch (IOException failure) {
             throw new IllegalStateException("Could not persist redacted configuration operation history", failure);
         }
@@ -903,7 +917,12 @@ public final class ConfigurationOperations implements AutoCloseable {
                                 Map<String, ConfigurationTaskResult> results, String approvalToken,
                                 UUID sourceOperationId, boolean recovered, boolean retryable) { }
 
-    public record OperationListView(List<OperationView> items, Map<String, UUID> voteLoggingRestartSessions) { }
+    public record OperationListView(List<OperationView> items, Map<String, UUID> voteLoggingRestartSessions,
+                                    long configurationGeneration) {
+        public OperationListView(List<OperationView> items, Map<String, UUID> voteLoggingRestartSessions) {
+            this(items, voteLoggingRestartSessions, 0L);
+        }
+    }
 
     private record ValidatedTargets(List<String> nodeIds, Map<String, String> platforms,
                                     Map<String, UUID> sessions) { }
