@@ -77,6 +77,11 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("let nodeLoadInFlight = null;"));
         assertTrue(script.body().contains("async function loadNodesOnce()"));
         assertTrue(script.body().contains("nodeLoadQueued = true;"));
+        assertTrue(script.body().contains("let nodeLoadQueuedPromise = null;"));
+        assertTrue(script.body().contains("return nodeLoadQueuedPromise;"),
+                "A queued registry refresh must remain awaitable by its caller.");
+        assertTrue(script.body().contains("loadNodes().then(resolveQueued, rejectQueued);"),
+                "A queued registry refresh must settle only after the follow-up pass completes.");
         assertTrue(script.body().contains("let operationHistoryLoadInFlight = null;"));
         assertTrue(script.body().contains("let operationHistoryLoadQueued = false;"));
         assertTrue(script.body().contains("async function loadOperationHistoryOnce()"));
@@ -320,6 +325,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("enrollmentStatus = 'failed';"));
         assertTrue(script.body().contains("if (enrollmentStatus === 'failed') issues.push(issue('warning'"),
                 "Unavailable enrollment state must downgrade dashboard health.");
+        assertTrue(script.body().contains("openWorkspace('activity');\n      return loadOperationHistory();"),
+                "Retry activity must reload operation history after navigating to its page.");
+        assertTrue(script.body().contains("openWorkspace('access');\n      return loadEnrollments();"),
+                "Retry access must reload enrollments after navigating to its page.");
         assertTrue(script.body().contains("dashboardConfigurationGeneration++"));
         assertTrue(script.body().contains("|${dashboardConfigurationGeneration}`"));
         assertTrue(script.body().contains("Configuration changed; refreshing server overview"));

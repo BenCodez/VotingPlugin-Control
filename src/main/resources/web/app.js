@@ -309,6 +309,9 @@ let autoLoadInFlight = new Set();
 let autoLoadPending = new Set();
 let nodeLoadInFlight = null;
 let nodeLoadQueued = false;
+let nodeLoadQueuedPromise = null;
+let nodeLoadQueuedResolve = null;
+let nodeLoadQueuedReject = null;
 let suppressNodeAutoLoad = 0;
 let operationHistoryLoadInFlight = null;
 let operationHistoryLoadQueued = false;
@@ -2056,8 +2059,8 @@ function dashboardVoteSummariesContradict(shortWindow, longWindow) {
     || dashboardCountRowsContradict(shortWindow?.topServers, longWindow?.topServers, 'server');
 }
 
-function issue(severity, title, detail, action, tab, scrollTarget = '', preset = '') {
-  return {severity, title, detail, action, tab, scrollTarget, preset};
+function issue(severity, title, detail, action, tab, scrollTarget = '', preset = '', onAction = null) {
+  return {severity, title, detail, action, tab, scrollTarget, preset, onAction};
 }
 
 function dashboardIssues() {
@@ -2169,10 +2172,16 @@ function dashboardIssues() {
       operationPhase(operation), 'View operation', 'activity')));
   if (operationHistoryStatus === 'failed') issues.push(issue('warning', 'Operation history is unavailable',
     'Recent configuration failures could not be loaded, so dashboard health is incomplete.',
-    'Retry activity', 'activity'));
+    'Retry activity', 'activity', '', '', () => {
+      openWorkspace('activity');
+      return loadOperationHistory();
+    }));
   if (enrollmentStatus === 'failed') issues.push(issue('warning', 'Enrollment state is unavailable',
     'Recent enrollment state could not be loaded, so backend access health is incomplete.',
-    'Retry access', 'access'));
+    'Retry access', 'access', '', '', () => {
+      openWorkspace('access');
+      return loadEnrollments();
+    }));
   return summary;
 }
 
@@ -2195,7 +2204,10 @@ function renderAttention(issues, total = issues.length) {
     const action = text(document.createElement('button'), item.action);
     action.type = 'button';
     action.className = 'secondary compact';
-    action.addEventListener('click', () => openWorkspace(item.tab, item.scrollTarget, item.preset));
+    action.addEventListener('click', () => {
+      if (item.onAction) void item.onAction();
+      else openWorkspace(item.tab, item.scrollTarget, item.preset);
+    });
     row.append(indicator, copy, action);
     attentionFeed.append(row);
   });
@@ -3391,7 +3403,13 @@ async function loadNodesOnce() {
 async function loadNodes() {
   if (nodeLoadInFlight) {
     nodeLoadQueued = true;
-    return nodeLoadInFlight;
+    if (!nodeLoadQueuedPromise) {
+      nodeLoadQueuedPromise = new Promise((resolve, reject) => {
+        nodeLoadQueuedResolve = resolve;
+        nodeLoadQueuedReject = reject;
+      });
+    }
+    return nodeLoadQueuedPromise;
   }
   const load = loadNodesOnce();
   nodeLoadInFlight = load;
@@ -3403,7 +3421,12 @@ async function loadNodes() {
     updateHeaderAction(tabFromHash());
     if (nodeLoadQueued) {
       nodeLoadQueued = false;
-      void loadNodes();
+      const resolveQueued = nodeLoadQueuedResolve;
+      const rejectQueued = nodeLoadQueuedReject;
+      nodeLoadQueuedPromise = null;
+      nodeLoadQueuedResolve = null;
+      nodeLoadQueuedReject = null;
+      loadNodes().then(resolveQueued, rejectQueued);
     }
   }
 }
