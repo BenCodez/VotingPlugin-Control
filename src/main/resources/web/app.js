@@ -242,6 +242,7 @@ let selectedNodes = new Set();
 let selectedServerId = '';
 let visibleNodeItems = [];
 let allNodeItems = [];
+let nodePageMetadata = new Map();
 let nodeIndex = new Map();
 let enrollmentIds = new Set();
 let enrollmentsLoaded = false;
@@ -2672,6 +2673,21 @@ function renderNodeViews() {
   updateExtendedButtons();
 }
 
+function selectNodePage(offset) {
+  pageOffset = Math.max(0, offset);
+  visibleNodeItems = allNodeItems.slice(pageOffset, pageOffset + PAGE_SIZE);
+  const first = visibleNodeItems.length === 0 ? 0 : pageOffset + 1;
+  const last = pageOffset + visibleNodeItems.length;
+  const pageMeta = nodePageMetadata.get(pageOffset);
+  const backendLimit = pageMeta?.backendItemsTruncated
+    ? ` Backend summaries are limited to ${pageMeta.backendItemsReturned} entries on this page.` : '';
+  text(message, visibleNodeItems.length === 0 ? 'No nodes on this page.'
+    : `Showing nodes ${first}–${last}.${backendLimit}`);
+  text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);
+  previousPage.disabled = pageOffset === 0;
+  nextPage.disabled = pageOffset + visibleNodeItems.length >= allNodeItems.length;
+}
+
 function routingDraftStatus(status) {
   return routingDirty
     ? `${status} Your unsaved proxy-routing draft is retained for ${routingDraftNodeId || 'the previous server'}; explicitly switch servers or load current values to discard it.`
@@ -3315,8 +3331,9 @@ async function loadNodesOnce() {
   try {
     const registry = await loadAllNodes();
     const previousNodeIndex = nodeIndex;
-    visibleNodeItems = registry.items.slice(pageOffset, pageOffset + PAGE_SIZE);
     allNodeItems = registry.items;
+    nodePageMetadata = registry.pageMetadata;
+    selectNodePage(pageOffset);
     dashboardTopologySignature = topologySignature(registry.items);
     backendTopologyTruncated = registry.truncated;
     backendTopologyTruncatedNodeIds = registry.truncatedNodeIds;
@@ -3398,20 +3415,11 @@ async function loadNodesOnce() {
     renderNodeViews();
     updatePluginSuggestions();
     updateConfigurationButtons();
-    const first = visibleNodeItems.length === 0 ? 0 : pageOffset + 1;
-    const last = pageOffset + visibleNodeItems.length;
-    const pageMeta = registry.pageMetadata.get(pageOffset);
-    const backendLimit = pageMeta?.backendItemsTruncated
-      ? ` Backend summaries are limited to ${pageMeta.backendItemsReturned} entries on this page.` : '';
-    text(message, visibleNodeItems.length === 0 ? 'No nodes on this page.'
-      : `Showing nodes ${first}–${last}.${backendLimit}`);
-    text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);
-    previousPage.disabled = pageOffset === 0;
-    nextPage.disabled = pageOffset + visibleNodeItems.length >= registry.items.length;
     if (suppressNodeAutoLoad === 0) void autoLoadTab(tabFromHash());
   } catch (error) {
     visibleNodeItems = [];
     allNodeItems = [];
+    nodePageMetadata = new Map();
     backendTopologyTruncated = false;
     nodeIndex.clear();
     nodeCapabilities.clear();
@@ -4921,6 +4929,8 @@ globalSearch.addEventListener('submit', event => {
     || allNodeItems.find(item => item.nodeId.toLowerCase().includes(normalized)
       || item.displayName.toLowerCase().includes(normalized));
   if (node) {
+    const nodePosition = allNodeItems.indexOf(node);
+    selectNodePage(Math.floor(nodePosition / PAGE_SIZE) * PAGE_SIZE);
     openWorkspace('servers');
     selectPrimaryServer(node.nodeId);
     globalSearchInput.value = '';

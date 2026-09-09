@@ -614,11 +614,24 @@ class ControlHttpServerTest {
         assertTrue(globalShortcut >= 0 && selectConfigView > globalShortcut && openShortcutTab > selectConfigView,
                 "Nested search shortcuts must establish their subview before tab autoload starts.");
         int globalNodeSearch = script.body().indexOf("if (node) {");
+        int locateNodePage = script.body().indexOf(
+                "selectNodePage(Math.floor(nodePosition / PAGE_SIZE) * PAGE_SIZE);", globalNodeSearch);
         int openServersForSearch = script.body().indexOf("openWorkspace('servers');", globalNodeSearch);
         int selectServerForSearch = script.body().indexOf("selectPrimaryServer(node.nodeId);", globalNodeSearch);
-        assertTrue(globalNodeSearch >= 0 && openServersForSearch > globalNodeSearch
+        assertTrue(globalNodeSearch >= 0 && locateNodePage > globalNodeSearch
+                        && openServersForSearch > locateNodePage
                         && selectServerForSearch > openServersForSearch,
-                "Global server search must navigate to Servers before selecting a node, preventing an Overview autoload.");
+                "Global server search must show the matching page, then navigate before selecting the node.");
+        int selectNodePage = script.body().indexOf("function selectNodePage(offset)");
+        assertTrue(selectNodePage >= 0
+                        && script.body().indexOf("text(pageNumber, `Page ${Math.floor(pageOffset / PAGE_SIZE) + 1}`);",
+                                selectNodePage) > selectNodePage
+                        && script.body().indexOf("previousPage.disabled = pageOffset === 0;", selectNodePage)
+                                > selectNodePage
+                        && script.body().indexOf(
+                                "nextPage.disabled = pageOffset + visibleNodeItems.length >= allNodeItems.length;",
+                                selectNodePage) > selectNodePage,
+                "Changing pages must keep the node range, page label, and navigation controls synchronized.");
         assertFalse(script.body().contains(".style."));
         assertError(send("POST", "/", null, null), 405, "METHOD_NOT_ALLOWED");
         HttpResponse<String> health = get("/api/v1/health", null);
