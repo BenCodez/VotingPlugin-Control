@@ -574,6 +574,9 @@ class ControlHttpServerTest {
         assertFalse(script.body().contains(
                 "unmatchedLoggedServices.slice(0, 10)"),
                 "All bounded unmatched-service entries must contribute to the health summary.");
+        assertFalse(script.body().contains(
+                "['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state)).slice(0, 5)"),
+                "All bounded failed operations must contribute to the dashboard issue total.");
         assertTrue(script.body().contains("runDriftCheck.addEventListener('click', async () => {\n  setConfigView('compare');"));
         assertTrue(script.body().contains("voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0"));
         assertTrue(script.body().contains("voteSitesConfiguredKnown: configuredVoteSites != null"));

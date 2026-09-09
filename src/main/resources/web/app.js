@@ -2195,7 +2195,7 @@ function dashboardIssues() {
         'A retained vote event used a service identifier with no configured match.', 'Open Vote Sites', 'data', 'site-health-card'));
     });
   }
-  operationHistoryItems.filter(operation => ['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state)).slice(0, 5)
+  operationHistoryItems.filter(operation => ['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state))
     .forEach(operation => issues.push(issue('warning', `${operationLabel(operation)} needs review`,
       operationPhase(operation), 'View operation', 'activity')));
   if (operationHistoryStatus === 'failed') issues.push(issue('warning', 'Operation history is unavailable',
