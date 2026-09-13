@@ -1079,7 +1079,11 @@ async function loadOperationHistoryOnce() {
     operationHistoryItems = retainedOperations.slice(0, MAX_OPERATION_HISTORY).map(operation =>
       ({...operation, results: Object.fromEntries(Object.entries(operation.results || {}).map(([nodeId, result]) =>
         [nodeId, result ? {...result, configuration: null} : result]))}));
-    if (observedSuccessfulApply) invalidateConfigurationReads();
+    if (observedSuccessfulApply) {
+      invalidateConfigurationReads();
+      resetDedicatedSetupValues();
+      if (tabFromHash() === 'quick-setup') window.setTimeout(() => void autoLoadTab('quick-setup'), 0);
+    }
     const pendingRestarts = new Map();
     const restartSessions = body.voteLoggingRestartSessions;
     if (restartSessions && typeof restartSessions === 'object' && !Array.isArray(restartSessions)) {

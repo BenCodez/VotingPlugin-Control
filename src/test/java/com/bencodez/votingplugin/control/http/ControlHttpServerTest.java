@@ -150,6 +150,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("previewVoteLogging.disabled = !quickReady || voteLoggingState.textContent === 'Not loaded';"));
         assertTrue(script.body().contains("if (automatic && requestGeneration !== inputGeneration) void autoLoadTab('quick-setup');"),
                 "Discarded automatic dedicated reads must request a fresh read rather than leave defaults previewable.");
+        assertTrue(script.body().contains("if (observedSuccessfulApply) {\n      invalidateConfigurationReads();\n      resetDedicatedSetupValues();"),
+                "Observed external applies must invalidate the dedicated setup cards as well as the main editor.");
+        assertTrue(script.body().contains("if (tabFromHash() === 'quick-setup') window.setTimeout(() => void autoLoadTab('quick-setup'), 0);"),
+                "Invalidated dedicated settings must automatically reload while Quick Setup is visible.");
         assertTrue(script.body().contains("nodeCapabilities.get(node)?.includes(quickSetupCapability())"),
                 "Quick approvals must remain valid only for their selected capability version.");
         assertTrue(script.body().contains("const profileName = profilePicker.value;"));
@@ -292,7 +296,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("serverConfigurationGeneration > observedServerConfigurationGeneration"));
         assertTrue(script.body().contains("Math.max(observedServerConfigurationGeneration, serverConfigurationGeneration)"),
                 "A delayed older response must not move the observed server generation backwards.");
-        assertTrue(script.body().contains("if (observedSuccessfulApply) invalidateConfigurationReads();"),
+        assertTrue(script.body().contains("if (observedSuccessfulApply) {\n      invalidateConfigurationReads();"),
                 "Activity refreshes must invalidate cached health after observing an external successful apply.");
         assertTrue(script.body().contains("if (applied) {\n    invalidateConfigurationReads();"),
                 "Locally completed applies must use the same cache invalidation path.");
