@@ -1557,9 +1557,12 @@ function setActiveTab(tab, updateHash = false) {
 }
 
 function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = null) {
-  if (preset) {
+  if (preset && quickPreset.value !== preset) {
     quickPreset.value = preset;
     loadedQuickSetup = null;
+    quickSetupDirty = false;
+    quickSetupPreserveReadGeneration = -1;
+    pendingDetectedVoteSite = null;
     updateQuickFields();
     clearApprovals();
   }
@@ -2996,8 +2999,17 @@ function backendQuickTargets() {
 
 function quickSetupCapability() {
   return quickPreset.value === 'proxy-backend' && quickMethod.value === 'HTTP'
-    ? 'config.proxy-method.v2' : quickPreset.value === 'vote-party'
+    ? 'config.proxy-method.v2' : quickPreset.value === 'vote-party' && votePartyUsesV2()
     ? 'config.quick-setup.v2' : 'config.quick-setup.v1';
+}
+
+function votePartyUsesV2() {
+  const selectedBackends = [...selectedNodes].filter(nodeId => nodeIndex.has(nodeId)
+    && isBackend(nodeIndex.get(nodeId))
+    && (nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v1')
+      || nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2')));
+  return selectedBackends.length > 0
+    && selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2'));
 }
 
 function quickSetupTargets() {
@@ -4043,15 +4055,15 @@ applyFileConfiguration.addEventListener('click', async () => {
       || !window.confirm(`Apply this exact ${configurationFile.value} preview to ${fileTargetDescription()}?`)) return;
   const approval = approvedFilePreview;
   approvedFilePreview = null;
-  // Applying claims one generation; the successful-read invalidation claims the next.
-  const expectedApplyGeneration = inputGeneration + 2;
+  const submittedContent = configurationContent.value;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, fileOperationStatus);
     const currentFileTargets = fileTargetsForSelection(configurationFile.value);
-    const submittedContextStillCurrent = inputGeneration === expectedApplyGeneration
-      && approval.fileName === configurationFile.value
+    const submittedContextStillCurrent = approval.fileName === configurationFile.value
+      && configurationContent.value === submittedContent
+      && fileDraftMatchesCurrentContext()
       && currentFileTargets.length === approval.nodeIds.length
       && approval.nodeIds.every(nodeId => currentFileTargets.includes(nodeId)
         && approval.sessions.get(nodeId) === nodeIndex.get(nodeId)?.sessionId);
@@ -4094,10 +4106,12 @@ function quickOptions() {
     disableNoServiceSiteMessage: String(quickHideSiteWarning.checked),
     disableUpdateChecking: String(quickDisableUpdates.checked)
   };
-  return {enabled: String(quickPartyEnabled.checked), votesRequired: quickPartyVotes.value,
+  const voteParty = {votesRequired: quickPartyVotes.value,
     command: quickPartyCommand.value.trim(),
     broadcast: quickPartyBroadcast.value.trim(), giveAllPlayers: String(quickPartyAll.checked),
     onlineOnly: String(quickPartyOnline.checked)};
+  if (quickSetupCapability() === 'config.quick-setup.v2') voteParty.enabled = String(quickPartyEnabled.checked);
+  return voteParty;
 }
 
 function quickReadOptions() {
@@ -4105,7 +4119,11 @@ function quickReadOptions() {
 }
 
 function quickReadConfigurationOptions() {
-  return quickPreset.value === 'proxy-backend' ? {method: quickMethod.value} : quickReadOptions();
+  if (quickPreset.value === 'proxy-backend') return {method: quickMethod.value};
+  if (quickPreset.value === 'vote-party' && quickSetupCapability() === 'config.quick-setup.v2') {
+    return {enabled: String(quickPartyEnabled.checked)};
+  }
+  return quickReadOptions();
 }
 
 function populateQuickState(options) {
@@ -4135,7 +4153,10 @@ function populateQuickState(options) {
     quickVoteLoggingDays.value = options.purgeDays || '30';
     quickVoteLoggingMainMysql.checked = options.useMainMySQL !== 'false';
   } else if (quickPreset.value === 'vote-party') {
-    quickPartyEnabled.checked = options.enabled === 'true';
+    const enabledAvailable = Object.hasOwn(options, 'enabled');
+    quickPartyEnabled.checked = enabledAvailable && options.enabled === 'true';
+    quickPartyEnabled.indeterminate = !enabledAvailable;
+    quickPartyEnabled.disabled = !enabledAvailable;
     quickPartyVotes.value = options.votesRequired || '20';
     quickPartyBroadcast.value = options.broadcast || '';
     quickPartyAll.checked = options.giveAllPlayers === 'true';

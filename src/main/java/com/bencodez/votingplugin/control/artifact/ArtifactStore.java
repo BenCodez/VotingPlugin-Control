@@ -151,7 +151,8 @@ public final class ArtifactStore {
                 if (Files.exists(incoming, LinkOption.NOFOLLOW_LINKS)) {
                     verifyExistingArtifact(incoming, incomingId);
                     boolean legacyCollision = legacyMarker && hasMatchingStagedUpload(files, incomingId);
-                    if (!stagedPresent && !legacyCollision) Files.delete(incoming);
+                    boolean interruptedPublication = stagedPresent && Files.isSameFile(staged, incoming);
+                    if (interruptedPublication || (!stagedPresent && !legacyCollision)) Files.delete(incoming);
                 }
                 restoreQuarantined(quarantined);
             }

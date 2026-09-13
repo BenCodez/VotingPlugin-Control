@@ -367,6 +367,31 @@ class ArtifactStoreTest {
         assertFalse(Files.exists(marker));
     }
 
+    @Test void startupRollsBackAHardLinkedPublicationBeforeCommit() throws Exception {
+        Path artifacts = directory.resolve("hard-link-recovery-artifacts");
+        byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/Incoming.class", new byte[] {2});
+        ArtifactStore store = new ArtifactStore(artifacts);
+        String oldId = store.upload(new ByteArrayInputStream(old), "old.jar", sha256(old)).artifactId();
+        String incomingId = sha256(incoming);
+        String transaction = "7".repeat(32);
+        Path quarantine = artifacts.resolve("evict-" + transaction + "-" + oldId + ".part");
+        Files.move(artifacts.resolve(oldId + ".jar"), quarantine);
+        Path staged = Files.write(artifacts.resolve("upload-linked.part"), incoming);
+        Path published = artifacts.resolve(incomingId + ".jar");
+        Files.createLink(published, staged);
+        Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending");
+        Files.writeString(marker, staged.getFileName().toString());
+
+        ArtifactStore recovered = new ArtifactStore(artifacts);
+
+        assertArrayEquals(old, recovered.open(oldId).readAllBytes());
+        assertRejected(() -> recovered.open(incomingId));
+        assertFalse(Files.exists(staged));
+        assertFalse(Files.exists(quarantine));
+        assertFalse(Files.exists(marker));
+    }
+
     @Test void startupFinishesACommittedEvictionWithoutRestoringOldArtifacts() throws Exception {
         Path artifacts = directory.resolve("committed-artifacts");
         byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
