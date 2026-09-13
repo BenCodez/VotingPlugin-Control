@@ -175,6 +175,14 @@ class ControlHttpServerTest {
                 "Quick approvals must remain valid only for their selected capability version.");
         assertTrue(script.body().contains("'config.quick-setup.v1', 'config.quick-setup.v2', 'config.proxy-method.v2'"),
                 "Secondary versioned backends must remain selectable for HTTP and Vote Party setup.");
+		assertTrue(script.body().contains("'config.quick-setup.v2', 'config.proxy-method.v2', 'data.inspect.v1'"),
+				"HTTP capability transitions must invalidate cached guided configuration reads.");
+		assertTrue(script.body().contains("return {enabled: 'true'};"),
+				"The v2 read selector must be a constant capability hint, not editable Vote Party state.");
+		assertTrue(script.body().contains("proxyMethodCurrentReadCapability !== readCapability"),
+				"The active proxy method must be invalidated when its v1/v2 read capability changes.");
+		assertTrue(script.body().contains("proxyMethodCurrentReadCapability = readCapability;"),
+				"Successful proxy reads must remember the exact capability used.");
         assertTrue(script.body().contains("quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)"));
         assertTrue(script.body().contains("!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded'"));
         assertTrue(script.body().contains("Configuration changed elsewhere; your unsaved guided edits were preserved."),

@@ -321,16 +321,37 @@ public final class ArtifactStore {
     }
 
     private void createTransactionMarker(Path marker, String stagedName) throws IOException {
-        try (FileChannel channel = FileChannel.open(marker, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
+        Path temporaryMarker = directory.resolve("upload-marker-" + UUID.randomUUID() + ".part");
+        boolean published = false;
+        try (FileChannel channel = FileChannel.open(temporaryMarker,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
                 LinkOption.NOFOLLOW_LINKS)) {
-            setPermissions(marker, FILE_PERMISSIONS);
+            setPermissions(temporaryMarker, FILE_PERMISSIONS);
             ByteBuffer contents = ByteBuffer.wrap(stagedName.getBytes(StandardCharsets.UTF_8));
             while (contents.hasRemaining()) {
                 if (channel.write(contents) <= 0) throw new IOException("Artifact transaction marker could not be written");
             }
             channel.force(true);
+        } catch (IOException | RuntimeException failure) {
+            cleanupTemporaryMarker(temporaryMarker, failure);
+            throw failure;
         }
-        DurableFiles.forceDirectory(directory);
+        try {
+            Files.move(temporaryMarker, marker, StandardCopyOption.ATOMIC_MOVE);
+            published = true;
+            DurableFiles.forceDirectory(directory);
+        } catch (IOException | RuntimeException failure) {
+            if (!published) cleanupTemporaryMarker(temporaryMarker, failure);
+            throw failure;
+        }
+    }
+
+    private void cleanupTemporaryMarker(Path temporaryMarker, Throwable original) {
+        try {
+            if (Files.deleteIfExists(temporaryMarker)) DurableFiles.forceDirectory(directory);
+        } catch (IOException cleanupFailure) {
+            original.addSuppressed(cleanupFailure);
+        }
     }
 
     private IOException rollbackPublication(Path artifact, List<QuarantinedFile> quarantined,

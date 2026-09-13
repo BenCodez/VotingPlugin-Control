@@ -264,6 +264,7 @@ let transportTestBackendId = '';
 let proxyMethodProxyId = '';
 let proxyMethodCurrentFor = '';
 let proxyMethodCurrentSessionId = '';
+let proxyMethodCurrentReadCapability = '';
 let proxyMethodCurrentValue = '';
 let nodeCapabilities = new Map();
 let nodePlugins = new Map();
@@ -1257,6 +1258,7 @@ function applyAuthenticatedSession(body) {
   proxyMethodProxyId = '';
   proxyMethodCurrentFor = '';
   proxyMethodCurrentSessionId = '';
+  proxyMethodCurrentReadCapability = '';
   proxyMethodCurrentValue = '';
   fileReadCache.clear();
   lastFileReadOperation = null;
@@ -2634,10 +2636,13 @@ function renderProxyMethod() {
   }));
   proxyMethodProxy.value = proxyMethodProxyId;
   const network = proxyMethodReadNetwork();
+  const readCapability = proxyMethodReadCapability();
   if (proxyMethodCurrentFor !== proxyMethodProxyId
-      || proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')) {
+      || proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')
+      || proxyMethodCurrentReadCapability !== readCapability) {
     proxyMethodCurrentFor = '';
     proxyMethodCurrentSessionId = '';
+    proxyMethodCurrentReadCapability = '';
     proxyMethodCurrentValue = '';
   }
   const ready = network.proxyReady && network.topologyComplete && network.reported.length > 0 &&
@@ -2849,6 +2854,7 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   proxyMethodProxyId = '';
   proxyMethodCurrentFor = '';
   proxyMethodCurrentSessionId = '';
+  proxyMethodCurrentReadCapability = '';
   proxyMethodCurrentValue = '';
   fileReadCache.clear();
   text(networkDoctorResults, reason);
@@ -3108,6 +3114,7 @@ function discardAuthenticationState(reason) {
   proxyMethodProxyId = '';
   proxyMethodCurrentFor = '';
   proxyMethodCurrentSessionId = '';
+  proxyMethodCurrentReadCapability = '';
   proxyMethodCurrentValue = '';
   fileReadCache.clear();
   lastFileReadOperation = null;
@@ -3509,7 +3516,7 @@ async function loadNodesOnce() {
       ? node.detectedPlugins : []]));
     const selectedCapabilitiesChanged = [...selectedNodes].some(node =>
       ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1', 'config.quick-setup.v1',
-        'config.quick-setup.v2', 'data.inspect.v1'].some(capability =>
+        'config.quick-setup.v2', 'config.proxy-method.v2', 'data.inspect.v1'].some(capability =>
         Boolean(previousCapabilities.get(node)?.includes(capability)) !==
           Boolean(nodeCapabilities.get(node)?.includes(capability))));
     if (selectedCapabilitiesChanged) {
@@ -4015,7 +4022,7 @@ function quickReadOptions() {
 function quickReadConfigurationOptions() {
   if (quickPreset.value === 'proxy-backend') return {method: quickMethod.value};
   if (quickPreset.value === 'vote-party' && quickSetupCapability() === 'config.quick-setup.v2') {
-    return {enabled: String(quickPartyEnabled.checked)};
+    return {enabled: 'true'};
   }
   return quickReadOptions();
 }
@@ -4269,6 +4276,7 @@ async function loadProxyMethod(automatic = false) {
         || sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId || result?.sessionId !== sessionId) return;
     proxyMethodCurrentFor = proxyId;
     proxyMethodCurrentSessionId = sessionId;
+    proxyMethodCurrentReadCapability = readCapability;
     proxyMethodCurrentValue = method;
     renderProxyMethod();
     text(proxyMethodStatus, `Active method on ${proxyId}: ${method}`);
@@ -4283,6 +4291,7 @@ proxyMethodProxy.addEventListener('change', () => {
   proxyMethodProxyId = proxyMethodProxy.value;
   proxyMethodCurrentFor = '';
   proxyMethodCurrentSessionId = '';
+  proxyMethodCurrentReadCapability = '';
   proxyMethodCurrentValue = '';
   renderProxyMethod();
   const network = proxyMethodReadNetwork();
@@ -4323,6 +4332,7 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
     if (applied.state === 'SUCCEEDED') {
       proxyMethodCurrentFor = network.proxy.nodeId;
       proxyMethodCurrentSessionId = network.proxy.sessionId;
+      proxyMethodCurrentReadCapability = proxyMethodReadCapability();
       proxyMethodCurrentValue = method;
       renderProxyMethod();
     }

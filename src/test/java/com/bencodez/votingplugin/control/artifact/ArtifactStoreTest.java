@@ -99,6 +99,16 @@ class ArtifactStoreTest {
         assertRejected(() -> store.upload(new ByteArrayInputStream(duplicate), "VotingPlugin.jar", sha256(duplicate)));
     }
 
+	@Test void removesAnUnpublishedTemporaryTransactionMarkerOnStartup() throws Exception {
+		Path artifacts = directory.resolve("artifacts");
+		Files.createDirectories(artifacts);
+		Path incomplete = Files.writeString(artifacts.resolve("upload-marker-crashed.part"), "truncated");
+
+		new ArtifactStore(artifacts);
+
+		assertFalse(Files.exists(incomplete));
+	}
+
     @Test void rejectsSymlinkedStorageAndExistingArtifactTargets() throws Exception {
         Path real = directory.resolve("real");
         Files.createDirectory(real);
