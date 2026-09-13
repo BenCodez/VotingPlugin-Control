@@ -43,6 +43,8 @@ public final class DeploymentOperations {
     public static final Duration COMPLETE_RETENTION = Duration.ofMinutes(30);
     public static final int MAX_RETAINED = 100;
     static final int MAX_PRUNE_TRANSITIONS = 100;
+    private static final int MAX_JOURNAL_BYTES = 5 * 1024 * 1024;
+    private static final int MAX_DEPLOYMENT_BYTES = 64 * 1024;
     private static final int MAX_MESSAGE_CHARS = 500;
     private static final Set<String> FAILURE_CODES = Set.of(
             "ARTIFACT_NOT_FOUND", "HASH_MISMATCH", "SIZE_MISMATCH", "INVALID_ARTIFACT",
@@ -56,7 +58,10 @@ public final class DeploymentOperations {
     private final NodeRegistry registry;
     private final ConfigurationAuditLog audit;
     private final Clock clock;
+    /** The pre-per-deployment journal, retained only to import existing installations. */
     private final Path journal;
+    private final Path index;
+    private final Path deploymentDirectory;
     private final LinkedHashMap<UUID, StoredDeployment> deployments = new LinkedHashMap<>();
 
     public DeploymentOperations(NodeRegistry registry, Clock clock) {
@@ -88,6 +93,8 @@ public final class DeploymentOperations {
         this.clock = Objects.requireNonNull(clock, "clock");
         try {
             this.journal = dataDirectory == null ? null : prepareJournal(dataDirectory);
+            this.index = dataDirectory == null ? null : prepareIndex(dataDirectory);
+            this.deploymentDirectory = dataDirectory == null ? null : prepareDeploymentDirectory(dataDirectory);
             if (journal != null) loadJournal();
         } catch (IOException failure) {
             throw new IllegalStateException("Deployment journal could not be opened", failure);
@@ -121,7 +128,14 @@ public final class DeploymentOperations {
         StoredDeployment stored = new StoredDeployment(UUID.randomUUID(), request.artifactId(), request.sha256(),
                 request.size(), clock.instant(), targets);
         deployments.put(stored.id, stored);
-        commit(stored.id, null, "DEPLOYMENT_CREATED", "QUEUED");
+        if (deploymentDirectory != null) {
+            persistDeployment(stored.id);
+            persistIndex();
+            for (UUID id : prior.keySet()) {
+                if (!deployments.containsKey(id)) deleteDeployment(id);
+            }
+        }
+        if (audit != null) audit.append("DEPLOYMENT_CREATED", stored.id, null, "QUEUED");
         return view(stored);
         } catch (RuntimeException failure) {
             restore(prior, failure);
@@ -137,6 +151,7 @@ public final class DeploymentOperations {
     private DeploymentTask claimCurrent(String nodeId, NodeStatus node) {
         prune();
         LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
+        UUID changedDeployment = null;
         try {
         if (!node.online() || !node.acceptedCapabilities().contains(CAPABILITY)) return null;
         Instant now = clock.instant();
@@ -144,6 +159,7 @@ public final class DeploymentOperations {
             Target target = deployment.targets.get(nodeId);
             if (target == null || target.state.equals("SUCCEEDED") || target.state.equals("FAILED")) continue;
             if (!target.pinnedSession.equals(node.sessionId())) {
+                changedDeployment = deployment.id;
                 failUnavailable(deployment, target, "Node reconnected before this artifact was staged");
                 prior = copyDeployments();
                 continue;
@@ -155,6 +171,7 @@ public final class DeploymentOperations {
                 target.attemptId = null;
             }
             if (!target.pinnedSession.equals(node.sessionId())) continue;
+            changedDeployment = deployment.id;
             target.state = "IN_PROGRESS";
             target.leasedAt = now;
             target.attemptId = UUID.randomUUID();
@@ -164,7 +181,8 @@ public final class DeploymentOperations {
         }
         return null;
         } catch (RuntimeException failure) {
-            restore(prior, failure);
+            if (changedDeployment == null) restore(prior, failure);
+            else restore(prior, failure, changedDeployment);
             throw failure;
         }
     }
@@ -236,7 +254,7 @@ public final class DeploymentOperations {
         commit(deployment.id, node.nodeId(), "DEPLOYMENT_COMPLETED", result.code());
         return view(deployment);
         } catch (RuntimeException failure) {
-            restore(prior, failure);
+            restore(prior, failure, deploymentId);
             throw failure;
         }
     }
@@ -348,7 +366,7 @@ public final class DeploymentOperations {
     }
 
     private void commit(UUID operationId, String nodeId, String action, String outcome) {
-        if (journal != null) persistJournal();
+        if (deploymentDirectory != null) persistDeployment(operationId);
         if (audit != null) audit.append(action, operationId, nodeId, outcome);
     }
 
@@ -370,16 +388,24 @@ public final class DeploymentOperations {
         return result;
     }
 
-    private void restore(LinkedHashMap<UUID, StoredDeployment> prior, RuntimeException failure) {
+    private void restore(LinkedHashMap<UUID, StoredDeployment> prior, RuntimeException failure,
+                         UUID... changedDeployments) {
         deployments.clear();
         deployments.putAll(prior);
-        if (journal != null) {
+        if (deploymentDirectory != null) {
             try {
-                persistJournal();
+                persistDeployments(Set.of(changedDeployments));
+                persistIndex();
             } catch (RuntimeException rollbackFailure) {
                 failure.addSuppressed(rollbackFailure);
             }
         }
+    }
+
+    private void restore(LinkedHashMap<UUID, StoredDeployment> prior, RuntimeException failure) {
+        Set<UUID> changed = new java.util.LinkedHashSet<>(deployments.keySet());
+        changed.addAll(prior.keySet());
+        restore(prior, failure, changed.toArray(UUID[]::new));
     }
 
     private void prune() {
@@ -408,14 +434,23 @@ public final class DeploymentOperations {
 
         LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
         Instant cutoff = clock.instant().minus(COMPLETE_RETENTION);
+        Set<UUID> removed = new java.util.LinkedHashSet<>();
         try {
-            int previousSize = deployments.size();
-            deployments.values().removeIf(deployment ->
-                    isTerminal(deployment) && deployment.createdAt.isBefore(cutoff));
+            deployments.values().removeIf(deployment -> {
+                boolean remove = isTerminal(deployment) && deployment.createdAt.isBefore(cutoff);
+                if (remove) removed.add(deployment.id);
+                return remove;
+            });
             evictCompleted();
-            if (deployments.size() != previousSize && journal != null) persistJournal();
+            for (UUID id : prior.keySet()) {
+                if (!deployments.containsKey(id)) removed.add(id);
+            }
+            if (!removed.isEmpty() && deploymentDirectory != null) {
+                persistIndex();
+                persistDeployments(removed);
+            }
         } catch (RuntimeException failure) {
-            restore(prior, failure);
+            restore(prior, failure, removed.toArray(UUID[]::new));
             throw failure;
         }
     }
@@ -423,14 +458,17 @@ public final class DeploymentOperations {
     private void applyPruneFailures(List<PendingFailure> failures) {
         if (failures.isEmpty()) return;
         LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
+        Set<UUID> changed = failures.stream().map(PendingFailure::deploymentId)
+                .collect(java.util.stream.Collectors.toSet());
         for (PendingFailure failure : failures) {
             markFailed(deployments.get(failure.deploymentId).targets.get(failure.nodeId),
                     failure.code, failure.message);
         }
         try {
-            if (journal != null) persistJournal();
+            if (deploymentDirectory != null) persistDeployments(failures.stream()
+                    .map(PendingFailure::deploymentId).collect(java.util.stream.Collectors.toSet()));
         } catch (RuntimeException failure) {
-            restore(prior, failure);
+            restore(prior, failure, changed.toArray(UUID[]::new));
             throw failure;
         }
         if (audit == null) return;
@@ -445,8 +483,9 @@ public final class DeploymentOperations {
                     Target previous = prior.get(unapplied.deploymentId).targets.get(unapplied.nodeId);
                     copyTargetState(previous, current);
                 }
-                if (journal != null) {
-                    try { persistJournal(); }
+                if (deploymentDirectory != null) {
+                    try { persistDeployments(failures.subList(index, failures.size()).stream()
+                            .map(PendingFailure::deploymentId).collect(java.util.stream.Collectors.toSet())); }
                     catch (RuntimeException rollbackFailure) { failure.addSuppressed(rollbackFailure); }
                 }
                 throw failure;
@@ -513,65 +552,146 @@ public final class DeploymentOperations {
         return file;
     }
 
-    private void persistJournal() {
+    private static Path prepareDeploymentDirectory(Path dataDirectory) throws IOException {
+        Path directory = dataDirectory.resolve("plugin-deployments");
+        if (Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) {
+            if (Files.isSymbolicLink(directory) || !Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("Deployment journal directory is not a real directory");
+            }
+        } else {
+            Files.createDirectory(directory);
+        }
+        return directory;
+    }
+
+    private static Path prepareIndex(Path dataDirectory) throws IOException {
+        Path file = dataDirectory.resolve("plugin-deployments-index.json");
+        checkRegularFile(file, "Deployment journal index");
+        return file;
+    }
+
+    private void persistDeployment(UUID deploymentId) {
+        StoredDeployment deployment = deployments.get(deploymentId);
+        if (deployment == null) {
+            deleteDeployment(deploymentId);
+            return;
+        }
         try {
-            List<Map<String, Object>> entries = new ArrayList<>();
-            for (StoredDeployment deployment : deployments.values()) {
-                Map<String, Object> value = new LinkedHashMap<>();
-                value.put("id", deployment.id);
-                value.put("artifactId", deployment.artifactId);
-                value.put("sha256", deployment.sha256);
-                value.put("size", deployment.size);
-                value.put("createdAt", deployment.createdAt);
-                List<Map<String, Object>> targets = new ArrayList<>();
-                for (Target target : deployment.targets.values()) {
-                    Map<String, Object> item = new LinkedHashMap<>();
-                    item.put("nodeId", target.nodeId);
-                    item.put("sessionId", target.pinnedSession);
-                    item.put("state", target.state);
-                    item.put("leasedAt", target.leasedAt);
-                    item.put("attemptId", target.attemptId);
-                    item.put("result", target.result);
-                    targets.add(item);
-                }
-                value.put("targets", targets);
-                entries.add(value);
-            }
-            byte[] bytes = JSON.writeValueAsBytes(entries);
-            if (bytes.length > 5 * 1024 * 1024) throw new IOException("Deployment journal exceeds its bound");
-            Path temp = journal.resolveSibling(journal.getFileName() + ".tmp");
-            if (Files.exists(temp, LinkOption.NOFOLLOW_LINKS)) {
-                if (Files.isSymbolicLink(temp)) throw new IOException("Deployment journal temporary file is a symlink");
-                Files.delete(temp);
-            }
-            try (FileChannel channel = FileChannel.open(temp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
-                    LinkOption.NOFOLLOW_LINKS)) {
-                ByteBuffer buffer = ByteBuffer.wrap(bytes);
-                while (buffer.hasRemaining()) channel.write(buffer);
-                channel.force(true);
-            }
-            try {
-                Files.move(temp, journal, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
-                Files.move(temp, journal, StandardCopyOption.REPLACE_EXISTING);
-            }
-            DurableFiles.forceDirectory(journal.getParent());
+            byte[] bytes = JSON.writeValueAsBytes(persistedValue(deployment));
+            if (bytes.length > MAX_DEPLOYMENT_BYTES) throw new IOException("Deployment journal entry exceeds its bound");
+            Path file = deploymentFile(deploymentId);
+            writeAtomically(file, bytes, "Deployment journal entry");
         } catch (IOException e) {
-            throw new IllegalStateException("Deployment journal could not be written", e);
+            throw new IllegalStateException("Deployment journal entry could not be written", e);
         }
     }
 
+    private void persistDeployments(Set<UUID> deploymentIds) {
+        for (UUID deploymentId : deploymentIds) persistDeployment(deploymentId);
+    }
+
+    private void persistIndex() {
+        try {
+            byte[] bytes = JSON.writeValueAsBytes(deployments.keySet());
+            if (bytes.length > MAX_RETAINED * 40) throw new IOException("Deployment journal index exceeds its bound");
+            writeAtomically(index, bytes, "Deployment journal index");
+        } catch (IOException e) {
+            throw new IllegalStateException("Deployment journal index could not be written", e);
+        }
+    }
+
+    private static void writeAtomically(Path file, byte[] bytes, String description) throws IOException {
+        checkRegularFile(file, description);
+        Path temp = file.resolveSibling(file.getFileName() + ".tmp");
+        if (Files.exists(temp, LinkOption.NOFOLLOW_LINKS)) {
+            checkRegularFile(temp, description + " temporary file");
+            Files.delete(temp);
+        }
+        try (FileChannel channel = FileChannel.open(temp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
+                LinkOption.NOFOLLOW_LINKS)) {
+            ByteBuffer buffer = ByteBuffer.wrap(bytes);
+            while (buffer.hasRemaining()) channel.write(buffer);
+            channel.force(true);
+        }
+        try {
+            Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+        }
+        DurableFiles.forceDirectory(file.getParent());
+    }
+
+    private void deleteDeployment(UUID deploymentId) {
+        Path file = deploymentFile(deploymentId);
+        try {
+            if (!Files.exists(file, LinkOption.NOFOLLOW_LINKS)) return;
+            checkRegularFile(file, "Deployment journal entry");
+            Files.delete(file);
+            DurableFiles.forceDirectory(deploymentDirectory);
+        } catch (IOException e) {
+            throw new IllegalStateException("Deployment journal entry could not be removed", e);
+        }
+    }
+
+    private Path deploymentFile(UUID deploymentId) {
+        return deploymentDirectory.resolve(deploymentId + ".json");
+    }
+
+    private static void checkRegularFile(Path file, String description) throws IOException {
+        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)
+                && (Files.isSymbolicLink(file) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS))) {
+            throw new IOException(description + " is not a regular file");
+        }
+    }
+
+    private static Map<String, Object> persistedValue(StoredDeployment deployment) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("id", deployment.id);
+        value.put("artifactId", deployment.artifactId);
+        value.put("sha256", deployment.sha256);
+        value.put("size", deployment.size);
+        value.put("createdAt", deployment.createdAt);
+        List<Map<String, Object>> targets = new ArrayList<>();
+        for (Target target : deployment.targets.values()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("nodeId", target.nodeId);
+            item.put("sessionId", target.pinnedSession);
+            item.put("state", target.state);
+            item.put("leasedAt", target.leasedAt);
+            item.put("attemptId", target.attemptId);
+            item.put("result", target.result);
+            targets.add(item);
+        }
+        value.put("targets", targets);
+        return value;
+    }
+
     private void loadJournal() throws IOException {
-        if (!Files.exists(journal, LinkOption.NOFOLLOW_LINKS)) return;
+        if (Files.exists(journal, LinkOption.NOFOLLOW_LINKS)) {
+            loadLegacyJournal();
+            normalizeLoadedEntries();
+            clearPartialMigrationEntries();
+            persistDeployments(new java.util.LinkedHashSet<>(deployments.keySet()));
+            persistIndex();
+            Files.delete(journal);
+            DurableFiles.forceDirectory(journal.getParent());
+        } else {
+            loadDeploymentDirectory();
+            Set<UUID> changed = normalizeLoadedEntries();
+            if (!changed.isEmpty()) persistDeployments(changed);
+        }
+    }
+
+    private void loadLegacyJournal() throws IOException {
         byte[] bytes;
         try (var channel = Files.newByteChannel(journal, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
-            if (Files.size(journal) > 5 * 1024 * 1024) throw new IOException("Deployment journal exceeds its bound");
+            if (Files.size(journal) > MAX_JOURNAL_BYTES) throw new IOException("Deployment journal exceeds its bound");
             ByteBuffer buffer = ByteBuffer.allocate((int) Files.size(journal));
             while (buffer.hasRemaining() && channel.read(buffer) >= 0) { }
             if (buffer.hasRemaining()) throw new IOException("Deployment journal could not be read");
             bytes = buffer.array();
         }
-        if (bytes.length > 5 * 1024 * 1024) throw new IOException("Deployment journal exceeds its bound");
+        if (bytes.length > MAX_JOURNAL_BYTES) throw new IOException("Deployment journal exceeds its bound");
         String text = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
                 .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
@@ -585,14 +705,140 @@ public final class DeploymentOperations {
             StoredDeployment deployment = parseDeployment(item);
             if (deployments.put(deployment.id, deployment) != null) throw new IOException("Duplicate deployment ID");
         }
-        boolean changed = false;
+    }
+
+    private void loadDeploymentDirectory() throws IOException {
+        if (!Files.exists(index, LinkOption.NOFOLLOW_LINKS)) {
+            clearPartialMigrationEntries();
+            return;
+        }
+        List<UUID> retained = loadIndex();
+        Map<UUID, Path> entriesById = new LinkedHashMap<>();
+        List<Path> staleEntries = new ArrayList<>();
+        int bytes = 0;
+        try (var entries = Files.newDirectoryStream(deploymentDirectory)) {
+            for (Path entry : entries) {
+                String name = entry.getFileName().toString();
+                if (name.endsWith(".json.tmp") && isDeploymentFile(name.substring(0, name.length() - 4))) {
+                    checkRegularFile(entry, "Deployment journal temporary file");
+                    Files.delete(entry);
+                    DurableFiles.forceDirectory(deploymentDirectory);
+                    continue;
+                }
+                if (!isDeploymentFile(name)) throw new IOException("Deployment journal directory contains an unexpected file");
+                checkRegularFile(entry, "Deployment journal entry");
+                UUID id = UUID.fromString(name.substring(0, name.length() - 5));
+                if (!retained.contains(id)) {
+                    staleEntries.add(entry);
+                    continue;
+                }
+                long size = Files.size(entry);
+                if (size > MAX_DEPLOYMENT_BYTES || size > MAX_JOURNAL_BYTES - bytes) {
+                    throw new IOException("Deployment journal exceeds its bound");
+                }
+                bytes += (int) size;
+                if (entriesById.put(id, entry) != null) throw new IOException("Deployment journal is invalid");
+            }
+        }
+        for (UUID id : retained) {
+            Path entry = entriesById.get(id);
+            if (entry == null) throw new IOException("Deployment journal entry is missing");
+            StoredDeployment deployment = parseJournalFile(entry);
+            if (!deployment.id.equals(id) || deployments.put(id, deployment) != null) {
+                throw new IOException("Deployment journal is invalid");
+            }
+        }
+        for (Path stale : staleEntries) Files.delete(stale);
+        if (!staleEntries.isEmpty()) DurableFiles.forceDirectory(deploymentDirectory);
+    }
+
+    private List<UUID> loadIndex() throws IOException {
+        long size = Files.size(index);
+        if (size > MAX_RETAINED * 40) throw new IOException("Deployment journal index exceeds its bound");
+        byte[] bytes;
+        try (var channel = Files.newByteChannel(index, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            ByteBuffer buffer = ByteBuffer.allocate((int) size);
+            while (buffer.hasRemaining() && channel.read(buffer) >= 0) { }
+            if (buffer.hasRemaining()) throw new IOException("Deployment journal index could not be read");
+            bytes = buffer.array();
+        }
+        String text = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
+        try (JsonParser parser = JSON.getFactory().createParser(text)) {
+            JsonNode root = JSON.readTree(parser);
+            if (parser.nextToken() != null || root == null || !root.isArray() || root.size() > MAX_RETAINED) {
+                throw new IOException("Deployment journal index is invalid");
+            }
+            List<UUID> ids = new ArrayList<>();
+            for (JsonNode item : root) {
+                if (!item.isTextual()) throw new IOException("Deployment journal index is invalid");
+                UUID id = UUID.fromString(item.textValue());
+                if (!id.toString().equals(item.textValue()) || ids.contains(id)) {
+                    throw new IOException("Deployment journal index is invalid");
+                }
+                ids.add(id);
+            }
+            return ids;
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("Deployment journal index is invalid", invalid);
+        }
+    }
+
+    /** The legacy array remains authoritative until every partial import file is safely discarded. */
+    private void clearPartialMigrationEntries() throws IOException {
+        try (var entries = Files.newDirectoryStream(deploymentDirectory)) {
+            for (Path entry : entries) {
+                String name = entry.getFileName().toString();
+                if (!isDeploymentFile(name) && !(name.endsWith(".json.tmp")
+                        && isDeploymentFile(name.substring(0, name.length() - 4)))) {
+                    throw new IOException("Deployment journal directory contains an unexpected file");
+                }
+                checkRegularFile(entry, "Deployment journal migration entry");
+                Files.delete(entry);
+            }
+        }
+        DurableFiles.forceDirectory(deploymentDirectory);
+    }
+
+    private static boolean isDeploymentFile(String name) {
+        if (!name.endsWith(".json")) return false;
+        try {
+            return UUID.fromString(name.substring(0, name.length() - 5)).toString().concat(".json").equals(name);
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
+    }
+
+    private StoredDeployment parseJournalFile(Path file) throws IOException {
+        byte[] bytes;
+        try (var channel = Files.newByteChannel(file, Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            long size = Files.size(file);
+            if (size > MAX_DEPLOYMENT_BYTES) throw new IOException("Deployment journal entry exceeds its bound");
+            ByteBuffer buffer = ByteBuffer.allocate((int) size);
+            while (buffer.hasRemaining() && channel.read(buffer) >= 0) { }
+            if (buffer.hasRemaining()) throw new IOException("Deployment journal entry could not be read");
+            bytes = buffer.array();
+        }
+        String text = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString();
+        try (JsonParser parser = JSON.getFactory().createParser(text)) {
+            JsonNode value = JSON.readTree(parser);
+            if (parser.nextToken() != null) throw new IOException("Deployment journal entry has trailing data");
+            return parseDeployment(value);
+        }
+    }
+
+    private Set<UUID> normalizeLoadedEntries() {
+        Set<UUID> changedDeployments = new java.util.LinkedHashSet<>();
         for (StoredDeployment deployment : deployments.values()) {
             for (Target target : deployment.targets.values()) {
                 if (target.result != null) {
                     DeploymentTaskResult safe = safeResult(target.result);
                     if (!safe.equals(target.result)) {
                         target.result = safe;
-                        changed = true;
+                        changedDeployments.add(deployment.id);
                     }
                 }
                 if (!"IN_PROGRESS".equals(target.state)) continue;
@@ -602,10 +848,10 @@ public final class DeploymentOperations {
                         "Control restarted while this staging attempt was in progress", interruptedAttempt);
                 target.leasedAt = null;
                 target.attemptId = null;
-                changed = true;
+                changedDeployments.add(deployment.id);
             }
         }
-        if (changed) persistJournal();
+        return changedDeployments;
     }
 
     private StoredDeployment parseDeployment(JsonNode item) throws IOException {

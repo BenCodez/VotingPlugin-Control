@@ -30,6 +30,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
+import java.util.stream.Stream;
 
 class DeploymentOperationsTest {
     private static final UUID SESSION_A = UUID.fromString("00000000-0000-0000-0000-000000000001");
@@ -130,8 +131,7 @@ class DeploymentOperationsTest {
                         "secret=/private/server/path/token", task.attemptId()));
 
         assertEquals("The node could not write the staged artifact", completed.nodes().get(0).result().message());
-        assertFalse(Files.readString(directory.resolve("plugin-deployments.json"), StandardCharsets.UTF_8)
-                .contains("/private/server/path/token"));
+        assertFalse(durableJournal(directory).contains("/private/server/path/token"));
     }
 
     @Test
@@ -225,26 +225,23 @@ class DeploymentOperationsTest {
     }
 
     @Test
-    void retentionPersistenceFailureRestoresTheRemovedDeployment(@TempDir Path directory) throws Exception {
+    void transitionPersistenceFailureRestoresThePriorDeploymentState(@TempDir Path directory) throws Exception {
         FakeRegistry registry = new FakeRegistry();
         registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
         DeploymentOperations operations = new DeploymentOperations(registry, directory, clock);
         DeploymentResult created = operations.create(request("backend"));
-        DeploymentTask task = operations.claim("backend", SESSION_A);
-        operations.complete(created.deploymentId(), "backend",
-                new DeploymentTaskResult(SESSION_A, true, "RESTART_REQUIRED", "staged", task.attemptId()));
-        Duration elapsed = DeploymentOperations.COMPLETE_RETENTION.plusSeconds(1);
-        clock.advance(elapsed);
-        Path temporary = Files.createDirectory(directory.resolve("plugin-deployments.json.tmp"));
+        Path temporary = Files.createDirectory(deploymentFile(directory, created.deploymentId())
+                .resolveSibling(created.deploymentId() + ".json.tmp"));
         Files.writeString(temporary.resolve("blocker"), "block", StandardCharsets.UTF_8);
 
+        clock.advance(DeploymentOperations.ACTIVE_RETENTION);
         assertThrows(IllegalStateException.class, () -> operations.list(0, 100));
         Files.delete(temporary.resolve("blocker"));
         Files.delete(temporary);
-        clock.advance(elapsed.negated());
+        clock.advance(DeploymentOperations.ACTIVE_RETENTION.negated());
 
-        assertEquals("SUCCEEDED", operations.get(created.deploymentId()).state());
-        assertEquals("SUCCEEDED", new DeploymentOperations(registry, directory, clock)
+        assertEquals("QUEUED", operations.get(created.deploymentId()).state());
+        assertEquals("QUEUED", new DeploymentOperations(registry, directory, clock)
                 .get(created.deploymentId()).state());
     }
 
@@ -283,10 +280,10 @@ class DeploymentOperationsTest {
     }
 
     @Test
-    void retentionEvictsTheOldestCompletedDeploymentAndListsNewestFirst() {
+    void retentionEvictsTheOldestCompletedDeploymentAndListsNewestFirst(@TempDir Path directory) throws Exception {
         FakeRegistry registry = new FakeRegistry();
         registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
-        DeploymentOperations operations = new DeploymentOperations(registry, clock);
+        DeploymentOperations operations = new DeploymentOperations(registry, directory, clock);
         UUID oldest = null;
         for (int index = 0; index < DeploymentOperations.MAX_RETAINED; index++) {
             DeploymentResult created = operations.create(request("backend"));
@@ -302,6 +299,10 @@ class DeploymentOperationsTest {
         UUID evicted = oldest;
         assertEquals("OPERATION_NOT_FOUND", assertThrows(ValidationException.class,
                 () -> operations.get(evicted)).code());
+        DeploymentOperations reopened = new DeploymentOperations(registry, directory, clock);
+        assertEquals(DeploymentOperations.MAX_RETAINED, reopened.list(0, 100).size());
+        assertEquals("OPERATION_NOT_FOUND", assertThrows(ValidationException.class,
+                () -> reopened.get(evicted)).code());
     }
 
     @Test
@@ -333,8 +334,8 @@ class DeploymentOperationsTest {
     void journalRejectsFutureAndOverflowingTimestampsAtStartup(@TempDir Path directory) throws Exception {
         FakeRegistry registry = new FakeRegistry();
         registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
-        new DeploymentOperations(registry, directory, clock).create(request("backend"));
-        Path journal = directory.resolve("plugin-deployments.json");
+        DeploymentResult created = new DeploymentOperations(registry, directory, clock).create(request("backend"));
+        Path journal = deploymentFile(directory, created.deploymentId());
         String valid = Files.readString(journal, StandardCharsets.UTF_8);
 
         Files.writeString(journal, valid.replace(clock.instant().toString(), Instant.MAX.toString()),
@@ -357,8 +358,8 @@ class DeploymentOperationsTest {
     void journalRejectsNonCanonicalOrMismatchedArtifactIdentity(@TempDir Path directory) throws Exception {
         FakeRegistry registry = new FakeRegistry();
         registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
-        new DeploymentOperations(registry, directory, clock).create(request("backend"));
-        Path journal = directory.resolve("plugin-deployments.json");
+        DeploymentResult created = new DeploymentOperations(registry, directory, clock).create(request("backend"));
+        Path journal = deploymentFile(directory, created.deploymentId());
         String valid = Files.readString(journal, StandardCharsets.UTF_8);
 
         for (String invalidId : List.of("VotingPlugin.jar", SHA.toUpperCase(), "b".repeat(64))) {
@@ -371,6 +372,75 @@ class DeploymentOperationsTest {
 
     private static DeploymentRequest request(String... nodes) {
         return new DeploymentRequest(SHA, SHA, 1234, List.of(nodes));
+    }
+
+    @Test
+    void claimAndCompletionOnlyRewriteTheAffectedDeploymentEntry(@TempDir Path directory) throws Exception {
+        FakeRegistry registry = new FakeRegistry();
+        registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+        DeploymentOperations operations = new DeploymentOperations(registry, directory, clock);
+        List<UUID> deploymentIds = new java.util.ArrayList<>();
+        for (int index = 0; index < DeploymentOperations.MAX_RETAINED; index++) {
+            deploymentIds.add(operations.create(request("backend")).deploymentId());
+        }
+        Map<UUID, String> untouched = new HashMap<>();
+        for (int index = 1; index < deploymentIds.size(); index++) {
+            UUID id = deploymentIds.get(index);
+            untouched.put(id, Files.readString(deploymentFile(directory, id), StandardCharsets.UTF_8));
+        }
+
+        DeploymentTask task = operations.claim("backend", SESSION_A);
+        assertEquals(deploymentIds.get(0), task.deploymentId());
+        assertUntouchedDeploymentFiles(directory, untouched);
+        operations.complete(task.deploymentId(), "backend",
+                new DeploymentTaskResult(SESSION_A, true, "RESTART_REQUIRED", "staged", task.attemptId()));
+        assertUntouchedDeploymentFiles(directory, untouched);
+    }
+
+    @Test
+    void legacyMonolithicJournalIsImportedOnceIntoPerDeploymentEntries(@TempDir Path directory) throws Exception {
+        FakeRegistry registry = new FakeRegistry();
+        registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+        DeploymentResult created = new DeploymentOperations(registry, directory, clock).create(request("backend"));
+        Path entry = deploymentFile(directory, created.deploymentId());
+        String legacy = "[" + Files.readString(entry, StandardCharsets.UTF_8) + "]";
+        Files.delete(entry);
+        Files.writeString(directory.resolve("plugin-deployments.json"), legacy, StandardCharsets.UTF_8);
+
+        DeploymentResult restored = new DeploymentOperations(registry, directory, clock).get(created.deploymentId());
+        assertEquals("QUEUED", restored.state());
+        assertTrue(Files.exists(entry));
+        assertFalse(Files.exists(directory.resolve("plugin-deployments.json")));
+    }
+
+    @Test
+    void rejectsASymlinkedPerDeploymentDirectory(@TempDir Path directory) throws Exception {
+        Path target = Files.createDirectory(directory.resolve("target"));
+        try {
+            Files.createSymbolicLink(directory.resolve("plugin-deployments"), target);
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException unavailable) {
+            return; // The test account/filesystem cannot create links.
+        }
+
+        assertThrows(IllegalStateException.class, () -> new DeploymentOperations(new FakeRegistry(), directory, clock));
+    }
+
+    private static Path deploymentFile(Path directory, UUID deploymentId) {
+        return directory.resolve("plugin-deployments").resolve(deploymentId + ".json");
+    }
+
+    private static String durableJournal(Path directory) throws java.io.IOException {
+        try (Stream<Path> files = Files.list(directory.resolve("plugin-deployments"))) {
+            StringBuilder text = new StringBuilder();
+            for (Path file : files.toList()) text.append(Files.readString(file, StandardCharsets.UTF_8));
+            return text.toString();
+        }
+    }
+
+    private static void assertUntouchedDeploymentFiles(Path directory, Map<UUID, String> expected) throws Exception {
+        for (Map.Entry<UUID, String> entry : expected.entrySet()) {
+            assertEquals(entry.getValue(), Files.readString(deploymentFile(directory, entry.getKey()), StandardCharsets.UTF_8));
+        }
     }
 
     private static final class FakeRegistry implements NodeRegistry {
