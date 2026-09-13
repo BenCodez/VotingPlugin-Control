@@ -133,6 +133,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (Object.hasOwn(profile, 'partyEnabled')) quickPartyEnabled.checked = Boolean(profile.partyEnabled);"),
                 "Legacy v1 profiles must preserve the live Vote Party enabled state when they omit that field.");
         assertTrue(script.body().contains("config.proxy-method.v2"));
+        assertTrue(script.body().contains("quickPreset.value === 'vote-party'\n    ? 'config.quick-setup.v2'"),
+                "Vote Party Enabled must never be sent under the incompatible v1 quick-setup contract.");
         assertTrue(script.body().contains("function quickSetupTargets()"));
         assertTrue(script.body().contains("nodeIds = quickSetupTargets()"));
         assertTrue(script.body().contains("currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets()"));
@@ -159,12 +161,14 @@ class ControlHttpServerTest {
                 "Discarded automatic dedicated reads must request a fresh read rather than leave defaults previewable.");
         assertTrue(script.body().contains("if (observedSuccessfulApply) {\n      invalidateConfigurationReads();\n      invalidateGuidedSetupReads();"),
                 "Observed external applies must invalidate the dedicated setup cards as well as the main editor.");
+        assertTrue(script.body().contains("if (applied) {\n    invalidateConfigurationReads();\n    invalidateGuidedSetupReads();"),
+                "Locally completed applies must invalidate guided reads as well as the main editor.");
         assertTrue(script.body().contains("if (tabFromHash() === 'quick-setup') window.setTimeout(() => void autoLoadTab('quick-setup'), 0);"),
                 "Invalidated dedicated settings must automatically reload while Quick Setup is visible.");
         assertTrue(script.body().contains("nodeCapabilities.get(node)?.includes(quickSetupCapability())"),
                 "Quick approvals must remain valid only for their selected capability version.");
-        assertTrue(script.body().contains("'config.quick-setup.v1', 'config.proxy-method.v2'"),
-                "Secondary v2-only backends must remain selectable for HTTP setup.");
+        assertTrue(script.body().contains("'config.quick-setup.v1', 'config.quick-setup.v2', 'config.proxy-method.v2'"),
+                "Secondary versioned backends must remain selectable for HTTP and Vote Party setup.");
         assertTrue(script.body().contains("quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)"));
         assertTrue(script.body().contains("!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded'"));
         assertTrue(script.body().contains("Configuration changed elsewhere; your unsaved guided edits were preserved."),
@@ -172,6 +176,11 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("dedicatedSetupDirty.add(preset);"));
         assertTrue(script.body().contains("if (quickPreset.value !== 'vote-site') quickSetupDirty = true;"),
                 "The shared name field is a selector for vote sites but a dirty editable value for other presets.");
+        assertTrue(script.body().contains("function exposeDirtyVoteSiteReload()"));
+        assertTrue(script.body().contains("quickSetupDirty = true;\n  exposeDirtyVoteSiteReload();"),
+                "Becoming dirty during the selector debounce must also expose reload.");
+        assertTrue(script.body().contains("The vote-site key changed; load its current values to discard your unsaved edits."),
+                "A dirty vote-site selector transition must expose an explicit discard and reload action.");
         assertTrue(script.body().contains("const profileName = profilePicker.value;"));
         assertTrue(script.body().contains("profilePicker.value !== profileName || !currentProfile || JSON.stringify(currentProfile) !== profileSignature"),
                 "Profile application must verify its selection after waiting for live values.");

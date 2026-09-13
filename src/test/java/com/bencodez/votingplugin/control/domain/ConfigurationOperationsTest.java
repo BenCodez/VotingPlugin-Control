@@ -823,6 +823,14 @@ class ConfigurationOperationsTest {
                 null, List.of(), null, null, "standalone", Map.of("proposal", "x".repeat(501))));
     }
 
+    @Test void votePartyEnabledRoundTripsRequireTheVersionedCapability() {
+        ManagedConfiguration voteParty = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-party", Map.of("enabled", "false", "votesRequired", "20",
+                "broadcast", "", "giveAllPlayers", "false", "onlineOnly", "true", "command", ""));
+
+        assertEquals(ConfigurationOperations.QUICK_SETUP_VOTE_PARTY_CAPABILITY, voteParty.capability());
+    }
+
     @Test void rewardBuilderResultDoesNotRetainOrEchoItsProposal() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

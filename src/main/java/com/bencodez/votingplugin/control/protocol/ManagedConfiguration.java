@@ -137,6 +137,7 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
                     ? "HTTP".equals(options.get("method")) ? "config.proxy-method.v2" : "config.proxy-method.v1"
                     : "proxy-backend".equals(preset) && "HTTP".equals(options.get("method"))
                     ? "config.proxy-method.v2"
+                    : "vote-party".equals(preset) ? "config.quick-setup.v2"
                     : "config.quick-setup.v1";
             default -> throw new IllegalStateException("unsupported configuration domain");
         };
