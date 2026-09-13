@@ -134,6 +134,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("function quickSetupTargets()"));
         assertTrue(script.body().contains("nodeIds = quickSetupTargets()"));
         assertTrue(script.body().contains("currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets()"));
+        assertTrue(script.body().contains("autoLoadPending.add(tab);"));
+        assertTrue(script.body().contains("configurationOperationsInFlight === 0 && autoLoadPending.has('quick-setup')"));
+        assertTrue(script.body().contains("function quickReadConfigurationOptions()"));
+        assertTrue(script.body().contains("options: quickReadConfigurationOptions()"));
         assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));

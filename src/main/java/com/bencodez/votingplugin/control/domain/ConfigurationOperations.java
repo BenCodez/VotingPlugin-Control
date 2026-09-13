@@ -261,11 +261,21 @@ public final class ConfigurationOperations implements AutoCloseable {
                     else operation.claimSessions.put(nodeId, previousClaimSession);
                     throw e;
                 }
-                return new ConfigurationTask(operation.id, operation.type, operation.configuration,
+                return new ConfigurationTask(operation.id, operation.type, configurationForTask(operation),
                         operation.expectedRevisions.get(nodeId), attemptId);
             }
         }
         return null;
+    }
+
+    private static ManagedConfiguration configurationForTask(StoredOperation operation) {
+        ManagedConfiguration configuration = operation.configuration;
+        if ("READ".equals(operation.type) && ManagedConfiguration.QUICK_SETUP.equals(configuration.domain())
+                && "proxy-backend".equals(configuration.preset()) && configuration.options().containsKey("method")) {
+            return new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null,
+                    configuration.preset(), Map.of());
+        }
+        return configuration;
     }
 
     private boolean deferProxyMethodApply(StoredOperation operation, NodeStatus node) {

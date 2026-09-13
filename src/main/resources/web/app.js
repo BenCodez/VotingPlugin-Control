@@ -1619,7 +1619,11 @@ async function autoLoadTab(tab) {
     } finally { finishAutoLoad(tab); }
     return;
   }
-  if (tab === 'quick-setup' && !approvedQuickPreview && !configurationOperationsInFlight
+  if (tab === 'quick-setup' && configurationOperationsInFlight) {
+    autoLoadPending.add(tab);
+    return;
+  }
+  if (tab === 'quick-setup' && !approvedQuickPreview
       && (autoSitesState.textContent === 'Not loaded' || voteLoggingState.textContent === 'Not loaded'
         || quickPresetReadable() && !loadedQuickSetup)) {
     autoLoadInFlight.add(tab);
@@ -3279,6 +3283,11 @@ async function startConfigurationOperation(path, body, statusElement = operation
     configurationOperationsInFlight--;
     updateConfigurationButtons();
     updateExtendedButtons();
+    if (configurationOperationsInFlight === 0 && autoLoadPending.has('quick-setup')
+        && !autoLoadInFlight.has('quick-setup')) {
+      autoLoadPending.delete('quick-setup');
+      void autoLoadTab('quick-setup');
+    }
   }
 }
 
@@ -3924,6 +3933,10 @@ function quickReadOptions() {
   return quickPreset.value === 'vote-site' ? {name: quickName.value.trim()} : {};
 }
 
+function quickReadConfigurationOptions() {
+  return quickPreset.value === 'proxy-backend' ? {method: quickMethod.value} : quickReadOptions();
+}
+
 function populateQuickState(options) {
   if (quickPreset.value === 'proxy-backend') {
     quickName.value = options.server || '';
@@ -3974,7 +3987,7 @@ async function loadQuickSetupValues(automatic = false) {
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: [selectedServerId],
-      configuration: {domain: 'quick-setup', preset, options: quickReadOptions()}
+      configuration: {domain: 'quick-setup', preset, options: quickReadConfigurationOptions()}
     }, quickOperationStatus);
     const result = Object.values(operation.results).find(item =>
       item.success && item.configuration?.preset === preset && item.configuration?.options);
