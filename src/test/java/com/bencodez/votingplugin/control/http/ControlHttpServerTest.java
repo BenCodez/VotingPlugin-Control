@@ -138,6 +138,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("configurationOperationsInFlight === 0 && autoLoadPending.has('quick-setup')"));
         assertTrue(script.body().contains("function quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("options: quickReadConfigurationOptions()"));
+        assertTrue(script.body().contains("loadedQuickSetup.selector === JSON.stringify(quickReadConfigurationOptions())"));
+        assertTrue(script.body().contains("selector: JSON.stringify(quickReadConfigurationOptions())"),
+                "The retained selector must reflect the method returned by the live backend read.");
         assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
@@ -313,7 +316,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("Discard unsaved routing changes and load current values?"));
         assertTrue(script.body().contains("Discard the unsaved ${configurationFile.value} draft and read/reload the current file for this server?"));
         assertTrue(script.body().contains("window.addEventListener('beforeunload'"));
-        assertTrue(script.body().contains("loadedQuickSetup = {nodeId, sessionId, preset, selector}"));
+        assertTrue(script.body().contains("loadedQuickSetup = {nodeId, sessionId, preset,"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
         assertTrue(script.body().contains("if (selectedCapabilitiesChanged) {\n      approvedPreview = null;"));
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
