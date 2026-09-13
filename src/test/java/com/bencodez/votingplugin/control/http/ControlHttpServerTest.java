@@ -149,6 +149,11 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("function quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("options: quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("loadedQuickSetup.selector === JSON.stringify(quickReadConfigurationOptions())"));
+		assertTrue(script.body().contains("function handleQuickTargetCapabilityChange(previousCapability)"));
+		assertTrue(script.body().contains("The selected backends require a different Vote Party capability."),
+				"A target-driven v1/v2 change must expose an explicit reload when dirty.");
+		assertTrue(script.body().contains("handleQuickTargetCapabilityChange(previousQuickCapability);"),
+				"Target selection changes must reload or expose the capability-correct Vote Party read.");
         assertTrue(script.body().contains("const autoLoadGeneration = inputGeneration;"));
         assertTrue(script.body().contains("if (inputGeneration !== autoLoadGeneration) {\n        autoLoadPending.add(tab);\n        return;\n      }"),
                 "A stale dedicated read must fence the remainder of the automatic quick-setup sequence.");

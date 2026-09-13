@@ -1419,6 +1419,7 @@ function nodeCard(node) {
   checkbox.checked = selectedNodes.has(node.nodeId);
   if (node.nodeId === selectedServerId) selector.title = 'The primary server remains included in configuration changes.';
   checkbox.addEventListener('change', () => {
+	const previousQuickCapability = quickSetupCapability();
     if (checkbox.checked && selectedNodes.size >= MAX_CONFIGURATION_TARGETS) {
       checkbox.checked = false;
       text(operationStatus, `At most ${MAX_CONFIGURATION_TARGETS} servers can be configured at once.`);
@@ -1430,6 +1431,7 @@ function nodeCard(node) {
     approvedQuickPreview = null;
     dedicatedSetupApprovals.clear();
     inputGeneration++;
+	handleQuickTargetCapabilityChange(previousQuickCapability);
     updatePluginSuggestions();
     renderSelectedServer();
     updateConfigurationButtons();
@@ -2951,6 +2953,19 @@ function votePartyUsesV2() {
     && selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2'));
 }
 
+function handleQuickTargetCapabilityChange(previousCapability) {
+  if (quickPreset.value !== 'vote-party' || previousCapability === quickSetupCapability()) return;
+  loadedQuickSetup = null;
+  approvedQuickPreview = null;
+  if (quickSetupDirty) {
+    readQuickSetup.hidden = false;
+    text(quickOperationStatus,
+      'The selected backends require a different Vote Party capability. Retry loading to discard unsaved edits.');
+  } else if (tabFromHash() === 'quick-setup') {
+    void autoLoadTab('quick-setup');
+  }
+}
+
 function quickSetupTargets() {
   return targets(quickSetupCapability())
     .filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
@@ -4460,6 +4475,7 @@ loadAutoSites.addEventListener('click', () => loadDedicatedSetup('auto-create-vo
 previewAutoSites.addEventListener('click', () => previewDedicatedSetup('auto-create-vote-sites'));
 applyAutoSites.addEventListener('click', () => applyDedicatedSetup('auto-create-vote-sites'));
 selectAllAutoSitesTargets.addEventListener('click', () => {
+	const previousQuickCapability = quickSetupCapability();
   const available = allNodeItems.filter(node => isBackend(node) && node.online
     && node.acceptedCapabilities.includes('config.quick-setup.v1'));
   const candidates = available
@@ -4471,6 +4487,7 @@ selectAllAutoSitesTargets.addEventListener('click', () => {
   approvedFilePreview = null;
   approvedQuickPreview = null;
   inputGeneration++;
+	handleQuickTargetCapabilityChange(previousQuickCapability);
   renderNodeViews();
   updatePluginSuggestions();
   updateConfigurationButtons();
