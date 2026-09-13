@@ -253,6 +253,9 @@ let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
 let loadedQuickSetup = null;
+let quickSetupDirty = false;
+let quickSetupPreserveReadGeneration = -1;
+const dedicatedSetupDirty = new Set();
 let voteSitesSourceId = '';
 let voteSitesTargetIds = new Set();
 let voteSitesTargetsInitialized = false;
@@ -1081,7 +1084,7 @@ async function loadOperationHistoryOnce() {
         [nodeId, result ? {...result, configuration: null} : result]))}));
     if (observedSuccessfulApply) {
       invalidateConfigurationReads();
-      resetDedicatedSetupValues();
+      invalidateGuidedSetupReads();
       if (tabFromHash() === 'quick-setup') window.setTimeout(() => void autoLoadTab('quick-setup'), 0);
     }
     const pendingRestarts = new Map();
@@ -1244,6 +1247,7 @@ function applyAuthenticatedSession(body) {
   approvedFilePreview = null;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   selectedNodes.clear();
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
@@ -1407,7 +1411,8 @@ function nodeCard(node) {
   selector.className = 'node-select';
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
-  const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1', 'config.quick-setup.v1']
+  const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1',
+    'config.quick-setup.v1', 'config.proxy-method.v2']
     .some(capability => node.acceptedCapabilities.includes(capability));
   checkbox.disabled = !node.online || !controllable || node.nodeId === selectedServerId;
   checkbox.checked = selectedNodes.has(node.nodeId);
@@ -1628,22 +1633,33 @@ async function autoLoadTab(tab) {
     return;
   }
   if (tab === 'quick-setup' && !approvedQuickPreview
-      && (autoSitesState.textContent === 'Not loaded' || voteLoggingState.textContent === 'Not loaded'
-        || quickPresetReadable() && !quickSetupValuesLoaded())) {
+      && (!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded'
+        || !dedicatedSetupDirty.has('vote-logging') && voteLoggingState.textContent === 'Not loaded'
+        || quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)
+          && !quickSetupValuesLoaded())) {
     autoLoadInFlight.add(tab);
     try {
       const autoLoadGeneration = inputGeneration;
-      if (autoSitesState.textContent === 'Not loaded') await loadDedicatedSetup('auto-create-vote-sites', true);
+      if (!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded') {
+        await loadDedicatedSetup('auto-create-vote-sites', true);
+      }
       if (inputGeneration !== autoLoadGeneration) {
         autoLoadPending.add(tab);
         return;
       }
-      if (voteLoggingState.textContent === 'Not loaded') await loadDedicatedSetup('vote-logging', true);
+      if (!dedicatedSetupDirty.has('vote-logging') && voteLoggingState.textContent === 'Not loaded') {
+        await loadDedicatedSetup('vote-logging', true);
+      }
       if (inputGeneration !== autoLoadGeneration) {
         autoLoadPending.add(tab);
         return;
       }
-      if (quickPresetReadable() && !quickSetupValuesLoaded()) await loadQuickSetupValues(true);
+      if (quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)
+          && !quickSetupValuesLoaded()) {
+        const preserveGeneration = quickSetupPreserveReadGeneration;
+        await loadQuickSetupValues(true, quickSetupDirty);
+        if (quickSetupPreserveReadGeneration === preserveGeneration) quickSetupPreserveReadGeneration = -1;
+      }
     } finally { finishAutoLoad(tab); }
     return;
   }
@@ -2776,6 +2792,7 @@ function resetServerConfigurationForms(status, preserveDirtyDrafts = false) {
 }
 
 function resetDedicatedSetupValues() {
+  dedicatedSetupDirty.clear();
   autoSitesEnabled.checked = false;
   voteLoggingEnabled.checked = false;
   voteLoggingDays.value = '30';
@@ -2786,6 +2803,23 @@ function resetDedicatedSetupValues() {
   voteLoggingState.className = 'pill neutral';
   loadAutoSites.hidden = true;
   loadVoteLogging.hidden = true;
+}
+
+function invalidateGuidedSetupReads() {
+  loadedQuickSetup = null;
+  if (quickSetupDirty) {
+    readQuickSetup.hidden = false;
+    text(quickOperationStatus, 'Configuration changed elsewhere; your unsaved guided edits were preserved. Load current values to discard them.');
+  }
+  [['auto-create-vote-sites', autoSitesState, autoSitesStatus, loadAutoSites],
+    ['vote-logging', voteLoggingState, voteLoggingStatus, loadVoteLogging]].forEach(([preset, state, status, retry]) => {
+    text(state, 'Not loaded');
+    state.className = 'pill neutral';
+    retry.hidden = !dedicatedSetupDirty.has(preset);
+    if (dedicatedSetupDirty.has(preset)) {
+      text(status, 'Configuration changed elsewhere; your unsaved edits were preserved. Load current values to discard them.');
+    }
+  });
 }
 
 function resetServerContextValues(reason, preserveDirtyDrafts = false) {
@@ -2825,6 +2859,7 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   text(autoSitesStatus, reason);
   text(voteLoggingStatus, reason);
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   readQuickSetup.hidden = true;
   resetServerConfigurationForms(reason, preserveDirtyDrafts);
   const preset = quickPreset.value;
@@ -3031,6 +3066,7 @@ function discardAuthenticationState(reason) {
   approvedFilePreview = null;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   inputGeneration++;
   logout.hidden = true;
   sidebarToggle.hidden = true;
@@ -3997,7 +4033,7 @@ function populateQuickState(options) {
   }
 }
 
-async function loadQuickSetupValues(automatic = false) {
+async function loadQuickSetupValues(automatic = false, preserveDirty = false) {
   if (!quickPresetReadable()) return false;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
@@ -4028,7 +4064,12 @@ async function loadQuickSetupValues(automatic = false) {
     }
     const detected = preset === 'vote-site' && pendingDetectedVoteSite?.nodeId === nodeId
       && pendingDetectedVoteSite.key === quickName.value.trim() ? pendingDetectedVoteSite : null;
+    const selectedProxyMethod = preset === 'proxy-backend' ? quickMethod.value : null;
+    const editedProxyServer = preserveDirty && preset === 'proxy-backend' ? quickName.value : null;
     populateQuickState(result.configuration.options);
+    if (selectedProxyMethod != null) quickMethod.value = selectedProxyMethod;
+    if (editedProxyServer != null) quickName.value = editedProxyServer;
+    quickSetupDirty = preserveDirty;
     if (detected && result.configuration.options.exists === 'false') {
       quickSiteDisplayName.value = detected.service;
       quickService.value = detected.service;
@@ -4318,6 +4359,7 @@ async function loadDedicatedSetup(preset, automatic = false) {
       voteLoggingMainMysql.checked = options.useMainMySQL !== 'false';
       text(voteLoggingState, voteLoggingEnabled.checked ? 'Enabled on primary' : 'Disabled on primary');
     }
+    dedicatedSetupDirty.delete(preset);
     elements.state.className = `pill ${options.enabled === 'true' ? 'online' : 'neutral'}`;
     text(elements.status, operationSummary(operation));
   } catch (error) {
@@ -4413,7 +4455,9 @@ previewVoteLogging.addEventListener('click', () => previewDedicatedSetup('vote-l
 applyVoteLogging.addEventListener('click', () => applyDedicatedSetup('vote-logging'));
 [autoSitesEnabled, voteLoggingEnabled, voteLoggingDays, voteLoggingMainMysql].forEach(field => {
   field.addEventListener('input', () => {
-    dedicatedSetupApprovals.delete(field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging');
+    const preset = field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging';
+    dedicatedSetupApprovals.delete(preset);
+    dedicatedSetupDirty.add(preset);
     inputGeneration++;
     updateExtendedButtons();
   });
@@ -4999,6 +5043,7 @@ loadProfile.addEventListener('click', async () => {
     return;
   }
   applyProfileValues(profile);
+  quickSetupDirty = true;
   inputGeneration++;
   updateQuickFields();
   clearApprovals();
@@ -5018,14 +5063,25 @@ deleteProfile.addEventListener('click', () => {
 
 clearOperationHistory.addEventListener('click', loadOperationHistory);
 
-[quickName, quickMethod, quickSiteDisplayName, quickService, quickUrl, quickDelay,
+[quickSiteDisplayName, quickService, quickUrl, quickDelay,
   quickSitePriority, quickSiteMaterial, quickSiteEnabled, quickSiteHidden, quickRewardScope,
   quickCommand, quickMessage, quickProcessRewards, quickAutoSites, quickExtraCheck, quickCountFake,
   quickHideSiteWarning, quickDisableUpdates, quickPartyEnabled, quickPartyVotes, quickPartyCommand, quickPartyBroadcast,
   quickPartyAll, quickPartyOnline, quickAutoSitesOnly, quickVoteLoggingEnabled, quickVoteLoggingDays,
-  quickVoteLoggingMainMysql].forEach(field => field.addEventListener('input', clearApprovals));
+  quickVoteLoggingMainMysql].forEach(field => field.addEventListener('input', () => {
+  quickSetupDirty = true;
+  clearApprovals();
+}));
+quickMethod.addEventListener('input', clearApprovals);
+quickName.addEventListener('input', () => {
+  if (quickPreset.value !== 'vote-site') quickSetupDirty = true;
+  clearApprovals();
+});
 quickMethod.addEventListener('input', () => {
-  if (quickPreset.value === 'proxy-backend' && quickPresetReadable()) void autoLoadTab('quick-setup');
+  if (quickPreset.value === 'proxy-backend' && quickPresetReadable()) {
+    if (quickSetupDirty) quickSetupPreserveReadGeneration = inputGeneration;
+    void autoLoadTab('quick-setup');
+  }
 });
 quickName.addEventListener('input', () => {
   if (pendingDetectedVoteSite && pendingDetectedVoteSite.key !== quickName.value.trim()) pendingDetectedVoteSite = null;
@@ -5067,6 +5123,7 @@ configurationFile.addEventListener('input', () => {
 });
 quickPreset.addEventListener('input', () => {
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   if (quickPreset.value !== 'vote-site') pendingDetectedVoteSite = null;
   updateQuickFields();
   clearApprovals();

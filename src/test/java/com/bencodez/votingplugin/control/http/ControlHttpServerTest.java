@@ -144,18 +144,34 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const autoLoadGeneration = inputGeneration;"));
         assertTrue(script.body().contains("if (inputGeneration !== autoLoadGeneration) {\n        autoLoadPending.add(tab);\n        return;\n      }"),
                 "A stale dedicated read must fence the remainder of the automatic quick-setup sequence.");
-        assertTrue(script.body().contains("quickMethod.addEventListener('input', () => {\n  if (quickPreset.value === 'proxy-backend' && quickPresetReadable()) void autoLoadTab('quick-setup');"),
+        assertTrue(script.body().contains("quickMethod.addEventListener('input', () => {\n  if (quickPreset.value === 'proxy-backend' && quickPresetReadable()) {"));
+        assertTrue(script.body().contains("if (quickSetupDirty) quickSetupPreserveReadGeneration = inputGeneration;\n    void autoLoadTab('quick-setup');"),
                 "Changing a proxy-backend method must schedule a capability-correct reread.");
+        assertTrue(script.body().contains("const selectedProxyMethod = preset === 'proxy-backend' ? quickMethod.value : null;"));
+        assertTrue(script.body().contains("if (selectedProxyMethod != null) quickMethod.value = selectedProxyMethod;"),
+                "The capability read must not overwrite the proxy method the operator selected for preview.");
+        assertTrue(script.body().contains("const editedProxyServer = preserveDirty && preset === 'proxy-backend' ? quickName.value : null;"));
+        assertTrue(script.body().contains("if (editedProxyServer != null) quickName.value = editedProxyServer;"),
+                "A capability read must preserve an edited proxy destination.");
         assertTrue(script.body().contains("previewAutoSites.disabled = !quickReady || autoSitesState.textContent === 'Not loaded';"));
         assertTrue(script.body().contains("previewVoteLogging.disabled = !quickReady || voteLoggingState.textContent === 'Not loaded';"));
         assertTrue(script.body().contains("if (automatic && requestGeneration !== inputGeneration) void autoLoadTab('quick-setup');"),
                 "Discarded automatic dedicated reads must request a fresh read rather than leave defaults previewable.");
-        assertTrue(script.body().contains("if (observedSuccessfulApply) {\n      invalidateConfigurationReads();\n      resetDedicatedSetupValues();"),
+        assertTrue(script.body().contains("if (observedSuccessfulApply) {\n      invalidateConfigurationReads();\n      invalidateGuidedSetupReads();"),
                 "Observed external applies must invalidate the dedicated setup cards as well as the main editor.");
         assertTrue(script.body().contains("if (tabFromHash() === 'quick-setup') window.setTimeout(() => void autoLoadTab('quick-setup'), 0);"),
                 "Invalidated dedicated settings must automatically reload while Quick Setup is visible.");
         assertTrue(script.body().contains("nodeCapabilities.get(node)?.includes(quickSetupCapability())"),
                 "Quick approvals must remain valid only for their selected capability version.");
+        assertTrue(script.body().contains("'config.quick-setup.v1', 'config.proxy-method.v2'"),
+                "Secondary v2-only backends must remain selectable for HTTP setup.");
+        assertTrue(script.body().contains("quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)"));
+        assertTrue(script.body().contains("!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded'"));
+        assertTrue(script.body().contains("Configuration changed elsewhere; your unsaved guided edits were preserved."),
+                "External configuration changes must not overwrite unsaved guided edits.");
+        assertTrue(script.body().contains("dedicatedSetupDirty.add(preset);"));
+        assertTrue(script.body().contains("if (quickPreset.value !== 'vote-site') quickSetupDirty = true;"),
+                "The shared name field is a selector for vote sites but a dirty editable value for other presets.");
         assertTrue(script.body().contains("const profileName = profilePicker.value;"));
         assertTrue(script.body().contains("profilePicker.value !== profileName || !currentProfile || JSON.stringify(currentProfile) !== profileSignature"),
                 "Profile application must verify its selection after waiting for live values.");
@@ -241,7 +257,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));
         assertFalse(script.body().contains("quickPresetReadable() && !loadedQuickSetup"),
                 "Quick-setup autoload must re-read when the loaded vote-site selector changes.");
-        assertTrue(script.body().contains("quickPresetReadable() && !quickSetupValuesLoaded()"),
+        assertTrue(script.body().contains("quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)"),
                 "Quick-setup autoload must validate the loaded selector before deciding it is current.");
         assertTrue(script.body().contains("loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId"));
         assertTrue(script.body().contains("previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId"));
@@ -310,7 +326,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (previewGeneration !== inputGeneration\n"
                         + "        || signature !== JSON.stringify"),
                 "Dedicated previews completed after another apply must not restore stale approvals.");
-        assertTrue(script.body().contains("dedicatedSetupApprovals.delete(field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging');\n"
+        assertTrue(script.body().contains("dedicatedSetupApprovals.delete(preset);\n    dedicatedSetupDirty.add(preset);\n"
                         + "    inputGeneration++;\n    updateExtendedButtons();"),
                 "Dedicated setup edits must fence delayed reads before they can overwrite newer input.");
         assertTrue(script.body().contains("const submittedOptions = JSON.stringify(dedicatedSetupOptions(preset));"));
