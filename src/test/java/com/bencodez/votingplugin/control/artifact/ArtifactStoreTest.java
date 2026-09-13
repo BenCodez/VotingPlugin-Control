@@ -17,6 +17,9 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -43,7 +46,7 @@ class ArtifactStoreTest {
         Path published = directory.resolve("artifacts").resolve(sha256 + ".jar");
         assertTrue(Files.isRegularFile(published));
         try (var entries = Files.list(directory.resolve("artifacts"))) {
-            assertEquals(1, entries.count());
+            assertEquals(1, entries.filter(path -> path.getFileName().toString().endsWith(".jar")).count());
         }
     }
 
@@ -55,7 +58,7 @@ class ArtifactStoreTest {
         assertRejected(() -> store.upload(new ByteArrayInputStream(jar), "VotingPlugin.jar", "0".repeat(64)));
         assertRejected(() -> store.upload(new ByteArrayInputStream(jar), "VotingPlugin.jar", actual.toUpperCase()));
         try (var entries = Files.list(directory.resolve("artifacts"))) {
-            assertEquals(0, entries.count());
+            assertEquals(0, entries.filter(path -> path.getFileName().toString().endsWith(".jar")).count());
         }
     }
 
@@ -132,7 +135,7 @@ class ArtifactStoreTest {
         };
         assertRejected(() -> store.upload(oversized, "VotingPlugin.jar", "0".repeat(64)));
         try (var entries = Files.list(directory.resolve("artifacts"))) {
-            assertEquals(0, entries.count());
+            assertEquals(0, entries.filter(path -> path.getFileName().toString().endsWith(".jar")).count());
         }
     }
 
@@ -254,6 +257,92 @@ class ArtifactStoreTest {
         assertFalse(Files.exists(quarantine));
     }
 
+    @Test void startupRecoversALegacyInterruptedEvictionMarker() throws Exception {
+        Path artifacts = directory.resolve("legacy-pending-artifacts");
+        byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/New.class", new byte[] {2});
+        ArtifactStore store = new ArtifactStore(artifacts);
+        String oldId = store.upload(new ByteArrayInputStream(old), "old.jar", sha256(old)).artifactId();
+        String incomingId = sha256(incoming);
+        String transaction = "5".repeat(32);
+        Path quarantine = artifacts.resolve("evict-" + transaction + "-" + oldId + ".part");
+        Files.move(artifacts.resolve(oldId + ".jar"), quarantine);
+        Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
+        Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending");
+        Files.createFile(marker);
+
+        ArtifactStore recovered = new ArtifactStore(artifacts);
+
+        assertArrayEquals(old, recovered.open(oldId).readAllBytes());
+        assertRejected(() -> recovered.open(incomingId));
+        assertFalse(Files.exists(quarantine));
+        assertFalse(Files.exists(marker));
+    }
+
+    @Test void legacyPendingCollisionRecoveryPreservesTheCompetingArtifact() throws Exception {
+        Path artifacts = directory.resolve("legacy-collision-artifacts");
+        byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/New.class", new byte[] {2});
+        ArtifactStore store = new ArtifactStore(artifacts);
+        String oldId = store.upload(new ByteArrayInputStream(old), "old.jar", sha256(old)).artifactId();
+        String incomingId = sha256(incoming);
+        String transaction = "6".repeat(32);
+        Path quarantine = artifacts.resolve("evict-" + transaction + "-" + oldId + ".part");
+        Files.move(artifacts.resolve(oldId + ".jar"), quarantine);
+        Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
+        Path staged = Files.write(artifacts.resolve("upload-legacy-collision.part"), incoming);
+        Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending");
+        Files.createFile(marker);
+
+        ArtifactStore recovered = new ArtifactStore(artifacts);
+
+        assertArrayEquals(old, recovered.open(oldId).readAllBytes());
+        assertArrayEquals(incoming, recovered.open(incomingId).readAllBytes());
+        assertFalse(Files.exists(staged));
+        assertFalse(Files.exists(quarantine));
+        assertFalse(Files.exists(marker));
+    }
+
+    @Test void uploadsSharingADirectorySerializeCapacityPlanningAndPublication() throws Exception {
+        Path artifacts = directory.resolve("shared-artifacts");
+        CountDownLatch firstPublishing = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondPublishing = new CountDownLatch(1);
+        ArtifactStore first = new ArtifactStore(artifacts, 1_000_000, 1, path -> {
+            firstPublishing.countDown();
+            try {
+                if (!releaseFirst.await(5, TimeUnit.SECONDS)) throw new IOException("Timed out awaiting test release");
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new IOException(failure);
+            }
+        });
+        ArtifactStore second = new ArtifactStore(artifacts, 1_000_000, 1,
+                path -> secondPublishing.countDown());
+        byte[] firstJar = jar("name: VotingPlugin\n", "plugin/First.class", new byte[] {1});
+        byte[] secondJar = jar("name: VotingPlugin\n", "plugin/Second.class", new byte[] {2});
+
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var firstUpload = executor.submit(() -> first.upload(
+                    new ByteArrayInputStream(firstJar), "first.jar", sha256(firstJar)));
+            assertTrue(firstPublishing.await(5, TimeUnit.SECONDS));
+            var secondUpload = executor.submit(() -> second.upload(
+                    new ByteArrayInputStream(secondJar), "second.jar", sha256(secondJar)));
+            assertFalse(secondPublishing.await(200, TimeUnit.MILLISECONDS));
+            releaseFirst.countDown();
+            firstUpload.get(5, TimeUnit.SECONDS);
+            secondUpload.get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseFirst.countDown();
+            executor.shutdownNow();
+        }
+
+        try (var files = Files.list(artifacts)) {
+            assertEquals(1, files.filter(path -> path.getFileName().toString().endsWith(".jar")).count());
+        }
+    }
+
     @Test void startupPreservesACompetingArtifactAfterAnInterruptedPublishCollision() throws Exception {
         Path artifacts = directory.resolve("collision-recovery-artifacts");
         byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
@@ -289,8 +378,7 @@ class ArtifactStoreTest {
         Path quarantine = artifacts.resolve("evict-" + transaction + "-" + oldId + ".part");
         Files.move(artifacts.resolve(oldId + ".jar"), quarantine);
         Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
-        Files.writeString(artifacts.resolve("evict-" + transaction + "-" + incomingId + ".committed"),
-                "upload-committed.part");
+        Files.createFile(artifacts.resolve("evict-" + transaction + "-" + incomingId + ".committed"));
 
         ArtifactStore recovered = new ArtifactStore(artifacts);
 

@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +26,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import org.yaml.snakeyaml.LoaderOptions;
@@ -50,6 +54,7 @@ public final class ArtifactStore {
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
     private static final Set<PosixFilePermission> FILE_PERMISSIONS = Set.of(
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+    private static final ConcurrentMap<Path, ReentrantLock> DIRECTORY_LOCKS = new ConcurrentHashMap<>();
 
     private final Path directory;
     private final long maximumStoredBytes;
@@ -83,7 +88,10 @@ public final class ArtifactStore {
         this.afterPublishMove = afterPublishMove;
         try {
             createPrivateDirectory(this.directory);
-            removeIncompleteUploads();
+            withDirectoryLock(() -> {
+                removeIncompleteUploads();
+                return null;
+            });
         } catch (ArtifactException failure) {
             throw failure;
         } catch (IOException | RuntimeException failure) {
@@ -114,11 +122,13 @@ public final class ArtifactStore {
             String name = marker.getFileName().toString();
             if (!name.matches("evict-[0-9a-f]{32}-[0-9a-f]{64}\\.(?:pending|committed)")) continue;
             if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(marker)
-                    || Files.size(marker) < 1 || Files.size(marker) > 128) throw rejected();
+                    || Files.size(marker) > 128) throw rejected();
             String stagedName = Files.readString(marker, StandardCharsets.UTF_8);
-            if (!stagedName.matches("upload-[A-Za-z0-9._-]+\\.part") || stagedName.contains("..")) throw rejected();
-            Path staged = directory.resolve(stagedName);
-            boolean stagedPresent = Files.exists(staged, LinkOption.NOFOLLOW_LINKS);
+            boolean legacyMarker = stagedName.isEmpty();
+            if (!legacyMarker && (!stagedName.matches("upload-[A-Za-z0-9._-]+\\.part")
+                    || stagedName.contains(".."))) throw rejected();
+            Path staged = legacyMarker ? null : directory.resolve(stagedName);
+            boolean stagedPresent = staged != null && Files.exists(staged, LinkOption.NOFOLLOW_LINKS);
             if (stagedPresent && (!Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS)
                     || Files.isSymbolicLink(staged))) throw rejected();
             String transaction = name.substring("evict-".length(), "evict-".length() + 32);
@@ -140,7 +150,8 @@ public final class ArtifactStore {
             } else {
                 if (Files.exists(incoming, LinkOption.NOFOLLOW_LINKS)) {
                     verifyExistingArtifact(incoming, incomingId);
-                    if (!stagedPresent) Files.delete(incoming);
+                    boolean legacyCollision = legacyMarker && hasMatchingStagedUpload(files, incomingId);
+                    if (!stagedPresent && !legacyCollision) Files.delete(incoming);
                 }
                 restoreQuarantined(quarantined);
             }
@@ -148,6 +159,17 @@ public final class ArtifactStore {
             Files.delete(marker);
             DurableFiles.forceDirectory(directory);
         }
+    }
+
+    private boolean hasMatchingStagedUpload(List<Path> files, String incomingId) throws IOException {
+        for (Path candidate : files) {
+            String name = candidate.getFileName().toString();
+            if (!name.startsWith("upload-") || !name.endsWith(".part")
+                    || !Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)
+                    || Files.isSymbolicLink(candidate) || Files.size(candidate) > MAX_UPLOAD_BYTES) continue;
+            if (hash(candidate).equals(incomingId)) return true;
+        }
+        return false;
     }
 
     /**
@@ -168,6 +190,18 @@ public final class ArtifactStore {
                 || protectedArtifactIds == null || protectedArtifactIds.stream().anyMatch(id -> !isSha256(id))) {
             throw rejected();
         }
+        try {
+            return withDirectoryLock(() -> uploadLocked(source, displayFilename, claimedSha256,
+                    protectedArtifactIds));
+        } catch (ArtifactException failure) {
+            throw failure;
+        } catch (IOException | RuntimeException failure) {
+            throw rejected();
+        }
+    }
+
+    private Artifact uploadLocked(InputStream source, String displayFilename, String claimedSha256,
+                                  Set<String> protectedArtifactIds) throws IOException {
         Path temporary = null;
         boolean published = false;
         try {
@@ -188,12 +222,27 @@ public final class ArtifactStore {
             List<StoredFile> evictionPlan = planCapacity(digest.size(), protectedArtifactIds);
             published = publishWithRollback(temporary, artifact, evictionPlan);
             return new Artifact(actual, displayFilename, digest.size());
-        } catch (ArtifactException failure) {
-            throw failure;
-        } catch (IOException | RuntimeException failure) {
-            throw rejected();
         } finally {
             if (!published && temporary != null) deleteTemporary(temporary);
+        }
+    }
+
+    private <T> T withDirectoryLock(IoSupplier<T> operation) throws IOException {
+        ReentrantLock processLock = DIRECTORY_LOCKS.computeIfAbsent(directory, ignored -> new ReentrantLock());
+        processLock.lock();
+        try {
+            verifyDirectory();
+            Path lockPath = directory.resolve(".artifact-store.lock");
+            try (FileChannel channel = FileChannel.open(lockPath,
+                    Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS));
+                 FileLock ignored = channel.lock()) {
+                if (!Files.isRegularFile(lockPath, LinkOption.NOFOLLOW_LINKS)
+                        || Files.isSymbolicLink(lockPath)) throw rejected();
+                setPermissions(lockPath, FILE_PERMISSIONS);
+                return operation.run();
+            }
+        } finally {
+            processLock.unlock();
         }
     }
 
@@ -601,4 +650,5 @@ public final class ArtifactStore {
     private record StoredFile(Path path, String artifactId, long size, long modified) { }
     private record QuarantinedFile(Path original, Path backup) { }
     @FunctionalInterface interface IoAction { void run(Path path) throws IOException; }
+    @FunctionalInterface private interface IoSupplier<T> { T run() throws IOException; }
 }
