@@ -2,15 +2,22 @@ package com.bencodez.votingplugin.control.http;
 
 import com.bencodez.votingplugin.control.auth.CredentialStore;
 import com.bencodez.votingplugin.control.auth.WebSessionStore;
+import com.bencodez.votingplugin.control.artifact.ArtifactStore;
+import com.bencodez.votingplugin.control.artifact.ArtifactStore.ArtifactException;
 import com.bencodez.votingplugin.control.domain.NodeRegistry;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
 import com.bencodez.votingplugin.control.domain.ConfigurationSnapshots;
 import com.bencodez.votingplugin.control.domain.InspectionOperations;
+import com.bencodez.votingplugin.control.domain.DeploymentOperations;
 import com.bencodez.votingplugin.control.domain.ValidationException;
 import com.bencodez.votingplugin.control.protocol.ConfigurationRequests;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTask;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import com.bencodez.votingplugin.control.protocol.ControlIdentity;
+import com.bencodez.votingplugin.control.protocol.DeploymentRequest;
+import com.bencodez.votingplugin.control.protocol.DeploymentResult;
+import com.bencodez.votingplugin.control.protocol.DeploymentTask;
+import com.bencodez.votingplugin.control.protocol.DeploymentTaskResult;
 import com.bencodez.votingplugin.control.protocol.Heartbeat;
 import com.bencodez.votingplugin.control.protocol.InspectionRequests;
 import com.bencodez.votingplugin.control.protocol.InspectionTask;
@@ -69,6 +76,8 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final String OPERATIONS = "/api/v1/operations";
     private static final String INSPECTIONS = "/api/v1/inspections";
     private static final String SNAPSHOTS = "/api/v1/snapshots";
+    private static final String ARTIFACTS = "/api/v1/artifacts/votingplugin";
+    private static final String DEPLOYMENTS = "/api/v1/deployments";
     private static final String AUTH_LOGIN = "/api/v1/auth/login";
     private static final String AUTH_SESSION = "/api/v1/auth/session";
     private static final String AUTH_LOGOUT = "/api/v1/auth/logout";
@@ -95,6 +104,9 @@ public final class ControlHttpServer implements AutoCloseable {
     private final ConfigurationOperations configurationOperations;
     private final InspectionOperations inspectionOperations;
     private final ConfigurationSnapshots configurationSnapshots;
+    private final ArtifactStore artifactStore;
+    private final DeploymentOperations deploymentOperations;
+    private final Object deploymentArtifactLifecycle = new Object();
     private final ThreadPoolExecutor executor;
     private final ThreadPoolExecutor passwordExecutor;
     private final PasswordAdmission passwordAdmission = new PasswordAdmission(MAX_PASSWORD_ATTEMPTS_PER_CLIENT);
@@ -152,7 +164,8 @@ public final class ControlHttpServer implements AutoCloseable {
                              InspectionOperations inspectionOperations, boolean secureCookies,
                              Set<String> trustedProxyAddresses, String launchId) throws IOException {
         this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
-                temporarySnapshots(), Clock.systemUTC(), System::nanoTime, secureCookies,
+                temporarySnapshots(), temporaryArtifactStore(), new DeploymentOperations(registry, Clock.systemUTC()),
+                Clock.systemUTC(), System::nanoTime, secureCookies,
                 trustedProxyAddresses, launchId);
     }
 
@@ -161,8 +174,19 @@ public final class ControlHttpServer implements AutoCloseable {
                              InspectionOperations inspectionOperations, ConfigurationSnapshots configurationSnapshots,
                              boolean secureCookies, Set<String> trustedProxyAddresses, String launchId) throws IOException {
         this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
-                configurationSnapshots, Clock.systemUTC(), System::nanoTime, secureCookies,
+                configurationSnapshots, temporaryArtifactStore(), new DeploymentOperations(registry, Clock.systemUTC()),
+                Clock.systemUTC(), System::nanoTime, secureCookies,
                 trustedProxyAddresses, launchId);
+    }
+
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, ConfigurationOperations configurationOperations,
+                             InspectionOperations inspectionOperations, ConfigurationSnapshots configurationSnapshots,
+                             ArtifactStore artifactStore, DeploymentOperations deploymentOperations,
+                             boolean secureCookies, Set<String> trustedProxyAddresses, String launchId) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
+                configurationSnapshots, artifactStore, deploymentOperations, Clock.systemUTC(), System::nanoTime,
+                secureCookies, trustedProxyAddresses, launchId);
     }
 
     ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
@@ -170,7 +194,8 @@ public final class ControlHttpServer implements AutoCloseable {
                       java.util.function.LongSupplier nanoTime, boolean secureCookies,
                       Set<String> trustedProxyAddresses, String launchId) throws IOException {
         this(address, registry, identity, credentials, configurationOperations,
-                new InspectionOperations(registry, clock), temporarySnapshots(), clock, nanoTime, secureCookies,
+                new InspectionOperations(registry, clock), temporarySnapshots(), temporaryArtifactStore(),
+                new DeploymentOperations(registry, clock), clock, nanoTime, secureCookies,
                 trustedProxyAddresses, launchId);
     }
 
@@ -180,12 +205,14 @@ public final class ControlHttpServer implements AutoCloseable {
                       java.util.function.LongSupplier nanoTime, boolean secureCookies,
                       Set<String> trustedProxyAddresses, String launchId) throws IOException {
         this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
-                temporarySnapshots(), clock, nanoTime, secureCookies, trustedProxyAddresses, launchId);
+                temporarySnapshots(), temporaryArtifactStore(), new DeploymentOperations(registry, clock),
+                clock, nanoTime, secureCookies, trustedProxyAddresses, launchId);
     }
 
     ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                       CredentialStore credentials, ConfigurationOperations configurationOperations,
                       InspectionOperations inspectionOperations, ConfigurationSnapshots configurationSnapshots,
+                      ArtifactStore artifactStore, DeploymentOperations deploymentOperations,
                       Clock clock, java.util.function.LongSupplier nanoTime, boolean secureCookies,
                       Set<String> trustedProxyAddresses, String launchId) throws IOException {
         this.registry = Objects.requireNonNull(registry, "registry");
@@ -194,6 +221,8 @@ public final class ControlHttpServer implements AutoCloseable {
         this.configurationOperations = Objects.requireNonNull(configurationOperations, "configurationOperations");
         this.inspectionOperations = Objects.requireNonNull(inspectionOperations, "inspectionOperations");
         this.configurationSnapshots = Objects.requireNonNull(configurationSnapshots, "configurationSnapshots");
+        this.artifactStore = Objects.requireNonNull(artifactStore, "artifactStore");
+        this.deploymentOperations = Objects.requireNonNull(deploymentOperations, "deploymentOperations");
         this.secureCookies = secureCookies;
         this.trustedProxyAddresses = Set.copyOf(Objects.requireNonNull(trustedProxyAddresses, "trustedProxyAddresses"));
         this.launchId = launchId;
@@ -243,6 +272,10 @@ public final class ControlHttpServer implements AutoCloseable {
                 Clock.systemUTC());
     }
 
+    private static ArtifactStore temporaryArtifactStore() throws IOException {
+        return new ArtifactStore(Files.createTempDirectory("votingplugin-control-test-artifacts"));
+    }
+
     @Override
     public void close() {
         server.stop(0);
@@ -288,12 +321,14 @@ public final class ControlHttpServer implements AutoCloseable {
         } catch (JsonProcessingException | CharacterCodingException e) {
             error(exchange, 400, "MALFORMED_JSON", "Request body is not valid JSON", List.of());
         } catch (RequestTooLargeException e) {
-            error(exchange, 413, "REQUEST_TOO_LARGE", "Request body exceeds " + MAX_REQUEST_BYTES + " bytes",
+            error(exchange, 413, "REQUEST_TOO_LARGE", "Request body exceeds " + e.maximum + " bytes",
                     List.of());
         } catch (SnapshotStoreException e) {
             System.getLogger(ControlHttpServer.class.getName()).log(System.Logger.Level.WARNING,
                     "Snapshot store request failed: " + e.getCause().getClass().getSimpleName());
             error(exchange, 503, "SNAPSHOT_STORE_UNAVAILABLE", "Configuration snapshot storage is unavailable", List.of());
+        } catch (ArtifactException e) {
+            error(exchange, 400, "ARTIFACT_REJECTED", "VotingPlugin artifact was rejected", List.of());
         } catch (IllegalArgumentException e) {
             error(exchange, 400, "VALIDATION_ERROR", "Request validation failed", List.of());
         } catch (ResponseCompleteException ignored) {
@@ -464,6 +499,53 @@ public final class ControlHttpServer implements AutoCloseable {
                     Map.of("created", result.created(), "node", result.node(), "identity", identity));
             return;
         }
+        if (ARTIFACTS.equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            requireArtifactMediaType(exchange);
+            requireBodyWithin(exchange, ArtifactStore.MAX_UPLOAD_BYTES);
+            String filename = requiredHeader(exchange, "X-Filename");
+            String claimedSha256 = singleHeader(exchange, "X-Artifact-SHA256");
+            ArtifactStore.Artifact artifact;
+            synchronized (deploymentArtifactLifecycle) {
+                artifact = artifactStore.upload(exchange.getRequestBody(), filename, claimedSha256,
+                        deploymentOperations.referencedArtifactIds());
+            }
+            send(exchange, 201, Map.of("artifactId", artifact.artifactId(), "sha256", artifact.artifactId(),
+                    "size", artifact.size(), "fileName", artifact.displayFilename()));
+            return;
+        }
+        if (DEPLOYMENTS.equals(path)) {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                authenticateAdmin(exchange, false);
+                Map<String, String> parameters = query(uri.getRawQuery());
+                int offset = integer(parameters.getOrDefault("offset", "0"), "offset");
+                int limit = integer(parameters.getOrDefault("limit", "50"), "limit");
+                send(exchange, 200, Map.of("items", deploymentOperations.list(offset, limit),
+                        "offset", offset, "limit", limit));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod())) {
+                authenticateAdmin(exchange, true);
+                DeploymentRequest request = read(exchange, DeploymentRequest.class);
+                requireRequest(request);
+                DeploymentResult deployment;
+                synchronized (deploymentArtifactLifecycle) {
+                    ArtifactStore.Artifact artifact = artifactStore.describe(request.artifactId());
+                    if (!artifact.artifactId().equals(request.sha256()) || artifact.size() != request.size()) {
+                        throw new ValidationException("ARTIFACT_MISMATCH",
+                                "Deployment metadata does not match the verified artifact", List.of());
+                    }
+                    deployment = deploymentOperations.create(request);
+                }
+                send(exchange, 202, deployment);
+                return;
+            }
+            exchange.getResponseHeaders().set("Allow", "GET, POST");
+            error(exchange, 405, "METHOD_NOT_ALLOWED", "Method is not allowed",
+                    List.of("allowed=GET", "allowed=POST"));
+            throw new ResponseCompleteException();
+        }
         if ((CONFIGURATION + "/read").equals(path)) {
             requireMethod(exchange, "POST");
             authenticateAdmin(exchange, true);
@@ -553,13 +635,31 @@ public final class ControlHttpServer implements AutoCloseable {
                 return;
             }
         }
+        if (path != null && path.startsWith(DEPLOYMENTS + "/")) {
+            String remainder = path.substring((DEPLOYMENTS + "/").length());
+            String[] segments = remainder.split("/", -1);
+            UUID deploymentId = UUID.fromString(segments[0]);
+            if (segments.length == 1) {
+                requireMethod(exchange, "GET");
+                authenticateAdmin(exchange, false);
+                send(exchange, 200, deploymentOperations.get(deploymentId));
+                return;
+            }
+            if (segments.length == 2 && "retry".equals(segments[1])) {
+                requireMethod(exchange, "POST");
+                authenticateAdmin(exchange, true);
+                send(exchange, 202, deploymentOperations.retry(deploymentId));
+                return;
+            }
+        }
 
         String prefix = NODES + "/";
         if (path != null && path.startsWith(prefix)) {
             String remainder = path.substring(prefix.length());
             String[] segments = remainder.split("/", -1);
             if (segments.length == 2 && ("heartbeat".equals(segments[1]) || "presence".equals(segments[1])
-                    || "operations".equals(segments[1]) || "inspections".equals(segments[1]))) {
+                    || "operations".equals(segments[1]) || "inspections".equals(segments[1])
+                    || "deployments".equals(segments[1]))) {
                 String nodeId = decodePathSegment(segments[0]);
                 if ("heartbeat".equals(segments[1])) {
                     requireMethod(exchange, "PUT");
@@ -582,7 +682,7 @@ public final class ControlHttpServer implements AutoCloseable {
                     } else {
                         send(exchange, 200, task);
                     }
-                } else {
+                } else if ("inspections".equals(segments[1])) {
                     requireMethod(exchange, "POST");
                     authenticateNode(exchange, nodeId);
                     InspectionRequests.Claim claim = read(exchange, InspectionRequests.Claim.class);
@@ -593,6 +693,13 @@ public final class ControlHttpServer implements AutoCloseable {
                     } else {
                         send(exchange, 200, task);
                     }
+                } else {
+                    requireMethod(exchange, "POST");
+                    authenticateNode(exchange, nodeId);
+                    DeploymentClaim claim = read(exchange, DeploymentClaim.class);
+                    requireRequest(claim);
+                    DeploymentTask task = deploymentOperations.claim(nodeId, claim.sessionId());
+                    if (task == null) noContent(exchange); else send(exchange, 200, task);
                 }
                 return;
             }
@@ -610,6 +717,31 @@ public final class ControlHttpServer implements AutoCloseable {
                 authenticateNode(exchange, nodeId);
                 InspectionTaskResult result = read(exchange, InspectionTaskResult.class);
                 send(exchange, 200, inspectionOperations.complete(UUID.fromString(segments[2]), nodeId, result));
+                return;
+            }
+            if (segments.length == 4 && "deployments".equals(segments[1]) && "result".equals(segments[3])) {
+                String nodeId = decodePathSegment(segments[0]);
+                requireMethod(exchange, "POST");
+                authenticateNode(exchange, nodeId);
+                DeploymentTaskResult result = read(exchange, DeploymentTaskResult.class);
+                requireRequest(result);
+                send(exchange, 200, deploymentOperations.complete(UUID.fromString(segments[2]), nodeId, result));
+                return;
+            }
+            if (segments.length == 4 && "deployments".equals(segments[1]) && "artifact".equals(segments[3])) {
+                String nodeId = decodePathSegment(segments[0]);
+                requireMethod(exchange, "GET");
+                authenticateNode(exchange, nodeId);
+                UUID deploymentId = UUID.fromString(segments[2]);
+                UUID sessionId = requiredUuidHeader(exchange, "X-Node-Session");
+                UUID attemptId = requiredUuidHeader(exchange, "X-Deployment-Attempt");
+                DeploymentTask task = deploymentOperations.authorizeArtifact(deploymentId, nodeId, sessionId, attemptId);
+                ArtifactStore.Artifact artifact = artifactStore.describe(task.artifactId());
+                if (!artifact.artifactId().equals(task.sha256()) || artifact.size() != task.size()) {
+                    throw new ValidationException("ARTIFACT_MISMATCH",
+                            "Deployment artifact no longer matches the claimed task", List.of());
+                }
+                sendArtifact(exchange, artifact, artifactStore.open(task.artifactId()));
                 return;
             }
         }
@@ -753,7 +885,7 @@ public final class ControlHttpServer implements AutoCloseable {
                 throw new IllegalArgumentException("Invalid Content-Length");
             }
             if (length > MAX_REQUEST_BYTES) {
-                throw new RequestTooLargeException();
+                throw new RequestTooLargeException(MAX_REQUEST_BYTES);
             }
         }
         byte[] bytes;
@@ -764,7 +896,7 @@ public final class ControlHttpServer implements AutoCloseable {
             while ((count = input.read(buffer)) != -1) {
                 total += count;
                 if (total > MAX_REQUEST_BYTES) {
-                    throw new RequestTooLargeException();
+                    throw new RequestTooLargeException(MAX_REQUEST_BYTES);
                 }
                 output.write(buffer, 0, count);
             }
@@ -774,6 +906,54 @@ public final class ControlHttpServer implements AutoCloseable {
                 .onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(bytes)).toString();
         return json.readValue(text, type);
+    }
+
+    private static void requireArtifactMediaType(HttpExchange exchange) {
+        String type = singleHeader(exchange, "Content-Type");
+        if (type == null || !"application/java-archive".equalsIgnoreCase(type.split(";", 2)[0].trim())) {
+            throw new ValidationException("UNSUPPORTED_MEDIA_TYPE",
+                    "Content-Type must be application/java-archive", List.of());
+        }
+    }
+
+    private static void requireBodyWithin(HttpExchange exchange, long maximum) throws RequestTooLargeException {
+        String value = singleHeader(exchange, "Content-Length");
+        if (value == null) return;
+        try {
+            long length = Long.parseLong(value);
+            if (length < 1 || length > maximum) throw new RequestTooLargeException(maximum);
+        } catch (NumberFormatException failure) {
+            throw new IllegalArgumentException("Invalid Content-Length");
+        }
+    }
+
+    private static String requiredHeader(HttpExchange exchange, String name) {
+        String value = singleHeader(exchange, name);
+        if (value == null || value.isBlank()) {
+            throw new ValidationException("VALIDATION_ERROR", "Request validation failed",
+                    List.of(name + " is required"));
+        }
+        return value;
+    }
+
+    private static UUID requiredUuidHeader(HttpExchange exchange, String name) {
+        try {
+            return UUID.fromString(requiredHeader(exchange, name));
+        } catch (IllegalArgumentException failure) {
+            throw new ValidationException("VALIDATION_ERROR", "Request validation failed",
+                    List.of(name + " must be a UUID"));
+        }
+    }
+
+    private void sendArtifact(HttpExchange exchange, ArtifactStore.Artifact artifact, InputStream input) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", "application/java-archive");
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        exchange.getResponseHeaders().set("X-Artifact-SHA256", artifact.artifactId());
+        exchange.sendResponseHeaders(200, artifact.size());
+        try (input; OutputStream output = exchange.getResponseBody()) {
+            input.transferTo(output);
+        }
     }
 
     private static void requireRequest(Object request) {
@@ -1003,7 +1183,13 @@ public final class ControlHttpServer implements AutoCloseable {
     }
 
     @SuppressWarnings("serial")
-    private static final class RequestTooLargeException extends IOException { }
+    private static final class RequestTooLargeException extends IOException {
+        private final long maximum;
+
+        private RequestTooLargeException(long maximum) {
+            this.maximum = maximum;
+        }
+    }
     @SuppressWarnings("serial")
     private static final class AuthenticationException extends RuntimeException {
         private final boolean rateLimited;
@@ -1028,6 +1214,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private record SetupRequest(String setupCode, String password) { }
     private record EnrollmentRequest(String nodeId) { }
     private record SnapshotRequest(String name, UUID operationId) { }
+    private record DeploymentClaim(UUID sessionId) { }
     record BackendPage(List<NodeStatus> items, int backendItemsReturned, boolean backendItemsTruncated,
                        List<String> backendItemsTruncatedNodeIds) { }
 

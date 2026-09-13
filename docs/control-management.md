@@ -45,6 +45,8 @@ Control accepts only the intersection with its own allow-list.
 | `config.vote-sites-sync.v1` | Reward-safe VoteSites merge from one backend to selected targets |
 | `config.transport-test.v1` | Typed, bounded proxy-to-backend communication check |
 | `config.proxy-method.v1` | Coordinated preview/apply and acknowledged runtime replacement for a supported network proxy method |
+| `config.proxy-method.v2` | The same coordinated contract with the optional HTTP method represented explicitly |
+| `plugin.deploy.v1` | Verify and stage a VotingPlugin JAR for the node's next process restart; never hot reload or restart it |
 | `data.inspect.v1` | Typed read-only data, health, simulation, and diagnostics requests |
 
 Do not infer support from plugin version strings. Check `acceptedCapabilities` for the exact capability.
@@ -60,7 +62,8 @@ authenticated, CSRF-protected endpoint and node capability checks as an external
 | Overview dashboard | Builds six summary cards, Attention Required, quick actions, topology, logged-service activity, and recent operation activity from the node registry plus existing `overview`, `vote-site-health`, and `vote-log-summary` inspections | Read-only aggregation; failed, incomplete, or malformed sub-inspections produce a warning rather than a Healthy claim; disconnected registered nodes produce a warning; unknown Minecraft presence is not treated as offline; VoteLog counts are labeled as logged events; actions only open existing safe workflows rather than inventing auto-fixes |
 | Network Doctor | Runs `diagnostics` (which includes the overview fields), combines node health with Control's current topology, and displays checks for connector, configuration, Votifier, vote sites, rewards, logging, and proxy topology | Read-only; “healthy” is bounded reported state, not a synthetic vote |
 | Diagnostics download | Downloads the last Network Doctor result as local JSON | Redacted status bundle only; no raw configuration/logs/player records/infrastructure secrets |
-| Activity | Loads the newest 50 live/recovered operation views, labels phases, lineage, reload/rollback, resumes eligible guided preview approvals, and offers retry only when `retryable` | Recovered history cannot be retried; approval is single-use and apply is CSRF-protected; proxy-method apply needs a new preview |
+| Activity | Loads the newest 50 live/recovered configuration operation views, labels phases, lineage, reload/rollback, resumes eligible guided preview approvals, and offers retry only when `retryable` | Recovered configuration history cannot be retried; approval is single-use and apply is CSRF-protected; proxy-method apply needs a new preview |
+| Plugin update | Uploads one bounded JAR, shows the deployment-capable subset, and stages it on those nodes | SHA-256 and JAR identity are verified; session/attempt leases authorize downloads; Control never automatically reloads or restarts nodes; private storage is capped at 32 artifacts / 512 MiB and evicts only artifacts not referenced by retained deployment history |
 | Fast file reads | Caches a successful file read for 30 seconds by node ID, node session, and file | Browser memory only; cleared on logout and successful relevant writes; session binding prevents reuse after reconnect |
 | Full-YAML drafts | Keeps unsaved editor contents during a registry refresh | A dirty draft is bound to its source node, session, and file; it cannot preview or apply after that session changes. The operator must explicitly confirm a current-file read/reload, which discards the retained draft and rebinds the editor. |
 | Proxy configuration | Opens `bungeeconfig.yml` only for the selected online proxy that negotiated `config.proxy-files.v1` | Fixed one-file capability, never proxy file browsing; redacted READ, PREVIEW, and one-time approved APPLY still apply |
@@ -77,7 +80,11 @@ authenticated, CSRF-protected endpoint and node capability checks as an external
 
 The Setup tab replaces the former “Quick Setup” framing but retains existing typed presets, VoteSites sync, detected-plugin
 command suggestions, preview, approval, node backup, reload, and rollback. Setup profiles are convenience input only; live
-values should be loaded before modifying an existing configuration.
+values should be loaded before modifying an existing configuration. The normal Settings flow performs that read
+automatically on entry and whenever the selected node or file changes. It clears the prior node's editable state before the
+request, deduplicates navigation-triggered reads, caches successful reads briefly by node session and file, and
+invalidates/re-reads after a successful apply. Failure leaves no stale editable value and exposes an inline Retry action.
+None of these reads can trigger APPLY.
 
 ## Configuration operations
 
@@ -438,6 +445,13 @@ node resources require the bearer credential bound to the path node ID.
 | `POST` | `/api/v1/operations/{operationId}/retry` | admin/browser + CSRF | Reissue safe failed work as a new operation |
 | `POST` | `/api/v1/nodes/{nodeId}/operations` | matching node | Claim one configuration task or `204` |
 | `POST` | `/api/v1/nodes/{nodeId}/operations/{operationId}/result` | matching node | Complete one claimed configuration task |
+| `POST` | `/api/v1/artifacts/votingplugin` | admin/browser + CSRF | Stream, hash, inspect, and atomically retain one VotingPlugin JAR (64 MiB maximum) |
+| `GET`, `POST` | `/api/v1/deployments` | admin/browser; CSRF for POST | List durable staging operations or target an exact verified artifact |
+| `GET` | `/api/v1/deployments/{deploymentId}` | admin/browser | Read per-node staging state |
+| `POST` | `/api/v1/deployments/{deploymentId}/retry` | admin/browser + CSRF | Create a new operation for currently eligible failed targets only |
+| `POST` | `/api/v1/nodes/{nodeId}/deployments` | matching node | Claim one session-pinned deployment task |
+| `GET` | `/api/v1/nodes/{nodeId}/deployments/{deploymentId}/artifact` | matching node + session/attempt headers | Stream the verified artifact during the exact live lease |
+| `POST` | `/api/v1/nodes/{nodeId}/deployments/{deploymentId}/result` | matching node | Complete the exact attempt with staged/restart-required or a bounded failure |
 | `POST` | `/api/v1/inspections` | admin/browser + CSRF | Queue one typed read-only query |
 | `GET` | `/api/v1/inspections/{inspectionId}` | admin/browser | Read short-lived inspection status/result |
 | `POST` | `/api/v1/nodes/{nodeId}/inspections` | matching node | Claim one inspection or `204` |

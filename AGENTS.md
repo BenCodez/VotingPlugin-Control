@@ -107,6 +107,11 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
     inspection gating on `VoteLogging.Enabled`, document that a restart is required after either toggle, and do not claim
     enabled/available/readable are interchangeable states. Serialize APPLY operations and retries that share a target so
     retained creation order is also successful completion order for restart-session warnings.
+14. `plugin.deploy.v1` stages only a verified VotingPlugin JAR for the next process restart. Keep uploads and expanded ZIP
+    content bounded, content-addressed, private, symlink-safe, and atomically published. A node download requires its exact
+    live session, attempt, and unexpired lease; each node independently verifies the hash and plugin identity. Never hot
+    reload, automatically restart, or include older nodes that did not negotiate the exact capability. A Control restart
+    invalidates in-progress download authority and requires an explicit retry.
 
 ## Paired protocol workflow
 

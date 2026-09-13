@@ -2,8 +2,8 @@
 
 VotingPlugin Control is a separate, local-first administration service for a VotingPlugin network. It provides
 authenticated discovery of multiple BungeeCord and Velocity proxies, direct Bukkit backend enrollment, full VotingPlugin
-YAML configuration control, guided setup, redacted snapshots/drift comparison, durable operation history, and typed
-read-only vote/data diagnostics. The local WebUI uses the same versioned API. Control does not process votes, and
+YAML configuration control, guided setup, redacted snapshots/drift comparison, durable operation history, verified
+next-restart VotingPlugin JAR staging, and typed read-only vote/data diagnostics. The local WebUI uses the same versioned API. Control does not process votes, and
 VotingPlugin does not depend on it for startup, joins, routing, rewards, or shutdown.
 
 Maintainers and coding agents should read [AGENTS.md](AGENTS.md). The complete management, inspection, limits, and threat
@@ -158,6 +158,13 @@ All errors have the stable form:
 | `POST` | `/api/v1/nodes/{nodeId}/inspections/{inspectionId}/result` | matching node | Complete that inspection attempt |
 | `GET`, `POST` | `/api/v1/snapshots` | admin or WebUI session; CSRF for POST | List summaries or save a named snapshot from a completed file read |
 | `GET` | `/api/v1/snapshots/{snapshotId}` | admin or WebUI session | Load one durable snapshot's full redacted file content |
+| `POST` | `/api/v1/artifacts/votingplugin` | admin or WebUI session + CSRF | Stream and verify one bounded VotingPlugin JAR into private content-addressed storage |
+| `GET`, `POST` | `/api/v1/deployments` | admin or WebUI session; CSRF for POST | List deployment history or stage a verified artifact on explicit `plugin.deploy.v1` nodes |
+| `GET` | `/api/v1/deployments/{deploymentId}` | admin or WebUI session | Read durable per-node staging state |
+| `POST` | `/api/v1/deployments/{deploymentId}/retry` | admin or WebUI session + CSRF | Retry only failed, currently eligible nodes as a new operation |
+| `POST` | `/api/v1/nodes/{nodeId}/deployments` | matching node | Claim one session-pinned deployment task, or `204` |
+| `GET` | `/api/v1/nodes/{nodeId}/deployments/{deploymentId}/artifact` | matching node + exact session/attempt headers | Download the claimed verified JAR during its lease |
+| `POST` | `/api/v1/nodes/{nodeId}/deployments/{deploymentId}/result` | matching node | Complete the exact staging attempt |
 
 Routes are exact. Child suffixes do not inherit a handler, every known endpoint has an intentional method/structured 405,
 and all unknown endpoints return a structured 404.
@@ -195,8 +202,15 @@ Control and VotingPlugin both enforce fixed quick-setup preset/option schemas; u
 than becoming arbitrary YAML writes. The WebUI settings catalog is a static versioned reference over these typed paths,
 not a generic setting API.
 
-Read actions load only the primary server shown in the configuration header. Preview and apply still cover every server
+Opening Settings or changing the selected server automatically reads that server's current configuration. A failed read
+clears the editor and exposes an inline retry; successful applies invalidate cached values and read the confirmed state
+again. Read actions load only the primary server shown in the configuration header. Preview and apply still cover every server
 explicitly included in configuration changes, so one slow secondary node does not delay opening the editor or guided form.
+
+`plugin.deploy.v1` is additive and exact: older nodes remain connected but are excluded from JAR staging. The WebUI uploads
+at most 64 MiB, Control validates the ZIP structure and root `plugin.yml`, and every node re-verifies the SHA-256 before
+staging. Staging never reloads or restarts a server; success is reported as `RESTART_REQUIRED`. Interrupted Control attempts
+become failed durable history and require an explicit retry, preventing a pre-restart lease from authorizing a download.
 
 `data.inspect.v1` is a separate read-only lane for overview, vote-site health (including persisted unconfigured service
 observations), exact-player data, bounded VoteLog summary/search/correlation trace, non-creating service-site resolution,
