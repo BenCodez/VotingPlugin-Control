@@ -133,15 +133,20 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (Object.hasOwn(profile, 'partyEnabled')) quickPartyEnabled.checked = Boolean(profile.partyEnabled);"),
                 "Legacy v1 profiles must preserve the live Vote Party enabled state when they omit that field.");
         assertTrue(script.body().contains("config.proxy-method.v2"));
-        assertTrue(script.body().contains("quickPreset.value === 'vote-party' && votePartyUsesV2()\n"
-                        + "    ? 'config.quick-setup.v2'"),
-                "Vote Party must use v2 only when every selected backend supports it.");
+		assertTrue(script.body().contains("quickPreset.value === 'vote-party'\n"
+						+ "    ? votePartyCapability()"),
+				"Vote Party must select only a capability shared by every selected backend.");
         assertTrue(script.body().contains("if (quickSetupCapability() === 'config.quick-setup.v2') voteParty.enabled"),
                 "Vote Party Enabled must never be sent under the incompatible v1 quick-setup contract.");
         assertTrue(script.body().contains("quickPartyEnabled.indeterminate = !enabledAvailable;\n"
                         + "    quickPartyEnabled.disabled = !enabledAvailable;"),
                 "A legacy read must represent Enabled as unavailable instead of leaking another server's value.");
         assertTrue(script.body().contains("function quickSetupTargets()"));
+		assertTrue(script.body().contains("function votePartyCapability()"));
+		assertTrue(script.body().contains("if (selectedBackends.length === 0) return null;"));
+		assertTrue(script.body().contains("selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v1'))"));
+		assertTrue(script.body().contains("return null;\n}"),
+				"Mixed Vote Party capability sets must be rejected instead of silently dropping selected backends.");
         assertTrue(script.body().contains("nodeIds = quickSetupTargets()"));
         assertTrue(script.body().contains("currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets()"));
         assertTrue(script.body().contains("autoLoadPending.add(tab);"));

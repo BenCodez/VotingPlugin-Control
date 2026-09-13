@@ -2940,17 +2940,21 @@ function backendQuickTargets() {
 
 function quickSetupCapability() {
   return quickPreset.value === 'proxy-backend' && quickMethod.value === 'HTTP'
-    ? 'config.proxy-method.v2' : quickPreset.value === 'vote-party' && votePartyUsesV2()
-    ? 'config.quick-setup.v2' : 'config.quick-setup.v1';
+    ? 'config.proxy-method.v2' : quickPreset.value === 'vote-party'
+    ? votePartyCapability() : 'config.quick-setup.v1';
 }
 
-function votePartyUsesV2() {
+function votePartyCapability() {
   const selectedBackends = [...selectedNodes].filter(nodeId => nodeIndex.has(nodeId)
-    && isBackend(nodeIndex.get(nodeId))
-    && (nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v1')
-      || nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2')));
-  return selectedBackends.length > 0
-    && selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2'));
+    && isBackend(nodeIndex.get(nodeId)));
+  if (selectedBackends.length === 0) return null;
+  if (selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2'))) {
+    return 'config.quick-setup.v2';
+  }
+  if (selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v1'))) {
+    return 'config.quick-setup.v1';
+  }
+  return null;
 }
 
 function handleQuickTargetCapabilityChange(previousCapability) {
