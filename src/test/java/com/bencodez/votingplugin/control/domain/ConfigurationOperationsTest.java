@@ -1175,6 +1175,28 @@ class ConfigurationOperationsTest {
         assertEquals(false, read.results().get("proxy-a").success());
     }
 
+    @Test void claimCancelsBackendSetupWhenTheNodeChangesRoleWithinItsSession() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY);
+        registry.register(new NodeRegistration("backend", session, "Backend", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null,
+                List.of(), null, null, "proxy-backend", Map.of("method", "HTTP"));
+        UUID operation = operations.createRead(List.of("backend"), selector).operationId();
+
+        registry.register(new NodeRegistration("backend", session, "Backend", "VELOCITY", "test", 1,
+                capabilities, Set.of()));
+
+        assertNull(operations.claim("backend", session));
+        ConfigurationOperations.OperationView view = operations.get(operation);
+        assertEquals("COMPLETED_WITH_ERRORS", view.state());
+        assertEquals("TARGET_CHANGED", view.results().get("backend").code());
+    }
+
     @Test void completionCancelsClaimedTaskWhenTheNodeLosesItsCapabilityWithinTheSession() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

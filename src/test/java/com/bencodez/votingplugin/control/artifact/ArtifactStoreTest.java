@@ -186,6 +186,28 @@ class ArtifactStoreTest {
         assertRejected(() -> store.open(secondId));
     }
 
+    @Test void incompleteRollbackRetainsItsPendingRecoveryMarker() throws Exception {
+        Path artifacts = directory.resolve("rollback-artifacts");
+        AtomicBoolean failAfterMove = new AtomicBoolean();
+        byte[] first = jar("name: VotingPlugin\n", "plugin/One.class", new byte[] {1});
+        byte[] second = jar("name: VotingPlugin\n", "plugin/Two.class", new byte[] {2});
+        String firstId = sha256(first);
+        ArtifactStore store = new ArtifactStore(artifacts, 1_000_000, 1, path -> {
+            if (failAfterMove.get()) {
+                Files.writeString(artifacts.resolve(firstId + ".jar"), "corrupt rollback target");
+                throw new IOException("simulated post-move failure");
+            }
+        });
+        store.upload(new ByteArrayInputStream(first), "first.jar", firstId);
+
+        failAfterMove.set(true);
+        assertRejected(() -> store.upload(new ByteArrayInputStream(second), "second.jar", sha256(second)));
+
+        try (var entries = Files.list(artifacts)) {
+            assertTrue(entries.anyMatch(path -> path.getFileName().toString().endsWith(".pending")));
+        }
+    }
+
     @Test void startupRestoresAnInterruptedEvictionQuarantine() throws Exception {
         Path artifacts = directory.resolve("artifacts");
         byte[] jar = jar("name: VotingPlugin\n", "plugin/Main.class", new byte[] {1});

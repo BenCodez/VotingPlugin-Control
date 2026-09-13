@@ -116,7 +116,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("MAX_OPERATION_TARGETS = 100"));
         assertTrue(script.body().contains("proxyMethodNetworkSignature(refreshedNetwork)"));
         assertTrue(script.body().contains("proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')"));
-        assertTrue(script.body().contains("sessionId !== proxyMethodNetwork().proxy?.sessionId"));
+        assertTrue(script.body().contains("sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId"));
         assertTrue(script.body().contains("refreshedNetwork.proxy?.sessionId !== network.proxy.sessionId"));
         assertTrue(script.body().contains("if (approvedQuickPreview?.workflow === 'sync-vote-sites') approvedQuickPreview = null;"));
         assertTrue(script.body().contains("if (quickPreset.value !== 'sync-vote-sites') return;"));
@@ -216,6 +216,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(
                 "configurationContent.addEventListener('input', () => {\n  if (!configurationDirty) {\n    configurationDraftNodeId = selectedServerId;"));
         assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));
+        assertFalse(script.body().contains("quickPresetReadable() && !loadedQuickSetup"),
+                "Quick-setup autoload must re-read when the loaded vote-site selector changes.");
+        assertTrue(script.body().contains("quickPresetReadable() && !quickSetupValuesLoaded()"),
+                "Quick-setup autoload must validate the loaded selector before deciding it is current.");
         assertTrue(script.body().contains("loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId"));
         assertTrue(script.body().contains("previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId"));
         assertTrue(script.body().contains("sessionId !== nodeIndex.get(nodeId)?.sessionId"));
@@ -681,6 +685,17 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (autoLoadInFlight.has(tab)) {\n    autoLoadPending.add(tab);"));
         assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"),
                 "A preset change during an older read must queue a fresh autoload.");
+        assertTrue(script.body().contains("quickPresetReadable() && !await loadQuickSetupValues(true)"),
+                "Loading a saved profile must read live values before enabling the template.");
+        assertTrue(script.body().contains("applyProfileValues(profile);"),
+                "The saved template must be restored after the live read rather than overwritten by it.");
+        assertTrue(script.body().contains("node.acceptedCapabilities.includes('config.proxy-method.v1')\n      || node.acceptedCapabilities.includes('config.proxy-method.v2')"),
+                "An HTTP v2-only proxy must be selectable while each method action still checks its exact capability.");
+        assertTrue(script.body().contains("const methodNetwork = proxyMethodNetwork(proxyMethodCapabilityFor(button.dataset.proxyMethod));"),
+                "Method actions must retain their exact per-method capability check.");
+        assertTrue(script.body().contains("const readCapability = proxyMethodReadCapability();"));
+        assertTrue(script.body().contains("readCapability === 'config.proxy-method.v2' ? 'HTTP' : 'PLUGINMESSAGING'"),
+                "A v2-only proxy must read its current method through the capability it advertises.");
         assertTrue(script.body().contains("autoLoadPending.clear();"));
         int globalShortcut = script.body().indexOf("function openGlobalShortcut(destination)");
         int selectConfigView = script.body().indexOf("setConfigView(destination.configView);", globalShortcut);

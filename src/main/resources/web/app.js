@@ -1625,12 +1625,12 @@ async function autoLoadTab(tab) {
   }
   if (tab === 'quick-setup' && !approvedQuickPreview
       && (autoSitesState.textContent === 'Not loaded' || voteLoggingState.textContent === 'Not loaded'
-        || quickPresetReadable() && !loadedQuickSetup)) {
+        || quickPresetReadable() && !quickSetupValuesLoaded())) {
     autoLoadInFlight.add(tab);
     try {
       if (autoSitesState.textContent === 'Not loaded') await loadDedicatedSetup('auto-create-vote-sites', true);
       if (voteLoggingState.textContent === 'Not loaded') await loadDedicatedSetup('vote-logging', true);
-      if (quickPresetReadable() && !loadedQuickSetup) await loadQuickSetupValues(true);
+      if (quickPresetReadable() && !quickSetupValuesLoaded()) await loadQuickSetupValues(true);
     } finally { finishAutoLoad(tab); }
     return;
   }
@@ -2545,11 +2545,22 @@ function renderTransportTest() {
 
 function proxyMethodCandidates() {
   return allNodeItems.filter(node => isProxy(node) && node.online &&
-    node.acceptedCapabilities.includes('config.proxy-method.v1'));
+    (node.acceptedCapabilities.includes('config.proxy-method.v1')
+      || node.acceptedCapabilities.includes('config.proxy-method.v2')));
 }
 
 function proxyMethodCapabilityFor(method) {
   return method === 'HTTP' ? 'config.proxy-method.v2' : 'config.proxy-method.v1';
+}
+
+function proxyMethodReadCapability() {
+  const capabilities = nodeCapabilities.get(proxyMethodProxyId) || [];
+  return capabilities.includes('config.proxy-method.v1')
+    ? 'config.proxy-method.v1' : 'config.proxy-method.v2';
+}
+
+function proxyMethodReadNetwork() {
+  return proxyMethodNetwork(proxyMethodReadCapability());
 }
 
 function proxyMethodNetworkFor(items, truncatedNodeIds, proxyId, capability = 'config.proxy-method.v1') {
@@ -2588,7 +2599,7 @@ function renderProxyMethod() {
     return option;
   }));
   proxyMethodProxy.value = proxyMethodProxyId;
-  const network = proxyMethodNetwork();
+  const network = proxyMethodReadNetwork();
   if (proxyMethodCurrentFor !== proxyMethodProxyId
       || proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')) {
     proxyMethodCurrentFor = '';
@@ -2855,7 +2866,7 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   previewQuickSetup.disabled = !quickReady || (quickPresetNeedsRead() && !quickSetupValuesLoaded());
   applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
   runTransportTest.disabled = !authenticated || !transportTestProxyId || !transportTestBackendId || busy;
-  const methodNetwork = proxyMethodNetwork();
+  const methodNetwork = proxyMethodReadNetwork();
   proxyMethodButtons.forEach(button => {
     const network = proxyMethodNetwork(proxyMethodCapabilityFor(button.dataset.proxyMethod));
     button.disabled = !authenticated || !network.proxyReady || !network.topologyComplete || network.reported.length === 0
@@ -3974,7 +3985,7 @@ function populateQuickState(options) {
 }
 
 async function loadQuickSetupValues(automatic = false) {
-  if (!quickPresetReadable()) return;
+  if (!quickPresetReadable()) return false;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
   const preset = quickPreset.value;
@@ -4000,7 +4011,7 @@ async function loadQuickSetupValues(automatic = false) {
         readQuickSetup.hidden = false;
         updateConfigurationButtons();
       }
-      return;
+      return false;
     }
     const detected = preset === 'vote-site' && pendingDetectedVoteSite?.nodeId === nodeId
       && pendingDetectedVoteSite.key === quickName.value.trim() ? pendingDetectedVoteSite : null;
@@ -4021,6 +4032,7 @@ async function loadQuickSetupValues(automatic = false) {
     text(quickOperationStatus, `Current values loaded from ${Object.keys(operation.results).find(id => operation.results[id] === result)}.${suffix}`);
     readQuickSetup.hidden = true;
     updateConfigurationButtons();
+    return true;
   } catch (error) {
     if (authenticated && generation === inputGeneration && preset === quickPreset.value
         && nodeId === selectedServerId && sessionId === nodeIndex.get(nodeId)?.sessionId
@@ -4030,6 +4042,7 @@ async function loadQuickSetupValues(automatic = false) {
       readQuickSetup.hidden = false;
       updateConfigurationButtons();
     }
+    return false;
   }
 }
 
@@ -4158,19 +4171,21 @@ runTransportTest.addEventListener('click', async () => {
 
 async function loadProxyMethod(automatic = false) {
   const proxyId = proxyMethodProxyId;
-  const sessionId = proxyMethodNetwork().proxy?.sessionId;
+  const readCapability = proxyMethodReadCapability();
+  const sessionId = proxyMethodNetwork(readCapability).proxy?.sessionId;
   const requestAuthenticationGeneration = authenticationGeneration;
   if (!proxyId) return;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: [proxyId],
-      configuration: {domain: 'quick-setup', preset: 'proxy-method', options: {method: 'PLUGINMESSAGING'}}
+      configuration: {domain: 'quick-setup', preset: 'proxy-method',
+        options: {method: readCapability === 'config.proxy-method.v2' ? 'HTTP' : 'PLUGINMESSAGING'}}
     }, proxyMethodStatus);
     const result = operation.results[proxyId];
     const method = result?.success ? result.configuration?.options?.method : '';
     if (!method) throw new Error('The proxy did not return its active communication method.');
     if (requestAuthenticationGeneration !== authenticationGeneration || proxyId !== proxyMethodProxyId
-        || sessionId !== proxyMethodNetwork().proxy?.sessionId || result?.sessionId !== sessionId) return;
+        || sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId || result?.sessionId !== sessionId) return;
     proxyMethodCurrentFor = proxyId;
     proxyMethodCurrentSessionId = sessionId;
     proxyMethodCurrentValue = method;
@@ -4189,7 +4204,7 @@ proxyMethodProxy.addEventListener('change', () => {
   proxyMethodCurrentSessionId = '';
   proxyMethodCurrentValue = '';
   renderProxyMethod();
-  const network = proxyMethodNetwork();
+  const network = proxyMethodReadNetwork();
   text(proxyMethodStatus, network.unavailable.length > 0
     ? `Cannot switch yet. Enroll, update, and connect: ${network.unavailable.map(backend => backend.displayName).join(', ')}.`
     : 'Choose a method to preflight every node before applying.');
@@ -4915,10 +4930,8 @@ profilePicker.addEventListener('change', () => {
   loadProfile.disabled = !profilePicker.value;
   deleteProfile.disabled = !profilePicker.value;
 });
-loadProfile.addEventListener('click', () => {
-  const profile = readProfiles()[profilePicker.value];
-  if (!profile || profile.version !== 1) { text(profileStatus, 'That profile is unavailable or unsupported.'); return; }
-  pendingDetectedVoteSite = null;
+
+function applyProfileValues(profile) {
   const assign = (field, value, max = 500) => { field.value = String(value ?? '').slice(0, max); };
   if ([...quickPreset.options].some(option => option.value === profile.preset)) quickPreset.value = profile.preset;
   assign(quickName, profile.name, 64); assign(quickMethod, profile.method, 32);
@@ -4945,10 +4958,28 @@ loadProfile.addEventListener('click', () => {
     rewardSiteLabel.hidden = rewardScope.value !== 'site';
     copyRewardToSetup.disabled = boundedLines(rewardCommands.value).length === 0;
   }
+}
+
+loadProfile.addEventListener('click', async () => {
+  const profile = readProfiles()[profilePicker.value];
+  if (!profile || profile.version !== 1) { text(profileStatus, 'That profile is unavailable or unsupported.'); return; }
+  pendingDetectedVoteSite = null;
+  if ([...quickPreset.options].some(option => option.value === profile.preset)) quickPreset.value = profile.preset;
+  quickName.value = String(profile.name ?? '').slice(0, 64);
+  quickMethod.value = String(profile.method ?? '').slice(0, 32);
   loadedQuickSetup = null;
   updateQuickFields();
   clearApprovals();
-  text(profileStatus, `Loaded “${profilePicker.value}”. Load live values first if this preset edits existing configuration.`);
+  text(profileStatus, `Loading live values before applying “${profilePicker.value}”…`);
+  if (quickPresetReadable() && !await loadQuickSetupValues(true)) {
+    text(profileStatus, `Could not load live values for “${profilePicker.value}”. Retry before using this profile.`);
+    return;
+  }
+  applyProfileValues(profile);
+  inputGeneration++;
+  updateQuickFields();
+  clearApprovals();
+  text(profileStatus, `Loaded “${profilePicker.value}” over the confirmed live values. Preview before applying.`);
 });
 deleteProfile.addEventListener('click', () => {
   const name = profilePicker.value;
