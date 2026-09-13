@@ -134,10 +134,17 @@ when the pieces are independently deployable or need materially different review
 Protocol version `1` describes the registration/heartbeat resource protocol. Feature evolution normally uses a new
 capability such as `data.inspect.v1`; do not bump the whole protocol for an optional additive feature.
 
-`config.proxy-method.v1` persists a validated method on the proxy and reported backends. Backends reload only their proxy
-communication handler. The proxy acknowledges the durable result before its existing guarded runtime replacement, so
-teardown cannot lose the completion. A failed backend reload must restore its backup. Control availability or a method
-switch must never delay or prevent normal proxy or backend startup.
+`config.proxy-method.v1` persists the legacy plugin-messaging or Redis method on the proxy and reported backends;
+`config.proxy-method.v2` adds HTTP. Control must select the exact capability required by the requested method. Backends
+reload only their proxy communication handler. The proxy acknowledges the durable result before its existing guarded
+runtime replacement, so teardown cannot lose the completion. A failed backend reload must restore its backup. Control
+availability or a method switch must never delay or prevent normal proxy or backend startup.
+
+`config.quick-setup.v2` adds `VoteParty.Enabled` to the versioned quick-setup contract. Control must keep legacy
+Vote Party payloads on `config.quick-setup.v1` and require v2 before sending or accepting the `enabled` field. The
+VotingPlugin connector change may deploy first and remain unused until Control negotiates v2; deploying Control first
+must leave v2 actions unavailable on older nodes. Merge the VotingPlugin capability implementation before relying on the
+new Control behavior in production.
 
 ## Safe change checklist
 

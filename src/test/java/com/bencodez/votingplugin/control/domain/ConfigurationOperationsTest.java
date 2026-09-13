@@ -829,6 +829,9 @@ class ConfigurationOperationsTest {
                 "broadcast", "", "giveAllPlayers", "false", "onlineOnly", "true", "command", ""));
 
         assertEquals(ConfigurationOperations.QUICK_SETUP_VOTE_PARTY_CAPABILITY, voteParty.capability());
+        ManagedConfiguration legacyVoteParty = new ManagedConfiguration("quick-setup", null, null,
+                null, null, "vote-party", Map.of("votesRequired", "20"));
+        assertEquals(ConfigurationOperations.QUICK_SETUP_CAPABILITY, legacyVoteParty.capability());
     }
 
     @Test void rewardBuilderResultDoesNotRetainOrEchoItsProposal() throws Exception {
