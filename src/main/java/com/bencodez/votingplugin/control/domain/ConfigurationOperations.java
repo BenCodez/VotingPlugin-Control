@@ -240,6 +240,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             if ("QUEUED".equals(state) || ("IN_PROGRESS".equals(state) && leased != null
                     && !now.isBefore(leased.plus(LEASE)))) {
                 if (cancelChangedFileRole(operation, node)) continue;
+                if (cancelChangedBackendSetupRole(operation, node)) continue;
                 if (cancelChangedProxyMethodRole(operation, node)) continue;
                 if (deferProxyMethodApply(operation, node)) continue;
                 if (cancelLostCapability(operation, node)) continue;
@@ -372,6 +373,16 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (expectedPlatform != null && expectedPlatform.equalsIgnoreCase(node.platform()) && currentRoleMatches) {
             return false;
         }
+        automaticCancellation(operation, node.nodeId(), sessionId(node), "TARGET_CHANGED",
+                "Node platform changed after the task was created; create it again", "TARGET_ROLE_CHANGED");
+        return true;
+    }
+
+    private boolean cancelChangedBackendSetupRole(StoredOperation operation, NodeStatus node) {
+        if (!ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                || !"proxy-backend".equals(operation.configuration.preset())) return false;
+        String expectedPlatform = operation.targetPlatforms.get(node.nodeId());
+        if ("BUKKIT".equalsIgnoreCase(expectedPlatform) && "BUKKIT".equalsIgnoreCase(node.platform())) return false;
         automaticCancellation(operation, node.nodeId(), sessionId(node), "TARGET_CHANGED",
                 "Node platform changed after the task was created; create it again", "TARGET_ROLE_CHANGED");
         return true;
@@ -556,7 +567,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (!Objects.equals(operation.claimSessions.get(nodeId), result.sessionId())) {
             throw new ValidationException("SESSION_MISMATCH", "Operation task belongs to another node session", List.of());
         }
-        if (cancelChangedFileRole(operation, node) || cancelChangedProxyMethodRole(operation, node)
+        if (cancelChangedFileRole(operation, node) || cancelChangedBackendSetupRole(operation, node)
+                || cancelChangedProxyMethodRole(operation, node)
                 || cancelLostCapability(operation, node)) {
             return view(operation);
         }

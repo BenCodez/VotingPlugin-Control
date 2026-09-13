@@ -232,6 +232,20 @@ class DeploymentOperationsTest {
         }
     }
 
+    @Test
+    void journalRejectsFutureAndOverflowingTimestampsAtStartup(@TempDir Path directory) throws Exception {
+        FakeRegistry registry = new FakeRegistry();
+        registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+        new DeploymentOperations(registry, directory, clock).create(request("backend"));
+        Path journal = directory.resolve("plugin-deployments.json");
+        String valid = Files.readString(journal, StandardCharsets.UTF_8);
+
+        Files.writeString(journal, valid.replace(clock.instant().toString(), Instant.MAX.toString()),
+                StandardCharsets.UTF_8);
+
+        assertThrows(IllegalStateException.class, () -> new DeploymentOperations(registry, directory, clock));
+    }
+
     private static DeploymentRequest request(String... nodes) {
         return new DeploymentRequest("VotingPlugin.jar", SHA, 1234, List.of(nodes));
     }

@@ -565,6 +565,7 @@ public final class DeploymentOperations {
             String sha256 = item.path("sha256").asText();
             long size = item.path("size").asLong(-1);
             Instant createdAt = Instant.parse(item.path("createdAt").asText());
+            validatePersistedInstant(createdAt, ACTIVE_RETENTION);
             JsonNode targetsNode = item.path("targets");
             if (!targetsNode.isArray() || targetsNode.isEmpty() || targetsNode.size() > 100) throw new IOException("Invalid targets");
             List<Target> targets = new ArrayList<>();
@@ -574,6 +575,7 @@ public final class DeploymentOperations {
                 target.state = node.path("state").asText();
                 if (!List.of("QUEUED", "IN_PROGRESS", "SUCCEEDED", "FAILED").contains(target.state)) throw new IOException("Invalid target state");
                 target.leasedAt = node.path("leasedAt").isNull() ? null : Instant.parse(node.path("leasedAt").asText());
+                if (target.leasedAt != null) validatePersistedInstant(target.leasedAt, LEASE);
                 target.attemptId = node.path("attemptId").isNull() ? null : UUID.fromString(node.path("attemptId").asText());
                 if (node.has("result") && !node.path("result").isNull()) {
                     target.result = JSON.treeToValue(node.path("result"), DeploymentTaskResult.class);
@@ -600,6 +602,15 @@ public final class DeploymentOperations {
             return new StoredDeployment(id, request.artifactId(), request.sha256(), request.size(), createdAt, targets);
         } catch (RuntimeException e) {
             throw new IOException("Deployment journal entry is invalid", e);
+        }
+    }
+
+    private void validatePersistedInstant(Instant value, Duration arithmeticBound) throws IOException {
+        try {
+            if (value.isAfter(clock.instant())) throw new IOException("Deployment journal timestamp is in the future");
+            value.plus(arithmeticBound);
+        } catch (java.time.DateTimeException failure) {
+            throw new IOException("Deployment journal timestamp is out of range", failure);
         }
     }
 

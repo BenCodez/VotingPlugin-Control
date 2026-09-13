@@ -259,6 +259,14 @@ public final class ArtifactStore {
     private IOException rollbackPublication(Path artifact, List<QuarantinedFile> quarantined,
                                             Path pending, Path committed) {
         IOException failure = null;
+        if (Files.exists(committed, LinkOption.NOFOLLOW_LINKS)) {
+            try {
+                move(committed, pending, false);
+                DurableFiles.forceDirectory(directory);
+            } catch (IOException problem) {
+                return problem;
+            }
+        }
         try {
             if (Files.exists(artifact, LinkOption.NOFOLLOW_LINKS)) {
                 if (!Files.isRegularFile(artifact, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(artifact)) {
@@ -273,13 +281,16 @@ public final class ArtifactStore {
         catch (IOException problem) {
             if (failure == null) failure = problem; else failure.addSuppressed(problem);
         }
-        for (Path marker : List.of(pending, committed)) try { Files.deleteIfExists(marker); }
-        catch (IOException problem) {
-            if (failure == null) failure = problem; else failure.addSuppressed(problem);
-        }
         try { DurableFiles.forceDirectory(directory); }
         catch (IOException problem) {
             if (failure == null) failure = problem; else failure.addSuppressed(problem);
+        }
+        if (failure != null) return failure;
+        try {
+            Files.deleteIfExists(pending);
+            DurableFiles.forceDirectory(directory);
+        } catch (IOException problem) {
+            failure = problem;
         }
         return failure;
     }
