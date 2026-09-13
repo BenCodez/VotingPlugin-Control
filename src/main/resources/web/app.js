@@ -272,6 +272,7 @@ let nodePlugins = new Map();
 let inputGeneration = 0;
 let authenticationGeneration = 0;
 let loginInFlight = false;
+let logoutInFlight = false;
 let setupRequired = false;
 let enrollmentInFlight = false;
 let enrollmentRefreshRequested = false;
@@ -1663,7 +1664,11 @@ async function autoLoadTab(tab) {
     } finally { finishAutoLoad(tab); }
     return;
   }
-  if (tab === 'quick-setup' && !approvedQuickPreview && !configurationOperationsInFlight
+  if (tab === 'quick-setup' && configurationOperationsInFlight) {
+    autoLoadPending.add(tab);
+    return;
+  }
+  if (tab === 'quick-setup' && !approvedQuickPreview
       && (autoSitesState.textContent === 'Not loaded' || voteLoggingState.textContent === 'Not loaded'
         || quickPresetReadable() && !loadedQuickSetup)) {
     autoLoadInFlight.add(tab);
@@ -2764,7 +2769,7 @@ function renderDeploymentEligibility() {
   text(deploymentEligibility, `${eligible.length}/${connected.length} connected nodes eligible`
     + (batches > 1 ? ` · ${batches} bounded deployment batches` : ''));
   deploymentEligibility.className = `pill ${eligible.length ? 'online' : 'neutral'}`;
-  deployPlugin.disabled = !authenticated || deploymentInFlight || !deploymentJar.files?.length
+  deployPlugin.disabled = !authenticated || logoutInFlight || deploymentInFlight || !deploymentJar.files?.length
     || eligible.length === 0 || batches > MAX_DEPLOYMENT_BATCHES;
 }
 
@@ -3032,6 +3037,9 @@ function updatePluginSuggestions() {
 }
 
 async function authorized(path, options = {}) {
+  if (logoutInFlight && path !== '/api/v1/auth/logout') {
+    throw new Error('Authentication is changing. Try again after it finishes.');
+  }
   const requestGeneration = authenticationGeneration;
   const method = (options.method || 'GET').toUpperCase();
   const response = await fetch(path, {
@@ -3376,6 +3384,11 @@ async function startConfigurationOperation(path, body, statusElement = operation
     configurationOperationsInFlight--;
     updateConfigurationButtons();
     updateExtendedButtons();
+    if (configurationOperationsInFlight === 0 && autoLoadPending.has('quick-setup')
+        && !autoLoadInFlight.has('quick-setup')) {
+      autoLoadPending.delete('quick-setup');
+      void autoLoadTab('quick-setup');
+    }
   }
 }
 
@@ -3669,9 +3682,11 @@ form.addEventListener('submit', async event => {
 logout.addEventListener('click', async () => {
   if (loginInFlight) return;
   loginInFlight = true;
+  logoutInFlight = true;
   const logoutGeneration = ++authenticationGeneration;
   loginButton.disabled = true;
   logout.disabled = true;
+  renderDeploymentEligibility();
   try {
     await authorized('/api/v1/auth/logout', {method: 'POST'});
     if (logoutGeneration === authenticationGeneration) discardAuthenticationState('Signed out.');
@@ -3680,9 +3695,11 @@ logout.addEventListener('click', async () => {
       text(message, 'Sign out could not be confirmed. Check your connection and try again.');
     }
   } finally {
+    logoutInFlight = false;
     loginInFlight = false;
     loginButton.disabled = false;
     logout.disabled = false;
+    renderDeploymentEligibility();
   }
 });
 
@@ -4021,6 +4038,10 @@ function quickReadOptions() {
   return quickPreset.value === 'vote-site' ? {name: quickName.value.trim()} : {};
 }
 
+function quickReadConfigurationOptions() {
+  return quickPreset.value === 'proxy-backend' ? {method: quickMethod.value} : quickReadOptions();
+}
+
 function populateQuickState(options) {
   if (quickPreset.value === 'proxy-backend') {
     quickName.value = options.server || '';
@@ -4071,7 +4092,7 @@ async function loadQuickSetupValues(automatic = false) {
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: [selectedServerId],
-      configuration: {domain: 'quick-setup', preset, options: quickReadOptions()}
+      configuration: {domain: 'quick-setup', preset, options: quickReadConfigurationOptions()}
     }, quickOperationStatus);
     const result = Object.values(operation.results).find(item =>
       item.success && item.configuration?.preset === preset && item.configuration?.options);
@@ -5109,7 +5130,7 @@ deploymentJar.addEventListener('change', renderDeploymentEligibility);
 deployPlugin.addEventListener('click', async () => {
   const file = deploymentJar.files?.[0];
   const eligible = deploymentTargets();
-  if (!file || !eligible.length || deploymentInFlight) return;
+  if (!authenticated || logoutInFlight || !file || !eligible.length || deploymentInFlight) return;
   const batches = [];
   for (let offset = 0; offset < eligible.length; offset += MAX_OPERATION_TARGETS) {
     batches.push(eligible.slice(offset, offset + MAX_OPERATION_TARGETS));

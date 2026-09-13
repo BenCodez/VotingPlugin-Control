@@ -227,7 +227,7 @@ public final class DeploymentOperations {
             throw new ValidationException("TASK_NOT_CLAIMED", "Deployment attempt does not match", List.of());
         }
         validateResult(result);
-        target.result = result;
+        target.result = safeResult(result);
         target.state = result.success() ? "SUCCEEDED" : "FAILED";
         target.leasedAt = null;
         target.attemptId = null;
@@ -294,10 +294,36 @@ public final class DeploymentOperations {
         }
     }
 
+    private static DeploymentTaskResult safeResult(DeploymentTaskResult result) {
+        if (result == null) return null;
+        String message = switch (result.code()) {
+            case "RESTART_REQUIRED" -> "Artifact staged successfully; restart required";
+            case "ARTIFACT_NOT_FOUND" -> "The verified artifact is no longer available";
+            case "HASH_MISMATCH" -> "The staged artifact hash did not match";
+            case "SIZE_MISMATCH" -> "The staged artifact size did not match";
+            case "INVALID_ARTIFACT" -> "The node rejected the artifact as invalid";
+            case "UNSUPPORTED" -> "The node does not support this deployment";
+            case "DOWNLOAD_FAILED" -> "The node could not download the verified artifact";
+            case "STAGING_FAILED" -> "The node could not stage the artifact";
+            case "WRITE_FAILED" -> "The node could not write the staged artifact";
+            case "RESTART_FAILED" -> "The node reported a restart failure";
+            case "RESTART_TIMEOUT" -> "The node reported a restart timeout";
+            case "CAPABILITY_LOST" -> "The node session or deployment capability changed";
+            case "CANCELLED" -> "The deployment was cancelled";
+            case "TIMEOUT" -> "The deployment did not finish before its deadline";
+            case "DEPLOYMENT_FAILED" -> "The node could not complete the deployment";
+            case "CONTROL_RESTARTED" -> "Control restarted before staging completed";
+            case "INTERNAL_ERROR" -> "The node reported an internal deployment error";
+            default -> "The node reported a deployment result";
+        };
+        return new DeploymentTaskResult(result.sessionId(), result.success(), result.code(), message,
+                result.attemptId());
+    }
+
     private DeploymentResult view(StoredDeployment deployment) {
         List<DeploymentResult.NodeResult> nodes = deployment.targets.values().stream()
                 .map(target -> new DeploymentResult.NodeResult(target.nodeId, target.pinnedSession, target.state,
-                        target.result, target.leasedAt, target.attemptId)).toList();
+                        safeResult(target.result), target.leasedAt, target.attemptId)).toList();
         return new DeploymentResult(deployment.id, deployment.artifactId, deployment.sha256, deployment.size,
                 state(deployment), deployment.createdAt, nodes);
     }
@@ -510,6 +536,13 @@ public final class DeploymentOperations {
         boolean changed = false;
         for (StoredDeployment deployment : deployments.values()) {
             for (Target target : deployment.targets.values()) {
+                if (target.result != null) {
+                    DeploymentTaskResult safe = safeResult(target.result);
+                    if (!safe.equals(target.result)) {
+                        target.result = safe;
+                        changed = true;
+                    }
+                }
                 if (!"IN_PROGRESS".equals(target.state)) continue;
                 UUID interruptedAttempt = target.attemptId;
                 target.state = "FAILED";

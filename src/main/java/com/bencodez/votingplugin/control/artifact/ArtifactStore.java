@@ -24,6 +24,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import org.yaml.snakeyaml.LoaderOptions;
@@ -83,24 +84,11 @@ public final class ArtifactStore {
     }
 
     private void removeIncompleteUploads() throws IOException {
+        recoverEvictionTransactions();
         try (var files = Files.list(directory)) {
             for (Path file : files.toList()) {
                 String name = file.getFileName().toString();
-                if (name.matches("evict-[0-9a-f]{64}\\.part")) {
-                    if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file)) {
-                        throw rejected();
-                    }
-                    String artifactId = name.substring("evict-".length(), name.length() - ".part".length());
-                    verifyExistingArtifact(file, artifactId);
-                    Path original = artifactPath(artifactId);
-                    if (Files.exists(original, LinkOption.NOFOLLOW_LINKS)) {
-                        verifyExistingArtifact(original, artifactId);
-                        Files.delete(file);
-                    } else {
-                        move(file, original, false);
-                    }
-                    continue;
-                }
+                if (name.startsWith("evict-")) throw rejected();
                 if (!name.startsWith("upload-") || !name.endsWith(".part")) continue;
                 if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file)) {
                     throw rejected();
@@ -109,6 +97,43 @@ public final class ArtifactStore {
             }
         }
         DurableFiles.forceDirectory(directory);
+    }
+
+    private void recoverEvictionTransactions() throws IOException {
+        List<Path> files;
+        try (var entries = Files.list(directory)) { files = entries.toList(); }
+        for (Path marker : files) {
+            String name = marker.getFileName().toString();
+            if (!name.matches("evict-[0-9a-f]{32}-[0-9a-f]{64}\\.(?:pending|committed)")) continue;
+            if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(marker)
+                    || Files.size(marker) != 0) throw rejected();
+            String transaction = name.substring("evict-".length(), "evict-".length() + 32);
+            String incomingId = name.substring("evict-".length() + 33, "evict-".length() + 33 + 64);
+            boolean committed = name.endsWith(".committed");
+            List<QuarantinedFile> quarantined = new ArrayList<>();
+            for (Path candidate : files) {
+                String candidateName = candidate.getFileName().toString();
+                if (!candidateName.matches("evict-" + transaction + "-[0-9a-f]{64}\\.part")) continue;
+                String artifactId = candidateName.substring("evict-".length() + 33,
+                        "evict-".length() + 33 + 64);
+                verifyExistingArtifact(candidate, artifactId);
+                quarantined.add(new QuarantinedFile(artifactPath(artifactId), candidate));
+            }
+            Path incoming = artifactPath(incomingId);
+            if (committed) {
+                verifyExistingArtifact(incoming, incomingId);
+                for (QuarantinedFile file : quarantined) Files.delete(file.backup());
+            } else {
+                if (Files.exists(incoming, LinkOption.NOFOLLOW_LINKS)) {
+                    verifyExistingArtifact(incoming, incomingId);
+                    Files.delete(incoming);
+                }
+                restoreQuarantined(quarantined);
+            }
+            DurableFiles.forceDirectory(directory);
+            Files.delete(marker);
+            DurableFiles.forceDirectory(directory);
+        }
     }
 
     /**
@@ -133,6 +158,7 @@ public final class ArtifactStore {
         boolean published = false;
         try {
             verifyDirectory();
+            recoverEvictionTransactions();
             temporary = Files.createTempFile(directory, "upload-", ".part");
             setPermissions(temporary, FILE_PERMISSIONS);
             DigestAndSize digest = copyBounded(source, temporary);
@@ -190,28 +216,48 @@ public final class ArtifactStore {
     private void publishWithRollback(Path temporary, Path artifact, List<StoredFile> evictionPlan)
             throws IOException {
         List<QuarantinedFile> quarantined = new ArrayList<>();
+        String transaction = UUID.randomUUID().toString().replace("-", "");
+        String incomingId = artifact.getFileName().toString().substring(0, 64);
+        Path pending = directory.resolve("evict-" + transaction + "-" + incomingId + ".pending");
+        Path committed = directory.resolve("evict-" + transaction + "-" + incomingId + ".committed");
         try {
+            createTransactionMarker(pending);
             for (StoredFile candidate : evictionPlan) {
-                Path backup = directory.resolve("evict-" + candidate.artifactId() + ".part");
+                Path backup = directory.resolve("evict-" + transaction + "-" + candidate.artifactId() + ".part");
                 if (Files.exists(backup, LinkOption.NOFOLLOW_LINKS)) throw rejected();
                 move(candidate.path(), backup, false);
                 quarantined.add(new QuarantinedFile(candidate.path(), backup));
             }
             if (!quarantined.isEmpty()) DurableFiles.forceDirectory(directory);
             publish(temporary, artifact);
+            move(pending, committed, false);
+            DurableFiles.forceDirectory(directory);
         } catch (IOException | RuntimeException failure) {
-            IOException rollbackFailure = rollbackPublication(artifact, quarantined);
+            IOException rollbackFailure = rollbackPublication(artifact, quarantined, pending, committed);
             if (rollbackFailure != null) failure.addSuppressed(rollbackFailure);
             throw failure;
         }
-        for (QuarantinedFile file : quarantined) deleteTemporary(file.backup());
-        if (!quarantined.isEmpty()) {
-            try { DurableFiles.forceDirectory(directory); }
-            catch (IOException ignored) { /* The canonical artifact is already durable; retry cleanup on startup. */ }
+        try {
+            for (QuarantinedFile file : quarantined) Files.delete(file.backup());
+            DurableFiles.forceDirectory(directory);
+            Files.delete(committed);
+            DurableFiles.forceDirectory(directory);
+        } catch (IOException ignored) {
+            /* The committed marker makes remaining cleanup deterministic on startup. */
         }
     }
 
-    private IOException rollbackPublication(Path artifact, List<QuarantinedFile> quarantined) {
+    private void createTransactionMarker(Path marker) throws IOException {
+        try (FileChannel channel = FileChannel.open(marker, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
+                LinkOption.NOFOLLOW_LINKS)) {
+            setPermissions(marker, FILE_PERMISSIONS);
+            channel.force(true);
+        }
+        DurableFiles.forceDirectory(directory);
+    }
+
+    private IOException rollbackPublication(Path artifact, List<QuarantinedFile> quarantined,
+                                            Path pending, Path committed) {
         IOException failure = null;
         try {
             if (Files.exists(artifact, LinkOption.NOFOLLOW_LINKS)) {
@@ -223,22 +269,32 @@ public final class ArtifactStore {
         } catch (IOException problem) {
             failure = problem;
         }
-        for (int index = quarantined.size() - 1; index >= 0; index--) {
-            QuarantinedFile file = quarantined.get(index);
-            try {
-                if (Files.exists(file.backup(), LinkOption.NOFOLLOW_LINKS)
-                        && !Files.exists(file.original(), LinkOption.NOFOLLOW_LINKS)) {
-                    move(file.backup(), file.original(), false);
-                }
-            } catch (IOException problem) {
-                if (failure == null) failure = problem; else failure.addSuppressed(problem);
-            }
+        try { restoreQuarantined(quarantined); }
+        catch (IOException problem) {
+            if (failure == null) failure = problem; else failure.addSuppressed(problem);
+        }
+        for (Path marker : List.of(pending, committed)) try { Files.deleteIfExists(marker); }
+        catch (IOException problem) {
+            if (failure == null) failure = problem; else failure.addSuppressed(problem);
         }
         try { DurableFiles.forceDirectory(directory); }
         catch (IOException problem) {
             if (failure == null) failure = problem; else failure.addSuppressed(problem);
         }
         return failure;
+    }
+
+    private void restoreQuarantined(List<QuarantinedFile> quarantined) throws IOException {
+        for (int index = quarantined.size() - 1; index >= 0; index--) {
+            QuarantinedFile file = quarantined.get(index);
+            if (!Files.exists(file.backup(), LinkOption.NOFOLLOW_LINKS)) continue;
+            if (Files.exists(file.original(), LinkOption.NOFOLLOW_LINKS)) {
+                verifyExistingArtifact(file.original(), file.original().getFileName().toString().substring(0, 64));
+                Files.delete(file.backup());
+            } else {
+                move(file.backup(), file.original(), false);
+            }
+        }
     }
 
     /** Opens a verified immutable artifact by its opaque identifier. */

@@ -189,16 +189,66 @@ class ArtifactStoreTest {
     @Test void startupRestoresAnInterruptedEvictionQuarantine() throws Exception {
         Path artifacts = directory.resolve("artifacts");
         byte[] jar = jar("name: VotingPlugin\n", "plugin/Main.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/New.class", new byte[] {2});
         ArtifactStore store = new ArtifactStore(artifacts);
         String artifactId = store.upload(new ByteArrayInputStream(jar), "VotingPlugin.jar", sha256(jar)).artifactId();
+        String incomingId = sha256(incoming);
+        String transaction = "1".repeat(32);
         Path canonical = artifacts.resolve(artifactId + ".jar");
-        Path quarantine = artifacts.resolve("evict-" + artifactId + ".part");
+        Path quarantine = artifacts.resolve("evict-" + transaction + "-" + artifactId + ".part");
         Files.move(canonical, quarantine);
+        Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
+        Files.createFile(artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending"));
 
         ArtifactStore recovered = new ArtifactStore(artifacts);
 
         assertArrayEquals(jar, recovered.open(artifactId).readAllBytes());
+        assertRejected(() -> recovered.open(incomingId));
         assertFalse(Files.exists(quarantine));
+    }
+
+    @Test void startupFinishesACommittedEvictionWithoutRestoringOldArtifacts() throws Exception {
+        Path artifacts = directory.resolve("committed-artifacts");
+        byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/New.class", new byte[] {2});
+        ArtifactStore store = new ArtifactStore(artifacts);
+        String oldId = store.upload(new ByteArrayInputStream(old), "old.jar", sha256(old)).artifactId();
+        String incomingId = sha256(incoming);
+        String transaction = "2".repeat(32);
+        Path quarantine = artifacts.resolve("evict-" + transaction + "-" + oldId + ".part");
+        Files.move(artifacts.resolve(oldId + ".jar"), quarantine);
+        Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
+        Files.createFile(artifacts.resolve("evict-" + transaction + "-" + incomingId + ".committed"));
+
+        ArtifactStore recovered = new ArtifactStore(artifacts);
+
+        assertArrayEquals(incoming, recovered.open(incomingId).readAllBytes());
+        assertRejected(() -> recovered.open(oldId));
+        assertFalse(Files.exists(quarantine));
+    }
+
+    @Test void nextUploadFinishesCommittedEvictionBeforePlanningCapacity() throws Exception {
+        Path artifacts = directory.resolve("active-committed-artifacts");
+        byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/Incoming.class", new byte[] {2});
+        byte[] next = jar("name: VotingPlugin\n", "plugin/Next.class", new byte[] {3});
+        ArtifactStore store = new ArtifactStore(artifacts, 1_000_000, 1);
+        String oldId = store.upload(new ByteArrayInputStream(old), "old.jar", sha256(old)).artifactId();
+        String incomingId = sha256(incoming);
+        String transaction = "3".repeat(32);
+        Path quarantine = artifacts.resolve("evict-" + transaction + "-" + oldId + ".part");
+        Files.move(artifacts.resolve(oldId + ".jar"), quarantine);
+        Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
+        Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".committed");
+        Files.createFile(marker);
+
+        String nextId = store.upload(new ByteArrayInputStream(next), "next.jar", sha256(next)).artifactId();
+        ArtifactStore recovered = new ArtifactStore(artifacts, 1_000_000, 1);
+
+        assertArrayEquals(next, recovered.open(nextId).readAllBytes());
+        assertRejected(() -> recovered.open(incomingId));
+        assertFalse(Files.exists(quarantine));
+        assertFalse(Files.exists(marker));
     }
 
     private static byte[] jar(String pluginYml, String entryName, byte[] content) throws IOException {

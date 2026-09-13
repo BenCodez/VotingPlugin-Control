@@ -886,6 +886,13 @@ class ConfigurationOperationsTest {
         assertEquals(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY, backendHttp.capability());
         assertThrows(ValidationException.class,
                 () -> operations.createPreview(List.of("proxy-a"), backendHttp));
+        UUID httpBackendSession = UUID.randomUUID();
+        registry.register(new NodeRegistration("http-backend", httpBackendSession, "HTTP Backend", "BUKKIT",
+                "test", 1, Set.of(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY), Set.of()));
+        operations.createRead(List.of("http-backend"), backendHttp);
+        ConfigurationTask httpRead = operations.claim("http-backend", httpBackendSession);
+        assertEquals("proxy-backend", httpRead.configuration().preset());
+        assertEquals(Map.of(), httpRead.configuration().options());
         ManagedConfiguration lowercaseHttp = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null,
                 List.of(), null, null, "proxy-backend", Map.of("server", "lobby", "method", "http"));
         assertThrows(IllegalArgumentException.class, lowercaseHttp::validateProposal);

@@ -1,6 +1,7 @@
 package com.bencodez.votingplugin.control.domain;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -113,6 +114,23 @@ class DeploymentOperationsTest {
         DeploymentResult restored = reopened.get(created.deploymentId());
         assertEquals("SUCCEEDED", restored.state());
         assertEquals("RESTART_REQUIRED", restored.nodes().get(0).result().code());
+    }
+
+    @Test
+    void nodeMessagesAreReplacedBeforePersistenceAndPublicDisplay(@TempDir Path directory) throws Exception {
+        FakeRegistry registry = new FakeRegistry();
+        registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+        DeploymentOperations operations = new DeploymentOperations(registry, directory, clock);
+        DeploymentResult created = operations.create(request("backend"));
+        DeploymentTask task = operations.claim("backend", SESSION_A);
+
+        DeploymentResult completed = operations.complete(created.deploymentId(), "backend",
+                new DeploymentTaskResult(SESSION_A, false, "WRITE_FAILED",
+                        "secret=/private/server/path/token", task.attemptId()));
+
+        assertEquals("The node could not write the staged artifact", completed.nodes().get(0).result().message());
+        assertFalse(Files.readString(directory.resolve("plugin-deployments.json"), StandardCharsets.UTF_8)
+                .contains("/private/server/path/token"));
     }
 
     @Test

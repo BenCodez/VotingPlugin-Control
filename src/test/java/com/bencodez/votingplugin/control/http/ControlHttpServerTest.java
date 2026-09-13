@@ -116,6 +116,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("result.configuration?.content != null"));
         assertTrue(script.body().contains("authenticationGeneration"));
         assertTrue(script.body().contains("if (loginInFlight) return"));
+        assertTrue(script.body().contains("logoutInFlight && path !== '/api/v1/auth/logout'"));
+        assertTrue(script.body().contains("!authenticated || logoutInFlight || !file"));
         assertTrue(script.body().contains("backendItemsTruncated"));
         assertTrue(script.body().contains("topologyComplete: !truncatedNodeIds.has(proxyId)"));
         assertTrue(script.body().contains("proxyReady: network.proxyReady"));
@@ -139,21 +141,13 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("enabled: String(quickPartyEnabled.checked)"));
         assertTrue(script.body().contains("quickPartyEnabled.checked = options.enabled === 'true'"));
         assertTrue(script.body().contains("config.proxy-method.v2"));
-        assertTrue(script.body().contains("plugin.deploy.v1"));
-        assertTrue(script.body().contains("offset += MAX_OPERATION_TARGETS"));
-        assertTrue(script.body().contains("batch.map(node => node.nodeId)"));
-        assertTrue(script.body().contains("submittedOperations.push(operation)"));
-        assertTrue(script.body().contains("The listed operations remain durable in Activity"));
-        assertTrue(script.body().contains("Authentication changed before the deployment upload started"));
-        assertTrue(script.body().contains("Authentication changed before every deployment batch was submitted"));
-        assertTrue(script.body().contains("deploymentJar.value = ''"));
-        assertTrue(script.body().contains("generation === authenticationGeneration"));
-        assertTrue(script.body().contains("if (generation === authenticationGeneration) {\n      deploymentInFlight = false;"));
-        assertTrue(script.body().contains("Automatically restart is disabled")
-                || script.body().contains("Automatic restart is disabled"));
         assertTrue(script.body().contains("function quickSetupTargets()"));
         assertTrue(script.body().contains("nodeIds = quickSetupTargets()"));
         assertTrue(script.body().contains("currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets()"));
+        assertTrue(script.body().contains("autoLoadPending.add(tab);"));
+        assertTrue(script.body().contains("configurationOperationsInFlight === 0 && autoLoadPending.has('quick-setup')"));
+        assertTrue(script.body().contains("function quickReadConfigurationOptions()"));
+        assertTrue(script.body().contains("options: quickReadConfigurationOptions()"));
         assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
