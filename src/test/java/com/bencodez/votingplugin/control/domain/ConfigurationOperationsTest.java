@@ -875,6 +875,11 @@ class ConfigurationOperationsTest {
         assertThrows(IllegalArgumentException.class, () -> new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP,
                 null, List.of(), null, null, ManagedConfiguration.PROXY_METHOD,
                 Map.of("method", "UNKNOWN")).validateProposal());
+
+        ManagedConfiguration http = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "HTTP"));
+        http.validateProposal();
+        assertEquals(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY, http.capability());
     }
 
     @Test void proxyMethodApplyKeepsEvictedBackendsAsFailedDependencies() throws Exception {
@@ -892,6 +897,7 @@ class ConfigurationOperationsTest {
         assertEquals("COMPLETED_WITH_ERRORS", result.state());
         assertEquals("CAPABILITY_LOST", result.results().get("lobby").code());
         assertEquals("DEPENDENCY_FAILED", result.results().get("proxy-a").code());
+        assertTrue(result.results().get("proxy-a").message().contains("lobby CAPABILITY_LOST"));
     }
 
     @Test void proxyMethodApplyDoesNotCancelAnOfflineBackendWithAnActiveLease() throws Exception {

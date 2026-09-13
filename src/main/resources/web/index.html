@@ -228,6 +228,7 @@
             <button type="button" data-proxy-method="MQTT">MQTT</button>
             <button type="button" data-proxy-method="MYSQL">MySQL</button>
             <button type="button" data-proxy-method="SOCKETS">Sockets</button>
+            <button type="button" data-proxy-method="HTTP">HTTP</button>
           </div>
           <div class="operation-actions">
             <button id="read-proxy-method" class="secondary" type="button" disabled>Refresh active method</button>
@@ -327,7 +328,7 @@
               <div class="editor-footer">
                 <span><output id="editor-position">Line 1, Column 1</output> · Tab inserts two spaces · Ctrl/⌘+S previews</span>
                 <div class="operation-actions">
-                  <button id="read-file-configuration" class="secondary" type="button" disabled>Read selected</button>
+                  <button id="read-file-configuration" class="secondary" type="button" disabled hidden>Retry read</button>
                   <button id="preview-file-configuration" type="button" disabled>Preview file</button>
                   <button id="apply-file-configuration" type="button" disabled>Approve and apply</button>
                 </div>
@@ -397,14 +398,14 @@
             <div class="section-title"><div><p class="eyebrow">Vote-site discovery</p><h3>Auto-create vote sites</h3><p>Change only <code>AutoCreateVoteSites</code>. Disabling it keeps unknown services visible in health data without generating entries; explicit admin creation remains available.</p></div><span class="pill neutral" id="auto-sites-state">Not loaded</span></div>
             <label class="check-row"><input id="auto-sites-enabled" type="checkbox"> Automatically create unknown vote sites</label>
             <div class="target-scope"><span id="auto-sites-target-count">0 selected backends</span><button id="select-all-auto-sites-targets" class="secondary compact" type="button" disabled>Select all online backends</button></div>
-            <div class="operation-actions"><button id="load-auto-sites" class="secondary" type="button" disabled>Load</button><button id="preview-auto-sites" type="button" disabled>Preview</button><button id="apply-auto-sites" type="button" disabled>Approve and apply</button></div>
+            <div class="operation-actions"><button id="load-auto-sites" class="secondary" type="button" disabled hidden>Retry read</button><button id="preview-auto-sites" type="button" disabled>Preview</button><button id="apply-auto-sites" type="button" disabled>Approve and apply</button></div>
             <pre id="auto-sites-status" aria-live="polite">Choose a capable Bukkit node.</pre>
           </section>
           <section class="card">
             <div class="section-title"><div><p class="eyebrow">Optional MySQL event history</p><h3>Vote logging</h3><p>Enable bounded event logging for searches and vote-ID traces. This is separate from ordinary player totals. Changing Enabled or UseMainMySQL requires a full backend restart after apply; a plugin reload is not enough.</p></div><span class="pill neutral" id="vote-logging-state">Not loaded</span></div>
             <label class="check-row"><input id="vote-logging-enabled" type="checkbox"> Enable vote logging</label>
             <div class="form-grid compact-grid"><label>Purge after days<input id="vote-logging-days" type="number" min="-1" max="3650" step="1" value="30"><small class="form-help">Use -1 to disable automatic purging; 0 is not valid.</small></label><label class="check-row"><input id="vote-logging-main-mysql" type="checkbox" checked> Use main MySQL connection</label></div>
-            <div class="operation-actions"><button id="load-vote-logging" class="secondary" type="button" disabled>Load</button><button id="preview-vote-logging" type="button" disabled>Preview</button><button id="apply-vote-logging" type="button" disabled>Approve and apply</button></div>
+            <div class="operation-actions"><button id="load-vote-logging" class="secondary" type="button" disabled hidden>Retry read</button><button id="preview-vote-logging" type="button" disabled>Preview</button><button id="apply-vote-logging" type="button" disabled>Approve and apply</button></div>
             <pre id="vote-logging-status" aria-live="polite">Choose a capable Bukkit node. Dedicated MySQL credentials remain in the full YAML editor.</pre>
           </section>
         </div>
@@ -444,6 +445,7 @@
             <div class="form-grid quick-fields" data-presets="proxy-backend">
               <label>Communication method<select id="quick-method">
                 <option value="PLUGINMESSAGING">Plugin messaging</option>
+                <option value="HTTP">HTTP</option>
                 <option value="REDIS">Redis</option>
                 <option value="MQTT">MQTT</option>
                 <option value="MYSQL">MySQL</option>
@@ -503,6 +505,7 @@
               <p class="warning-text">Changing Enabled or UseMainMySQL requires a full backend restart after apply; a plugin reload is not enough.</p>
             </fieldset>
             <div class="form-grid quick-fields" data-presets="vote-party">
+              <label class="check-row"><input id="quick-party-enabled" type="checkbox"> Enable Vote Party</label>
               <label>Votes required<input id="quick-party-votes" type="number" min="1" max="100000" value="20"></label>
               <label>Reward command<input id="quick-party-command" maxlength="500" list="quick-command-suggestions" value="give %player% diamond 1"></label>
               <label>Broadcast<input id="quick-party-broadcast" maxlength="500" value="&aVote party reached!"></label>
@@ -511,7 +514,7 @@
               <p>Existing reward sections and commands are preserved. A new command is appended once.</p>
             </div>
             <div class="operation-actions">
-              <button id="read-quick-setup" class="secondary" type="button" disabled>Load current values</button>
+              <button id="read-quick-setup" class="secondary" type="button" disabled hidden>Retry read</button>
               <button id="preview-quick-setup" type="button" disabled>Preview setup</button>
               <button id="apply-quick-setup" type="button" disabled>Approve and apply</button>
             </div>

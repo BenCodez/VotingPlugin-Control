@@ -33,6 +33,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     public static final String VOTE_SITES_SYNC_CAPABILITY = "config.vote-sites-sync.v1";
     public static final String TRANSPORT_TEST_CAPABILITY = "config.transport-test.v1";
     public static final String PROXY_METHOD_CAPABILITY = "config.proxy-method.v1";
+    public static final String PROXY_METHOD_HTTP_CAPABILITY = "config.proxy-method.v2";
     private static final int MAX_OPERATIONS = 1000;
     private static final int MAX_LISTED_OPERATIONS = 100;
     private static final int MAX_FILE_OPERATIONS = 16;
@@ -318,8 +319,16 @@ public final class ConfigurationOperations implements AutoCloseable {
                     "Proxy topology changed after approval; preview again", "TOPOLOGY_CHANGED");
             return true;
         }
+        String causes = backends.stream().filter(backendId -> operation.results.get(backendId) == null
+                        || !operation.results.get(backendId).success())
+                .map(backendId -> {
+                    ConfigurationTaskResult failure = operation.results.get(backendId);
+                    return failure == null ? backendId + " RESULT_UNAVAILABLE"
+                            : backendId + " " + failure.code() + ": " + failure.message();
+                })
+                .collect(java.util.stream.Collectors.joining("; "));
         automaticCancellation(operation, node.nodeId(), sessionId(node), "DEPENDENCY_FAILED",
-                "A backend failed the proxy method apply", "BACKEND_APPLY_FAILED");
+                truncateUtf8("Proxy not applied because " + causes, 500), "BACKEND_APPLY_FAILED");
         return true;
     }
 

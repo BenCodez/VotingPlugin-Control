@@ -68,7 +68,9 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("Comment support unknown"));
         assertTrue(web.body().contains("Sync site definitions across backends"));
         assertTrue(web.body().contains("Target-only sites and every reward section stay local"));
-        assertTrue(web.body().contains("Load current values"));
+        assertFalse(web.body().contains("Load current values"));
+        assertTrue(web.body().contains("Retry read"));
+        assertTrue(web.body().contains("id=\"quick-party-enabled\""));
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
@@ -118,6 +120,16 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("refreshedNetwork.proxy?.sessionId !== network.proxy.sessionId"));
         assertTrue(script.body().contains("if (approvedQuickPreview?.workflow === 'sync-vote-sites') approvedQuickPreview = null;"));
         assertTrue(script.body().contains("if (quickPreset.value !== 'sync-vote-sites') return;"));
+        assertTrue(script.body().contains("await loadFileConfiguration(true);"),
+                "Successful file applies must refresh confirmed current state.");
+        assertTrue(script.body().contains("await loadQuickSetupValues(true);"),
+                "Successful guided applies must refresh confirmed current state.");
+        assertTrue(script.body().contains("configurationContent.setAttribute('aria-busy', 'true')"));
+        assertTrue(script.body().contains("readFileConfiguration.hidden = false;"));
+        assertTrue(script.body().contains("readQuickSetup.hidden = false;"));
+        assertTrue(script.body().contains("enabled: String(quickPartyEnabled.checked)"));
+        assertTrue(script.body().contains("quickPartyEnabled.checked = options.enabled === 'true'"));
+        assertTrue(script.body().contains("config.proxy-method.v2"));
         assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
@@ -253,10 +265,10 @@ class ControlHttpServerTest {
                 "Activity refreshes must invalidate cached health after observing an external successful apply.");
         assertTrue(script.body().contains("if (applied) {\n    invalidateConfigurationReads();"),
                 "Locally completed applies must use the same cache invalidation path.");
-        assertTrue(script.body().contains("const submittedFile = JSON.stringify({content: configurationContent.value, fileName: approval.fileName,"));
-        assertTrue(script.body().contains("const currentFile = JSON.stringify({content: configurationContent.value, fileName: configurationFile.value,"));
-        assertTrue(script.body().contains("submittedFile === currentFile"),
-                "File apply completion must compare content, target scope, file, and node sessions.");
+        assertTrue(script.body().contains("const expectedApplyGeneration = inputGeneration + 2;"));
+        assertTrue(script.body().contains("const submittedContextStillCurrent = inputGeneration === expectedApplyGeneration"));
+        assertTrue(script.body().contains("approval.sessions.get(nodeId) === nodeIndex.get(nodeId)?.sessionId"),
+                "File apply completion must compare input generation, target scope, file, and node sessions.");
         assertTrue(script.body().contains("The apply completed, but newer unsaved file edits remain. Preview again before applying them."),
                 "A file apply must not label edits made during polling as already saved.");
         assertTrue(script.body().contains("const previewGeneration = inputGeneration;\n  try {\n    const nodeIds = backendQuickTargets();"));
@@ -334,7 +346,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("handleEditorKeydown"));
         assertTrue(script.body().contains("receivedLastVotes.length > MAX_PLAYER_LAST_VOTES"));
         assertTrue(script.body().contains(".slice(0, MAX_PLAYER_LAST_VOTES)"));
-        assertTrue(script.body().contains("if (!automatic) text(fileOperationStatus, error.message);"));
+        assertFalse(script.body().contains("if (!automatic) text(fileOperationStatus, error.message);"));
         assertTrue(script.body().contains("const cell = document.createElement('td');"));
         assertTrue(script.body().contains("const submittedProposal = JSON.stringify({proposal: proposal(), nodeIds: approval.nodeIds});"));
         assertTrue(script.body().contains("const currentProposal = JSON.stringify({proposal: proposal(), nodeIds: targets('config.proxy-routing.v1')});"));
@@ -525,7 +537,7 @@ class ControlHttpServerTest {
                 "Setup diagnostics must invalidate any cached dashboard evidence.");
         assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
         assertTrue(script.body().contains("Object.hasOwn(value, 'voteLogAvailable') ? value.voteLogAvailable : value.voteLoggingAvailable"));
-        assertTrue(script.body().contains("const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);"));
+        assertTrue(script.body().contains("const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS', 'HTTP']);"));
         assertTrue(script.body().contains("result.proxyMode === true && !proxyMethods.has(result.proxyMethod.toUpperCase())"));
         assertTrue(script.body().contains("const requiredStrings = new Set(['pluginVersion', 'platform', 'serverSoftware', 'serverVersion', 'dataStorage']);"));
         assertTrue(script.body().contains("field === 'proxyMethod'"));
