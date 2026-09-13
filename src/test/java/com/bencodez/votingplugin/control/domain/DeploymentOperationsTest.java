@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.bencodez.votingplugin.control.protocol.Heartbeat;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
@@ -168,7 +169,7 @@ class DeploymentOperationsTest {
     }
 
     @Test
-    void laterAuditFailureDoesNotRollBackAnEarlierPruneCancellation(@TempDir Path directory) throws Exception {
+    void auditFailureRollsBackTheUnauditedPruneBatch(@TempDir Path directory) throws Exception {
         Path auditDirectory = directory.resolve("audit");
         Path journalDirectory = directory.resolve("journal");
         FakeRegistry registry = new FakeRegistry();
@@ -192,11 +193,75 @@ class DeploymentOperationsTest {
             assertThrows(ConfigurationAuditLog.AuditException.class, () -> operations.get(deploymentId));
         }
 
+        registry.add("first", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
         registry.add("second", SESSION_B, Set.of(DeploymentRequest.CAPABILITY));
         DeploymentResult restored = new DeploymentOperations(registry, journalDirectory, clock).get(deploymentId);
-        assertEquals("FAILED", restored.nodes().get(0).state());
-        assertEquals("CAPABILITY_LOST", restored.nodes().get(0).result().code());
+        assertEquals("QUEUED", restored.nodes().get(0).state());
         assertEquals("QUEUED", restored.nodes().get(1).state());
+    }
+
+    @Test
+    void pruneBoundsAndBatchesExpiredTargetTransitions() {
+        FakeRegistry registry = new FakeRegistry();
+        String[] nodeIds = new String[DeploymentOperations.MAX_PRUNE_TRANSITIONS];
+        for (int index = 0; index < nodeIds.length; index++) {
+            nodeIds[index] = "backend-" + index;
+            registry.add(nodeIds[index], UUID.randomUUID(), Set.of(DeploymentRequest.CAPABILITY));
+        }
+        DeploymentOperations operations = new DeploymentOperations(registry, clock);
+        DeploymentResult first = operations.create(request(nodeIds));
+        DeploymentResult second = operations.create(request(nodeIds));
+        for (String nodeId : nodeIds) registry.remove(nodeId);
+        clock.advance(DeploymentOperations.ACTIVE_RETENTION);
+
+        List<DeploymentResult> firstSweep = operations.list(0, 100);
+        assertEquals("FAILED", firstSweep.stream().filter(item -> item.deploymentId().equals(first.deploymentId()))
+                .findFirst().orElseThrow().state());
+        assertEquals("QUEUED", firstSweep.stream().filter(item -> item.deploymentId().equals(second.deploymentId()))
+                .findFirst().orElseThrow().state());
+
+        List<DeploymentResult> secondSweep = operations.list(0, 100);
+        assertTrue(secondSweep.stream().allMatch(item -> item.state().equals("FAILED")));
+    }
+
+    @Test
+    void retentionPersistenceFailureRestoresTheRemovedDeployment(@TempDir Path directory) throws Exception {
+        FakeRegistry registry = new FakeRegistry();
+        registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+        DeploymentOperations operations = new DeploymentOperations(registry, directory, clock);
+        DeploymentResult created = operations.create(request("backend"));
+        DeploymentTask task = operations.claim("backend", SESSION_A);
+        operations.complete(created.deploymentId(), "backend",
+                new DeploymentTaskResult(SESSION_A, true, "RESTART_REQUIRED", "staged", task.attemptId()));
+        Duration elapsed = DeploymentOperations.COMPLETE_RETENTION.plusSeconds(1);
+        clock.advance(elapsed);
+        Path temporary = Files.createDirectory(directory.resolve("plugin-deployments.json.tmp"));
+        Files.writeString(temporary.resolve("blocker"), "block", StandardCharsets.UTF_8);
+
+        assertThrows(IllegalStateException.class, () -> operations.list(0, 100));
+        Files.delete(temporary.resolve("blocker"));
+        Files.delete(temporary);
+        clock.advance(elapsed.negated());
+
+        assertEquals("SUCCEEDED", operations.get(created.deploymentId()).state());
+        assertEquals("SUCCEEDED", new DeploymentOperations(registry, directory, clock)
+                .get(created.deploymentId()).state());
+    }
+
+    @Test
+    void activeLeaseBlocksLaterDeploymentForTheSameNode() {
+        FakeRegistry registry = new FakeRegistry();
+        registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+        DeploymentOperations operations = new DeploymentOperations(registry, clock);
+        DeploymentResult first = operations.create(request("backend"));
+        operations.create(request("backend"));
+
+        DeploymentTask claimed = operations.claim("backend", SESSION_A);
+        assertEquals(first.deploymentId(), claimed.deploymentId());
+        assertNull(operations.claim("backend", SESSION_A));
+
+        clock.advance(DeploymentOperations.LEASE);
+        assertEquals(first.deploymentId(), operations.claim("backend", SESSION_A).deploymentId());
     }
 
     @Test

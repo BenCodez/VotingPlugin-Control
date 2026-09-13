@@ -42,6 +42,7 @@ public final class DeploymentOperations {
     public static final Duration ACTIVE_RETENTION = Duration.ofMinutes(15);
     public static final Duration COMPLETE_RETENTION = Duration.ofMinutes(30);
     public static final int MAX_RETAINED = 100;
+    static final int MAX_PRUNE_TRANSITIONS = 100;
     private static final int MAX_MESSAGE_CHARS = 500;
     private static final Set<String> FAILURE_CODES = Set.of(
             "ARTIFACT_NOT_FOUND", "HASH_MISMATCH", "SIZE_MISMATCH", "INVALID_ARTIFACT",
@@ -148,7 +149,7 @@ public final class DeploymentOperations {
                 continue;
             }
             if (target.state.equals("IN_PROGRESS")) {
-                if (target.leasedAt != null && now.isBefore(target.leasedAt.plus(LEASE))) continue;
+                if (target.leasedAt != null && now.isBefore(target.leasedAt.plus(LEASE))) return null;
                 target.state = "QUEUED";
                 target.leasedAt = null;
                 target.attemptId = null;
@@ -382,38 +383,75 @@ public final class DeploymentOperations {
     }
 
     private void prune() {
-        LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
-        try {
-            Instant now = clock.instant();
-            for (StoredDeployment deployment : deployments.values()) {
-                for (Target target : deployment.targets.values()) {
-                    if ("SUCCEEDED".equals(target.state) || "FAILED".equals(target.state)) continue;
-                    NodeStatus node = registry.find(target.nodeId);
-                    if (node != null && node.online() && (!target.pinnedSession.equals(node.sessionId())
-                            || !node.acceptedCapabilities().contains(CAPABILITY))) {
-                        failUnavailable(deployment, target,
-                                "Node session or deployment capability changed before staging completed");
-                        prior = copyDeployments();
-                        continue;
-                    }
+        Instant now = clock.instant();
+        List<PendingFailure> failures = new ArrayList<>();
+        outer: for (StoredDeployment deployment : deployments.values()) {
+            for (Target target : deployment.targets.values()) {
+                if ("SUCCEEDED".equals(target.state) || "FAILED".equals(target.state)) continue;
+                NodeStatus node = registry.find(target.nodeId);
+                if (node != null && node.online() && (!target.pinnedSession.equals(node.sessionId())
+                        || !node.acceptedCapabilities().contains(CAPABILITY))) {
+                    failures.add(new PendingFailure(deployment.id, target.nodeId, "CAPABILITY_LOST",
+                            "Node session or deployment capability changed before staging completed"));
+                } else {
                     boolean activeLease = "IN_PROGRESS".equals(target.state) && target.leasedAt != null
                             && now.isBefore(target.leasedAt.plus(LEASE));
                     if (!activeLease && !now.isBefore(deployment.createdAt.plus(ACTIVE_RETENTION))) {
-                        failTarget(deployment, target, "TIMEOUT",
-                                "Node did not stage the artifact before the deployment deadline");
-                        prior = copyDeployments();
+                        failures.add(new PendingFailure(deployment.id, target.nodeId, "TIMEOUT",
+                                "Node did not stage the artifact before the deployment deadline"));
                     }
                 }
+                if (failures.size() >= MAX_PRUNE_TRANSITIONS) break outer;
             }
+        }
+        applyPruneFailures(failures);
+
+        LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
+        Instant cutoff = clock.instant().minus(COMPLETE_RETENTION);
+        try {
+            int previousSize = deployments.size();
+            deployments.values().removeIf(deployment ->
+                    isTerminal(deployment) && deployment.createdAt.isBefore(cutoff));
+            evictCompleted();
+            if (deployments.size() != previousSize && journal != null) persistJournal();
         } catch (RuntimeException failure) {
             restore(prior, failure);
             throw failure;
         }
-        Instant cutoff = clock.instant().minus(COMPLETE_RETENTION);
-        boolean removed = deployments.values().removeIf(deployment ->
-                isTerminal(deployment) && deployment.createdAt.isBefore(cutoff));
-        evictCompleted();
-        if (removed && journal != null) persistJournal();
+    }
+
+    private void applyPruneFailures(List<PendingFailure> failures) {
+        if (failures.isEmpty()) return;
+        LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
+        for (PendingFailure failure : failures) {
+            markFailed(deployments.get(failure.deploymentId).targets.get(failure.nodeId),
+                    failure.code, failure.message);
+        }
+        try {
+            if (journal != null) persistJournal();
+        } catch (RuntimeException failure) {
+            restore(prior, failure);
+            throw failure;
+        }
+        if (audit == null) return;
+        for (int index = 0; index < failures.size(); index++) {
+            PendingFailure transition = failures.get(index);
+            try {
+                audit.append("DEPLOYMENT_CANCELLED", transition.deploymentId, transition.nodeId, transition.code);
+            } catch (RuntimeException failure) {
+                for (int rollback = index; rollback < failures.size(); rollback++) {
+                    PendingFailure unapplied = failures.get(rollback);
+                    Target current = deployments.get(unapplied.deploymentId).targets.get(unapplied.nodeId);
+                    Target previous = prior.get(unapplied.deploymentId).targets.get(unapplied.nodeId);
+                    copyTargetState(previous, current);
+                }
+                if (journal != null) {
+                    try { persistJournal(); }
+                    catch (RuntimeException rollbackFailure) { failure.addSuppressed(rollbackFailure); }
+                }
+                throw failure;
+            }
+        }
     }
 
     private void failUnavailable(StoredDeployment deployment, Target target, String message) {
@@ -421,12 +459,23 @@ public final class DeploymentOperations {
     }
 
     private void failTarget(StoredDeployment deployment, Target target, String code, String message) {
+        markFailed(target, code, message);
+        commit(deployment.id, target.nodeId, "DEPLOYMENT_CANCELLED", code);
+    }
+
+    private void markFailed(Target target, String code, String message) {
         UUID attempt = target.attemptId == null ? UUID.randomUUID() : target.attemptId;
         target.state = "FAILED";
         target.result = new DeploymentTaskResult(target.pinnedSession, false, code, message, attempt);
         target.leasedAt = null;
         target.attemptId = null;
-        commit(deployment.id, target.nodeId, "DEPLOYMENT_CANCELLED", code);
+    }
+
+    private static void copyTargetState(Target source, Target destination) {
+        destination.state = source.state;
+        destination.leasedAt = source.leasedAt;
+        destination.attemptId = source.attemptId;
+        destination.result = source.result;
     }
 
     private void evictCompleted() {
@@ -626,6 +675,8 @@ public final class DeploymentOperations {
         value.fieldNames().forEachRemaining(actual::add);
         if (!actual.equals(expected)) throw new IOException("Deployment journal entry is invalid");
     }
+
+    private record PendingFailure(UUID deploymentId, String nodeId, String code, String message) { }
 
     private static final class StoredDeployment {
         private final UUID id;

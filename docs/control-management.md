@@ -42,6 +42,7 @@ Control accepts only the intersection with its own allow-list.
 | `config.files.v1` | Bounded reads/previews/applies for managed Bukkit YAML files |
 | `config.file-comments.v1` | Preserves Control-managed comment metadata where supported |
 | `config.quick-setup.v1` | Typed guided settings and reward/site presets |
+| `config.quick-setup.v2` | Vote Party guided settings including revision-safe Enabled round trips |
 | `config.vote-sites-sync.v1` | Reward-safe VoteSites merge from one backend to selected targets |
 | `config.transport-test.v1` | Typed, bounded proxy-to-backend communication check |
 | `config.proxy-method.v1` | Coordinated preview/apply and acknowledged runtime replacement for a supported network proxy method |
@@ -135,8 +136,9 @@ general setting activation still requires a proxy restart.
 4. Nodes stage and atomically replace managed YAML, reload VotingPlugin, and restore the local `.control-backup` if reload
    fails. The result distinguishes reload and rollback from a successful save.
 
-The proxy method preset validates and persists the requested `MYSQL`, `PLUGINMESSAGING`, `REDIS`, `MQTT`, or `SOCKETS`
-method on the proxy and its reported backends. The proxy acknowledges its durable result before replacing its runtime, so
+The proxy method preset validates and persists the requested `MYSQL`, `PLUGINMESSAGING`, `REDIS`, `MQTT`, `SOCKETS`, or
+`HTTP` method on the proxy and its reported backends. `HTTP` requires every target to negotiate
+`config.proxy-method.v2`; the other methods use `config.proxy-method.v1`. The proxy acknowledges its durable result before replacing its runtime, so
 the operation result cannot be lost during teardown. Backends reload only their proxy communication handler. If a durable
 write or backend handler reload fails, its local backup is restored and the operation reports the failed/rolled-back state
 rather than a false network-wide success.

@@ -30,6 +30,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     public static final String FILE_CAPABILITY = "config.files.v1";
     public static final String PROXY_FILE_CAPABILITY = "config.proxy-files.v1";
     public static final String QUICK_SETUP_CAPABILITY = "config.quick-setup.v1";
+    public static final String QUICK_SETUP_VOTE_PARTY_CAPABILITY = "config.quick-setup.v2";
     public static final String VOTE_SITES_SYNC_CAPABILITY = "config.vote-sites-sync.v1";
     public static final String TRANSPORT_TEST_CAPABILITY = "config.transport-test.v1";
     public static final String PROXY_METHOD_CAPABILITY = "config.proxy-method.v1";

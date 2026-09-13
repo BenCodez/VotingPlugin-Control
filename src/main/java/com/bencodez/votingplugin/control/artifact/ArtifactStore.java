@@ -519,10 +519,17 @@ public final class ArtifactStore {
     private boolean publish(Path temporary, Path artifact) throws IOException {
         try {
             beforePublishMove.run(artifact);
-            moveWithoutReplacing(temporary, artifact);
+            Files.createLink(artifact, temporary);
         } catch (java.nio.file.FileAlreadyExistsException collision) {
             verifyExistingArtifact(artifact, artifact.getFileName().toString().substring(0, 64));
             return false;
+        }
+        try {
+            Files.delete(temporary);
+        } catch (IOException failure) {
+            try { Files.deleteIfExists(artifact); }
+            catch (IOException rollbackFailure) { failure.addSuppressed(rollbackFailure); }
+            throw failure;
         }
         return true;
     }
@@ -544,10 +551,6 @@ public final class ArtifactStore {
             if (replace) Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
             else Files.move(source, target);
         }
-    }
-
-    private static void moveWithoutReplacing(Path source, Path target) throws IOException {
-        Files.move(source, target);
     }
 
     private void verifyExistingArtifact(Path artifact, String expectedHash) throws IOException {
