@@ -186,6 +186,30 @@ class ArtifactStoreTest {
         assertRejected(() -> store.open(secondId));
     }
 
+    @Test void publicationCollisionRestoresPlannedEvictionsAndRemovesTheStagedUpload() throws Exception {
+        Path artifacts = directory.resolve("collision-artifacts");
+        byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/Incoming.class", new byte[] {2});
+        String oldId = sha256(old);
+        String incomingId = sha256(incoming);
+        AtomicBoolean createCollision = new AtomicBoolean();
+        ArtifactStore store = new ArtifactStore(artifacts, 1_000_000, 1, path -> {
+            if (createCollision.get()) Files.write(path, incoming);
+        }, path -> { });
+        store.upload(new ByteArrayInputStream(old), "old.jar", oldId);
+
+        createCollision.set(true);
+        ArtifactStore.Artifact duplicate = store.upload(new ByteArrayInputStream(incoming), "incoming.jar", incomingId);
+
+        assertEquals(incomingId, duplicate.artifactId());
+        assertArrayEquals(old, store.open(oldId).readAllBytes());
+        assertArrayEquals(incoming, store.open(incomingId).readAllBytes());
+        try (var entries = Files.list(artifacts)) {
+            assertFalse(entries.anyMatch(path -> path.getFileName().toString().startsWith("upload-")
+                    || path.getFileName().toString().startsWith("evict-")));
+        }
+    }
+
     @Test void incompleteRollbackRetainsItsPendingRecoveryMarker() throws Exception {
         Path artifacts = directory.resolve("rollback-artifacts");
         AtomicBoolean failAfterMove = new AtomicBoolean();
@@ -220,13 +244,38 @@ class ArtifactStoreTest {
         Path quarantine = artifacts.resolve("evict-" + transaction + "-" + artifactId + ".part");
         Files.move(canonical, quarantine);
         Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
-        Files.createFile(artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending"));
+        Files.writeString(artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending"),
+                "upload-owned.part");
 
         ArtifactStore recovered = new ArtifactStore(artifacts);
 
         assertArrayEquals(jar, recovered.open(artifactId).readAllBytes());
         assertRejected(() -> recovered.open(incomingId));
         assertFalse(Files.exists(quarantine));
+    }
+
+    @Test void startupPreservesACompetingArtifactAfterAnInterruptedPublishCollision() throws Exception {
+        Path artifacts = directory.resolve("collision-recovery-artifacts");
+        byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/Incoming.class", new byte[] {2});
+        ArtifactStore store = new ArtifactStore(artifacts);
+        String oldId = store.upload(new ByteArrayInputStream(old), "old.jar", sha256(old)).artifactId();
+        String incomingId = sha256(incoming);
+        String transaction = "4".repeat(32);
+        Path quarantine = artifacts.resolve("evict-" + transaction + "-" + oldId + ".part");
+        Files.move(artifacts.resolve(oldId + ".jar"), quarantine);
+        Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
+        Path staged = Files.write(artifacts.resolve("upload-collision.part"), incoming);
+        Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending");
+        Files.writeString(marker, staged.getFileName().toString());
+
+        ArtifactStore recovered = new ArtifactStore(artifacts);
+
+        assertArrayEquals(old, recovered.open(oldId).readAllBytes());
+        assertArrayEquals(incoming, recovered.open(incomingId).readAllBytes());
+        assertFalse(Files.exists(staged));
+        assertFalse(Files.exists(quarantine));
+        assertFalse(Files.exists(marker));
     }
 
     @Test void startupFinishesACommittedEvictionWithoutRestoringOldArtifacts() throws Exception {
@@ -240,7 +289,8 @@ class ArtifactStoreTest {
         Path quarantine = artifacts.resolve("evict-" + transaction + "-" + oldId + ".part");
         Files.move(artifacts.resolve(oldId + ".jar"), quarantine);
         Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
-        Files.createFile(artifacts.resolve("evict-" + transaction + "-" + incomingId + ".committed"));
+        Files.writeString(artifacts.resolve("evict-" + transaction + "-" + incomingId + ".committed"),
+                "upload-committed.part");
 
         ArtifactStore recovered = new ArtifactStore(artifacts);
 
@@ -262,7 +312,7 @@ class ArtifactStoreTest {
         Files.move(artifacts.resolve(oldId + ".jar"), quarantine);
         Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
         Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".committed");
-        Files.createFile(marker);
+        Files.writeString(marker, "upload-committed-next.part");
 
         String nextId = store.upload(new ByteArrayInputStream(next), "next.jar", sha256(next)).artifactId();
         ArtifactStore recovered = new ArtifactStore(artifacts, 1_000_000, 1);
