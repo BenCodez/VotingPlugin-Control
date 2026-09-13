@@ -2837,9 +2837,10 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
     fileTargetsForSelection().length > 0 && !busy;
   const fileDraftReady = fileReady && fileDraftMatchesCurrentContext();
   const syncSelected = quickPreset.value === 'sync-vote-sites';
+  const quickCapability = quickSetupCapability();
   const quickReady = authenticated && !busy && (syncSelected
     ? Boolean(voteSitesSourceId && selectedVoteSitesTargets().length > 0)
-    : primaryCapabilities.includes('config.quick-setup.v1') && targets('config.quick-setup.v1').length > 0);
+    : primaryCapabilities.includes(quickCapability) && quickSetupTargets().length > 0);
   readConfiguration.disabled = !routingReadReady;
   previewConfiguration.disabled = !routingDraftReady;
   applyConfiguration.disabled = !routingDraftReady || !approvedPreview;
@@ -2865,6 +2866,16 @@ function targets(capability) {
 
 function backendQuickTargets() {
   return targets('config.quick-setup.v1').filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
+}
+
+function quickSetupCapability() {
+  return quickPreset.value === 'proxy-backend' && quickMethod.value === 'HTTP'
+    ? 'config.proxy-method.v2' : 'config.quick-setup.v1';
+}
+
+function quickSetupTargets() {
+  return targets(quickSetupCapability())
+    .filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
 }
 
 function clearApprovals() {
@@ -4036,14 +4047,15 @@ previewQuickSetup.addEventListener('click', async () => {
       }
       return;
     }
+    const nodeIds = quickSetupTargets();
     const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
-      nodeIds: targets('config.quick-setup.v1'),
+      nodeIds,
       configuration: {domain: 'quick-setup', preset: quickPreset.value, options: quickOptions()}
     }, quickOperationStatus);
     text(quickOperationStatus, operationSummary(operation));
     if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration) {
       approvedQuickPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken,
-        nodeIds: targets('config.quick-setup.v1')};
+        nodeIds};
       updateConfigurationButtons();
     } else if (previewGeneration !== inputGeneration) {
       text(quickOperationStatus, 'The targets or setup changed while previewing. Preview again before apply.');
@@ -4067,7 +4079,7 @@ applyQuickSetup.addEventListener('click', async () => {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, quickOperationStatus);
-    const currentNodeIds = sync ? selectedVoteSitesTargets() : targets('config.quick-setup.v1');
+    const currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets();
     const currentQuickSetup = JSON.stringify({preset: quickPreset.value, options: quickOptions(),
       nodeIds: currentNodeIds, sourceId: sync ? voteSitesSourceId : ''});
     text(quickOperationStatus, operation.state === 'SUCCEEDED' && submittedQuickSetup !== currentQuickSetup

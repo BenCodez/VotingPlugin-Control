@@ -72,11 +72,15 @@ class ArtifactStoreTest {
         byte[] missing = jar(null, "plugin/Main.class", new byte[] {1});
         byte[] wrong = jar("name: AnotherPlugin\n", "plugin/Main.class", new byte[] {1});
         byte[] ambiguous = jar("name: VotingPlugin\nname: AnotherPlugin\n", "plugin/Main.class", new byte[] {1});
+        byte[] quotedDuplicate = jar("name: VotingPlugin\n\"name\": AnotherPlugin\n",
+                "plugin/Main.class", new byte[] {1});
         byte[] bomb = jar("name: VotingPlugin\n", "data.bin", new byte[1_000_000]);
 
         assertRejected(() -> store.upload(new ByteArrayInputStream(missing), "VotingPlugin.jar", sha256(missing)));
         assertRejected(() -> store.upload(new ByteArrayInputStream(wrong), "VotingPlugin.jar", sha256(wrong)));
         assertRejected(() -> store.upload(new ByteArrayInputStream(ambiguous), "VotingPlugin.jar", sha256(ambiguous)));
+        assertRejected(() -> store.upload(new ByteArrayInputStream(quotedDuplicate),
+                "VotingPlugin.jar", sha256(quotedDuplicate)));
         assertRejected(() -> store.upload(new ByteArrayInputStream(bomb), "VotingPlugin.jar", sha256(bomb)));
     }
 
@@ -146,6 +150,23 @@ class ArtifactStoreTest {
         assertArrayEquals(first, store.open(firstId).readAllBytes());
         assertArrayEquals(third, store.open(thirdId).readAllBytes());
         assertRejected(() -> store.open(secondId));
+    }
+
+    @Test void infeasibleCapacityDoesNotEvictAnUnprotectedArtifact() throws Exception {
+        byte[] first = jar("name: VotingPlugin\n", "plugin/One.class", new byte[] {1});
+        byte[] second = jar("name: VotingPlugin\n", "plugin/Two.class", new byte[] {2});
+        byte[] third = jar("name: VotingPlugin\n", "plugin/Three.class",
+                "larger incoming artifact payload".repeat(20).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertTrue(third.length > first.length);
+        ArtifactStore store = new ArtifactStore(directory.resolve("artifacts"), first.length + second.length, 3);
+        String firstId = store.upload(new ByteArrayInputStream(first), "first.jar", sha256(first)).artifactId();
+        String secondId = store.upload(new ByteArrayInputStream(second), "second.jar", sha256(second)).artifactId();
+
+        assertRejected(() -> store.upload(new ByteArrayInputStream(third), "third.jar", sha256(third),
+                Set.of(secondId)));
+
+        assertArrayEquals(first, store.open(firstId).readAllBytes());
+        assertArrayEquals(second, store.open(secondId).readAllBytes());
     }
 
     private static byte[] jar(String pluginYml, String entryName, byte[] content) throws IOException {

@@ -130,6 +130,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("enabled: String(quickPartyEnabled.checked)"));
         assertTrue(script.body().contains("quickPartyEnabled.checked = options.enabled === 'true'"));
         assertTrue(script.body().contains("config.proxy-method.v2"));
+        assertTrue(script.body().contains("function quickSetupTargets()"));
+        assertTrue(script.body().contains("nodeIds = quickSetupTargets()"));
+        assertTrue(script.body().contains("currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets()"));
         assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));

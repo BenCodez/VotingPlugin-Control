@@ -45,9 +45,12 @@ Control accepts only the intersection with its own allow-list.
 | `config.vote-sites-sync.v1` | Reward-safe VoteSites merge from one backend to selected targets |
 | `config.transport-test.v1` | Typed, bounded proxy-to-backend communication check |
 | `config.proxy-method.v1` | Coordinated preview/apply and acknowledged runtime replacement for a supported network proxy method |
+| `config.proxy-method.v2` | HTTP proxy-method selection and HTTP backend quick setup; only paired connectors implementing the HTTP contract advertise it |
 | `data.inspect.v1` | Typed read-only data, health, simulation, and diagnostics requests |
 
 Do not infer support from plugin version strings. Check `acceptedCapabilities` for the exact capability.
+Deploy the paired VotingPlugin connector change before enabling Control features that require a new capability. During a
+mixed-version rollout, older nodes remain connected but are excluded from v2 HTTP previews and applies.
 
 ## WebUI feature map
 

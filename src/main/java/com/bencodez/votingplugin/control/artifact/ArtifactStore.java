@@ -26,6 +26,9 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import org.yaml.snakeyaml.LoaderOptions;
+import org.yaml.snakeyaml.Yaml;
+import org.yaml.snakeyaml.constructor.SafeConstructor;
 
 /**
  * Private, content-addressed staging for administrator-supplied VotingPlugin JARs.
@@ -150,15 +153,17 @@ public final class ArtifactStore {
         }
         stored.sort(Comparator.comparingLong(StoredFile::modified).thenComparing(item -> item.path().toString()));
         int count = stored.size();
+        List<StoredFile> evictionPlan = new ArrayList<>();
         for (StoredFile candidate : stored) {
             if (count < maximumStoredArtifacts && bytes <= maximumStoredBytes - incomingBytes) break;
             if (protectedArtifactIds.contains(candidate.artifactId())) continue;
-            Files.delete(candidate.path());
-            DurableFiles.forceDirectory(directory);
+            evictionPlan.add(candidate);
             bytes -= candidate.size();
             count--;
         }
         if (count >= maximumStoredArtifacts || bytes > maximumStoredBytes - incomingBytes) throw rejected();
+        for (StoredFile candidate : evictionPlan) Files.delete(candidate.path());
+        if (!evictionPlan.isEmpty()) DurableFiles.forceDirectory(directory);
     }
 
     /** Opens a verified immutable artifact by its opaque identifier. */
@@ -279,19 +284,18 @@ public final class ArtifactStore {
         } catch (CharacterCodingException failure) {
             throw rejected();
         }
-        boolean found = false;
-        for (String line : text.split("\\r?\\n", -1)) {
-            if (line.startsWith("name:")) {
-                if (found) return false;
-                found = true;
-                String value = line.substring("name:".length()).trim();
-                int comment = value.indexOf('#');
-                if (comment >= 0) value = value.substring(0, comment).trim();
-                if (!("VotingPlugin".equals(value) || "\"VotingPlugin\"".equals(value)
-                        || "'VotingPlugin'".equals(value))) return false;
-            }
+        try {
+            LoaderOptions options = new LoaderOptions();
+            options.setAllowDuplicateKeys(false);
+            options.setAllowRecursiveKeys(false);
+            options.setMaxAliasesForCollections(0);
+            options.setCodePointLimit(MAX_PLUGIN_YML_BYTES);
+            Object document = new Yaml(new SafeConstructor(options)).load(text);
+            return document instanceof java.util.Map<?, ?> descriptor
+                    && "VotingPlugin".equals(descriptor.get("name"));
+        } catch (RuntimeException failure) {
+            throw rejected();
         }
-        return found;
     }
 
     private void publish(Path temporary, Path artifact) throws IOException {
