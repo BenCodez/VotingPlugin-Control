@@ -4070,7 +4070,7 @@ async function loadQuickSetupValues(automatic = false, preserveDirty = false) {
     }
     const detected = preset === 'vote-site' && pendingDetectedVoteSite?.nodeId === nodeId
       && pendingDetectedVoteSite.key === quickName.value.trim() ? pendingDetectedVoteSite : null;
-    const selectedProxyMethod = preset === 'proxy-backend' ? quickMethod.value : null;
+    const selectedProxyMethod = preserveDirty && preset === 'proxy-backend' ? quickMethod.value : null;
     const editedProxyServer = preserveDirty && preset === 'proxy-backend' ? quickName.value : null;
     populateQuickState(result.configuration.options);
     if (selectedProxyMethod != null) quickMethod.value = selectedProxyMethod;
@@ -5086,6 +5086,7 @@ quickName.addEventListener('input', () => {
 });
 quickMethod.addEventListener('input', () => {
   if (quickPreset.value === 'proxy-backend' && quickPresetReadable()) {
+    quickSetupDirty = true;
     if (quickSetupDirty) quickSetupPreserveReadGeneration = inputGeneration;
     void autoLoadTab('quick-setup');
   }

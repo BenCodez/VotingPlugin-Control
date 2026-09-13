@@ -147,9 +147,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (inputGeneration !== autoLoadGeneration) {\n        autoLoadPending.add(tab);\n        return;\n      }"),
                 "A stale dedicated read must fence the remainder of the automatic quick-setup sequence.");
         assertTrue(script.body().contains("quickMethod.addEventListener('input', () => {\n  if (quickPreset.value === 'proxy-backend' && quickPresetReadable()) {"));
-        assertTrue(script.body().contains("if (quickSetupDirty) quickSetupPreserveReadGeneration = inputGeneration;\n    void autoLoadTab('quick-setup');"),
+        assertTrue(script.body().contains("quickSetupDirty = true;\n    if (quickSetupDirty) quickSetupPreserveReadGeneration = inputGeneration;\n    void autoLoadTab('quick-setup');"),
                 "Changing a proxy-backend method must schedule a capability-correct reread.");
-        assertTrue(script.body().contains("const selectedProxyMethod = preset === 'proxy-backend' ? quickMethod.value : null;"));
+        assertTrue(script.body().contains("const selectedProxyMethod = preserveDirty && preset === 'proxy-backend' ? quickMethod.value : null;"));
         assertTrue(script.body().contains("if (selectedProxyMethod != null) quickMethod.value = selectedProxyMethod;"),
                 "The capability read must not overwrite the proxy method the operator selected for preview.");
         assertTrue(script.body().contains("const editedProxyServer = preserveDirty && preset === 'proxy-backend' ? quickName.value : null;"));
