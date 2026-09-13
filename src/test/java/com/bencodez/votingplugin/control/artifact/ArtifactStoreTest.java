@@ -17,6 +17,7 @@ import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import org.junit.jupiter.api.Test;
@@ -72,11 +73,15 @@ class ArtifactStoreTest {
         byte[] missing = jar(null, "plugin/Main.class", new byte[] {1});
         byte[] wrong = jar("name: AnotherPlugin\n", "plugin/Main.class", new byte[] {1});
         byte[] ambiguous = jar("name: VotingPlugin\nname: AnotherPlugin\n", "plugin/Main.class", new byte[] {1});
+        byte[] quotedDuplicate = jar("name: VotingPlugin\n\"name\": AnotherPlugin\n",
+                "plugin/Main.class", new byte[] {1});
         byte[] bomb = jar("name: VotingPlugin\n", "data.bin", new byte[1_000_000]);
 
         assertRejected(() -> store.upload(new ByteArrayInputStream(missing), "VotingPlugin.jar", sha256(missing)));
         assertRejected(() -> store.upload(new ByteArrayInputStream(wrong), "VotingPlugin.jar", sha256(wrong)));
         assertRejected(() -> store.upload(new ByteArrayInputStream(ambiguous), "VotingPlugin.jar", sha256(ambiguous)));
+        assertRejected(() -> store.upload(new ByteArrayInputStream(quotedDuplicate),
+                "VotingPlugin.jar", sha256(quotedDuplicate)));
         assertRejected(() -> store.upload(new ByteArrayInputStream(bomb), "VotingPlugin.jar", sha256(bomb)));
     }
 
@@ -146,6 +151,54 @@ class ArtifactStoreTest {
         assertArrayEquals(first, store.open(firstId).readAllBytes());
         assertArrayEquals(third, store.open(thirdId).readAllBytes());
         assertRejected(() -> store.open(secondId));
+    }
+
+    @Test void infeasibleCapacityDoesNotEvictAnUnprotectedArtifact() throws Exception {
+        byte[] first = jar("name: VotingPlugin\n", "plugin/One.class", new byte[] {1});
+        byte[] second = jar("name: VotingPlugin\n", "plugin/Two.class", new byte[] {2});
+        byte[] third = jar("name: VotingPlugin\n", "plugin/Three.class",
+                "larger incoming artifact payload".repeat(20).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertTrue(third.length > first.length);
+        ArtifactStore store = new ArtifactStore(directory.resolve("artifacts"), first.length + second.length, 3);
+        String firstId = store.upload(new ByteArrayInputStream(first), "first.jar", sha256(first)).artifactId();
+        String secondId = store.upload(new ByteArrayInputStream(second), "second.jar", sha256(second)).artifactId();
+
+        assertRejected(() -> store.upload(new ByteArrayInputStream(third), "third.jar", sha256(third),
+                Set.of(secondId)));
+
+        assertArrayEquals(first, store.open(firstId).readAllBytes());
+        assertArrayEquals(second, store.open(secondId).readAllBytes());
+    }
+
+    @Test void publicationFailureRestoresEvictionsAndRemovesTheRejectedArtifact() throws Exception {
+        AtomicBoolean failAfterMove = new AtomicBoolean();
+        byte[] first = jar("name: VotingPlugin\n", "plugin/One.class", new byte[] {1});
+        byte[] second = jar("name: VotingPlugin\n", "plugin/Two.class", new byte[] {2});
+        ArtifactStore store = new ArtifactStore(directory.resolve("artifacts"), 1_000_000, 1,
+                path -> { if (failAfterMove.get()) throw new IOException("simulated post-move failure"); });
+        String firstId = store.upload(new ByteArrayInputStream(first), "first.jar", sha256(first)).artifactId();
+
+        failAfterMove.set(true);
+        String secondId = sha256(second);
+        assertRejected(() -> store.upload(new ByteArrayInputStream(second), "second.jar", secondId));
+
+        assertArrayEquals(first, store.open(firstId).readAllBytes());
+        assertRejected(() -> store.open(secondId));
+    }
+
+    @Test void startupRestoresAnInterruptedEvictionQuarantine() throws Exception {
+        Path artifacts = directory.resolve("artifacts");
+        byte[] jar = jar("name: VotingPlugin\n", "plugin/Main.class", new byte[] {1});
+        ArtifactStore store = new ArtifactStore(artifacts);
+        String artifactId = store.upload(new ByteArrayInputStream(jar), "VotingPlugin.jar", sha256(jar)).artifactId();
+        Path canonical = artifacts.resolve(artifactId + ".jar");
+        Path quarantine = artifacts.resolve("evict-" + artifactId + ".part");
+        Files.move(canonical, quarantine);
+
+        ArtifactStore recovered = new ArtifactStore(artifacts);
+
+        assertArrayEquals(jar, recovered.open(artifactId).readAllBytes());
+        assertFalse(Files.exists(quarantine));
     }
 
     private static byte[] jar(String pluginYml, String entryName, byte[] content) throws IOException {

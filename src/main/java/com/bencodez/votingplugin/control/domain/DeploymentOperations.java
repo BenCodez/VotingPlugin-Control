@@ -39,6 +39,7 @@ import java.util.UUID;
 public final class DeploymentOperations {
     public static final String CAPABILITY = DeploymentRequest.CAPABILITY;
     public static final Duration LEASE = Duration.ofMinutes(2);
+    public static final Duration ACTIVE_RETENTION = Duration.ofMinutes(15);
     public static final Duration COMPLETE_RETENTION = Duration.ofMinutes(30);
     public static final int MAX_RETAINED = 100;
     private static final int MAX_MESSAGE_CHARS = 500;
@@ -356,6 +357,7 @@ public final class DeploymentOperations {
     private void prune() {
         LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
         try {
+            Instant now = clock.instant();
             for (StoredDeployment deployment : deployments.values()) {
                 for (Target target : deployment.targets.values()) {
                     if ("SUCCEEDED".equals(target.state) || "FAILED".equals(target.state)) continue;
@@ -364,6 +366,13 @@ public final class DeploymentOperations {
                             || !node.acceptedCapabilities().contains(CAPABILITY))) {
                         failUnavailable(deployment, target,
                                 "Node session or deployment capability changed before staging completed");
+                        continue;
+                    }
+                    boolean activeLease = "IN_PROGRESS".equals(target.state) && target.leasedAt != null
+                            && now.isBefore(target.leasedAt.plus(LEASE));
+                    if (!activeLease && !now.isBefore(deployment.createdAt.plus(ACTIVE_RETENTION))) {
+                        failTarget(deployment, target, "TIMEOUT",
+                                "Node did not stage the artifact before the deployment deadline");
                     }
                 }
             }
@@ -379,12 +388,16 @@ public final class DeploymentOperations {
     }
 
     private void failUnavailable(StoredDeployment deployment, Target target, String message) {
+        failTarget(deployment, target, "CAPABILITY_LOST", message);
+    }
+
+    private void failTarget(StoredDeployment deployment, Target target, String code, String message) {
         UUID attempt = target.attemptId == null ? UUID.randomUUID() : target.attemptId;
         target.state = "FAILED";
-        target.result = new DeploymentTaskResult(target.pinnedSession, false, "CAPABILITY_LOST", message, attempt);
+        target.result = new DeploymentTaskResult(target.pinnedSession, false, code, message, attempt);
         target.leasedAt = null;
         target.attemptId = null;
-        commit(deployment.id, target.nodeId, "DEPLOYMENT_CANCELLED", "CAPABILITY_LOST");
+        commit(deployment.id, target.nodeId, "DEPLOYMENT_CANCELLED", code);
     }
 
     private void evictCompleted() {
@@ -455,7 +468,8 @@ public final class DeploymentOperations {
             }
             try (FileChannel channel = FileChannel.open(temp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
                     LinkOption.NOFOLLOW_LINKS)) {
-                channel.write(ByteBuffer.wrap(bytes));
+                ByteBuffer buffer = ByteBuffer.wrap(bytes);
+                while (buffer.hasRemaining()) channel.write(buffer);
                 channel.force(true);
             }
             try {

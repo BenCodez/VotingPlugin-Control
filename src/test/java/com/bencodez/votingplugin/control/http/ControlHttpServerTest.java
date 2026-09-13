@@ -135,12 +135,25 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("configurationContent.setAttribute('aria-busy', 'true')"));
         assertTrue(script.body().contains("readFileConfiguration.hidden = false;"));
         assertTrue(script.body().contains("readQuickSetup.hidden = false;"));
+        assertTrue(script.body().contains("if (!quickSetupValuesLoaded()) {\n        text(quickOperationStatus, 'The server or setup changed while reading."));
         assertTrue(script.body().contains("enabled: String(quickPartyEnabled.checked)"));
         assertTrue(script.body().contains("quickPartyEnabled.checked = options.enabled === 'true'"));
         assertTrue(script.body().contains("config.proxy-method.v2"));
         assertTrue(script.body().contains("plugin.deploy.v1"));
+        assertTrue(script.body().contains("offset += MAX_OPERATION_TARGETS"));
+        assertTrue(script.body().contains("batch.map(node => node.nodeId)"));
+        assertTrue(script.body().contains("submittedOperations.push(operation)"));
+        assertTrue(script.body().contains("The listed operations remain durable in Activity"));
+        assertTrue(script.body().contains("Authentication changed before the deployment upload started"));
+        assertTrue(script.body().contains("Authentication changed before every deployment batch was submitted"));
+        assertTrue(script.body().contains("deploymentJar.value = ''"));
+        assertTrue(script.body().contains("generation === authenticationGeneration"));
+        assertTrue(script.body().contains("if (generation === authenticationGeneration) {\n      deploymentInFlight = false;"));
         assertTrue(script.body().contains("Automatically restart is disabled")
                 || script.body().contains("Automatic restart is disabled"));
+        assertTrue(script.body().contains("function quickSetupTargets()"));
+        assertTrue(script.body().contains("nodeIds = quickSetupTargets()"));
+        assertTrue(script.body().contains("currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets()"));
         assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));

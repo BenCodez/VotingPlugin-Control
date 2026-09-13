@@ -226,6 +226,7 @@ const PAGE_SIZE = 100;
 const MAX_CONFIGURATION_TARGETS = 100;
 const MAX_SYNC_TARGETS = 100;
 const MAX_OPERATION_TARGETS = 100;
+const MAX_DEPLOYMENT_BATCHES = 100;
 const MAX_TRACE_NODES = 12;
 const MAX_TRACE_EVENTS_PER_NODE = 100;
 const MAX_PLAYER_LAST_VOTES = 100;
@@ -2759,9 +2760,12 @@ function deploymentTargets() {
 function renderDeploymentEligibility() {
   const eligible = deploymentTargets();
   const connected = allNodeItems.filter(node => node.online);
-  text(deploymentEligibility, `${eligible.length}/${connected.length} connected nodes eligible`);
+  const batches = Math.ceil(eligible.length / MAX_OPERATION_TARGETS);
+  text(deploymentEligibility, `${eligible.length}/${connected.length} connected nodes eligible`
+    + (batches > 1 ? ` · ${batches} bounded deployment batches` : ''));
   deploymentEligibility.className = `pill ${eligible.length ? 'online' : 'neutral'}`;
-  deployPlugin.disabled = !authenticated || deploymentInFlight || !deploymentJar.files?.length || eligible.length === 0;
+  deployPlugin.disabled = !authenticated || deploymentInFlight || !deploymentJar.files?.length
+    || eligible.length === 0 || batches > MAX_DEPLOYMENT_BATCHES;
 }
 
 function selectNodePage(offset) {
@@ -2893,9 +2897,10 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
     fileTargetsForSelection().length > 0 && !busy;
   const fileDraftReady = fileReady && fileDraftMatchesCurrentContext();
   const syncSelected = quickPreset.value === 'sync-vote-sites';
+  const quickCapability = quickSetupCapability();
   const quickReady = authenticated && !busy && (syncSelected
     ? Boolean(voteSitesSourceId && selectedVoteSitesTargets().length > 0)
-    : primaryCapabilities.includes('config.quick-setup.v1') && targets('config.quick-setup.v1').length > 0);
+    : primaryCapabilities.includes(quickCapability) && quickSetupTargets().length > 0);
   readConfiguration.disabled = !routingReadReady;
   previewConfiguration.disabled = !routingDraftReady;
   applyConfiguration.disabled = !routingDraftReady || !approvedPreview;
@@ -2921,6 +2926,16 @@ function targets(capability) {
 
 function backendQuickTargets() {
   return targets('config.quick-setup.v1').filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
+}
+
+function quickSetupCapability() {
+  return quickPreset.value === 'proxy-backend' && quickMethod.value === 'HTTP'
+    ? 'config.proxy-method.v2' : 'config.quick-setup.v1';
+}
+
+function quickSetupTargets() {
+  return targets(quickSetupCapability())
+    .filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
 }
 
 function clearApprovals() {
@@ -3121,6 +3136,9 @@ function discardAuthenticationState(reason) {
   dashboardTopologySignature = '';
   operationHistoryItems = [];
   deploymentHistoryItems = [];
+  deploymentJar.value = '';
+  deploymentInFlight = false;
+  text(deploymentStatus, '');
   observedServerConfigurationGeneration = null;
   operationHistoryStatus = 'not-loaded';
   enrollmentStatus = 'not-loaded';
@@ -4061,7 +4079,11 @@ async function loadQuickSetupValues(automatic = false) {
     if (generation !== inputGeneration || preset !== quickPreset.value || nodeId !== selectedServerId
         || sessionId !== nodeIndex.get(nodeId)?.sessionId
         || selector !== JSON.stringify(quickReadOptions())) {
-      text(quickOperationStatus, 'The server or setup changed while reading. Load the current values again.');
+      if (!quickSetupValuesLoaded()) {
+        text(quickOperationStatus, 'The server or setup changed while reading. Load the current values again.');
+        readQuickSetup.hidden = false;
+        updateConfigurationButtons();
+      }
       return;
     }
     const detected = preset === 'vote-site' && pendingDetectedVoteSite?.nodeId === nodeId
@@ -4126,14 +4148,15 @@ previewQuickSetup.addEventListener('click', async () => {
       }
       return;
     }
+    const nodeIds = quickSetupTargets();
     const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
-      nodeIds: targets('config.quick-setup.v1'),
+      nodeIds,
       configuration: {domain: 'quick-setup', preset: quickPreset.value, options: quickOptions()}
     }, quickOperationStatus);
     text(quickOperationStatus, operationSummary(operation));
     if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration) {
       approvedQuickPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken,
-        nodeIds: targets('config.quick-setup.v1')};
+        nodeIds};
       updateConfigurationButtons();
     } else if (previewGeneration !== inputGeneration) {
       text(quickOperationStatus, 'The targets or setup changed while previewing. Preview again before apply.');
@@ -4157,7 +4180,7 @@ applyQuickSetup.addEventListener('click', async () => {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, quickOperationStatus);
-    const currentNodeIds = sync ? selectedVoteSitesTargets() : targets('config.quick-setup.v1');
+    const currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets();
     const currentQuickSetup = JSON.stringify({preset: quickPreset.value, options: quickOptions(),
       nodeIds: currentNodeIds, sourceId: sync ? voteSitesSourceId : ''});
     text(quickOperationStatus, operation.state === 'SUCCEEDED' && submittedQuickSetup !== currentQuickSetup
@@ -5087,6 +5110,14 @@ deployPlugin.addEventListener('click', async () => {
   const file = deploymentJar.files?.[0];
   const eligible = deploymentTargets();
   if (!file || !eligible.length || deploymentInFlight) return;
+  const batches = [];
+  for (let offset = 0; offset < eligible.length; offset += MAX_OPERATION_TARGETS) {
+    batches.push(eligible.slice(offset, offset + MAX_OPERATION_TARGETS));
+  }
+  if (batches.length > MAX_DEPLOYMENT_BATCHES) {
+    text(deploymentStatus, `This deployment exceeds the ${MAX_DEPLOYMENT_BATCHES}-batch safety limit.`);
+    return;
+  }
   if (!file.name.toLowerCase().endsWith('.jar') || file.size < 1 || file.size > 64 * 1024 * 1024) {
     text(deploymentStatus, 'Choose a non-empty VotingPlugin JAR no larger than 64 MiB.');
     return;
@@ -5095,14 +5126,20 @@ deployPlugin.addEventListener('click', async () => {
     && !node.acceptedCapabilities.includes('plugin.deploy.v1')).map(node => node.displayName);
   const confirmation = `Upload ${file.name} (${file.size.toLocaleString()} bytes) and stage it on `
     + `${eligible.length} deployment-capable node(s)? Servers will require a restart. Automatic restart is disabled.`
+    + (batches.length > 1 ? ` Control will use ${batches.length} bounded operations.` : '')
     + (ineligible.length ? ` Older/incompatible nodes excluded: ${ineligible.join(', ')}.` : '');
   if (!window.confirm(confirmation)) return;
   deploymentInFlight = true;
   renderDeploymentEligibility();
   const generation = authenticationGeneration;
+  const submittedOperations = [];
+  const completedOperations = [];
   try {
     text(deploymentStatus, 'Calculating SHA-256 locally…');
     const sha256 = await deploymentFileSha256(file);
+    if (generation !== authenticationGeneration) {
+      throw new Error('Authentication changed before the deployment upload started.');
+    }
     text(deploymentStatus, sha256 ? `Uploading artifact ${sha256.slice(0, 12)} for server verification…`
       : 'Uploading artifact for bounded server-side SHA-256 verification…');
     const uploadHeaders = {'Content-Type': 'application/java-archive', 'X-Filename': file.name};
@@ -5114,19 +5151,38 @@ deployPlugin.addEventListener('click', async () => {
       throw new Error('Control returned artifact metadata that does not match the selected JAR.');
     }
     const verifiedSha256 = artifact.sha256;
-    const operation = await authorized('/api/v1/deployments', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
-        artifactId: artifact.artifactId, sha256: verifiedSha256, size: file.size,
-        nodeIds: eligible.map(node => node.nodeId)
-      })
-    });
-    const completed = await waitForDeployment(operation, generation);
-    text(deploymentStatus, `${deploymentSummary(completed)}\nRestart each successfully staged server to activate this JAR.`);
+    const operations = [];
+    for (const batch of batches) {
+      if (generation !== authenticationGeneration) {
+        throw new Error('Authentication changed before every deployment batch was submitted.');
+      }
+      const operation = await authorized('/api/v1/deployments', {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+          artifactId: artifact.artifactId, sha256: verifiedSha256, size: file.size,
+          nodeIds: batch.map(node => node.nodeId)
+        })
+      });
+      operations.push(operation);
+      submittedOperations.push(operation);
+    }
+    for (const operation of operations) {
+      completedOperations.push(await waitForDeployment(operation, generation));
+    }
+    text(deploymentStatus, `${completedOperations.map(deploymentSummary).join('\n\n')}\nRestart each successfully staged server to activate this JAR.`);
   } catch (error) {
-    text(deploymentStatus, error.message);
+    if (generation === authenticationGeneration) {
+      const submitted = submittedOperations.map(operation => completedOperations.find(completed =>
+        completed.deploymentId === operation.deploymentId) || operation);
+      text(deploymentStatus, submitted.length
+        ? `${submitted.map(deploymentSummary).join('\n\n')}\nDeployment submission or monitoring stopped: ${error.message}`
+          + '\nThe listed operations remain durable in Activity; verify them before retrying.'
+        : error.message);
+    }
   } finally {
-    deploymentInFlight = false;
-    renderDeploymentEligibility();
+    if (generation === authenticationGeneration) {
+      deploymentInFlight = false;
+      renderDeploymentEligibility();
+    }
   }
 });
 tabButtons.forEach(button => button.addEventListener('click', () => {

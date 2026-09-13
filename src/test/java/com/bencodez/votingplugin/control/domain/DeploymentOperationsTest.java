@@ -150,6 +150,24 @@ class DeploymentOperationsTest {
     }
 
     @Test
+    void unavailableTargetExpiresAndStopsProtectingItsArtifact() {
+        FakeRegistry registry = new FakeRegistry();
+        registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+        DeploymentOperations operations = new DeploymentOperations(registry, clock);
+        DeploymentResult created = operations.create(request("backend"));
+
+        registry.remove("backend");
+        clock.advance(DeploymentOperations.ACTIVE_RETENTION);
+        DeploymentResult expired = operations.get(created.deploymentId());
+        assertEquals("FAILED", expired.state());
+        assertEquals("TIMEOUT", expired.nodes().get(0).result().code());
+        assertEquals(Set.of("VotingPlugin.jar"), operations.referencedArtifactIds());
+
+        clock.advance(DeploymentOperations.COMPLETE_RETENTION.plusSeconds(1));
+        assertEquals(Set.of(), operations.referencedArtifactIds());
+    }
+
+    @Test
     void retentionEvictsTheOldestCompletedDeploymentAndListsNewestFirst() {
         FakeRegistry registry = new FakeRegistry();
         registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
@@ -207,6 +225,8 @@ class DeploymentOperationsTest {
             nodes.put(nodeId, new NodeStatus(nodeId, session, nodeId, "BUKKIT", "7.1.2-SNAPSHOT", 1,
                     capabilities, capabilities, Set.of(), List.of(), 0, Instant.EPOCH, Instant.EPOCH, true));
         }
+
+        void remove(String nodeId) { nodes.remove(nodeId); }
 
         @Override public NodeStatus find(String nodeId) { return nodes.get(nodeId); }
 

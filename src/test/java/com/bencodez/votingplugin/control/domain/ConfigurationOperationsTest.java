@@ -880,6 +880,15 @@ class ConfigurationOperationsTest {
                 null, null, ManagedConfiguration.PROXY_METHOD, Map.of("method", "HTTP"));
         http.validateProposal();
         assertEquals(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY, http.capability());
+
+        ManagedConfiguration backendHttp = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null,
+                List.of(), null, null, "proxy-backend", Map.of("server", "lobby", "method", "HTTP"));
+        assertEquals(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY, backendHttp.capability());
+        assertThrows(ValidationException.class,
+                () -> operations.createPreview(List.of("proxy-a"), backendHttp));
+        ManagedConfiguration lowercaseHttp = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null,
+                List.of(), null, null, "proxy-backend", Map.of("server", "lobby", "method", "http"));
+        assertThrows(IllegalArgumentException.class, lowercaseHttp::validateProposal);
     }
 
     @Test void proxyMethodApplyKeepsEvictedBackendsAsFailedDependencies() throws Exception {

@@ -480,6 +480,17 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     private static void validateConfigurationTargets(ValidatedTargets targets,
                                                        ManagedConfiguration configuration) {
+        if (ManagedConfiguration.QUICK_SETUP.equals(configuration.domain())
+                && "proxy-backend".equals(configuration.preset())) {
+            List<String> invalid = targets.nodeIds().stream()
+                    .filter(nodeId -> !"BUKKIT".equalsIgnoreCase(targets.platforms().get(nodeId)))
+                    .toList();
+            if (!invalid.isEmpty()) {
+                throw new ValidationException("INVALID_TARGET",
+                        "Backend proxy settings require Bukkit nodes", invalid);
+            }
+            return;
+        }
         if (!ManagedConfiguration.FILE.equals(configuration.domain())) return;
         boolean proxyFile = "bungeeconfig.yml".equals(configuration.fileName());
         List<String> invalid = targets.nodeIds().stream()
