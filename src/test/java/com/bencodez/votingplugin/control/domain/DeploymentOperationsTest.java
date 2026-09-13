@@ -168,6 +168,38 @@ class DeploymentOperationsTest {
     }
 
     @Test
+    void laterAuditFailureDoesNotRollBackAnEarlierPruneCancellation(@TempDir Path directory) throws Exception {
+        Path auditDirectory = directory.resolve("audit");
+        Path journalDirectory = directory.resolve("journal");
+        FakeRegistry registry = new FakeRegistry();
+        registry.add("first", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+        registry.add("second", SESSION_B, Set.of(DeploymentRequest.CAPABILITY));
+        UUID deploymentId;
+        try (ConfigurationAuditLog audit = new ConfigurationAuditLog(auditDirectory, clock)) {
+            DeploymentOperations operations = new DeploymentOperations(registry, audit, journalDirectory, clock);
+            deploymentId = operations.create(request("first", "second")).deploymentId();
+            registry.add("first", SESSION_REPLACED, Set.of(DeploymentRequest.CAPABILITY));
+            registry.add("second", SESSION_REPLACED, Set.of(DeploymentRequest.CAPABILITY));
+            registry.runBeforeFind(2, () -> {
+                try {
+                    Files.writeString(auditDirectory.resolve("configuration-audit.jsonl"), "corrupt",
+                            StandardCharsets.UTF_8);
+                } catch (java.io.IOException failure) {
+                    throw new java.io.UncheckedIOException(failure);
+                }
+            });
+
+            assertThrows(ConfigurationAuditLog.AuditException.class, () -> operations.get(deploymentId));
+        }
+
+        registry.add("second", SESSION_B, Set.of(DeploymentRequest.CAPABILITY));
+        DeploymentResult restored = new DeploymentOperations(registry, journalDirectory, clock).get(deploymentId);
+        assertEquals("FAILED", restored.nodes().get(0).state());
+        assertEquals("CAPABILITY_LOST", restored.nodes().get(0).result().code());
+        assertEquals("QUEUED", restored.nodes().get(1).state());
+    }
+
+    @Test
     void unavailableTargetExpiresAndStopsProtectingItsArtifact() {
         FakeRegistry registry = new FakeRegistry();
         registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
@@ -179,7 +211,7 @@ class DeploymentOperationsTest {
         DeploymentResult expired = operations.get(created.deploymentId());
         assertEquals("FAILED", expired.state());
         assertEquals("TIMEOUT", expired.nodes().get(0).result().code());
-        assertEquals(Set.of("VotingPlugin.jar"), operations.referencedArtifactIds());
+        assertEquals(Set.of(SHA), operations.referencedArtifactIds());
 
         clock.advance(DeploymentOperations.COMPLETE_RETENTION.plusSeconds(1));
         assertEquals(Set.of(), operations.referencedArtifactIds());
@@ -211,7 +243,7 @@ class DeploymentOperationsTest {
     void journalRejectsDuplicateFieldsAtEveryPersistedObjectLevel(@TempDir Path directory) throws Exception {
         String id = "10000000-0000-0000-0000-000000000001";
         String attempt = "20000000-0000-0000-0000-000000000001";
-        String prefix = "[{\"id\":\"" + id + "\",\"artifactId\":\"VotingPlugin.jar\","
+        String prefix = "[{\"id\":\"" + id + "\",\"artifactId\":\"" + SHA + "\","
                 + "\"sha256\":\"" + SHA + "\",\"size\":1234,\"createdAt\":\"2026-09-13T00:00:00Z\",\"targets\":[";
         String queued = "{\"nodeId\":\"backend\",\"sessionId\":\"" + SESSION_A
                 + "\",\"state\":\"QUEUED\",\"leasedAt\":null,\"attemptId\":null,\"result\":null}";
@@ -246,12 +278,41 @@ class DeploymentOperationsTest {
         assertThrows(IllegalStateException.class, () -> new DeploymentOperations(registry, directory, clock));
     }
 
+    @Test
+    void deploymentIdentityMustBeTheCanonicalArtifactDigest() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new DeploymentRequest("VotingPlugin.jar", SHA, 1234, List.of("backend")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DeploymentRequest(SHA.toUpperCase(), SHA.toUpperCase(), 1234, List.of("backend")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new DeploymentRequest("b".repeat(64), SHA, 1234, List.of("backend")));
+    }
+
+    @Test
+    void journalRejectsNonCanonicalOrMismatchedArtifactIdentity(@TempDir Path directory) throws Exception {
+        FakeRegistry registry = new FakeRegistry();
+        registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+        new DeploymentOperations(registry, directory, clock).create(request("backend"));
+        Path journal = directory.resolve("plugin-deployments.json");
+        String valid = Files.readString(journal, StandardCharsets.UTF_8);
+
+        for (String invalidId : List.of("VotingPlugin.jar", SHA.toUpperCase(), "b".repeat(64))) {
+            Files.writeString(journal, valid.replace("\"artifactId\":\"" + SHA + "\"",
+                    "\"artifactId\":\"" + invalidId + "\""), StandardCharsets.UTF_8);
+            assertThrows(IllegalStateException.class,
+                    () -> new DeploymentOperations(registry, directory, clock));
+        }
+    }
+
     private static DeploymentRequest request(String... nodes) {
-        return new DeploymentRequest("VotingPlugin.jar", SHA, 1234, List.of(nodes));
+        return new DeploymentRequest(SHA, SHA, 1234, List.of(nodes));
     }
 
     private static final class FakeRegistry implements NodeRegistry {
         private final Map<String, NodeStatus> nodes = new HashMap<>();
+        private int findCount;
+        private int callbackFind;
+        private Runnable findCallback;
 
         void add(String nodeId, UUID session, Set<String> capabilities) {
             nodes.put(nodeId, new NodeStatus(nodeId, session, nodeId, "BUKKIT", "7.1.2-SNAPSHOT", 1,
@@ -260,7 +321,21 @@ class DeploymentOperationsTest {
 
         void remove(String nodeId) { nodes.remove(nodeId); }
 
-        @Override public NodeStatus find(String nodeId) { return nodes.get(nodeId); }
+        void runBeforeFind(int findNumber, Runnable callback) {
+            findCount = 0;
+            callbackFind = findNumber;
+            findCallback = callback;
+        }
+
+        @Override public NodeStatus find(String nodeId) {
+            findCount++;
+            if (findCallback != null && findCount == callbackFind) {
+                Runnable callback = findCallback;
+                findCallback = null;
+                callback.run();
+            }
+            return nodes.get(nodeId);
+        }
 
         @Override public <T> T withSession(String nodeId, UUID sessionId,
                                            java.util.function.Function<NodeStatus, T> action) {

@@ -9,17 +9,19 @@ import java.util.regex.Pattern;
 public record DeploymentRequest(String artifactId, String sha256, long size, List<String> nodeIds) {
     public static final String CAPABILITY = "plugin.deploy.v1";
     public static final long MAX_ARTIFACT_BYTES = 64L * 1024 * 1024;
-    private static final Pattern ARTIFACT_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
+    private static final Pattern SHA256 = Pattern.compile("[0-9a-f]{64}");
     private static final Pattern NODE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
 
     public DeploymentRequest {
-        if (artifactId == null || !ARTIFACT_ID.matcher(artifactId).matches()) {
-            throw new IllegalArgumentException("artifactId is invalid");
+        if (artifactId == null || !SHA256.matcher(artifactId).matches()) {
+            throw new IllegalArgumentException("artifactId must be a lowercase SHA-256 digest");
         }
-        if (sha256 == null || !sha256.matches("[0-9a-fA-F]{64}")) {
-            throw new IllegalArgumentException("sha256 must be a 64-character hexadecimal digest");
+        if (sha256 == null || !SHA256.matcher(sha256).matches()) {
+            throw new IllegalArgumentException("sha256 must be a lowercase SHA-256 digest");
         }
-        sha256 = sha256.toLowerCase(java.util.Locale.ROOT);
+        if (!artifactId.equals(sha256)) {
+            throw new IllegalArgumentException("artifactId must equal sha256");
+        }
         if (size < 1 || size > MAX_ARTIFACT_BYTES) {
             throw new IllegalArgumentException("size is outside the deployment limit");
         }

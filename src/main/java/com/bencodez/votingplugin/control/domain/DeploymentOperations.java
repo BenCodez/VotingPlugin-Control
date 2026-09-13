@@ -144,6 +144,7 @@ public final class DeploymentOperations {
             if (target == null || target.state.equals("SUCCEEDED") || target.state.equals("FAILED")) continue;
             if (!target.pinnedSession.equals(node.sessionId())) {
                 failUnavailable(deployment, target, "Node reconnected before this artifact was staged");
+                prior = copyDeployments();
                 continue;
             }
             if (target.state.equals("IN_PROGRESS")) {
@@ -392,6 +393,7 @@ public final class DeploymentOperations {
                             || !node.acceptedCapabilities().contains(CAPABILITY))) {
                         failUnavailable(deployment, target,
                                 "Node session or deployment capability changed before staging completed");
+                        prior = copyDeployments();
                         continue;
                     }
                     boolean activeLease = "IN_PROGRESS".equals(target.state) && target.leasedAt != null
@@ -399,6 +401,7 @@ public final class DeploymentOperations {
                     if (!activeLease && !now.isBefore(deployment.createdAt.plus(ACTIVE_RETENTION))) {
                         failTarget(deployment, target, "TIMEOUT",
                                 "Node did not stage the artifact before the deployment deadline");
+                        prior = copyDeployments();
                     }
                 }
             }
@@ -563,6 +566,9 @@ public final class DeploymentOperations {
             UUID id = UUID.fromString(item.path("id").asText());
             String artifactId = item.path("artifactId").asText();
             String sha256 = item.path("sha256").asText();
+            if (!artifactId.matches("[0-9a-f]{64}") || !artifactId.equals(sha256)) {
+                throw new IOException("Invalid artifact identity");
+            }
             long size = item.path("size").asLong(-1);
             Instant createdAt = Instant.parse(item.path("createdAt").asText());
             validatePersistedInstant(createdAt, ACTIVE_RETENTION);

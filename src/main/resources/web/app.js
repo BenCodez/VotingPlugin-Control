@@ -258,6 +258,9 @@ let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
 let loadedQuickSetup = null;
+let quickSetupDirty = false;
+let quickSetupPreserveReadGeneration = -1;
+const dedicatedSetupDirty = new Set();
 let voteSitesSourceId = '';
 let voteSitesTargetIds = new Set();
 let voteSitesTargetsInitialized = false;
@@ -1121,7 +1124,11 @@ async function loadOperationHistoryOnce() {
         [nodeId, result ? {...result, configuration: null} : result]))}));
     deploymentHistoryItems = Array.isArray(deploymentBody.items)
       ? deploymentBody.items.slice(0, MAX_OPERATION_HISTORY) : [];
-    if (observedSuccessfulApply) invalidateConfigurationReads();
+    if (observedSuccessfulApply) {
+      invalidateConfigurationReads();
+      invalidateGuidedSetupReads();
+      if (tabFromHash() === 'quick-setup') window.setTimeout(() => void autoLoadTab('quick-setup'), 0);
+    }
     const pendingRestarts = new Map();
     const restartSessions = body.voteLoggingRestartSessions;
     if (restartSessions && typeof restartSessions === 'object' && !Array.isArray(restartSessions)) {
@@ -1283,6 +1290,7 @@ function applyAuthenticatedSession(body) {
   approvedFilePreview = null;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   selectedNodes.clear();
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
@@ -1448,7 +1456,8 @@ function nodeCard(node) {
   selector.className = 'node-select';
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
-  const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1', 'config.quick-setup.v1']
+  const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1',
+    'config.quick-setup.v1', 'config.proxy-method.v2']
     .some(capability => node.acceptedCapabilities.includes(capability));
   checkbox.disabled = !node.online || !controllable || node.nodeId === selectedServerId;
   checkbox.checked = selectedNodes.has(node.nodeId);
@@ -1669,13 +1678,33 @@ async function autoLoadTab(tab) {
     return;
   }
   if (tab === 'quick-setup' && !approvedQuickPreview
-      && (autoSitesState.textContent === 'Not loaded' || voteLoggingState.textContent === 'Not loaded'
-        || quickPresetReadable() && !quickSetupValuesLoaded())) {
+      && (!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded'
+        || !dedicatedSetupDirty.has('vote-logging') && voteLoggingState.textContent === 'Not loaded'
+        || quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)
+          && !quickSetupValuesLoaded())) {
     autoLoadInFlight.add(tab);
     try {
-      if (autoSitesState.textContent === 'Not loaded') await loadDedicatedSetup('auto-create-vote-sites', true);
-      if (voteLoggingState.textContent === 'Not loaded') await loadDedicatedSetup('vote-logging', true);
-      if (quickPresetReadable() && !quickSetupValuesLoaded()) await loadQuickSetupValues(true);
+      const autoLoadGeneration = inputGeneration;
+      if (!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded') {
+        await loadDedicatedSetup('auto-create-vote-sites', true);
+      }
+      if (inputGeneration !== autoLoadGeneration) {
+        autoLoadPending.add(tab);
+        return;
+      }
+      if (!dedicatedSetupDirty.has('vote-logging') && voteLoggingState.textContent === 'Not loaded') {
+        await loadDedicatedSetup('vote-logging', true);
+      }
+      if (inputGeneration !== autoLoadGeneration) {
+        autoLoadPending.add(tab);
+        return;
+      }
+      if (quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)
+          && !quickSetupValuesLoaded()) {
+        const preserveGeneration = quickSetupPreserveReadGeneration;
+        await loadQuickSetupValues(true, quickSetupDirty);
+        if (quickSetupPreserveReadGeneration === preserveGeneration) quickSetupPreserveReadGeneration = -1;
+      }
     } finally { finishAutoLoad(tab); }
     return;
   }
@@ -2728,13 +2757,13 @@ function updateExtendedButtons() {
   previewReward.disabled = !quickReady;
   applyReward.disabled = !quickReady || !dedicatedSetupApprovals.get('reward-builder');
   loadAutoSites.disabled = !quickReady;
-  previewAutoSites.disabled = !quickReady;
+  previewAutoSites.disabled = !quickReady || autoSitesState.textContent === 'Not loaded';
   applyAutoSites.disabled = !quickReady || !dedicatedSetupApprovals.get('auto-create-vote-sites');
   selectAllAutoSitesTargets.disabled = !authenticated || allQuickBackends.length === 0
     || configurationOperationsInFlight > 0;
   text(autoSitesTargetCount, `${backendTargets.length} selected ${backendTargets.length === 1 ? 'backend' : 'backends'}`);
   loadVoteLogging.disabled = !quickReady;
-  previewVoteLogging.disabled = !quickReady;
+  previewVoteLogging.disabled = !quickReady || voteLoggingState.textContent === 'Not loaded';
   applyVoteLogging.disabled = !quickReady || !dedicatedSetupApprovals.get('vote-logging');
   runDriftCheck.disabled = !driftReady;
   createSnapshot.disabled = !lastFileReadOperation;
@@ -2824,6 +2853,7 @@ function resetServerConfigurationForms(status, preserveDirtyDrafts = false) {
 }
 
 function resetDedicatedSetupValues() {
+  dedicatedSetupDirty.clear();
   autoSitesEnabled.checked = false;
   voteLoggingEnabled.checked = false;
   voteLoggingDays.value = '30';
@@ -2834,6 +2864,23 @@ function resetDedicatedSetupValues() {
   voteLoggingState.className = 'pill neutral';
   loadAutoSites.hidden = true;
   loadVoteLogging.hidden = true;
+}
+
+function invalidateGuidedSetupReads() {
+  loadedQuickSetup = null;
+  if (quickSetupDirty) {
+    readQuickSetup.hidden = false;
+    text(quickOperationStatus, 'Configuration changed elsewhere; your unsaved guided edits were preserved. Load current values to discard them.');
+  }
+  [['auto-create-vote-sites', autoSitesState, autoSitesStatus, loadAutoSites],
+    ['vote-logging', voteLoggingState, voteLoggingStatus, loadVoteLogging]].forEach(([preset, state, status, retry]) => {
+    text(state, 'Not loaded');
+    state.className = 'pill neutral';
+    retry.hidden = !dedicatedSetupDirty.has(preset);
+    if (dedicatedSetupDirty.has(preset)) {
+      text(status, 'Configuration changed elsewhere; your unsaved edits were preserved. Load current values to discard them.');
+    }
+  });
 }
 
 function resetServerContextValues(reason, preserveDirtyDrafts = false) {
@@ -2873,6 +2920,7 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   text(autoSitesStatus, reason);
   text(voteLoggingStatus, reason);
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   readQuickSetup.hidden = true;
   resetServerConfigurationForms(reason, preserveDirtyDrafts);
   const preset = quickPreset.value;
@@ -3115,6 +3163,7 @@ function discardAuthenticationState(reason) {
   approvedFilePreview = null;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   inputGeneration++;
   logout.hidden = true;
   sidebarToggle.hidden = true;
@@ -3569,7 +3618,7 @@ async function loadNodesOnce() {
       nodeCapabilities.get(node)?.includes(selectedFileCapability()));
     const invalidQuickApproval = approvedQuickPreview && approvedQuickPreview.workflow !== 'sync-vote-sites' &&
       !approvedQuickPreview.nodeIds.every(node =>
-      nodeCapabilities.get(node)?.includes('config.quick-setup.v1'));
+      nodeCapabilities.get(node)?.includes(quickSetupCapability()));
     const invalidVoteSitesApproval = approvedQuickPreview?.workflow === 'sync-vote-sites' &&
       (!approvedQuickPreview.nodeIds.every(node =>
         nodeCapabilities.get(node)?.includes('config.vote-sites-sync.v1')) ||
@@ -4089,7 +4138,7 @@ function populateQuickState(options) {
   }
 }
 
-async function loadQuickSetupValues(automatic = false) {
+async function loadQuickSetupValues(automatic = false, preserveDirty = false) {
   if (!quickPresetReadable()) return false;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
@@ -4120,7 +4169,12 @@ async function loadQuickSetupValues(automatic = false) {
     }
     const detected = preset === 'vote-site' && pendingDetectedVoteSite?.nodeId === nodeId
       && pendingDetectedVoteSite.key === quickName.value.trim() ? pendingDetectedVoteSite : null;
+    const selectedProxyMethod = preset === 'proxy-backend' ? quickMethod.value : null;
+    const editedProxyServer = preserveDirty && preset === 'proxy-backend' ? quickName.value : null;
     populateQuickState(result.configuration.options);
+    if (selectedProxyMethod != null) quickMethod.value = selectedProxyMethod;
+    if (editedProxyServer != null) quickName.value = editedProxyServer;
+    quickSetupDirty = preserveDirty;
     if (detected && result.configuration.options.exists === 'false') {
       quickSiteDisplayName.value = detected.service;
       quickService.value = detected.service;
@@ -4410,13 +4464,15 @@ async function loadDedicatedSetup(preset, automatic = false) {
       voteLoggingMainMysql.checked = options.useMainMySQL !== 'false';
       text(voteLoggingState, voteLoggingEnabled.checked ? 'Enabled on primary' : 'Disabled on primary');
     }
+    dedicatedSetupDirty.delete(preset);
     elements.state.className = `pill ${options.enabled === 'true' ? 'online' : 'neutral'}`;
     text(elements.status, operationSummary(operation));
   } catch (error) {
-    if (requestNodeId === selectedServerId && requestSessionId === nodeIndex.get(requestNodeId)?.sessionId
-        && requestGeneration === inputGeneration) {
+    if (authenticated && requestNodeId === selectedServerId
+        && requestSessionId === nodeIndex.get(requestNodeId)?.sessionId) {
       text(elements.status, `Could not load current ${preset} settings: ${error.message}`);
       elements.retry.hidden = false;
+      if (automatic && requestGeneration !== inputGeneration) void autoLoadTab('quick-setup');
     }
   }
   updateExtendedButtons();
@@ -4504,7 +4560,9 @@ previewVoteLogging.addEventListener('click', () => previewDedicatedSetup('vote-l
 applyVoteLogging.addEventListener('click', () => applyDedicatedSetup('vote-logging'));
 [autoSitesEnabled, voteLoggingEnabled, voteLoggingDays, voteLoggingMainMysql].forEach(field => {
   field.addEventListener('input', () => {
-    dedicatedSetupApprovals.delete(field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging');
+    const preset = field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging';
+    dedicatedSetupApprovals.delete(preset);
+    dedicatedSetupDirty.add(preset);
     inputGeneration++;
     updateExtendedButtons();
   });
@@ -5049,7 +5107,8 @@ function applyProfileValues(profile) {
   assign(quickMessage, profile.playerMessage, 500); quickProcessRewards.checked = Boolean(profile.processRewards);
   quickAutoSites.checked = Boolean(profile.autoSites); quickExtraCheck.checked = Boolean(profile.extraCheck);
   quickCountFake.checked = Boolean(profile.countFake); quickHideSiteWarning.checked = Boolean(profile.hideWarning);
-  quickDisableUpdates.checked = Boolean(profile.disableUpdates); quickPartyEnabled.checked = Boolean(profile.partyEnabled);
+  quickDisableUpdates.checked = Boolean(profile.disableUpdates);
+  if (Object.hasOwn(profile, 'partyEnabled')) quickPartyEnabled.checked = Boolean(profile.partyEnabled);
   assign(quickPartyVotes, profile.partyVotes, 6);
   assign(quickPartyCommand, profile.partyCommand, 500); assign(quickPartyBroadcast, profile.partyBroadcast, 500);
   quickPartyAll.checked = Boolean(profile.partyAll); quickPartyOnline.checked = Boolean(profile.partyOnline);
@@ -5067,8 +5126,10 @@ function applyProfileValues(profile) {
 }
 
 loadProfile.addEventListener('click', async () => {
-  const profile = readProfiles()[profilePicker.value];
+  const profileName = profilePicker.value;
+  const profile = readProfiles()[profileName];
   if (!profile || profile.version !== 1) { text(profileStatus, 'That profile is unavailable or unsupported.'); return; }
+  const profileSignature = JSON.stringify(profile);
   pendingDetectedVoteSite = null;
   if ([...quickPreset.options].some(option => option.value === profile.preset)) quickPreset.value = profile.preset;
   quickName.value = String(profile.name ?? '').slice(0, 64);
@@ -5076,16 +5137,22 @@ loadProfile.addEventListener('click', async () => {
   loadedQuickSetup = null;
   updateQuickFields();
   clearApprovals();
-  text(profileStatus, `Loading live values before applying “${profilePicker.value}”…`);
+  text(profileStatus, `Loading live values before applying “${profileName}”…`);
   if (quickPresetReadable() && !await loadQuickSetupValues(true)) {
-    text(profileStatus, `Could not load live values for “${profilePicker.value}”. Retry before using this profile.`);
+    text(profileStatus, `Could not load live values for “${profileName}”. Retry before using this profile.`);
+    return;
+  }
+  const currentProfile = readProfiles()[profileName];
+  if (profilePicker.value !== profileName || !currentProfile || JSON.stringify(currentProfile) !== profileSignature) {
+    text(profileStatus, 'The selected profile changed while loading live values. Select it again before applying it.');
     return;
   }
   applyProfileValues(profile);
+  quickSetupDirty = true;
   inputGeneration++;
   updateQuickFields();
   clearApprovals();
-  text(profileStatus, `Loaded “${profilePicker.value}” over the confirmed live values. Preview before applying.`);
+  text(profileStatus, `Loaded “${profileName}” over the confirmed live values. Preview before applying.`);
 });
 deleteProfile.addEventListener('click', () => {
   const name = profilePicker.value;
@@ -5101,12 +5168,26 @@ deleteProfile.addEventListener('click', () => {
 
 clearOperationHistory.addEventListener('click', loadOperationHistory);
 
-[quickName, quickMethod, quickSiteDisplayName, quickService, quickUrl, quickDelay,
+[quickSiteDisplayName, quickService, quickUrl, quickDelay,
   quickSitePriority, quickSiteMaterial, quickSiteEnabled, quickSiteHidden, quickRewardScope,
   quickCommand, quickMessage, quickProcessRewards, quickAutoSites, quickExtraCheck, quickCountFake,
   quickHideSiteWarning, quickDisableUpdates, quickPartyEnabled, quickPartyVotes, quickPartyCommand, quickPartyBroadcast,
   quickPartyAll, quickPartyOnline, quickAutoSitesOnly, quickVoteLoggingEnabled, quickVoteLoggingDays,
-  quickVoteLoggingMainMysql].forEach(field => field.addEventListener('input', clearApprovals));
+  quickVoteLoggingMainMysql].forEach(field => field.addEventListener('input', () => {
+  quickSetupDirty = true;
+  clearApprovals();
+}));
+quickMethod.addEventListener('input', clearApprovals);
+quickName.addEventListener('input', () => {
+  if (quickPreset.value !== 'vote-site') quickSetupDirty = true;
+  clearApprovals();
+});
+quickMethod.addEventListener('input', () => {
+  if (quickPreset.value === 'proxy-backend' && quickPresetReadable()) {
+    if (quickSetupDirty) quickSetupPreserveReadGeneration = inputGeneration;
+    void autoLoadTab('quick-setup');
+  }
+});
 quickName.addEventListener('input', () => {
   if (pendingDetectedVoteSite && pendingDetectedVoteSite.key !== quickName.value.trim()) pendingDetectedVoteSite = null;
   updateQuickFields();
@@ -5147,6 +5228,7 @@ configurationFile.addEventListener('input', () => {
 });
 quickPreset.addEventListener('input', () => {
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   if (quickPreset.value !== 'vote-site') pendingDetectedVoteSite = null;
   updateQuickFields();
   clearApprovals();
