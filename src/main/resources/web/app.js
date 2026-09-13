@@ -2958,7 +2958,7 @@ function quickSetupValuesLoaded() {
   return loadedQuickSetup?.nodeId === selectedServerId
     && loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId
     && loadedQuickSetup.preset === quickPreset.value
-    && loadedQuickSetup.selector === JSON.stringify(quickReadOptions());
+    && loadedQuickSetup.selector === JSON.stringify(quickReadConfigurationOptions());
 }
 
 function updatePluginSuggestions() {
@@ -3991,7 +3991,7 @@ async function loadQuickSetupValues(automatic = false) {
   const preset = quickPreset.value;
   const nodeId = selectedServerId;
   const sessionId = nodeIndex.get(nodeId)?.sessionId;
-  const selector = JSON.stringify(quickReadOptions());
+  const selector = JSON.stringify(quickReadConfigurationOptions());
   const generation = inputGeneration;
   readQuickSetup.hidden = true;
   text(quickOperationStatus, `Loading current ${preset} settings from ${nodeId}…`);
@@ -4005,7 +4005,7 @@ async function loadQuickSetupValues(automatic = false) {
     if (!result) throw new Error('The selected backend did not return guided settings. Update VotingPlugin on that node.');
     if (generation !== inputGeneration || preset !== quickPreset.value || nodeId !== selectedServerId
         || sessionId !== nodeIndex.get(nodeId)?.sessionId
-        || selector !== JSON.stringify(quickReadOptions())) {
+        || selector !== JSON.stringify(quickReadConfigurationOptions())) {
       if (!quickSetupValuesLoaded()) {
         text(quickOperationStatus, 'The server or setup changed while reading. Load the current values again.');
         readQuickSetup.hidden = false;
@@ -4021,7 +4021,8 @@ async function loadQuickSetupValues(automatic = false) {
       quickService.value = detected.service;
     }
     if (detected) pendingDetectedVoteSite = null;
-    loadedQuickSetup = {nodeId, sessionId, preset, selector};
+    loadedQuickSetup = {nodeId, sessionId, preset,
+      selector: JSON.stringify(quickReadConfigurationOptions())};
     inputGeneration++;
     const suffix = preset === 'vote-site' && result.configuration.options.exists === 'false'
       ? ` This site key does not exist yet; the form is ready to create it.${detected ? ' The detected service was retained.' : ''}`
@@ -4036,7 +4037,7 @@ async function loadQuickSetupValues(automatic = false) {
   } catch (error) {
     if (authenticated && generation === inputGeneration && preset === quickPreset.value
         && nodeId === selectedServerId && sessionId === nodeIndex.get(nodeId)?.sessionId
-        && selector === JSON.stringify(quickReadOptions())) {
+        && selector === JSON.stringify(quickReadConfigurationOptions())) {
       loadedQuickSetup = null;
       text(quickOperationStatus, `Could not load current ${preset} settings: ${error.message}`);
       readQuickSetup.hidden = false;
