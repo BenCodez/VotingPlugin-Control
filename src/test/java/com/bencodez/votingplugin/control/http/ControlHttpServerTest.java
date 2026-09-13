@@ -181,6 +181,13 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("'config.quick-setup.v1', 'config.quick-setup.v2', 'config.proxy-method.v2'"),
                 "Secondary versioned backends must remain selectable for HTTP and Vote Party setup.");
         assertTrue(script.body().contains("quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)"));
+        assertTrue(script.body().contains("return {enabled: 'true'};"),
+                "Vote Party v2 reads must not use the editable Enabled value as their selector.");
+        assertTrue(script.body().contains("loadQuickSetupValues(true, true)"),
+                "Profile loading must preserve its requested proxy method through the live read.");
+        assertTrue(script.body().contains("const previousQuickCapability = quickSetupCapability();")
+                        && script.body().contains("selectedNodes = filteredSelection;\n    handleQuickTargetCapabilityChange(previousQuickCapability);"),
+                "Heartbeat capability changes must invalidate or re-expose Vote Party loading.");
         assertTrue(script.body().contains("!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded'"));
         assertTrue(script.body().contains("Configuration changed elsewhere; your unsaved guided edits were preserved."),
                 "External configuration changes must not overwrite unsaved guided edits.");
@@ -750,7 +757,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (autoLoadInFlight.has(tab)) {\n    autoLoadPending.add(tab);"));
         assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"),
                 "A preset change during an older read must queue a fresh autoload.");
-        assertTrue(script.body().contains("quickPresetReadable() && !await loadQuickSetupValues(true)"),
+        assertTrue(script.body().contains("quickPresetReadable() && !await loadQuickSetupValues(true, true)"),
                 "Loading a saved profile must read live values before enabling the template.");
         assertTrue(script.body().contains("applyProfileValues(profile);"),
                 "The saved template must be restored after the live read rather than overwritten by it.");

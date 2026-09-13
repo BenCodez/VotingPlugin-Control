@@ -3504,6 +3504,7 @@ async function loadNodesOnce() {
   try {
     const registry = await loadAllNodes();
     const previousNodeIndex = nodeIndex;
+    const previousQuickCapability = quickSetupCapability();
     allNodeItems = registry.items;
     nodePageMetadata = registry.pageMetadata;
     selectNodePage(pageOffset);
@@ -3586,6 +3587,7 @@ async function loadNodesOnce() {
       text(operationStatus, routingDraftStatus('The selected nodes changed during refresh. Preview again before apply.'));
     }
     selectedNodes = filteredSelection;
+    handleQuickTargetCapabilityChange(previousQuickCapability);
     renderNodeViews();
     updatePluginSuggestions();
     updateConfigurationButtons();
@@ -4031,7 +4033,7 @@ function quickReadOptions() {
 function quickReadConfigurationOptions() {
   if (quickPreset.value === 'proxy-backend') return {method: quickMethod.value};
   if (quickPreset.value === 'vote-party' && quickSetupCapability() === 'config.quick-setup.v2') {
-    return {enabled: String(quickPartyEnabled.checked)};
+    return {enabled: 'true'};
   }
   return quickReadOptions();
 }
@@ -5077,7 +5079,7 @@ loadProfile.addEventListener('click', async () => {
   updateQuickFields();
   clearApprovals();
   text(profileStatus, `Loading live values before applying “${profileName}”…`);
-  if (quickPresetReadable() && !await loadQuickSetupValues(true)) {
+  if (quickPresetReadable() && !await loadQuickSetupValues(true, true)) {
     text(profileStatus, `Could not load live values for “${profileName}”. Retry before using this profile.`);
     return;
   }
