@@ -53,6 +53,7 @@ public final class ArtifactStore {
     private final Path directory;
     private final long maximumStoredBytes;
     private final int maximumStoredArtifacts;
+    private final IoAction afterPublishMove;
 
     /** Creates or opens an empty private directory owned by Control. */
     public ArtifactStore(Path directory) throws IOException {
@@ -60,11 +61,17 @@ public final class ArtifactStore {
     }
 
     ArtifactStore(Path directory, long maximumStoredBytes, int maximumStoredArtifacts) throws IOException {
+        this(directory, maximumStoredBytes, maximumStoredArtifacts, path -> { });
+    }
+
+    ArtifactStore(Path directory, long maximumStoredBytes, int maximumStoredArtifacts,
+                  IoAction afterPublishMove) throws IOException {
         if (directory == null) throw rejected();
-        if (maximumStoredBytes < 1 || maximumStoredArtifacts < 1) throw rejected();
+        if (maximumStoredBytes < 1 || maximumStoredArtifacts < 1 || afterPublishMove == null) throw rejected();
         this.directory = directory.toAbsolutePath().normalize();
         this.maximumStoredBytes = maximumStoredBytes;
         this.maximumStoredArtifacts = maximumStoredArtifacts;
+        this.afterPublishMove = afterPublishMove;
         try {
             createPrivateDirectory(this.directory);
             removeIncompleteUploads();
@@ -79,6 +86,21 @@ public final class ArtifactStore {
         try (var files = Files.list(directory)) {
             for (Path file : files.toList()) {
                 String name = file.getFileName().toString();
+                if (name.matches("evict-[0-9a-f]{64}\\.part")) {
+                    if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file)) {
+                        throw rejected();
+                    }
+                    String artifactId = name.substring("evict-".length(), name.length() - ".part".length());
+                    verifyExistingArtifact(file, artifactId);
+                    Path original = artifactPath(artifactId);
+                    if (Files.exists(original, LinkOption.NOFOLLOW_LINKS)) {
+                        verifyExistingArtifact(original, artifactId);
+                        Files.delete(file);
+                    } else {
+                        move(file, original, false);
+                    }
+                    continue;
+                }
                 if (!name.startsWith("upload-") || !name.endsWith(".part")) continue;
                 if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(file)) {
                     throw rejected();
@@ -123,8 +145,8 @@ public final class ArtifactStore {
                 verifyExistingArtifact(artifact, actual);
                 return new Artifact(actual, displayFilename, digest.size());
             }
-            ensureCapacity(digest.size(), protectedArtifactIds);
-            publish(temporary, artifact);
+            List<StoredFile> evictionPlan = planCapacity(digest.size(), protectedArtifactIds);
+            publishWithRollback(temporary, artifact, evictionPlan);
             published = true;
             return new Artifact(actual, displayFilename, digest.size());
         } catch (ArtifactException failure) {
@@ -136,7 +158,7 @@ public final class ArtifactStore {
         }
     }
 
-    private void ensureCapacity(long incomingBytes, Set<String> protectedArtifactIds) throws IOException {
+    private List<StoredFile> planCapacity(long incomingBytes, Set<String> protectedArtifactIds) throws IOException {
         List<StoredFile> stored = new ArrayList<>();
         long bytes = 0;
         try (var files = Files.list(directory)) {
@@ -162,8 +184,61 @@ public final class ArtifactStore {
             count--;
         }
         if (count >= maximumStoredArtifacts || bytes > maximumStoredBytes - incomingBytes) throw rejected();
-        for (StoredFile candidate : evictionPlan) Files.delete(candidate.path());
-        if (!evictionPlan.isEmpty()) DurableFiles.forceDirectory(directory);
+        return List.copyOf(evictionPlan);
+    }
+
+    private void publishWithRollback(Path temporary, Path artifact, List<StoredFile> evictionPlan)
+            throws IOException {
+        List<QuarantinedFile> quarantined = new ArrayList<>();
+        try {
+            for (StoredFile candidate : evictionPlan) {
+                Path backup = directory.resolve("evict-" + candidate.artifactId() + ".part");
+                if (Files.exists(backup, LinkOption.NOFOLLOW_LINKS)) throw rejected();
+                move(candidate.path(), backup, false);
+                quarantined.add(new QuarantinedFile(candidate.path(), backup));
+            }
+            if (!quarantined.isEmpty()) DurableFiles.forceDirectory(directory);
+            publish(temporary, artifact);
+        } catch (IOException | RuntimeException failure) {
+            IOException rollbackFailure = rollbackPublication(artifact, quarantined);
+            if (rollbackFailure != null) failure.addSuppressed(rollbackFailure);
+            throw failure;
+        }
+        for (QuarantinedFile file : quarantined) deleteTemporary(file.backup());
+        if (!quarantined.isEmpty()) {
+            try { DurableFiles.forceDirectory(directory); }
+            catch (IOException ignored) { /* The canonical artifact is already durable; retry cleanup on startup. */ }
+        }
+    }
+
+    private IOException rollbackPublication(Path artifact, List<QuarantinedFile> quarantined) {
+        IOException failure = null;
+        try {
+            if (Files.exists(artifact, LinkOption.NOFOLLOW_LINKS)) {
+                if (!Files.isRegularFile(artifact, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(artifact)) {
+                    throw rejected();
+                }
+                Files.delete(artifact);
+            }
+        } catch (IOException problem) {
+            failure = problem;
+        }
+        for (int index = quarantined.size() - 1; index >= 0; index--) {
+            QuarantinedFile file = quarantined.get(index);
+            try {
+                if (Files.exists(file.backup(), LinkOption.NOFOLLOW_LINKS)
+                        && !Files.exists(file.original(), LinkOption.NOFOLLOW_LINKS)) {
+                    move(file.backup(), file.original(), false);
+                }
+            } catch (IOException problem) {
+                if (failure == null) failure = problem; else failure.addSuppressed(problem);
+            }
+        }
+        try { DurableFiles.forceDirectory(directory); }
+        catch (IOException problem) {
+            if (failure == null) failure = problem; else failure.addSuppressed(problem);
+        }
+        return failure;
     }
 
     /** Opens a verified immutable artifact by its opaque identifier. */
@@ -300,18 +375,27 @@ public final class ArtifactStore {
 
     private void publish(Path temporary, Path artifact) throws IOException {
         try {
-            Files.move(temporary, artifact, StandardCopyOption.ATOMIC_MOVE);
-        } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
-            Files.move(temporary, artifact);
+            move(temporary, artifact, false);
         } catch (java.nio.file.FileAlreadyExistsException collision) {
             verifyExistingArtifact(artifact, artifact.getFileName().toString().substring(0, 64));
             return;
         }
+        afterPublishMove.run(artifact);
         setPermissions(artifact, FILE_PERMISSIONS);
         try (FileChannel channel = FileChannel.open(artifact, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
             channel.force(true);
         }
         DurableFiles.forceDirectory(directory);
+    }
+
+    private static void move(Path source, Path target, boolean replace) throws IOException {
+        try {
+            if (replace) Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            else Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+            if (replace) Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+            else Files.move(source, target);
+        }
     }
 
     private void verifyExistingArtifact(Path artifact, String expectedHash) throws IOException {
@@ -412,4 +496,6 @@ public final class ArtifactStore {
 
     private record DigestAndSize(String sha256, long size) { }
     private record StoredFile(Path path, String artifactId, long size, long modified) { }
+    private record QuarantinedFile(Path original, Path backup) { }
+    @FunctionalInterface interface IoAction { void run(Path path) throws IOException; }
 }

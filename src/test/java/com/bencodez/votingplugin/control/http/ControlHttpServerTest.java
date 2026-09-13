@@ -127,6 +127,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("configurationContent.setAttribute('aria-busy', 'true')"));
         assertTrue(script.body().contains("readFileConfiguration.hidden = false;"));
         assertTrue(script.body().contains("readQuickSetup.hidden = false;"));
+        assertTrue(script.body().contains("if (!quickSetupValuesLoaded()) {\n        text(quickOperationStatus, 'The server or setup changed while reading."));
         assertTrue(script.body().contains("enabled: String(quickPartyEnabled.checked)"));
         assertTrue(script.body().contains("quickPartyEnabled.checked = options.enabled === 'true'"));
         assertTrue(script.body().contains("config.proxy-method.v2"));

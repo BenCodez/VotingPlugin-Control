@@ -3982,7 +3982,11 @@ async function loadQuickSetupValues(automatic = false) {
     if (generation !== inputGeneration || preset !== quickPreset.value || nodeId !== selectedServerId
         || sessionId !== nodeIndex.get(nodeId)?.sessionId
         || selector !== JSON.stringify(quickReadOptions())) {
-      text(quickOperationStatus, 'The server or setup changed while reading. Load the current values again.');
+      if (!quickSetupValuesLoaded()) {
+        text(quickOperationStatus, 'The server or setup changed while reading. Load the current values again.');
+        readQuickSetup.hidden = false;
+        updateConfigurationButtons();
+      }
       return;
     }
     const detected = preset === 'vote-site' && pendingDetectedVoteSite?.nodeId === nodeId
