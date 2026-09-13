@@ -3520,6 +3520,7 @@ async function loadNodesOnce() {
         Boolean(previousCapabilities.get(node)?.includes(capability)) !==
           Boolean(nodeCapabilities.get(node)?.includes(capability))));
     if (selectedCapabilitiesChanged) {
+      invalidateGuidedSetupReads();
       approvedPreview = null;
       approvedFilePreview = null;
       approvedQuickPreview = null;
@@ -4054,7 +4055,9 @@ function populateQuickState(options) {
     quickVoteLoggingDays.value = options.purgeDays || '30';
     quickVoteLoggingMainMysql.checked = options.useMainMySQL !== 'false';
   } else if (quickPreset.value === 'vote-party') {
-    const enabledAvailable = Object.hasOwn(options, 'enabled');
+    const enabledAvailable = quickSetupCapability() === 'config.quick-setup.v2'
+      && nodeCapabilities.get(selectedServerId)?.includes('config.quick-setup.v2')
+      && Object.hasOwn(options, 'enabled');
     quickPartyEnabled.checked = enabledAvailable && options.enabled === 'true';
     quickPartyEnabled.indeterminate = !enabledAvailable;
     quickPartyEnabled.disabled = !enabledAvailable;

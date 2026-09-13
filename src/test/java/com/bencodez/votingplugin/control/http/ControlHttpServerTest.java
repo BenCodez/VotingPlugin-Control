@@ -183,6 +183,10 @@ class ControlHttpServerTest {
 				"The active proxy method must be invalidated when its v1/v2 read capability changes.");
 		assertTrue(script.body().contains("proxyMethodCurrentReadCapability = readCapability;"),
 				"Successful proxy reads must remember the exact capability used.");
+		assertTrue(script.body().contains("const enabledAvailable = quickSetupCapability() === 'config.quick-setup.v2'"),
+				"Vote Party Enabled availability must come from v2 negotiation, not a legacy response field.");
+		assertTrue(script.body().contains("if (selectedCapabilitiesChanged) {\n      invalidateGuidedSetupReads();"),
+				"Capability transitions must invalidate cached guided reads.");
         assertTrue(script.body().contains("quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)"));
         assertTrue(script.body().contains("!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded'"));
         assertTrue(script.body().contains("Configuration changed elsewhere; your unsaved guided edits were preserved."),
@@ -378,7 +382,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("window.addEventListener('beforeunload'"));
         assertTrue(script.body().contains("loadedQuickSetup = {nodeId, sessionId, preset,"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
-        assertTrue(script.body().contains("if (selectedCapabilitiesChanged) {\n      approvedPreview = null;"));
+		assertTrue(script.body().contains("if (selectedCapabilitiesChanged) {\n      invalidateGuidedSetupReads();\n      approvedPreview = null;"));
         assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
         assertTrue(script.body().contains("selectedCapabilitiesChanged"));
         assertTrue(script.body().contains("proxyFile ? !isProxy(restoreNode) : !isBackend(restoreNode)"));
