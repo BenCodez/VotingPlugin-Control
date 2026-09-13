@@ -128,13 +128,19 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("readFileConfiguration.hidden = false;"));
         assertTrue(script.body().contains("readQuickSetup.hidden = false;"));
         assertTrue(script.body().contains("if (!quickSetupValuesLoaded()) {\n        text(quickOperationStatus, 'The server or setup changed while reading."));
-        assertTrue(script.body().contains("enabled: String(quickPartyEnabled.checked)"));
-        assertTrue(script.body().contains("quickPartyEnabled.checked = options.enabled === 'true'"));
+        assertTrue(script.body().contains("voteParty.enabled = String(quickPartyEnabled.checked)"));
+        assertTrue(script.body().contains("quickPartyEnabled.checked = enabledAvailable && options.enabled === 'true'"));
         assertTrue(script.body().contains("if (Object.hasOwn(profile, 'partyEnabled')) quickPartyEnabled.checked = Boolean(profile.partyEnabled);"),
                 "Legacy v1 profiles must preserve the live Vote Party enabled state when they omit that field.");
         assertTrue(script.body().contains("config.proxy-method.v2"));
-        assertTrue(script.body().contains("quickPreset.value === 'vote-party'\n    ? 'config.quick-setup.v2'"),
+        assertTrue(script.body().contains("quickPreset.value === 'vote-party' && votePartyUsesV2()\n"
+                        + "    ? 'config.quick-setup.v2'"),
+                "Vote Party must use v2 only when every selected backend supports it.");
+        assertTrue(script.body().contains("if (quickSetupCapability() === 'config.quick-setup.v2') voteParty.enabled"),
                 "Vote Party Enabled must never be sent under the incompatible v1 quick-setup contract.");
+        assertTrue(script.body().contains("quickPartyEnabled.indeterminate = !enabledAvailable;\n"
+                        + "    quickPartyEnabled.disabled = !enabledAvailable;"),
+                "A legacy read must represent Enabled as unavailable instead of leaking another server's value.");
         assertTrue(script.body().contains("function quickSetupTargets()"));
         assertTrue(script.body().contains("nodeIds = quickSetupTargets()"));
         assertTrue(script.body().contains("currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets()"));
@@ -325,8 +331,9 @@ class ControlHttpServerTest {
                 "Activity refreshes must invalidate cached health after observing an external successful apply.");
         assertTrue(script.body().contains("if (applied) {\n    invalidateConfigurationReads();"),
                 "Locally completed applies must use the same cache invalidation path.");
-        assertTrue(script.body().contains("const expectedApplyGeneration = inputGeneration + 2;"));
-        assertTrue(script.body().contains("const submittedContextStillCurrent = inputGeneration === expectedApplyGeneration"));
+        assertTrue(script.body().contains("const submittedContent = configurationContent.value;"));
+        assertTrue(script.body().contains("const submittedContextStillCurrent = approval.fileName === configurationFile.value\n"
+                        + "      && configurationContent.value === submittedContent\n      && fileDraftMatchesCurrentContext()"));
         assertTrue(script.body().contains("approval.sessions.get(nodeId) === nodeIndex.get(nodeId)?.sessionId"),
                 "File apply completion must compare input generation, target scope, file, and node sessions.");
         assertTrue(script.body().contains("The apply completed, but newer unsaved file edits remain. Preview again before applying them."),
@@ -730,6 +737,11 @@ class ControlHttpServerTest {
         int activateAfterPreset = script.body().indexOf("setActiveTab(tab, true);", openWorkspace);
         assertTrue(openWorkspace >= 0 && presetBeforeTab > openWorkspace && activateAfterPreset > presetBeforeTab,
                 "Nested shortcuts must establish their preset before tab autoload starts.");
+        assertTrue(script.body().contains("if (preset && quickPreset.value !== preset) {\n"
+                        + "    quickPreset.value = preset;\n    loadedQuickSetup = null;\n"
+                        + "    quickSetupDirty = false;\n    quickSetupPreserveReadGeneration = -1;\n"
+                        + "    pendingDetectedVoteSite = null;"),
+                "A shortcut replacing the preset must discard dirty state from the previous form before autoloading.");
         assertTrue(script.body().contains("if (autoLoadInFlight.has(tab)) {\n    autoLoadPending.add(tab);"));
         assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"),
                 "A preset change during an older read must queue a fresh autoload.");
