@@ -130,6 +130,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (!quickSetupValuesLoaded()) {\n        text(quickOperationStatus, 'The server or setup changed while reading."));
         assertTrue(script.body().contains("enabled: String(quickPartyEnabled.checked)"));
         assertTrue(script.body().contains("quickPartyEnabled.checked = options.enabled === 'true'"));
+        assertTrue(script.body().contains("if (Object.hasOwn(profile, 'partyEnabled')) quickPartyEnabled.checked = Boolean(profile.partyEnabled);"),
+                "Legacy v1 profiles must preserve the live Vote Party enabled state when they omit that field.");
         assertTrue(script.body().contains("config.proxy-method.v2"));
         assertTrue(script.body().contains("function quickSetupTargets()"));
         assertTrue(script.body().contains("nodeIds = quickSetupTargets()"));
@@ -139,6 +141,20 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("function quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("options: quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("loadedQuickSetup.selector === JSON.stringify(quickReadConfigurationOptions())"));
+        assertTrue(script.body().contains("const autoLoadGeneration = inputGeneration;"));
+        assertTrue(script.body().contains("if (inputGeneration !== autoLoadGeneration) {\n        autoLoadPending.add(tab);\n        return;\n      }"),
+                "A stale dedicated read must fence the remainder of the automatic quick-setup sequence.");
+        assertTrue(script.body().contains("quickMethod.addEventListener('input', () => {\n  if (quickPreset.value === 'proxy-backend' && quickPresetReadable()) void autoLoadTab('quick-setup');"),
+                "Changing a proxy-backend method must schedule a capability-correct reread.");
+        assertTrue(script.body().contains("previewAutoSites.disabled = !quickReady || autoSitesState.textContent === 'Not loaded';"));
+        assertTrue(script.body().contains("previewVoteLogging.disabled = !quickReady || voteLoggingState.textContent === 'Not loaded';"));
+        assertTrue(script.body().contains("if (automatic && requestGeneration !== inputGeneration) void autoLoadTab('quick-setup');"),
+                "Discarded automatic dedicated reads must request a fresh read rather than leave defaults previewable.");
+        assertTrue(script.body().contains("nodeCapabilities.get(node)?.includes(quickSetupCapability())"),
+                "Quick approvals must remain valid only for their selected capability version.");
+        assertTrue(script.body().contains("const profileName = profilePicker.value;"));
+        assertTrue(script.body().contains("profilePicker.value !== profileName || !currentProfile || JSON.stringify(currentProfile) !== profileSignature"),
+                "Profile application must verify its selection after waiting for live values.");
         assertTrue(script.body().contains("selector: JSON.stringify(quickReadConfigurationOptions())"),
                 "The retained selector must reflect the method returned by the live backend read.");
         assertTrue(web.body().contains("Add a simple vote reward"));

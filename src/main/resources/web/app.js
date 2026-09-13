@@ -1628,8 +1628,17 @@ async function autoLoadTab(tab) {
         || quickPresetReadable() && !quickSetupValuesLoaded())) {
     autoLoadInFlight.add(tab);
     try {
+      const autoLoadGeneration = inputGeneration;
       if (autoSitesState.textContent === 'Not loaded') await loadDedicatedSetup('auto-create-vote-sites', true);
+      if (inputGeneration !== autoLoadGeneration) {
+        autoLoadPending.add(tab);
+        return;
+      }
       if (voteLoggingState.textContent === 'Not loaded') await loadDedicatedSetup('vote-logging', true);
+      if (inputGeneration !== autoLoadGeneration) {
+        autoLoadPending.add(tab);
+        return;
+      }
       if (quickPresetReadable() && !quickSetupValuesLoaded()) await loadQuickSetupValues(true);
     } finally { finishAutoLoad(tab); }
     return;
@@ -2683,13 +2692,13 @@ function updateExtendedButtons() {
   previewReward.disabled = !quickReady;
   applyReward.disabled = !quickReady || !dedicatedSetupApprovals.get('reward-builder');
   loadAutoSites.disabled = !quickReady;
-  previewAutoSites.disabled = !quickReady;
+  previewAutoSites.disabled = !quickReady || autoSitesState.textContent === 'Not loaded';
   applyAutoSites.disabled = !quickReady || !dedicatedSetupApprovals.get('auto-create-vote-sites');
   selectAllAutoSitesTargets.disabled = !authenticated || allQuickBackends.length === 0
     || configurationOperationsInFlight > 0;
   text(autoSitesTargetCount, `${backendTargets.length} selected ${backendTargets.length === 1 ? 'backend' : 'backends'}`);
   loadVoteLogging.disabled = !quickReady;
-  previewVoteLogging.disabled = !quickReady;
+  previewVoteLogging.disabled = !quickReady || voteLoggingState.textContent === 'Not loaded';
   applyVoteLogging.disabled = !quickReady || !dedicatedSetupApprovals.get('vote-logging');
   runDriftCheck.disabled = !driftReady;
   createSnapshot.disabled = !lastFileReadOperation;
@@ -3468,7 +3477,7 @@ async function loadNodesOnce() {
       nodeCapabilities.get(node)?.includes(selectedFileCapability()));
     const invalidQuickApproval = approvedQuickPreview && approvedQuickPreview.workflow !== 'sync-vote-sites' &&
       !approvedQuickPreview.nodeIds.every(node =>
-      nodeCapabilities.get(node)?.includes('config.quick-setup.v1'));
+      nodeCapabilities.get(node)?.includes(quickSetupCapability()));
     const invalidVoteSitesApproval = approvedQuickPreview?.workflow === 'sync-vote-sites' &&
       (!approvedQuickPreview.nodeIds.every(node =>
         nodeCapabilities.get(node)?.includes('config.vote-sites-sync.v1')) ||
@@ -4308,10 +4317,11 @@ async function loadDedicatedSetup(preset, automatic = false) {
     elements.state.className = `pill ${options.enabled === 'true' ? 'online' : 'neutral'}`;
     text(elements.status, operationSummary(operation));
   } catch (error) {
-    if (requestNodeId === selectedServerId && requestSessionId === nodeIndex.get(requestNodeId)?.sessionId
-        && requestGeneration === inputGeneration) {
+    if (authenticated && requestNodeId === selectedServerId
+        && requestSessionId === nodeIndex.get(requestNodeId)?.sessionId) {
       text(elements.status, `Could not load current ${preset} settings: ${error.message}`);
       elements.retry.hidden = false;
+      if (automatic && requestGeneration !== inputGeneration) void autoLoadTab('quick-setup');
     }
   }
   updateExtendedButtons();
@@ -4944,7 +4954,8 @@ function applyProfileValues(profile) {
   assign(quickMessage, profile.playerMessage, 500); quickProcessRewards.checked = Boolean(profile.processRewards);
   quickAutoSites.checked = Boolean(profile.autoSites); quickExtraCheck.checked = Boolean(profile.extraCheck);
   quickCountFake.checked = Boolean(profile.countFake); quickHideSiteWarning.checked = Boolean(profile.hideWarning);
-  quickDisableUpdates.checked = Boolean(profile.disableUpdates); quickPartyEnabled.checked = Boolean(profile.partyEnabled);
+  quickDisableUpdates.checked = Boolean(profile.disableUpdates);
+  if (Object.hasOwn(profile, 'partyEnabled')) quickPartyEnabled.checked = Boolean(profile.partyEnabled);
   assign(quickPartyVotes, profile.partyVotes, 6);
   assign(quickPartyCommand, profile.partyCommand, 500); assign(quickPartyBroadcast, profile.partyBroadcast, 500);
   quickPartyAll.checked = Boolean(profile.partyAll); quickPartyOnline.checked = Boolean(profile.partyOnline);
@@ -4962,8 +4973,10 @@ function applyProfileValues(profile) {
 }
 
 loadProfile.addEventListener('click', async () => {
-  const profile = readProfiles()[profilePicker.value];
+  const profileName = profilePicker.value;
+  const profile = readProfiles()[profileName];
   if (!profile || profile.version !== 1) { text(profileStatus, 'That profile is unavailable or unsupported.'); return; }
+  const profileSignature = JSON.stringify(profile);
   pendingDetectedVoteSite = null;
   if ([...quickPreset.options].some(option => option.value === profile.preset)) quickPreset.value = profile.preset;
   quickName.value = String(profile.name ?? '').slice(0, 64);
@@ -4971,16 +4984,21 @@ loadProfile.addEventListener('click', async () => {
   loadedQuickSetup = null;
   updateQuickFields();
   clearApprovals();
-  text(profileStatus, `Loading live values before applying “${profilePicker.value}”…`);
+  text(profileStatus, `Loading live values before applying “${profileName}”…`);
   if (quickPresetReadable() && !await loadQuickSetupValues(true)) {
-    text(profileStatus, `Could not load live values for “${profilePicker.value}”. Retry before using this profile.`);
+    text(profileStatus, `Could not load live values for “${profileName}”. Retry before using this profile.`);
+    return;
+  }
+  const currentProfile = readProfiles()[profileName];
+  if (profilePicker.value !== profileName || !currentProfile || JSON.stringify(currentProfile) !== profileSignature) {
+    text(profileStatus, 'The selected profile changed while loading live values. Select it again before applying it.');
     return;
   }
   applyProfileValues(profile);
   inputGeneration++;
   updateQuickFields();
   clearApprovals();
-  text(profileStatus, `Loaded “${profilePicker.value}” over the confirmed live values. Preview before applying.`);
+  text(profileStatus, `Loaded “${profileName}” over the confirmed live values. Preview before applying.`);
 });
 deleteProfile.addEventListener('click', () => {
   const name = profilePicker.value;
@@ -5002,6 +5020,9 @@ clearOperationHistory.addEventListener('click', loadOperationHistory);
   quickHideSiteWarning, quickDisableUpdates, quickPartyEnabled, quickPartyVotes, quickPartyCommand, quickPartyBroadcast,
   quickPartyAll, quickPartyOnline, quickAutoSitesOnly, quickVoteLoggingEnabled, quickVoteLoggingDays,
   quickVoteLoggingMainMysql].forEach(field => field.addEventListener('input', clearApprovals));
+quickMethod.addEventListener('input', () => {
+  if (quickPreset.value === 'proxy-backend' && quickPresetReadable()) void autoLoadTab('quick-setup');
+});
 quickName.addEventListener('input', () => {
   if (pendingDetectedVoteSite && pendingDetectedVoteSite.key !== quickName.value.trim()) pendingDetectedVoteSite = null;
   updateQuickFields();
