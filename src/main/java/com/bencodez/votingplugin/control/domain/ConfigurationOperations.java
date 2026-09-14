@@ -30,9 +30,11 @@ public final class ConfigurationOperations implements AutoCloseable {
     public static final String FILE_CAPABILITY = "config.files.v1";
     public static final String PROXY_FILE_CAPABILITY = "config.proxy-files.v1";
     public static final String QUICK_SETUP_CAPABILITY = "config.quick-setup.v1";
+    public static final String QUICK_SETUP_VOTE_PARTY_CAPABILITY = "config.quick-setup.v2";
     public static final String VOTE_SITES_SYNC_CAPABILITY = "config.vote-sites-sync.v1";
     public static final String TRANSPORT_TEST_CAPABILITY = "config.transport-test.v1";
     public static final String PROXY_METHOD_CAPABILITY = "config.proxy-method.v1";
+    public static final String PROXY_METHOD_HTTP_CAPABILITY = "config.proxy-method.v2";
     private static final int MAX_OPERATIONS = 1000;
     private static final int MAX_LISTED_OPERATIONS = 100;
     private static final int MAX_FILE_OPERATIONS = 16;
@@ -260,11 +262,21 @@ public final class ConfigurationOperations implements AutoCloseable {
                     else operation.claimSessions.put(nodeId, previousClaimSession);
                     throw e;
                 }
-                return new ConfigurationTask(operation.id, operation.type, operation.configuration,
+                return new ConfigurationTask(operation.id, operation.type, configurationForTask(operation),
                         operation.expectedRevisions.get(nodeId), attemptId);
             }
         }
         return null;
+    }
+
+    private static ManagedConfiguration configurationForTask(StoredOperation operation) {
+        ManagedConfiguration configuration = operation.configuration;
+        if ("READ".equals(operation.type) && ManagedConfiguration.QUICK_SETUP.equals(configuration.domain())
+                && "proxy-backend".equals(configuration.preset()) && configuration.options().containsKey("method")) {
+            return new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null,
+                    configuration.preset(), Map.of());
+        }
+        return configuration;
     }
 
     private boolean deferProxyMethodApply(StoredOperation operation, NodeStatus node) {
@@ -318,8 +330,16 @@ public final class ConfigurationOperations implements AutoCloseable {
                     "Proxy topology changed after approval; preview again", "TOPOLOGY_CHANGED");
             return true;
         }
+        String causes = backends.stream().filter(backendId -> operation.results.get(backendId) == null
+                        || !operation.results.get(backendId).success())
+                .map(backendId -> {
+                    ConfigurationTaskResult failure = operation.results.get(backendId);
+                    return failure == null ? backendId + " RESULT_UNAVAILABLE"
+                            : backendId + " " + failure.code() + ": " + failure.message();
+                })
+                .collect(java.util.stream.Collectors.joining("; "));
         automaticCancellation(operation, node.nodeId(), sessionId(node), "DEPENDENCY_FAILED",
-                "A backend failed the proxy method apply", "BACKEND_APPLY_FAILED");
+                truncateUtf8("Proxy not applied because " + causes, 500), "BACKEND_APPLY_FAILED");
         return true;
     }
 
@@ -471,6 +491,17 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     private static void validateConfigurationTargets(ValidatedTargets targets,
                                                        ManagedConfiguration configuration) {
+        if (ManagedConfiguration.QUICK_SETUP.equals(configuration.domain())
+                && "proxy-backend".equals(configuration.preset())) {
+            List<String> invalid = targets.nodeIds().stream()
+                    .filter(nodeId -> !"BUKKIT".equalsIgnoreCase(targets.platforms().get(nodeId)))
+                    .toList();
+            if (!invalid.isEmpty()) {
+                throw new ValidationException("INVALID_TARGET",
+                        "Backend proxy settings require Bukkit nodes", invalid);
+            }
+            return;
+        }
         if (!ManagedConfiguration.FILE.equals(configuration.domain())) return;
         boolean proxyFile = "bungeeconfig.yml".equals(configuration.fileName());
         List<String> invalid = targets.nodeIds().stream()
@@ -673,8 +704,15 @@ public final class ConfigurationOperations implements AutoCloseable {
         ManagedConfiguration expected = operation.configuration;
         boolean mismatch = expected == null || !expected.domain().equals(actual.domain())
                 || (ManagedConfiguration.FILE.equals(expected.domain()) && !expected.fileName().equals(actual.fileName()))
-                || (ManagedConfiguration.QUICK_SETUP.equals(expected.domain()) && !expected.preset().equals(actual.preset()));
+                || (ManagedConfiguration.QUICK_SETUP.equals(expected.domain()) && !expected.preset().equals(actual.preset()))
+                || (!activeMethodRead(operation, expected) && !expected.capability().equals(actual.capability()));
         if (mismatch) throw invalid("result configuration does not match the operation selector");
+    }
+
+    private static boolean activeMethodRead(StoredOperation operation, ManagedConfiguration expected) {
+        return "READ".equals(operation.type) && ManagedConfiguration.QUICK_SETUP.equals(expected.domain())
+                && (ManagedConfiguration.PROXY_METHOD.equals(expected.preset())
+                || "proxy-backend".equals(expected.preset()));
     }
 
     private String retainMessage(String message) {

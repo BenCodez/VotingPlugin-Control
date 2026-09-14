@@ -112,9 +112,14 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             throw new IllegalArgumentException("communication test requires one valid server");
         }
         if (QUICK_SETUP.equals(domain) && PROXY_METHOD.equals(preset)
-                && (options.size() != 1 || !List.of("PLUGINMESSAGING", "REDIS", "MQTT", "SOCKETS", "MYSQL")
+                && (options.size() != 1 || !List.of("PLUGINMESSAGING", "REDIS", "MQTT", "SOCKETS", "MYSQL", "HTTP")
                 .contains(options.get("method")))) {
             throw new IllegalArgumentException("proxy method requires one supported method");
+        }
+        if (QUICK_SETUP.equals(domain) && "proxy-backend".equals(preset) && options.containsKey("method")
+                && !List.of("PLUGINMESSAGING", "REDIS", "MQTT", "SOCKETS", "MYSQL", "HTTP")
+                .contains(options.get("method"))) {
+            throw new IllegalArgumentException("proxy backend requires a canonical supported method");
         }
         if (QUICK_SETUP.equals(domain) && REWARD_BUILDER.equals(preset)
                 && (options.size() != 1 || !options.containsKey("proposal"))) {
@@ -129,7 +134,11 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
             case QUICK_SETUP -> VOTE_SITES_SYNC.equals(preset)
                     ? "config.vote-sites-sync.v1" : COMMUNICATION_TEST.equals(preset)
                     ? "config.transport-test.v1" : PROXY_METHOD.equals(preset)
-                    ? "config.proxy-method.v1" : "config.quick-setup.v1";
+                    ? "HTTP".equals(options.get("method")) ? "config.proxy-method.v2" : "config.proxy-method.v1"
+                    : "proxy-backend".equals(preset) && "HTTP".equals(options.get("method"))
+                    ? "config.proxy-method.v2"
+                    : "vote-party".equals(preset) && options.containsKey("enabled") ? "config.quick-setup.v2"
+                    : "config.quick-setup.v1";
             default -> throw new IllegalStateException("unsupported configuration domain");
         };
     }

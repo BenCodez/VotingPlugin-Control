@@ -174,8 +174,10 @@ Configuration is split into independently negotiated capabilities. `config.proxy
 manages only an enrolled proxy's `bungeeconfig.yml`; it is not general proxy file access. The proxy file is strict,
 bounded, redacted YAML with safe preview/approval, atomic publication, and a local backup. General proxy-file settings
 are saved without a proxy reload, so the operation reports that a restart is needed to activate them. `config.quick-setup.v1` supplies standalone,
-proxy-backend, vote-site, easy-reward, common-settings, auto-create-vote-sites, vote-logging, vote-party, and typed
+proxy-backend, vote-site, easy-reward, common-settings, vote-party, auto-create-vote-sites, vote-logging, and typed
 reward-builder presets.
+Legacy Vote Party editing remains available through v1; only its Enabled extension requires
+`config.quick-setup.v2`, and v1 nodes are never sent that extended proposal.
 The auto-create preset owns only `AutoCreateVoteSites`; the logging preset owns only enabled state, purge retention
 (`-1` disables purging or `1`–`3650` days), and main-MySQL reuse, never connection credentials. Readable presets load their
 installed values before editing.

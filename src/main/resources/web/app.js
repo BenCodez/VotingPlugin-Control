@@ -98,6 +98,7 @@ const quickExtraCheck = document.querySelector('#quick-extra-check');
 const quickCountFake = document.querySelector('#quick-count-fake');
 const quickHideSiteWarning = document.querySelector('#quick-hide-site-warning');
 const quickDisableUpdates = document.querySelector('#quick-disable-updates');
+const quickPartyEnabled = document.querySelector('#quick-party-enabled');
 const quickPartyVotes = document.querySelector('#quick-party-votes');
 const quickPartyCommand = document.querySelector('#quick-party-command');
 const quickPartyBroadcast = document.querySelector('#quick-party-broadcast');
@@ -252,6 +253,9 @@ let approvedPreview = null;
 let approvedFilePreview = null;
 let approvedQuickPreview = null;
 let loadedQuickSetup = null;
+let quickSetupDirty = false;
+let quickSetupPreserveReadGeneration = -1;
+const dedicatedSetupDirty = new Set();
 let voteSitesSourceId = '';
 let voteSitesTargetIds = new Set();
 let voteSitesTargetsInitialized = false;
@@ -261,6 +265,7 @@ let proxyMethodProxyId = '';
 let proxyMethodCurrentFor = '';
 let proxyMethodCurrentSessionId = '';
 let proxyMethodCurrentValue = '';
+let proxyMethodReadGeneration = 0;
 let nodeCapabilities = new Map();
 let nodePlugins = new Map();
 let inputGeneration = 0;
@@ -274,6 +279,7 @@ let enrollmentRefreshResolve = null;
 let enrollmentMutationInFlight = false;
 let configurationOperationsInFlight = 0;
 let proxyMethodWorkflowInFlight = false;
+let voteSiteReadTimer = null;
 const FILE_READ_CACHE_TTL_MS = 30_000;
 const MAX_FILE_READ_CACHE_ENTRIES = 12;
 const MAX_OPERATION_HISTORY = 50;
@@ -356,6 +362,7 @@ const SETTINGS_SCHEMA = Object.freeze([
   {key: 'BungeeMethod', file: 'BungeeSettings.yml', type: 'enum', defaultValue: 'PLUGINMESSAGING', effect: 'Select the proxy transport.'},
   {key: 'VoteSites.<site>.Enabled', file: 'VoteSites.yml', type: 'boolean', defaultValue: 'true', effect: 'Allow a configured site to resolve and reward votes.'},
   {key: 'VoteSites.<site>.ServiceSite', file: 'VoteSites.yml', type: 'text ≤200', defaultValue: '', effect: 'Match the service name supplied by the vote listener.'},
+  {key: 'VoteParty.Enabled', file: 'SpecialRewards.yml', type: 'boolean', defaultValue: 'false', effect: 'Enable or disable Vote Party without changing other party settings.'},
   {key: 'VoteParty.VotesRequired', file: 'SpecialRewards.yml', type: 'integer 1–100000', defaultValue: '20', effect: 'Number of votes required to trigger a vote party.'}
 ]);
 
@@ -630,6 +637,8 @@ function renderSiteHealthResult(value) {
     button.className = 'secondary compact';
     button.addEventListener('click', () => {
       const key = String(service).replace(/[^A-Za-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 64) || 'vote-site';
+      quickSetupDirty = false;
+      quickSetupPreserveReadGeneration = -1;
       quickPreset.value = 'vote-site';
       quickName.value = key;
       quickSiteDisplayName.value = String(service).slice(0, 200);
@@ -642,7 +651,7 @@ function renderSiteHealthResult(value) {
       renderNodeViews();
       updatePluginSuggestions();
       setActiveTab('quick-setup', true);
-      text(quickOperationStatus, 'Detected service copied into the VoteSite setup. Load the generated key to confirm it is unused, complete the URL and delay, then preview before creating it.');
+      text(quickOperationStatus, 'Detected service copied into the VoteSite setup. Its generated key is loading automatically; complete the URL and delay, then preview before creating it.');
       scrollToAnchor(document.querySelector('#quick-setup-card'));
     });
     actions.append(button);
@@ -1076,7 +1085,11 @@ async function loadOperationHistoryOnce() {
     operationHistoryItems = retainedOperations.slice(0, MAX_OPERATION_HISTORY).map(operation =>
       ({...operation, results: Object.fromEntries(Object.entries(operation.results || {}).map(([nodeId, result]) =>
         [nodeId, result ? {...result, configuration: null} : result]))}));
-    if (observedSuccessfulApply) invalidateConfigurationReads();
+    if (observedSuccessfulApply) {
+      invalidateConfigurationReads();
+      invalidateGuidedSetupReads();
+      if (tabFromHash() === 'quick-setup') window.setTimeout(() => void autoLoadTab('quick-setup'), 0);
+    }
     const pendingRestarts = new Map();
     const restartSessions = body.voteLoggingRestartSessions;
     if (restartSessions && typeof restartSessions === 'object' && !Array.isArray(restartSessions)) {
@@ -1169,7 +1182,7 @@ function currentProfileValues() {
     processRewards: quickProcessRewards.checked, autoSites: quickAutoSites.checked,
     extraCheck: quickExtraCheck.checked, countFake: quickCountFake.checked,
     hideWarning: quickHideSiteWarning.checked, disableUpdates: quickDisableUpdates.checked,
-    partyVotes: quickPartyVotes.value, partyCommand: quickPartyCommand.value,
+    partyEnabled: quickPartyEnabled.checked, partyVotes: quickPartyVotes.value, partyCommand: quickPartyCommand.value,
     partyBroadcast: quickPartyBroadcast.value, partyAll: quickPartyAll.checked, partyOnline: quickPartyOnline.checked,
     autoSitesOnly: quickAutoSitesOnly.checked, voteLogging: quickVoteLoggingEnabled.checked,
     voteLoggingDays: quickVoteLoggingDays.value, voteLoggingMainMysql: quickVoteLoggingMainMysql.checked,
@@ -1237,6 +1250,7 @@ function applyAuthenticatedSession(body) {
   approvedFilePreview = null;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   selectedNodes.clear();
   voteSitesSourceId = '';
   voteSitesTargetIds.clear();
@@ -1321,7 +1335,9 @@ function friendlyCapability(capability) {
     'config.vote-sites-sync.v1': 'VoteSites sync',
     'config.transport-test.v1': 'Communication test',
     'config.proxy-method.v1': 'Proxy method',
+    'config.proxy-method.v2': 'Proxy method · HTTP',
     'config.quick-setup.v1': 'Setup assistant',
+    'config.quick-setup.v2': 'Vote Party setup',
     'config.proxy-routing.v1': 'Proxy routing',
     'data.inspect.v1': 'Read-only data inspection'
   })[capability];
@@ -1399,12 +1415,14 @@ function nodeCard(node) {
   selector.className = 'node-select';
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
-  const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1', 'config.quick-setup.v1']
+  const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1',
+    'config.quick-setup.v1', 'config.quick-setup.v2', 'config.proxy-method.v2']
     .some(capability => node.acceptedCapabilities.includes(capability));
   checkbox.disabled = !node.online || !controllable || node.nodeId === selectedServerId;
   checkbox.checked = selectedNodes.has(node.nodeId);
   if (node.nodeId === selectedServerId) selector.title = 'The primary server remains included in configuration changes.';
   checkbox.addEventListener('change', () => {
+	const previousQuickCapability = quickSetupCapability();
     if (checkbox.checked && selectedNodes.size >= MAX_CONFIGURATION_TARGETS) {
       checkbox.checked = false;
       text(operationStatus, `At most ${MAX_CONFIGURATION_TARGETS} servers can be configured at once.`);
@@ -1416,6 +1434,7 @@ function nodeCard(node) {
     approvedQuickPreview = null;
     dedicatedSetupApprovals.clear();
     inputGeneration++;
+	handleQuickTargetCapabilityChange(previousQuickCapability);
     updatePluginSuggestions();
     renderSelectedServer();
     updateConfigurationButtons();
@@ -1478,7 +1497,8 @@ function updateHeaderAction(tab) {
     : tab === 'network' ? runNetworkDoctor.disabled
     : tab === 'configurations' ? runDriftCheck.disabled
     : tab === 'data' ? refreshDataOverview.disabled
-    : tab === 'quick-setup' ? !nodeCapabilities.get(selectedServerId)?.includes('config.quick-setup.v1')
+    : tab === 'quick-setup' ? !nodeCapabilities.get(selectedServerId)?.some(capability =>
+      capability === 'config.quick-setup.v1' || capability === 'config.quick-setup.v2')
     : false;
   headerAction.disabled = !authenticated || unavailable;
 }
@@ -1497,9 +1517,12 @@ function setActiveTab(tab, updateHash = false) {
 }
 
 function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = null) {
-  if (preset) {
+  if (preset && quickPreset.value !== preset) {
     quickPreset.value = preset;
     loadedQuickSetup = null;
+    quickSetupDirty = false;
+    quickSetupPreserveReadGeneration = -1;
+    pendingDetectedVoteSite = null;
     updateQuickFields();
     clearApprovals();
   }
@@ -1528,6 +1551,9 @@ function resetFileEditorForSelection(message) {
   lastFileReadOperation = null;
   approvedFilePreview = null;
   updateEditorPosition();
+  configurationContent.disabled = false;
+  configurationContent.removeAttribute('aria-busy');
+  readFileConfiguration.hidden = true;
   text(fileOperationStatus, message);
 }
 
@@ -1599,8 +1625,7 @@ async function autoLoadTab(tab) {
     return;
   }
   if (tab === 'configurations') {
-    const yamlVisible = configViewPanels.some(panel => panel.dataset.configPanel === 'yaml' && !panel.hidden);
-    if (!yamlVisible || configurationDirty || configurationContentPresent || !fileTargetsForSelection().length) return;
+    if (configurationDirty || configurationContentPresent || !fileTargetsForSelection().length) return;
     autoLoadInFlight.add(tab);
     try { await loadFileConfiguration(true); } finally { finishAutoLoad(tab); }
     return;
@@ -1613,10 +1638,39 @@ async function autoLoadTab(tab) {
     } finally { finishAutoLoad(tab); }
     return;
   }
-  if (tab === 'quick-setup' && quickPresetReadable() && !loadedQuickSetup
-      && !approvedQuickPreview && !configurationOperationsInFlight) {
+  if (tab === 'quick-setup' && configurationOperationsInFlight) {
+    autoLoadPending.add(tab);
+    return;
+  }
+  if (tab === 'quick-setup' && !approvedQuickPreview
+      && (!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded'
+        || !dedicatedSetupDirty.has('vote-logging') && voteLoggingState.textContent === 'Not loaded'
+        || quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)
+          && !quickSetupValuesLoaded())) {
     autoLoadInFlight.add(tab);
-    try { await loadQuickSetupValues(true); } finally { finishAutoLoad(tab); }
+    try {
+      const autoLoadGeneration = inputGeneration;
+      if (!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded') {
+        await loadDedicatedSetup('auto-create-vote-sites', true);
+      }
+      if (inputGeneration !== autoLoadGeneration) {
+        autoLoadPending.add(tab);
+        return;
+      }
+      if (!dedicatedSetupDirty.has('vote-logging') && voteLoggingState.textContent === 'Not loaded') {
+        await loadDedicatedSetup('vote-logging', true);
+      }
+      if (inputGeneration !== autoLoadGeneration) {
+        autoLoadPending.add(tab);
+        return;
+      }
+      if (quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)
+          && !quickSetupValuesLoaded()) {
+        const preserveGeneration = quickSetupPreserveReadGeneration;
+        await loadQuickSetupValues(true, quickSetupDirty);
+        if (quickSetupPreserveReadGeneration === preserveGeneration) quickSetupPreserveReadGeneration = -1;
+      }
+    } finally { finishAutoLoad(tab); }
     return;
   }
   if (tab === 'data' && inspectionCapableNode() && !inspectionInFlight && !lastOverview) {
@@ -1821,7 +1875,7 @@ function normalizeDashboardOverview(value) {
   if (!platforms.has(result.platform.toUpperCase()) || !dataStorages.has(result.dataStorage.toUpperCase())) {
     incomplete = true;
   }
-  const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS']);
+  const proxyMethods = new Set(['PLUGINMESSAGING', 'REDIS', 'MQTT', 'MYSQL', 'SOCKETS', 'HTTP']);
   if (result.proxyMode === true && !proxyMethods.has(result.proxyMethod.toUpperCase())) incomplete = true;
   return {result, incomplete};
 }
@@ -2530,25 +2584,40 @@ function renderTransportTest() {
 
 function proxyMethodCandidates() {
   return allNodeItems.filter(node => isProxy(node) && node.online &&
-    node.acceptedCapabilities.includes('config.proxy-method.v1'));
+    (node.acceptedCapabilities.includes('config.proxy-method.v1')
+      || node.acceptedCapabilities.includes('config.proxy-method.v2')));
 }
 
-function proxyMethodNetworkFor(items, truncatedNodeIds, proxyId) {
+function proxyMethodCapabilityFor(method) {
+  return method === 'HTTP' ? 'config.proxy-method.v2' : 'config.proxy-method.v1';
+}
+
+function proxyMethodReadCapability() {
+  const capabilities = nodeCapabilities.get(proxyMethodProxyId) || [];
+  return capabilities.includes('config.proxy-method.v1')
+    ? 'config.proxy-method.v1' : 'config.proxy-method.v2';
+}
+
+function proxyMethodReadNetwork() {
+  return proxyMethodNetwork(proxyMethodReadCapability());
+}
+
+function proxyMethodNetworkFor(items, truncatedNodeIds, proxyId, capability = 'config.proxy-method.v1') {
   const index = new Map(items.map(node => [node.nodeId, node]));
   const proxy = index.get(proxyId);
-  const proxyReady = Boolean(proxy?.online && proxy.acceptedCapabilities.includes('config.proxy-method.v1'));
+  const proxyReady = Boolean(proxy?.online && proxy.acceptedCapabilities.includes(capability));
   const reported = Array.isArray(proxy?.backends) ? proxy.backends : [];
   const backends = reported.map(backend => index.get(backend.backendId)).filter(Boolean);
   const unavailable = reported.filter(backend => {
     const node = index.get(backend.backendId);
-    return !node || !isBackend(node) || !node.online || !node.acceptedCapabilities.includes('config.proxy-method.v1');
+    return !node || !isBackend(node) || !node.online || !node.acceptedCapabilities.includes(capability);
   });
   return {proxy, proxyReady, reported, backends, unavailable, topologyComplete: !truncatedNodeIds.has(proxyId),
     nodeIds: proxy ? [proxy.nodeId, ...backends.map(node => node.nodeId)] : []};
 }
 
-function proxyMethodNetwork() {
-  return proxyMethodNetworkFor(allNodeItems, backendTopologyTruncatedNodeIds, proxyMethodProxyId);
+function proxyMethodNetwork(capability = 'config.proxy-method.v1') {
+  return proxyMethodNetworkFor(allNodeItems, backendTopologyTruncatedNodeIds, proxyMethodProxyId, capability);
 }
 
 function proxyMethodNetworkSignature(network) {
@@ -2569,7 +2638,7 @@ function renderProxyMethod() {
     return option;
   }));
   proxyMethodProxy.value = proxyMethodProxyId;
-  const network = proxyMethodNetwork();
+  const network = proxyMethodReadNetwork();
   if (proxyMethodCurrentFor !== proxyMethodProxyId
       || proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')) {
     proxyMethodCurrentFor = '';
@@ -2590,8 +2659,11 @@ function renderProxyMethod() {
   proxyMethodCurrent.className = `pill ${proxyMethodCurrentValue ? 'online' : 'neutral'}`;
   proxyMethodButtons.forEach(button => {
     const active = button.dataset.proxyMethod === proxyMethodCurrentValue;
+    const methodNetwork = proxyMethodNetwork(proxyMethodCapabilityFor(button.dataset.proxyMethod));
     button.classList.toggle('active', active);
     button.setAttribute('aria-pressed', String(active));
+    button.disabled = !methodNetwork.proxyReady || !methodNetwork.topologyComplete || methodNetwork.reported.length === 0
+      || methodNetwork.nodeIds.length > MAX_OPERATION_TARGETS || methodNetwork.unavailable.length > 0;
   });
 }
 
@@ -2650,13 +2722,13 @@ function updateExtendedButtons() {
   previewReward.disabled = !quickReady;
   applyReward.disabled = !quickReady || !dedicatedSetupApprovals.get('reward-builder');
   loadAutoSites.disabled = !quickReady;
-  previewAutoSites.disabled = !quickReady;
+  previewAutoSites.disabled = !quickReady || autoSitesState.textContent === 'Not loaded';
   applyAutoSites.disabled = !quickReady || !dedicatedSetupApprovals.get('auto-create-vote-sites');
   selectAllAutoSitesTargets.disabled = !authenticated || allQuickBackends.length === 0
     || configurationOperationsInFlight > 0;
   text(autoSitesTargetCount, `${backendTargets.length} selected ${backendTargets.length === 1 ? 'backend' : 'backends'}`);
   loadVoteLogging.disabled = !quickReady;
-  previewVoteLogging.disabled = !quickReady;
+  previewVoteLogging.disabled = !quickReady || voteLoggingState.textContent === 'Not loaded';
   applyVoteLogging.disabled = !quickReady || !dedicatedSetupApprovals.get('vote-logging');
   runDriftCheck.disabled = !driftReady;
   createSnapshot.disabled = !lastFileReadOperation;
@@ -2730,6 +2802,7 @@ function resetServerConfigurationForms(status, preserveDirtyDrafts = false) {
 }
 
 function resetDedicatedSetupValues() {
+  dedicatedSetupDirty.clear();
   autoSitesEnabled.checked = false;
   voteLoggingEnabled.checked = false;
   voteLoggingDays.value = '30';
@@ -2738,6 +2811,25 @@ function resetDedicatedSetupValues() {
   text(voteLoggingState, 'Not loaded');
   autoSitesState.className = 'pill neutral';
   voteLoggingState.className = 'pill neutral';
+  loadAutoSites.hidden = true;
+  loadVoteLogging.hidden = true;
+}
+
+function invalidateGuidedSetupReads() {
+  loadedQuickSetup = null;
+  if (quickSetupDirty) {
+    readQuickSetup.hidden = false;
+    text(quickOperationStatus, 'Configuration changed elsewhere; your unsaved guided edits were preserved. Load current values to discard them.');
+  }
+  [['auto-create-vote-sites', autoSitesState, autoSitesStatus, loadAutoSites],
+    ['vote-logging', voteLoggingState, voteLoggingStatus, loadVoteLogging]].forEach(([preset, state, status, retry]) => {
+    text(state, 'Not loaded');
+    state.className = 'pill neutral';
+    retry.hidden = !dedicatedSetupDirty.has(preset);
+    if (dedicatedSetupDirty.has(preset)) {
+      text(status, 'Configuration changed elsewhere; your unsaved edits were preserved. Load current values to discard them.');
+    }
+  });
 }
 
 function resetServerContextValues(reason, preserveDirtyDrafts = false) {
@@ -2777,6 +2869,8 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   text(autoSitesStatus, reason);
   text(voteLoggingStatus, reason);
   loadedQuickSetup = null;
+  quickSetupDirty = false;
+  readQuickSetup.hidden = true;
   resetServerConfigurationForms(reason, preserveDirtyDrafts);
   const preset = quickPreset.value;
   quickSetupForm.reset();
@@ -2816,9 +2910,10 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
     fileTargetsForSelection().length > 0 && !busy;
   const fileDraftReady = fileReady && fileDraftMatchesCurrentContext();
   const syncSelected = quickPreset.value === 'sync-vote-sites';
+  const quickCapability = quickSetupCapability();
   const quickReady = authenticated && !busy && (syncSelected
     ? Boolean(voteSitesSourceId && selectedVoteSitesTargets().length > 0)
-    : primaryCapabilities.includes('config.quick-setup.v1') && targets('config.quick-setup.v1').length > 0);
+    : primaryCapabilities.includes(quickCapability) && quickSetupTargets().length > 0);
   readConfiguration.disabled = !routingReadReady;
   previewConfiguration.disabled = !routingDraftReady;
   applyConfiguration.disabled = !routingDraftReady || !approvedPreview;
@@ -2829,10 +2924,12 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   previewQuickSetup.disabled = !quickReady || (quickPresetNeedsRead() && !quickSetupValuesLoaded());
   applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
   runTransportTest.disabled = !authenticated || !transportTestProxyId || !transportTestBackendId || busy;
-  const methodNetwork = proxyMethodNetwork();
-  const methodReady = authenticated && methodNetwork.proxyReady && methodNetwork.topologyComplete && methodNetwork.reported.length > 0 &&
-    methodNetwork.nodeIds.length <= MAX_OPERATION_TARGETS && methodNetwork.unavailable.length === 0 && !busy;
-  proxyMethodButtons.forEach(button => { button.disabled = !methodReady; });
+  const methodNetwork = proxyMethodReadNetwork();
+  proxyMethodButtons.forEach(button => {
+    const network = proxyMethodNetwork(proxyMethodCapabilityFor(button.dataset.proxyMethod));
+    button.disabled = !authenticated || !network.proxyReady || !network.topologyComplete || network.reported.length === 0
+      || network.nodeIds.length > MAX_OPERATION_TARGETS || network.unavailable.length > 0 || busy;
+  });
   readProxyMethod.disabled = !authenticated || !methodNetwork.proxyReady || busy;
 }
 
@@ -2842,6 +2939,52 @@ function targets(capability) {
 
 function backendQuickTargets() {
   return targets('config.quick-setup.v1').filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
+}
+
+function quickSetupCapability() {
+  if (quickPreset.value === 'proxy-backend') {
+    const capability = quickMethod.value === 'HTTP' ? 'config.proxy-method.v2' : 'config.quick-setup.v1';
+    return selectedBackendsSupport(capability) ? capability : null;
+  }
+  return quickPreset.value === 'vote-party' ? votePartyCapability() : 'config.quick-setup.v1';
+}
+
+function selectedBackendsSupport(capability) {
+  const selectedBackends = [...selectedNodes].filter(nodeId => nodeIndex.has(nodeId)
+    && isBackend(nodeIndex.get(nodeId)));
+  return selectedBackends.length > 0
+    && selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes(capability));
+}
+
+function votePartyCapability() {
+  const selectedBackends = [...selectedNodes].filter(nodeId => nodeIndex.has(nodeId)
+    && isBackend(nodeIndex.get(nodeId)));
+  if (selectedBackends.length === 0) return null;
+  if (selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2'))) {
+    return 'config.quick-setup.v2';
+  }
+  if (selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v1'))) {
+    return 'config.quick-setup.v1';
+  }
+  return null;
+}
+
+function handleQuickTargetCapabilityChange(previousCapability) {
+  if (quickPreset.value !== 'vote-party' || previousCapability === quickSetupCapability()) return;
+  loadedQuickSetup = null;
+  approvedQuickPreview = null;
+  if (quickSetupDirty) {
+    readQuickSetup.hidden = false;
+    text(quickOperationStatus,
+      'The selected backends require a different Vote Party capability. Retry loading to discard unsaved edits.');
+  } else if (tabFromHash() === 'quick-setup') {
+    void autoLoadTab('quick-setup');
+  }
+}
+
+function quickSetupTargets() {
+  return targets(quickSetupCapability())
+    .filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
 }
 
 function clearApprovals() {
@@ -2889,7 +3032,7 @@ function updateQuickFields() {
   });
   quickName.closest('.quick-fields').hidden = !['proxy-backend', 'vote-site', 'easy-reward'].includes(quickPreset.value);
   const sync = quickPreset.value === 'sync-vote-sites';
-  readQuickSetup.hidden = !quickPresetReadable();
+  readQuickSetup.hidden = true;
   previewQuickSetup.textContent = sync ? 'Read source and preview sync' : 'Preview changes';
   applyQuickSetup.textContent = sync ? 'Approve and sync' : 'Approve and apply';
   updateConfigurationButtons();
@@ -2909,7 +3052,7 @@ function quickSetupValuesLoaded() {
   return loadedQuickSetup?.nodeId === selectedServerId
     && loadedQuickSetup.sessionId === nodeIndex.get(selectedServerId)?.sessionId
     && loadedQuickSetup.preset === quickPreset.value
-    && loadedQuickSetup.selector === JSON.stringify(quickReadOptions());
+    && loadedQuickSetup.selector === JSON.stringify(quickReadConfigurationOptions());
 }
 
 function updatePluginSuggestions() {
@@ -2969,6 +3112,7 @@ function discardAuthenticationState(reason) {
   approvedFilePreview = null;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   inputGeneration++;
   logout.hidden = true;
   sidebarToggle.hidden = true;
@@ -3111,6 +3255,20 @@ function voteLoggingRestartRequired(nodeId = selectedServerId) {
   return true;
 }
 
+function configurationFailureLabel(code) {
+  const labels = {
+    TRANSPORT_FAILED: 'Transport failure', CAPABILITY_LOST: 'Unsupported capability',
+    UNSUPPORTED_CAPABILITY: 'Unsupported capability', INVALID_CONFIGURATION: 'Invalid configuration',
+    READ_FAILED: 'Configuration read failed', CONFIGURATION_MISSING: 'Configuration missing',
+    CONFIGURATION_UNREADABLE: 'Configuration unreadable', CONFIGURATION_TOO_LARGE: 'Configuration too large',
+    CONFIGURATION_INVALID_ENCODING: 'Invalid configuration encoding', CONFIGURATION_UNSAFE: 'Unsafe configuration path',
+    WRITE_FAILED: 'Configuration write failed',
+    RELOAD_FAILED: 'Configuration reload failed', RESTART_REQUIRED: 'Restart required',
+    DEPENDENCY_FAILED: 'Dependency failure', DEPENDENCY_CHANGED: 'Dependency changed'
+  };
+  return labels[code] || code;
+}
+
 function operationSummary(operation) {
   const lines = [`${operation.type} · ${operation.state} · ${operation.operationId}`];
   const voteLoggingOperation = operation.configuration?.preset === 'vote-logging';
@@ -3134,7 +3292,7 @@ function operationSummary(operation) {
         ? 'configuration saved; proxy restart required'
       : result?.reloaded ? 'saved and reloaded' : 'applied';
     lines.push(`${result?.success ? '✓' : result ? '✗' : '…'} ${node}: ${result
-      ? `${result.success ? successLabel : result.code} — ${result.message}` : state.toLowerCase()}`);
+      ? `${result.success ? successLabel : configurationFailureLabel(result.code)} — ${result.message}` : state.toLowerCase()}`);
     if (result?.changes?.length) result.changes.forEach(change => lines.push(`  ${change}`));
     if (result?.rolledBack) lines.push('  NOT SAVED — the previous file was restored because reload failed');
   });
@@ -3176,6 +3334,7 @@ function invalidateConfigurationReads() {
     configurationContent.value = '';
     configurationContentPresent = false;
     text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');
+    if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);
   }
   lastOverview = null;
   lastDiagnostics = null;
@@ -3202,6 +3361,8 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
     && Object.values(operation.results || {}).some(result => result?.success);
   if (applied) {
     invalidateConfigurationReads();
+    invalidateGuidedSetupReads();
+    if (tabFromHash() === 'quick-setup') window.setTimeout(() => void autoLoadTab('quick-setup'), 0);
     if (tabFromHash() === 'overview') {
       text(dataOverview, 'Configuration changed; refreshing server overview…');
       window.setTimeout(() => void autoLoadTab('overview'), 0);
@@ -3231,6 +3392,11 @@ async function startConfigurationOperation(path, body, statusElement = operation
     configurationOperationsInFlight--;
     updateConfigurationButtons();
     updateExtendedButtons();
+    if (configurationOperationsInFlight === 0 && autoLoadPending.has('quick-setup')
+        && !autoLoadInFlight.has('quick-setup')) {
+      autoLoadPending.delete('quick-setup');
+      void autoLoadTab('quick-setup');
+    }
   }
 }
 
@@ -3355,6 +3521,7 @@ async function loadNodesOnce() {
   try {
     const registry = await loadAllNodes();
     const previousNodeIndex = nodeIndex;
+    const previousQuickCapability = quickSetupCapability();
     allNodeItems = registry.items;
     nodePageMetadata = registry.pageMetadata;
     selectNodePage(pageOffset);
@@ -3373,12 +3540,25 @@ async function loadNodesOnce() {
     nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
     nodePlugins = new Map(registry.items.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
       ? node.detectedPlugins : []]));
+    const proxyMethodCapabilityNodes = new Set([...selectedNodes, proxyMethodProxyId].filter(Boolean));
+    const proxyMethodCapabilitiesChanged = [...proxyMethodCapabilityNodes].some(node =>
+      ['config.proxy-method.v1', 'config.proxy-method.v2'].some(capability =>
+        Boolean(previousCapabilities.get(node)?.includes(capability)) !==
+          Boolean(nodeCapabilities.get(node)?.includes(capability))));
     const selectedCapabilitiesChanged = [...selectedNodes].some(node =>
       ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1', 'config.quick-setup.v1',
+        'config.quick-setup.v2', 'config.proxy-method.v1', 'config.proxy-method.v2',
         'data.inspect.v1'].some(capability =>
         Boolean(previousCapabilities.get(node)?.includes(capability)) !==
           Boolean(nodeCapabilities.get(node)?.includes(capability))));
-    if (selectedCapabilitiesChanged) {
+    if (selectedCapabilitiesChanged || proxyMethodCapabilitiesChanged) {
+      invalidateGuidedSetupReads();
+      if (proxyMethodCapabilitiesChanged) {
+        proxyMethodReadGeneration++;
+        proxyMethodCurrentFor = '';
+        proxyMethodCurrentSessionId = '';
+        proxyMethodCurrentValue = '';
+      }
       approvedPreview = null;
       approvedFilePreview = null;
       approvedQuickPreview = null;
@@ -3400,7 +3580,7 @@ async function loadNodesOnce() {
       nodeCapabilities.get(node)?.includes(selectedFileCapability()));
     const invalidQuickApproval = approvedQuickPreview && approvedQuickPreview.workflow !== 'sync-vote-sites' &&
       !approvedQuickPreview.nodeIds.every(node =>
-      nodeCapabilities.get(node)?.includes('config.quick-setup.v1'));
+      nodeCapabilities.get(node)?.includes(quickSetupCapability()));
     const invalidVoteSitesApproval = approvedQuickPreview?.workflow === 'sync-vote-sites' &&
       (!approvedQuickPreview.nodeIds.every(node =>
         nodeCapabilities.get(node)?.includes('config.vote-sites-sync.v1')) ||
@@ -3436,6 +3616,7 @@ async function loadNodesOnce() {
       text(operationStatus, routingDraftStatus('The selected nodes changed during refresh. Preview again before apply.'));
     }
     selectedNodes = filteredSelection;
+    handleQuickTargetCapabilityChange(previousQuickCapability);
     renderNodeViews();
     updatePluginSuggestions();
     updateConfigurationButtons();
@@ -3672,6 +3853,7 @@ applyConfiguration.addEventListener('click', async () => {
     if (operation.state === 'SUCCEEDED' && submittedProposal === currentProposal) {
       routingDirty = false;
       routingDraftNodeId = '';
+      await loadProxyRouting(true);
     }
   } catch (error) { text(operationStatus, error.message); }
 });
@@ -3695,7 +3877,7 @@ async function loadFileConfiguration(automatic = false) {
   const selectedReadNodeId = selectedNode?.online && selectedNode.acceptedCapabilities.includes(selectedFileCapability(selectedFile))
     && (selectedFile === 'bungeeconfig.yml' ? isProxy(selectedNode) : isBackend(selectedNode)) ? selectedServerId : '';
   if (!selectedReadNodeId) {
-    if (!automatic) text(fileOperationStatus, 'Choose a connected node that supports this configuration file.');
+    text(fileOperationStatus, 'Choose a connected node that supports this configuration file.');
     return;
   }
   const cacheKey = `${selectedServerId}|${selectedNode?.sessionId || ''}|${selectedFile}`;
@@ -3713,8 +3895,15 @@ async function loadFileConfiguration(automatic = false) {
     inputGeneration++;
     updateConfigurationButtons();
     updateExtendedButtons();
+    readFileConfiguration.hidden = true;
     return;
   }
+  configurationContent.value = '';
+  configurationContentPresent = false;
+  configurationContent.disabled = true;
+  configurationContent.setAttribute('aria-busy', 'true');
+  readFileConfiguration.hidden = true;
+  text(fileOperationStatus, `Loading ${selectedFile} from ${selectedReadNodeId}…`);
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: [selectedReadNodeId],
@@ -3738,9 +3927,29 @@ async function loadFileConfiguration(automatic = false) {
       inputGeneration++;
       updateConfigurationButtons();
       updateExtendedButtons();
+      readFileConfiguration.hidden = true;
+    } else if (readAuthenticationGeneration === authenticationGeneration && readInputGeneration === inputGeneration
+        && selectedFile === configurationFile.value && selectedReadNodeId === selectedServerId) {
+      throw new Error(contentResult?.message || `The ${selectedFile} read did not return editable content.`);
     }
   } catch (error) {
-    if (!automatic) text(fileOperationStatus, error.message);
+    if (authenticated && readAuthenticationGeneration === authenticationGeneration
+        && readInputGeneration === inputGeneration && selectedFile === configurationFile.value
+        && selectedReadNodeId === selectedServerId
+        && selectedNode.sessionId === nodeIndex.get(selectedReadNodeId)?.sessionId) {
+      configurationContent.value = '';
+      configurationContentPresent = false;
+      text(fileOperationStatus, `Could not load ${selectedFile}: ${error.message}`);
+      readFileConfiguration.hidden = false;
+    }
+  } finally {
+    if (authenticated && readAuthenticationGeneration === authenticationGeneration
+        && selectedFile === configurationFile.value && selectedReadNodeId === selectedServerId
+        && selectedNode.sessionId === nodeIndex.get(selectedReadNodeId)?.sessionId) {
+      configurationContent.disabled = false;
+      configurationContent.removeAttribute('aria-busy');
+      updateConfigurationButtons();
+    }
   }
 }
 
@@ -3787,24 +3996,29 @@ applyFileConfiguration.addEventListener('click', async () => {
       || !window.confirm(`Apply this exact ${configurationFile.value} preview to ${fileTargetDescription()}?`)) return;
   const approval = approvedFilePreview;
   approvedFilePreview = null;
-  const submittedFile = JSON.stringify({content: configurationContent.value, fileName: approval.fileName,
-    nodeIds: approval.nodeIds, sessions: approval.nodeIds.map(nodeId => approval.sessions.get(nodeId))});
+  const submittedContent = configurationContent.value;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, fileOperationStatus);
     const currentFileTargets = fileTargetsForSelection(configurationFile.value);
-    const currentFile = JSON.stringify({content: configurationContent.value, fileName: configurationFile.value,
-      nodeIds: currentFileTargets, sessions: currentFileTargets.map(nodeId => nodeIndex.get(nodeId)?.sessionId)});
-    if (operation.state === 'SUCCEEDED' && submittedFile === currentFile) {
-      text(fileOperationStatus, operationSummary(operation));
+    const submittedContextStillCurrent = approval.fileName === configurationFile.value
+      && configurationContent.value === submittedContent
+      && fileDraftMatchesCurrentContext()
+      && currentFileTargets.length === approval.nodeIds.length
+      && approval.nodeIds.every(nodeId => currentFileTargets.includes(nodeId)
+        && approval.sessions.get(nodeId) === nodeIndex.get(nodeId)?.sessionId);
+    if (operation.state === 'SUCCEEDED' && submittedContextStillCurrent) {
       fileReadCache.clear();
       lastFileReadOperation = null;
       configurationDirty = false;
       configurationDraftNodeId = '';
       configurationDraftSessionId = '';
       configurationDraftFileName = '';
+      configurationContent.value = '';
+      configurationContentPresent = false;
       updateExtendedButtons();
+      await loadFileConfiguration(true);
     } else if (operation.state === 'SUCCEEDED') {
       text(fileOperationStatus, `${operationSummary(operation)}\nThe apply completed, but newer unsaved file edits remain. Preview again before applying them.`);
     } else {
@@ -3833,13 +4047,24 @@ function quickOptions() {
     disableNoServiceSiteMessage: String(quickHideSiteWarning.checked),
     disableUpdateChecking: String(quickDisableUpdates.checked)
   };
-  return {votesRequired: quickPartyVotes.value, command: quickPartyCommand.value.trim(),
+  const voteParty = {votesRequired: quickPartyVotes.value,
+    command: quickPartyCommand.value.trim(),
     broadcast: quickPartyBroadcast.value.trim(), giveAllPlayers: String(quickPartyAll.checked),
     onlineOnly: String(quickPartyOnline.checked)};
+  if (quickSetupCapability() === 'config.quick-setup.v2') voteParty.enabled = String(quickPartyEnabled.checked);
+  return voteParty;
 }
 
 function quickReadOptions() {
   return quickPreset.value === 'vote-site' ? {name: quickName.value.trim()} : {};
+}
+
+function quickReadConfigurationOptions() {
+  if (quickPreset.value === 'proxy-backend') return {method: quickMethod.value};
+  if (quickPreset.value === 'vote-party' && quickSetupCapability() === 'config.quick-setup.v2') {
+    return {enabled: 'true'};
+  }
+  return quickReadOptions();
 }
 
 function populateQuickState(options) {
@@ -3869,6 +4094,10 @@ function populateQuickState(options) {
     quickVoteLoggingDays.value = options.purgeDays || '30';
     quickVoteLoggingMainMysql.checked = options.useMainMySQL !== 'false';
   } else if (quickPreset.value === 'vote-party') {
+    const enabledAvailable = Object.hasOwn(options, 'enabled');
+    quickPartyEnabled.checked = enabledAvailable && options.enabled === 'true';
+    quickPartyEnabled.indeterminate = !enabledAvailable;
+    quickPartyEnabled.disabled = !enabledAvailable;
     quickPartyVotes.value = options.votesRequired || '20';
     quickPartyBroadcast.value = options.broadcast || '';
     quickPartyAll.checked = options.giveAllPlayers === 'true';
@@ -3877,38 +4106,50 @@ function populateQuickState(options) {
   }
 }
 
-async function loadQuickSetupValues(automatic = false) {
-  if (!quickPresetReadable()) return;
+async function loadQuickSetupValues(automatic = false, preserveDirty = false) {
+  if (!quickPresetReadable()) return false;
   approvedQuickPreview = null;
   loadedQuickSetup = null;
   const preset = quickPreset.value;
   const nodeId = selectedServerId;
   const sessionId = nodeIndex.get(nodeId)?.sessionId;
-  const selector = JSON.stringify(quickReadOptions());
+  const selector = JSON.stringify(quickReadConfigurationOptions());
   const generation = inputGeneration;
+  readQuickSetup.hidden = true;
+  text(quickOperationStatus, `Loading current ${preset} settings from ${nodeId}…`);
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: [selectedServerId],
-      configuration: {domain: 'quick-setup', preset, options: quickReadOptions()}
+      configuration: {domain: 'quick-setup', preset, options: quickReadConfigurationOptions()}
     }, quickOperationStatus);
     const result = Object.values(operation.results).find(item =>
       item.success && item.configuration?.preset === preset && item.configuration?.options);
     if (!result) throw new Error('The selected backend did not return guided settings. Update VotingPlugin on that node.');
     if (generation !== inputGeneration || preset !== quickPreset.value || nodeId !== selectedServerId
         || sessionId !== nodeIndex.get(nodeId)?.sessionId
-        || selector !== JSON.stringify(quickReadOptions())) {
-      text(quickOperationStatus, 'The server or setup changed while reading. Load the current values again.');
-      return;
+        || selector !== JSON.stringify(quickReadConfigurationOptions())) {
+      if (!quickSetupValuesLoaded()) {
+        text(quickOperationStatus, 'The server or setup changed while reading. Load the current values again.');
+        readQuickSetup.hidden = false;
+        updateConfigurationButtons();
+      }
+      return false;
     }
     const detected = preset === 'vote-site' && pendingDetectedVoteSite?.nodeId === nodeId
       && pendingDetectedVoteSite.key === quickName.value.trim() ? pendingDetectedVoteSite : null;
+    const selectedProxyMethod = preserveDirty && preset === 'proxy-backend' ? quickMethod.value : null;
+    const editedProxyServer = preserveDirty && preset === 'proxy-backend' ? quickName.value : null;
     populateQuickState(result.configuration.options);
+    if (selectedProxyMethod != null) quickMethod.value = selectedProxyMethod;
+    if (editedProxyServer != null) quickName.value = editedProxyServer;
+    quickSetupDirty = preserveDirty;
     if (detected && result.configuration.options.exists === 'false') {
       quickSiteDisplayName.value = detected.service;
       quickService.value = detected.service;
     }
     if (detected) pendingDetectedVoteSite = null;
-    loadedQuickSetup = {nodeId, sessionId, preset, selector};
+    loadedQuickSetup = {nodeId, sessionId, preset,
+      selector: JSON.stringify(quickReadConfigurationOptions())};
     inputGeneration++;
     const suffix = preset === 'vote-site' && result.configuration.options.exists === 'false'
       ? ` This site key does not exist yet; the form is ready to create it.${detected ? ' The detected service was retained.' : ''}`
@@ -3917,9 +4158,19 @@ async function loadQuickSetupValues(automatic = false) {
       : preset === 'vote-party' && Number(result.configuration.options.rewardCommandCount || 0) > 0
       ? ` ${result.configuration.options.rewardCommandCount} existing reward command(s) will be preserved.` : '';
     text(quickOperationStatus, `Current values loaded from ${Object.keys(operation.results).find(id => operation.results[id] === result)}.${suffix}`);
+    readQuickSetup.hidden = true;
     updateConfigurationButtons();
+    return true;
   } catch (error) {
-    if (!automatic) text(quickOperationStatus, error.message);
+    if (authenticated && generation === inputGeneration && preset === quickPreset.value
+        && nodeId === selectedServerId && sessionId === nodeIndex.get(nodeId)?.sessionId
+        && selector === JSON.stringify(quickReadConfigurationOptions())) {
+      loadedQuickSetup = null;
+      text(quickOperationStatus, `Could not load current ${preset} settings: ${error.message}`);
+      readQuickSetup.hidden = false;
+      updateConfigurationButtons();
+    }
+    return false;
   }
 }
 
@@ -3954,14 +4205,15 @@ previewQuickSetup.addEventListener('click', async () => {
       }
       return;
     }
+    const nodeIds = quickSetupTargets();
     const operation = await startConfigurationOperation('/api/v1/configuration/preview', {
-      nodeIds: targets('config.quick-setup.v1'),
+      nodeIds,
       configuration: {domain: 'quick-setup', preset: quickPreset.value, options: quickOptions()}
     }, quickOperationStatus);
     text(quickOperationStatus, operationSummary(operation));
     if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration) {
       approvedQuickPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken,
-        nodeIds: targets('config.quick-setup.v1')};
+        nodeIds};
       updateConfigurationButtons();
     } else if (previewGeneration !== inputGeneration) {
       text(quickOperationStatus, 'The targets or setup changed while previewing. Preview again before apply.');
@@ -3985,12 +4237,16 @@ applyQuickSetup.addEventListener('click', async () => {
     const operation = await startConfigurationOperation('/api/v1/configuration/apply', {
       previewOperationId: approval.operationId, approvalToken: approval.approvalToken
     }, quickOperationStatus);
-    const currentNodeIds = sync ? selectedVoteSitesTargets() : targets('config.quick-setup.v1');
+    const currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets();
     const currentQuickSetup = JSON.stringify({preset: quickPreset.value, options: quickOptions(),
       nodeIds: currentNodeIds, sourceId: sync ? voteSitesSourceId : ''});
     text(quickOperationStatus, operation.state === 'SUCCEEDED' && submittedQuickSetup !== currentQuickSetup
       ? `${operationSummary(operation)}\nThe apply completed, but newer guided setup edits remain. Preview again before applying them.`
       : operationSummary(operation));
+    if (operation.state === 'SUCCEEDED' && submittedQuickSetup === currentQuickSetup && !sync) {
+      loadedQuickSetup = null;
+      await loadQuickSetupValues(true);
+    }
   } catch (error) { text(quickOperationStatus, error.message); }
 });
 
@@ -4043,19 +4299,23 @@ runTransportTest.addEventListener('click', async () => {
 
 async function loadProxyMethod(automatic = false) {
   const proxyId = proxyMethodProxyId;
-  const sessionId = proxyMethodNetwork().proxy?.sessionId;
+  const readCapability = proxyMethodReadCapability();
+  const readGeneration = proxyMethodReadGeneration;
+  const sessionId = proxyMethodNetwork(readCapability).proxy?.sessionId;
   const requestAuthenticationGeneration = authenticationGeneration;
   if (!proxyId) return;
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: [proxyId],
-      configuration: {domain: 'quick-setup', preset: 'proxy-method', options: {method: 'PLUGINMESSAGING'}}
+      configuration: {domain: 'quick-setup', preset: 'proxy-method',
+        options: {method: readCapability === 'config.proxy-method.v2' ? 'HTTP' : 'PLUGINMESSAGING'}}
     }, proxyMethodStatus);
     const result = operation.results[proxyId];
     const method = result?.success ? result.configuration?.options?.method : '';
     if (!method) throw new Error('The proxy did not return its active communication method.');
     if (requestAuthenticationGeneration !== authenticationGeneration || proxyId !== proxyMethodProxyId
-        || sessionId !== proxyMethodNetwork().proxy?.sessionId || result?.sessionId !== sessionId) return;
+        || readGeneration !== proxyMethodReadGeneration || readCapability !== proxyMethodReadCapability()
+        || sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId || result?.sessionId !== sessionId) return;
     proxyMethodCurrentFor = proxyId;
     proxyMethodCurrentSessionId = sessionId;
     proxyMethodCurrentValue = method;
@@ -4074,7 +4334,7 @@ proxyMethodProxy.addEventListener('change', () => {
   proxyMethodCurrentSessionId = '';
   proxyMethodCurrentValue = '';
   renderProxyMethod();
-  const network = proxyMethodNetwork();
+  const network = proxyMethodReadNetwork();
   text(proxyMethodStatus, network.unavailable.length > 0
     ? `Cannot switch yet. Enroll, update, and connect: ${network.unavailable.map(backend => backend.displayName).join(', ')}.`
     : 'Choose a method to preflight every node before applying.');
@@ -4083,7 +4343,7 @@ proxyMethodProxy.addEventListener('change', () => {
 
 proxyMethodButtons.forEach(button => button.addEventListener('click', async () => {
   const method = button.dataset.proxyMethod;
-  const network = proxyMethodNetwork();
+  const network = proxyMethodNetwork(proxyMethodCapabilityFor(method));
   if (!network.proxyReady || !network.topologyComplete || network.reported.length === 0 ||
       network.nodeIds.length > MAX_OPERATION_TARGETS || network.unavailable.length > 0 || proxyMethodWorkflowInFlight) return;
   proxyMethodWorkflowInFlight = true;
@@ -4098,7 +4358,7 @@ proxyMethodButtons.forEach(button => button.addEventListener('click', async () =
         'Backends reload their communication handler; the proxy replaces its runtime after Control records the result.')) return;
     const refreshedRegistry = await loadAllNodes();
     const refreshedNetwork = proxyMethodNetworkFor(refreshedRegistry.items, refreshedRegistry.truncatedNodeIds,
-      proxyMethodProxyId);
+      proxyMethodProxyId, proxyMethodCapabilityFor(method));
     if (proxyMethodProxyId !== network.proxy.nodeId ||
         refreshedNetwork.proxy?.sessionId !== network.proxy.sessionId ||
         proxyMethodNetworkSignature(refreshedNetwork) !== proxyMethodNetworkSignature(network) ||
@@ -4143,16 +4403,18 @@ function validatedPurgeDays(field) {
 
 function dedicatedSetupElements(preset) {
   return preset === 'auto-create-vote-sites'
-    ? {status: autoSitesStatus, state: autoSitesState}
-    : {status: voteLoggingStatus, state: voteLoggingState};
+    ? {status: autoSitesStatus, state: autoSitesState, retry: loadAutoSites}
+    : {status: voteLoggingStatus, state: voteLoggingState, retry: loadVoteLogging};
 }
 
-async function loadDedicatedSetup(preset) {
+async function loadDedicatedSetup(preset, automatic = false) {
   dedicatedSetupApprovals.delete(preset);
   const elements = dedicatedSetupElements(preset);
   const requestNodeId = selectedServerId;
   const requestSessionId = nodeIndex.get(requestNodeId)?.sessionId;
   const requestGeneration = inputGeneration;
+  elements.retry.hidden = true;
+  text(elements.status, `Loading current ${preset} settings from ${requestNodeId}…`);
   try {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds: [selectedServerId], configuration: {domain: 'quick-setup', preset, options: {}}
@@ -4172,8 +4434,17 @@ async function loadDedicatedSetup(preset) {
       voteLoggingMainMysql.checked = options.useMainMySQL !== 'false';
       text(voteLoggingState, voteLoggingEnabled.checked ? 'Enabled on primary' : 'Disabled on primary');
     }
+    dedicatedSetupDirty.delete(preset);
     elements.state.className = `pill ${options.enabled === 'true' ? 'online' : 'neutral'}`;
-  } catch (error) { text(elements.status, error.message); }
+    text(elements.status, operationSummary(operation));
+  } catch (error) {
+    if (authenticated && requestNodeId === selectedServerId
+        && requestSessionId === nodeIndex.get(requestNodeId)?.sessionId) {
+      text(elements.status, `Could not load current ${preset} settings: ${error.message}`);
+      elements.retry.hidden = false;
+      if (automatic && requestGeneration !== inputGeneration) void autoLoadTab('quick-setup');
+    }
+  }
   updateExtendedButtons();
 }
 
@@ -4224,6 +4495,7 @@ async function applyDedicatedSetup(preset) {
         text(elements.state, 'Saved; restart required');
         elements.state.className = 'pill neutral';
       }
+      await loadDedicatedSetup(preset, true);
       lastOverview = null;
     } else if (operation.state === 'SUCCEEDED') {
       text(elements.status, `${operationSummary(operation)}\nThe apply completed, but newer setup edits remain. Preview again before applying them.`);
@@ -4236,6 +4508,7 @@ loadAutoSites.addEventListener('click', () => loadDedicatedSetup('auto-create-vo
 previewAutoSites.addEventListener('click', () => previewDedicatedSetup('auto-create-vote-sites'));
 applyAutoSites.addEventListener('click', () => applyDedicatedSetup('auto-create-vote-sites'));
 selectAllAutoSitesTargets.addEventListener('click', () => {
+	const previousQuickCapability = quickSetupCapability();
   const available = allNodeItems.filter(node => isBackend(node) && node.online
     && node.acceptedCapabilities.includes('config.quick-setup.v1'));
   const candidates = available
@@ -4247,6 +4520,7 @@ selectAllAutoSitesTargets.addEventListener('click', () => {
   approvedFilePreview = null;
   approvedQuickPreview = null;
   inputGeneration++;
+	handleQuickTargetCapabilityChange(previousQuickCapability);
   renderNodeViews();
   updatePluginSuggestions();
   updateConfigurationButtons();
@@ -4258,7 +4532,9 @@ previewVoteLogging.addEventListener('click', () => previewDedicatedSetup('vote-l
 applyVoteLogging.addEventListener('click', () => applyDedicatedSetup('vote-logging'));
 [autoSitesEnabled, voteLoggingEnabled, voteLoggingDays, voteLoggingMainMysql].forEach(field => {
   field.addEventListener('input', () => {
-    dedicatedSetupApprovals.delete(field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging');
+    const preset = field === autoSitesEnabled ? 'auto-create-vote-sites' : 'vote-logging';
+    dedicatedSetupApprovals.delete(preset);
+    dedicatedSetupDirty.add(preset);
     inputGeneration++;
     updateExtendedButtons();
   });
@@ -4790,10 +5066,8 @@ profilePicker.addEventListener('change', () => {
   loadProfile.disabled = !profilePicker.value;
   deleteProfile.disabled = !profilePicker.value;
 });
-loadProfile.addEventListener('click', () => {
-  const profile = readProfiles()[profilePicker.value];
-  if (!profile || profile.version !== 1) { text(profileStatus, 'That profile is unavailable or unsupported.'); return; }
-  pendingDetectedVoteSite = null;
+
+function applyProfileValues(profile) {
   const assign = (field, value, max = 500) => { field.value = String(value ?? '').slice(0, max); };
   if ([...quickPreset.options].some(option => option.value === profile.preset)) quickPreset.value = profile.preset;
   assign(quickName, profile.name, 64); assign(quickMethod, profile.method, 32);
@@ -4805,7 +5079,9 @@ loadProfile.addEventListener('click', () => {
   assign(quickMessage, profile.playerMessage, 500); quickProcessRewards.checked = Boolean(profile.processRewards);
   quickAutoSites.checked = Boolean(profile.autoSites); quickExtraCheck.checked = Boolean(profile.extraCheck);
   quickCountFake.checked = Boolean(profile.countFake); quickHideSiteWarning.checked = Boolean(profile.hideWarning);
-  quickDisableUpdates.checked = Boolean(profile.disableUpdates); assign(quickPartyVotes, profile.partyVotes, 6);
+  quickDisableUpdates.checked = Boolean(profile.disableUpdates);
+  if (Object.hasOwn(profile, 'partyEnabled')) quickPartyEnabled.checked = Boolean(profile.partyEnabled);
+  assign(quickPartyVotes, profile.partyVotes, 6);
   assign(quickPartyCommand, profile.partyCommand, 500); assign(quickPartyBroadcast, profile.partyBroadcast, 500);
   quickPartyAll.checked = Boolean(profile.partyAll); quickPartyOnline.checked = Boolean(profile.partyOnline);
   quickAutoSitesOnly.checked = Boolean(profile.autoSitesOnly); quickVoteLoggingEnabled.checked = Boolean(profile.voteLogging);
@@ -4819,10 +5095,36 @@ loadProfile.addEventListener('click', () => {
     rewardSiteLabel.hidden = rewardScope.value !== 'site';
     copyRewardToSetup.disabled = boundedLines(rewardCommands.value).length === 0;
   }
+}
+
+loadProfile.addEventListener('click', async () => {
+  const profileName = profilePicker.value;
+  const profile = readProfiles()[profileName];
+  if (!profile || profile.version !== 1) { text(profileStatus, 'That profile is unavailable or unsupported.'); return; }
+  const profileSignature = JSON.stringify(profile);
+  pendingDetectedVoteSite = null;
+  if ([...quickPreset.options].some(option => option.value === profile.preset)) quickPreset.value = profile.preset;
+  quickName.value = String(profile.name ?? '').slice(0, 64);
+  quickMethod.value = String(profile.method ?? '').slice(0, 32);
   loadedQuickSetup = null;
   updateQuickFields();
   clearApprovals();
-  text(profileStatus, `Loaded “${profilePicker.value}”. Load live values first if this preset edits existing configuration.`);
+  text(profileStatus, `Loading live values before applying “${profileName}”…`);
+  if (quickPresetReadable() && !await loadQuickSetupValues(true, true)) {
+    text(profileStatus, `Could not load live values for “${profileName}”. Retry before using this profile.`);
+    return;
+  }
+  const currentProfile = readProfiles()[profileName];
+  if (profilePicker.value !== profileName || !currentProfile || JSON.stringify(currentProfile) !== profileSignature) {
+    text(profileStatus, 'The selected profile changed while loading live values. Select it again before applying it.');
+    return;
+  }
+  applyProfileValues(profile);
+  quickSetupDirty = true;
+  inputGeneration++;
+  updateQuickFields();
+  clearApprovals();
+  text(profileStatus, `Loaded “${profileName}” over the confirmed live values. Preview before applying.`);
 });
 deleteProfile.addEventListener('click', () => {
   const name = profilePicker.value;
@@ -4838,16 +5140,46 @@ deleteProfile.addEventListener('click', () => {
 
 clearOperationHistory.addEventListener('click', loadOperationHistory);
 
-[quickName, quickMethod, quickSiteDisplayName, quickService, quickUrl, quickDelay,
+[quickSiteDisplayName, quickService, quickUrl, quickDelay,
   quickSitePriority, quickSiteMaterial, quickSiteEnabled, quickSiteHidden, quickRewardScope,
   quickCommand, quickMessage, quickProcessRewards, quickAutoSites, quickExtraCheck, quickCountFake,
-  quickHideSiteWarning, quickDisableUpdates, quickPartyVotes, quickPartyCommand, quickPartyBroadcast,
+  quickHideSiteWarning, quickDisableUpdates, quickPartyEnabled, quickPartyVotes, quickPartyCommand, quickPartyBroadcast,
   quickPartyAll, quickPartyOnline, quickAutoSitesOnly, quickVoteLoggingEnabled, quickVoteLoggingDays,
-  quickVoteLoggingMainMysql].forEach(field => field.addEventListener('input', clearApprovals));
+  quickVoteLoggingMainMysql].forEach(field => field.addEventListener('input', () => {
+  quickSetupDirty = true;
+  exposeDirtyVoteSiteReload();
+  clearApprovals();
+}));
+quickMethod.addEventListener('input', clearApprovals);
+quickName.addEventListener('input', () => {
+  if (quickPreset.value !== 'vote-site') quickSetupDirty = true;
+  clearApprovals();
+});
+quickMethod.addEventListener('input', () => {
+  if (quickPreset.value === 'proxy-backend' && quickPresetReadable()) {
+    quickSetupDirty = true;
+    if (quickSetupDirty) quickSetupPreserveReadGeneration = inputGeneration;
+    void autoLoadTab('quick-setup');
+  }
+});
 quickName.addEventListener('input', () => {
   if (pendingDetectedVoteSite && pendingDetectedVoteSite.key !== quickName.value.trim()) pendingDetectedVoteSite = null;
   updateQuickFields();
+  exposeDirtyVoteSiteReload();
+  if (voteSiteReadTimer != null) window.clearTimeout(voteSiteReadTimer);
+  if (quickPreset.value === 'vote-site' && quickPresetReadable()) {
+    voteSiteReadTimer = window.setTimeout(() => {
+      voteSiteReadTimer = null;
+      void autoLoadTab('quick-setup');
+    }, 300);
+  }
 });
+
+function exposeDirtyVoteSiteReload() {
+  if (quickPreset.value !== 'vote-site' || !quickSetupDirty || quickSetupValuesLoaded()) return;
+  readQuickSetup.hidden = false;
+  text(quickOperationStatus, 'The vote-site key changed; load its current values to discard your unsaved edits.');
+}
 configurationContent.addEventListener('input', () => {
   if (!configurationDirty) {
     configurationDraftNodeId = selectedServerId;
@@ -4877,6 +5209,7 @@ configurationFile.addEventListener('input', () => {
 });
 quickPreset.addEventListener('input', () => {
   loadedQuickSetup = null;
+  quickSetupDirty = false;
   if (quickPreset.value !== 'vote-site') pendingDetectedVoteSite = null;
   updateQuickFields();
   clearApprovals();
@@ -4885,6 +5218,7 @@ quickPreset.addEventListener('input', () => {
       ? 'Enter the vote-site key, then load its current values before previewing.'
       : 'Load the current values from the primary server before previewing changes.');
   }
+  void autoLoadTab('quick-setup');
 });
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
 tabButtons.forEach(button => button.addEventListener('click', () => {
