@@ -302,7 +302,7 @@ public final class ArtifactStore {
                 return false;
             }
             finishPublishedArtifact(artifact);
-            move(pending, committed, false);
+            moveAtomically(pending, committed);
             DurableFiles.forceDirectory(directory);
         } catch (IOException | RuntimeException failure) {
             IOException rollbackFailure = rollbackPublication(artifact, quarantined, pending, committed, moved);
@@ -359,7 +359,7 @@ public final class ArtifactStore {
         IOException failure = null;
         if (Files.exists(committed, LinkOption.NOFOLLOW_LINKS)) {
             try {
-                move(committed, pending, false);
+                moveAtomically(committed, pending);
                 DurableFiles.forceDirectory(directory);
             } catch (IOException problem) {
                 return problem;
@@ -572,6 +572,15 @@ public final class ArtifactStore {
         } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
             if (replace) Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
             else Files.move(source, target);
+        }
+    }
+
+    /** Transaction state changes must never silently degrade to a non-atomic move. */
+    private static void moveAtomically(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+            throw new IOException("Artifact transaction marker transition is not atomic", unsupported);
         }
     }
 
