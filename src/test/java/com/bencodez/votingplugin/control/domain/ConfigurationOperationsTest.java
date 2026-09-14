@@ -116,7 +116,7 @@ class ConfigurationOperationsTest {
         assertEquals("false", read.results().get("lobby").configuration().options().get("processRewards"));
     }
 
-    @Test void quickSetupReadRejectsAResultFromANewerCapability() throws Exception {
+    @Test void quickSetupReadAcceptsInstalledStateFromANewerCapability() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
         UUID session = UUID.randomUUID();
@@ -130,8 +130,29 @@ class ConfigurationOperationsTest {
         ConfigurationTask task = operations.claim("lobby", session);
         ManagedConfiguration v2 = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
                 null, null, "vote-party", Map.of("enabled", "true"));
-        assertThrows(ValidationException.class, () -> operations.complete(read.operationId(), "lobby",
+        read = operations.complete(read.operationId(), "lobby",
                 new ConfigurationTaskResult(session, true, "OK", "installed", "a".repeat(64), v2,
+                        List.of(), false, false, task.attemptId()));
+        assertEquals("SUCCEEDED", read.state());
+        assertEquals("true", read.results().get("lobby").configuration().options().get("enabled"));
+    }
+
+    @Test void quickSetupPreviewRejectsAResultFromANewerCapability() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("lobby", session, "Lobby", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration v1 = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-party", Map.of("votesRequired", "100"));
+        ConfigurationOperations.OperationView preview = operations.createPreview(List.of("lobby"), v1);
+        ConfigurationTask task = operations.claim("lobby", session);
+        ManagedConfiguration v2 = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-party", Map.of("enabled", "true", "votesRequired", "100"));
+        assertThrows(ValidationException.class, () -> operations.complete(preview.operationId(), "lobby",
+                new ConfigurationTaskResult(session, true, "OK", "previewed", "a".repeat(64), v2,
                         List.of(), false, false, task.attemptId())));
     }
 

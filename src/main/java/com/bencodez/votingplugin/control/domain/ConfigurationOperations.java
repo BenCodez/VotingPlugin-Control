@@ -717,10 +717,10 @@ public final class ConfigurationOperations implements AutoCloseable {
         boolean mismatch = expected == null || !expected.domain().equals(actual.domain())
                 || (ManagedConfiguration.FILE.equals(expected.domain()) && !expected.fileName().equals(actual.fileName()))
                 || (ManagedConfiguration.QUICK_SETUP.equals(expected.domain()) && !expected.preset().equals(actual.preset()))
-                // A legacy selector may omit fields which are only available in a newer
-                // capability.  Never accept those fields as a v1 result: the stored
-                // operation capability is part of the selector contract.
-                || !expected.capability().equals(actual.capability());
+                // READ reports installed state, whose active method can imply a newer
+                // capability than the deliberately minimal selector sent to the node.
+                // PREVIEW/APPLY still require exact capability agreement.
+                || (!"READ".equals(operation.type) && !expected.capability().equals(actual.capability()));
         if (mismatch) throw invalid("result configuration does not match the operation selector");
     }
 
