@@ -133,8 +133,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("if (Object.hasOwn(profile, 'partyEnabled')) quickPartyEnabled.checked = Boolean(profile.partyEnabled);"),
                 "Legacy v1 profiles must preserve the live Vote Party enabled state when they omit that field.");
         assertTrue(script.body().contains("config.proxy-method.v2"));
-		assertTrue(script.body().contains("quickPreset.value === 'vote-party'\n"
-						+ "    ? votePartyCapability()"),
+		assertTrue(script.body().contains("return quickPreset.value === 'vote-party' ? votePartyCapability()"),
 				"Vote Party must select only a capability shared by every selected backend.");
         assertTrue(script.body().contains("if (quickSetupCapability() === 'config.quick-setup.v2') voteParty.enabled"),
                 "Vote Party Enabled must never be sent under the incompatible v1 quick-setup contract.");
@@ -143,6 +142,8 @@ class ControlHttpServerTest {
                 "A legacy read must represent Enabled as unavailable instead of leaking another server's value.");
         assertTrue(script.body().contains("function quickSetupTargets()"));
 		assertTrue(script.body().contains("function votePartyCapability()"));
+		assertTrue(script.body().contains("return selectedBackendsSupport(capability) ? capability : null;"));
+		assertTrue(script.body().contains("function selectedBackendsSupport(capability)"));
 		assertTrue(script.body().contains("'config.quick-setup.v2', 'config.proxy-method.v1', 'config.proxy-method.v2'"));
 		assertTrue(script.body().contains("if (selectedCapabilitiesChanged || proxyMethodCapabilitiesChanged) {\n      invalidateGuidedSetupReads();"));
 		assertTrue(script.body().contains("const proxyMethodCapabilityNodes = new Set([...selectedNodes, proxyMethodProxyId].filter(Boolean));"));

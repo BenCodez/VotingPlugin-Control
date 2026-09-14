@@ -2940,9 +2940,18 @@ function backendQuickTargets() {
 }
 
 function quickSetupCapability() {
-  return quickPreset.value === 'proxy-backend' && quickMethod.value === 'HTTP'
-    ? 'config.proxy-method.v2' : quickPreset.value === 'vote-party'
-    ? votePartyCapability() : 'config.quick-setup.v1';
+  if (quickPreset.value === 'proxy-backend') {
+    const capability = quickMethod.value === 'HTTP' ? 'config.proxy-method.v2' : 'config.quick-setup.v1';
+    return selectedBackendsSupport(capability) ? capability : null;
+  }
+  return quickPreset.value === 'vote-party' ? votePartyCapability() : 'config.quick-setup.v1';
+}
+
+function selectedBackendsSupport(capability) {
+  const selectedBackends = [...selectedNodes].filter(nodeId => nodeIndex.has(nodeId)
+    && isBackend(nodeIndex.get(nodeId)));
+  return selectedBackends.length > 0
+    && selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes(capability));
 }
 
 function votePartyCapability() {

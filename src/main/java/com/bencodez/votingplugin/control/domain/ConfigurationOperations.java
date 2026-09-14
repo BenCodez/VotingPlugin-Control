@@ -704,7 +704,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         ManagedConfiguration expected = operation.configuration;
         boolean mismatch = expected == null || !expected.domain().equals(actual.domain())
                 || (ManagedConfiguration.FILE.equals(expected.domain()) && !expected.fileName().equals(actual.fileName()))
-                || (ManagedConfiguration.QUICK_SETUP.equals(expected.domain()) && !expected.preset().equals(actual.preset()));
+                || (ManagedConfiguration.QUICK_SETUP.equals(expected.domain()) && !expected.preset().equals(actual.preset()))
+                || (!"READ".equals(operation.type) && !expected.capability().equals(actual.capability()));
         if (mismatch) throw invalid("result configuration does not match the operation selector");
     }
 
