@@ -289,7 +289,7 @@ public final class ArtifactStore {
             for (StoredFile candidate : evictionPlan) {
                 Path backup = directory.resolve("evict-" + transaction + "-" + candidate.artifactId() + ".part");
                 if (Files.exists(backup, LinkOption.NOFOLLOW_LINKS)) throw rejected();
-                move(candidate.path(), backup, false);
+                moveAtomically(candidate.path(), backup);
                 quarantined.add(new QuarantinedFile(candidate.path(), backup));
             }
             if (!quarantined.isEmpty()) DurableFiles.forceDirectory(directory);
@@ -401,7 +401,7 @@ public final class ArtifactStore {
                 verifyExistingArtifact(file.original(), file.original().getFileName().toString().substring(0, 64));
                 Files.delete(file.backup());
             } else {
-                move(file.backup(), file.original(), false);
+                moveAtomically(file.backup(), file.original());
             }
         }
     }
@@ -563,16 +563,6 @@ public final class ArtifactStore {
             channel.force(true);
         }
         DurableFiles.forceDirectory(directory);
-    }
-
-    private static void move(Path source, Path target, boolean replace) throws IOException {
-        try {
-            if (replace) Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            else Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
-        } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
-            if (replace) Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
-            else Files.move(source, target);
-        }
     }
 
     /** Transaction state changes must never silently degrade to a non-atomic move. */
