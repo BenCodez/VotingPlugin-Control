@@ -265,6 +265,7 @@ let proxyMethodProxyId = '';
 let proxyMethodCurrentFor = '';
 let proxyMethodCurrentSessionId = '';
 let proxyMethodCurrentValue = '';
+let proxyMethodReadGeneration = 0;
 let nodeCapabilities = new Map();
 let nodePlugins = new Map();
 let inputGeneration = 0;
@@ -3527,13 +3528,25 @@ async function loadNodesOnce() {
     nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
     nodePlugins = new Map(registry.items.map(node => [node.nodeId, node.online && Array.isArray(node.detectedPlugins)
       ? node.detectedPlugins : []]));
+    const proxyMethodCapabilityNodes = new Set([...selectedNodes, proxyMethodProxyId].filter(Boolean));
+    const proxyMethodCapabilitiesChanged = [...proxyMethodCapabilityNodes].some(node =>
+      ['config.proxy-method.v1', 'config.proxy-method.v2'].some(capability =>
+        Boolean(previousCapabilities.get(node)?.includes(capability)) !==
+          Boolean(nodeCapabilities.get(node)?.includes(capability))));
     const selectedCapabilitiesChanged = [...selectedNodes].some(node =>
       ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1', 'config.quick-setup.v1',
-        'config.quick-setup.v2',
+        'config.quick-setup.v2', 'config.proxy-method.v1', 'config.proxy-method.v2',
         'data.inspect.v1'].some(capability =>
         Boolean(previousCapabilities.get(node)?.includes(capability)) !==
           Boolean(nodeCapabilities.get(node)?.includes(capability))));
-    if (selectedCapabilitiesChanged) {
+    if (selectedCapabilitiesChanged || proxyMethodCapabilitiesChanged) {
+      invalidateGuidedSetupReads();
+      if (proxyMethodCapabilitiesChanged) {
+        proxyMethodReadGeneration++;
+        proxyMethodCurrentFor = '';
+        proxyMethodCurrentSessionId = '';
+        proxyMethodCurrentValue = '';
+      }
       approvedPreview = null;
       approvedFilePreview = null;
       approvedQuickPreview = null;
@@ -4275,6 +4288,7 @@ runTransportTest.addEventListener('click', async () => {
 async function loadProxyMethod(automatic = false) {
   const proxyId = proxyMethodProxyId;
   const readCapability = proxyMethodReadCapability();
+  const readGeneration = proxyMethodReadGeneration;
   const sessionId = proxyMethodNetwork(readCapability).proxy?.sessionId;
   const requestAuthenticationGeneration = authenticationGeneration;
   if (!proxyId) return;
@@ -4288,6 +4302,7 @@ async function loadProxyMethod(automatic = false) {
     const method = result?.success ? result.configuration?.options?.method : '';
     if (!method) throw new Error('The proxy did not return its active communication method.');
     if (requestAuthenticationGeneration !== authenticationGeneration || proxyId !== proxyMethodProxyId
+        || readGeneration !== proxyMethodReadGeneration || readCapability !== proxyMethodReadCapability()
         || sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId || result?.sessionId !== sessionId) return;
     proxyMethodCurrentFor = proxyId;
     proxyMethodCurrentSessionId = sessionId;

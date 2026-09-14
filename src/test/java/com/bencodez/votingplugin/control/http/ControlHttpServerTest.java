@@ -143,6 +143,11 @@ class ControlHttpServerTest {
                 "A legacy read must represent Enabled as unavailable instead of leaking another server's value.");
         assertTrue(script.body().contains("function quickSetupTargets()"));
 		assertTrue(script.body().contains("function votePartyCapability()"));
+		assertTrue(script.body().contains("'config.quick-setup.v2', 'config.proxy-method.v1', 'config.proxy-method.v2'"));
+		assertTrue(script.body().contains("if (selectedCapabilitiesChanged || proxyMethodCapabilitiesChanged) {\n      invalidateGuidedSetupReads();"));
+		assertTrue(script.body().contains("const proxyMethodCapabilityNodes = new Set([...selectedNodes, proxyMethodProxyId].filter(Boolean));"));
+		assertTrue(script.body().contains("if (proxyMethodCapabilitiesChanged) {\n        proxyMethodReadGeneration++;"));
+		assertTrue(script.body().contains("readGeneration !== proxyMethodReadGeneration || readCapability !== proxyMethodReadCapability()"));
 		assertTrue(script.body().contains("if (selectedBackends.length === 0) return null;"));
 		assertTrue(script.body().contains("selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v1'))"));
 		assertTrue(script.body().contains("return null;\n}"),
@@ -387,8 +392,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("window.addEventListener('beforeunload'"));
         assertTrue(script.body().contains("loadedQuickSetup = {nodeId, sessionId, preset,"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
-        assertTrue(script.body().contains("if (selectedCapabilitiesChanged) {\n      approvedPreview = null;"));
-        assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
+		assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
         assertTrue(script.body().contains("selectedCapabilitiesChanged"));
         assertTrue(script.body().contains("proxyFile ? !isProxy(restoreNode) : !isBackend(restoreNode)"));
         assertTrue(script.body().contains("discardAuthenticationState"));
