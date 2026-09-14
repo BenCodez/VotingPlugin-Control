@@ -99,6 +99,19 @@ class ArtifactStoreTest {
         assertRejected(() -> store.upload(new ByteArrayInputStream(duplicate), "VotingPlugin.jar", sha256(duplicate)));
     }
 
+    @Test void removesIncompleteUploadsBeforeEveryNewUpload() throws Exception {
+        Path artifacts = directory.resolve("artifacts-retry-cleanup");
+        ArtifactStore store = new ArtifactStore(artifacts);
+        Path incomplete = Files.writeString(artifacts.resolve("upload-rejected.part"), "partial");
+        byte[] valid = jar("name: VotingPlugin\n", "plugin/Main.class", new byte[] {1});
+
+        ArtifactStore.Artifact uploaded = store.upload(
+                new ByteArrayInputStream(valid), "VotingPlugin.jar", sha256(valid));
+
+        assertFalse(Files.exists(incomplete));
+        assertArrayEquals(valid, store.open(uploaded.artifactId()).readAllBytes());
+    }
+
 	@Test void removesAnUnpublishedTemporaryTransactionMarkerOnStartup() throws Exception {
 		Path artifacts = directory.resolve("artifacts");
 		Files.createDirectories(artifacts);

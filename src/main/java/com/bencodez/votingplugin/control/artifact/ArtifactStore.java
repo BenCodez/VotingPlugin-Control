@@ -260,7 +260,11 @@ public final class ArtifactStore {
         boolean published = false;
         try {
             verifyDirectory();
-            recoverEvictionTransactions();
+            // A prior rejected upload may have failed its best-effort finally
+            // cleanup. Reconcile every owned temporary before capacity planning;
+            // removeIncompleteUploads fails closed when a remnant cannot be
+            // safely verified or removed.
+            removeIncompleteUploads();
             temporary = Files.createTempFile(directory, "upload-", ".part");
             setPermissions(temporary, FILE_PERMISSIONS);
             DigestAndSize digest = copyBounded(source, temporary);

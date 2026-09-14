@@ -137,9 +137,12 @@ class ControlHttpServerTest {
                         + "    values.partyEnabled = quickPartyEnabled.checked;"),
                 "Profiles must omit an unavailable Vote Party Enabled value instead of fabricating false.");
         assertTrue(script.body().contains("config.proxy-method.v2"));
-        assertTrue(script.body().contains("quickPreset.value === 'vote-party' && votePartyUsesV2()\n"
-                        + "    ? 'config.quick-setup.v2'"),
+        assertTrue(script.body().contains("quickPreset.value === 'vote-party'\n"
+                        + "    ? votePartyCommonCapability() || 'config.quick-setup.unavailable'"),
                 "Vote Party must use v2 only when every selected backend supports it.");
+        assertTrue(script.body().contains("selectedVotePartyBackends().length > 0 && !votePartyCommonCapability()"));
+        assertTrue(script.body().contains("The selected backends do not share a Vote Party configuration capability."),
+                "Mixed v1-only/v2-only targets must be rejected explicitly instead of silently omitting a backend.");
         assertTrue(script.body().contains("if (quickSetupCapability() === 'config.quick-setup.v2') voteParty.enabled"),
                 "Vote Party Enabled must never be sent under the incompatible v1 quick-setup contract.");
         assertTrue(script.body().contains("quickPartyEnabled.indeterminate = !enabledAvailable;\n"

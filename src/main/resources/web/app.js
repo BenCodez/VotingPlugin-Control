@@ -2930,6 +2930,8 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   const fileDraftReady = fileReady && fileDraftMatchesCurrentContext();
   const syncSelected = quickPreset.value === 'sync-vote-sites';
   const quickCapability = quickSetupCapability();
+  const votePartyCapabilityMismatch = quickPreset.value === 'vote-party'
+    && selectedVotePartyBackends().length > 0 && !votePartyCommonCapability();
   const quickReady = authenticated && !busy && (syncSelected
     ? Boolean(voteSitesSourceId && selectedVoteSitesTargets().length > 0)
     : primaryCapabilities.includes(quickCapability) && quickSetupTargets().length > 0);
@@ -2942,6 +2944,10 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   readQuickSetup.disabled = !quickReady || !quickPresetReadable();
   previewQuickSetup.disabled = !quickReady || (quickPresetNeedsRead() && !quickSetupValuesLoaded());
   applyQuickSetup.disabled = !quickReady || !approvedQuickPreview;
+  if (votePartyCapabilityMismatch && !busy) {
+    text(quickOperationStatus,
+      'The selected backends do not share a Vote Party configuration capability. Update their VotingPlugin versions or select compatible backends.');
+  }
   runTransportTest.disabled = !authenticated || !transportTestProxyId || !transportTestBackendId || busy;
   const methodNetwork = proxyMethodReadNetwork();
   proxyMethodButtons.forEach(button => {
@@ -2962,17 +2968,28 @@ function backendQuickTargets() {
 
 function quickSetupCapability() {
   return quickPreset.value === 'proxy-backend' && quickMethod.value === 'HTTP'
-    ? 'config.proxy-method.v2' : quickPreset.value === 'vote-party' && votePartyUsesV2()
-    ? 'config.quick-setup.v2' : 'config.quick-setup.v1';
+    ? 'config.proxy-method.v2' : quickPreset.value === 'vote-party'
+    ? votePartyCommonCapability() || 'config.quick-setup.unavailable' : 'config.quick-setup.v1';
 }
 
 function votePartyUsesV2() {
-  const selectedBackends = [...selectedNodes].filter(nodeId => nodeIndex.has(nodeId)
-    && isBackend(nodeIndex.get(nodeId))
-    && (nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v1')
-      || nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2')));
-  return selectedBackends.length > 0
-    && selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2'));
+  return votePartyCommonCapability() === 'config.quick-setup.v2';
+}
+
+function selectedVotePartyBackends() {
+  return [...selectedNodes].filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
+}
+
+function votePartyCommonCapability() {
+  const selectedBackends = selectedVotePartyBackends();
+  if (!selectedBackends.length) return null;
+  if (selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2'))) {
+    return 'config.quick-setup.v2';
+  }
+  if (selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v1'))) {
+    return 'config.quick-setup.v1';
+  }
+  return null;
 }
 
 function reloadVotePartyWhenTargetCapabilityChanges(previousCapability, scheduleReload = true) {
