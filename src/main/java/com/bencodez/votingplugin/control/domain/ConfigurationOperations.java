@@ -264,7 +264,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                     throw e;
                 }
                 return new ConfigurationTask(operation.id, operation.type, configurationForTask(operation),
-                        operation.expectedRevisions.get(nodeId), attemptId);
+                        operation.expectedRevisions.get(nodeId), attemptId, operation.configuration.capability());
             }
         }
         return null;

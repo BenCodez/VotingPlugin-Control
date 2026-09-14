@@ -963,6 +963,7 @@ class ConfigurationOperationsTest {
         ConfigurationTask httpRead = operations.claim("http-backend", httpBackendSession);
         assertEquals("proxy-backend", httpRead.configuration().preset());
         assertEquals(Map.of(), httpRead.configuration().options());
+        assertEquals(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY, httpRead.capability());
         ManagedConfiguration lowercaseHttp = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null,
                 List.of(), null, null, "proxy-backend", Map.of("server", "lobby", "method", "http"));
         assertThrows(IllegalArgumentException.class, lowercaseHttp::validateProposal);
