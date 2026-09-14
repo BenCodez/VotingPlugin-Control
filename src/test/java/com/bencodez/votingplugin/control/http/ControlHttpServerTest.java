@@ -207,6 +207,8 @@ class ControlHttpServerTest {
                 "The shared name field is a selector for vote sites but a dirty editable value for other presets.");
         assertTrue(script.body().contains("quickSetupDirty = false;\n      quickSetupPreserveReadGeneration = -1;\n      quickPreset.value = 'vote-site';"),
                 "Opening a detected vote site must clear another preset's dirty guard before automatic READ.");
+        assertTrue(script.body().contains("if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);"),
+                "A clean active YAML editor must automatically reload after apply invalidates its cache.");
         assertTrue(script.body().contains("function exposeDirtyVoteSiteReload()"));
         assertTrue(script.body().contains("quickSetupDirty = true;\n  exposeDirtyVoteSiteReload();"),
                 "Becoming dirty during the selector debounce must also expose reload.");
@@ -341,6 +343,7 @@ class ControlHttpServerTest {
                         + "  if (!configurationDirty) {\n"
                         + "    configurationContent.value = '';\n    configurationContentPresent = false;\n"
                         + "    text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');\n"
+                        + "    if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);\n"
                         + "  }\n  lastOverview = null;\n  lastDiagnostics = null;\n"
                         + "  dashboardConfigurationGeneration++;\n  invalidateDashboardInspection();"),
                 "Every successful apply must invalidate file and dashboard reads even after the view context changes.");

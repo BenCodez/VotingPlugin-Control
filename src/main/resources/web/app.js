@@ -3334,6 +3334,7 @@ function invalidateConfigurationReads() {
     configurationContent.value = '';
     configurationContentPresent = false;
     text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');
+    if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);
   }
   lastOverview = null;
   lastDiagnostics = null;

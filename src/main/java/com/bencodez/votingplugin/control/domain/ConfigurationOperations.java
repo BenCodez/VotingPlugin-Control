@@ -705,8 +705,14 @@ public final class ConfigurationOperations implements AutoCloseable {
         boolean mismatch = expected == null || !expected.domain().equals(actual.domain())
                 || (ManagedConfiguration.FILE.equals(expected.domain()) && !expected.fileName().equals(actual.fileName()))
                 || (ManagedConfiguration.QUICK_SETUP.equals(expected.domain()) && !expected.preset().equals(actual.preset()))
-                || (!"READ".equals(operation.type) && !expected.capability().equals(actual.capability()));
+                || (!activeMethodRead(operation, expected) && !expected.capability().equals(actual.capability()));
         if (mismatch) throw invalid("result configuration does not match the operation selector");
+    }
+
+    private static boolean activeMethodRead(StoredOperation operation, ManagedConfiguration expected) {
+        return "READ".equals(operation.type) && ManagedConfiguration.QUICK_SETUP.equals(expected.domain())
+                && (ManagedConfiguration.PROXY_METHOD.equals(expected.preset())
+                || "proxy-backend".equals(expected.preset()));
     }
 
     private String retainMessage(String message) {
