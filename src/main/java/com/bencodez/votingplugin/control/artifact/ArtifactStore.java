@@ -50,6 +50,7 @@ public final class ArtifactStore {
     private static final long MAX_EXPANDED_BYTES = 128L * 1024L * 1024L;
     private static final long MAX_COMPRESSION_RATIO = 200L;
     private static final int MAX_PLUGIN_YML_BYTES = 64 * 1024;
+    private static final int MAX_TRANSACTION_MARKER_BYTES = 4096;
     private static final Set<PosixFilePermission> DIRECTORY_PERMISSIONS = Set.of(
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
     private static final Set<PosixFilePermission> FILE_PERMISSIONS = Set.of(
@@ -122,17 +123,27 @@ public final class ArtifactStore {
             String name = marker.getFileName().toString();
             if (!name.matches("evict-[0-9a-f]{32}-[0-9a-f]{64}\\.(?:pending|committed)")) continue;
             if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(marker)
-                    || Files.size(marker) > 128) throw rejected();
-            String stagedName = Files.readString(marker, StandardCharsets.UTF_8);
+                    || Files.size(marker) > MAX_TRANSACTION_MARKER_BYTES) throw rejected();
+            String markerContents = Files.readString(marker, StandardCharsets.UTF_8);
+            String[] markerLines = markerContents.split("\n", -1);
+            String stagedName = markerLines[0];
             boolean legacyMarker = stagedName.isEmpty();
             if (!legacyMarker && (!stagedName.matches("upload-[A-Za-z0-9._-]+\\.part")
                     || stagedName.contains(".."))) throw rejected();
+            List<String> plannedArtifactIds = new ArrayList<>();
+            Set<String> uniquePlannedArtifactIds = new HashSet<>();
+            for (int index = 1; index < markerLines.length; index++) {
+                String artifactId = markerLines[index];
+                if (!isSha256(artifactId) || !uniquePlannedArtifactIds.add(artifactId)) throw rejected();
+                plannedArtifactIds.add(artifactId);
+            }
             Path staged = legacyMarker ? null : directory.resolve(stagedName);
             boolean stagedPresent = staged != null && Files.exists(staged, LinkOption.NOFOLLOW_LINKS);
             if (stagedPresent && (!Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS)
                     || Files.isSymbolicLink(staged))) throw rejected();
             String transaction = name.substring("evict-".length(), "evict-".length() + 32);
             String incomingId = name.substring("evict-".length() + 33, "evict-".length() + 33 + 64);
+            if (uniquePlannedArtifactIds.contains(incomingId)) throw rejected();
             boolean committed = name.endsWith(".committed");
             List<QuarantinedFile> quarantined = new ArrayList<>();
             for (Path candidate : files) {
@@ -165,6 +176,7 @@ public final class ArtifactStore {
                 // A verified competing publication is equivalent to the commit point: keeping
                 // the quarantined artifacts would violate the configured capacity bound.
                 // The staged upload is removed by removeIncompleteUploads after this marker.
+                completePlannedEvictions(transaction, plannedArtifactIds, quarantined);
                 for (QuarantinedFile file : quarantined) Files.delete(file.backup());
             } else {
                 restoreQuarantined(quarantined);
@@ -173,6 +185,34 @@ public final class ArtifactStore {
             Files.delete(marker);
             DurableFiles.forceDirectory(directory);
         }
+    }
+
+    /** Completes a durable eviction plan after the incoming artifact reached its commit point. */
+    private void completePlannedEvictions(String transaction, List<String> plannedArtifactIds,
+                                          List<QuarantinedFile> quarantined) throws IOException {
+        Set<String> alreadyQuarantined = new HashSet<>();
+        for (QuarantinedFile file : quarantined) {
+            alreadyQuarantined.add(file.original().getFileName().toString().substring(0, 64));
+        }
+        boolean moved = false;
+        for (String artifactId : plannedArtifactIds) {
+            if (alreadyQuarantined.contains(artifactId)) continue;
+            Path original = artifactPath(artifactId);
+            Path backup = directory.resolve("evict-" + transaction + "-" + artifactId + ".part");
+            if (Files.exists(backup, LinkOption.NOFOLLOW_LINKS)) {
+                verifyExistingArtifact(backup, artifactId);
+                quarantined.add(new QuarantinedFile(original, backup));
+                continue;
+            }
+            // A missing original and backup means cleanup already completed before
+            // the marker itself could be removed. Otherwise finish the planned move.
+            if (!Files.exists(original, LinkOption.NOFOLLOW_LINKS)) continue;
+            verifyExistingArtifact(original, artifactId);
+            moveAtomically(original, backup);
+            quarantined.add(new QuarantinedFile(original, backup));
+            moved = true;
+        }
+        if (moved) DurableFiles.forceDirectory(directory);
     }
 
     private boolean hasMatchingStagedUpload(List<Path> files, String incomingId) throws IOException {
@@ -298,7 +338,7 @@ public final class ArtifactStore {
         Path committed = directory.resolve("evict-" + transaction + "-" + incomingId + ".committed");
         boolean moved = false;
         try {
-            createTransactionMarker(pending, temporary.getFileName().toString());
+            createTransactionMarker(pending, temporary.getFileName().toString(), evictionPlan);
             for (StoredFile candidate : evictionPlan) {
                 Path backup = directory.resolve("evict-" + transaction + "-" + candidate.artifactId() + ".part");
                 if (Files.exists(backup, LinkOption.NOFOLLOW_LINKS)) throw rejected();
@@ -334,14 +374,19 @@ public final class ArtifactStore {
         return moved;
     }
 
-    private void createTransactionMarker(Path marker, String stagedName) throws IOException {
+    private void createTransactionMarker(Path marker, String stagedName, List<StoredFile> evictionPlan)
+            throws IOException {
         Path temporaryMarker = directory.resolve("upload-marker-" + UUID.randomUUID() + ".part");
         boolean published = false;
+        StringBuilder serialized = new StringBuilder(stagedName);
+        for (StoredFile candidate : evictionPlan) serialized.append('\n').append(candidate.artifactId());
+        byte[] serializedBytes = serialized.toString().getBytes(StandardCharsets.UTF_8);
+        if (serializedBytes.length > MAX_TRANSACTION_MARKER_BYTES) throw rejected();
         try (FileChannel channel = FileChannel.open(temporaryMarker,
                 StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
                 LinkOption.NOFOLLOW_LINKS)) {
             setPermissions(temporaryMarker, FILE_PERMISSIONS);
-            ByteBuffer contents = ByteBuffer.wrap(stagedName.getBytes(StandardCharsets.UTF_8));
+            ByteBuffer contents = ByteBuffer.wrap(serializedBytes);
             while (contents.hasRemaining()) {
                 if (channel.write(contents) <= 0) throw new IOException("Artifact transaction marker could not be written");
             }

@@ -2593,6 +2593,15 @@ function proxyMethodCapabilityFor(method) {
 
 function proxyMethodReadCapability() {
   const capabilities = nodeCapabilities.get(proxyMethodProxyId) || [];
+  // v2 can represent every method, including HTTP; v1 cannot. Prefer the
+  // richer common contract and fall back to v1 for older mixed networks.
+  for (const capability of ['config.proxy-method.v2', 'config.proxy-method.v1']) {
+    const network = proxyMethodNetworkFor(allNodeItems, backendTopologyTruncatedNodeIds,
+      proxyMethodProxyId, capability);
+    if (network.proxyReady && network.topologyComplete && network.unavailable.length === 0) return capability;
+  }
+  // Retain a proxy-supported fallback so the disabled-state explanation can
+  // identify the missing backend capability or incomplete topology.
   return capabilities.includes('config.proxy-method.v1')
     ? 'config.proxy-method.v1' : 'config.proxy-method.v2';
 }
@@ -2962,10 +2971,18 @@ function votePartyUsesV2() {
 function reloadVotePartyWhenTargetCapabilityChanges(previousCapability, scheduleReload = true) {
   if (quickPreset.value !== 'vote-party' || previousCapability === quickSetupCapability()) return;
   loadedQuickSetup = null;
-  quickSetupDirty = false;
   approvedQuickPreview = null;
-  populateQuickState({});
-  text(quickOperationStatus, 'Selected backend capabilities changed. Loading confirmed Vote Party settings…');
+  if (quickSetupDirty) {
+    // The capability-dependent Enabled field must be refreshed, but the
+    // operator's unsaved common Vote Party edits remain authoritative locally.
+    quickSetupPreserveReadGeneration = inputGeneration;
+    text(quickOperationStatus,
+      'Selected backend capabilities changed. Preserving unsaved Vote Party edits while loading confirmed state…');
+  } else {
+    quickSetupPreserveReadGeneration = -1;
+    populateQuickState({});
+    text(quickOperationStatus, 'Selected backend capabilities changed. Loading confirmed Vote Party settings…');
+  }
   updateConfigurationButtons();
   // Funnel capability transitions through the tab's single-flight autoloader.
   // A rapid v2/v1/v2 change therefore marks one follow-up read instead of
@@ -4124,9 +4141,27 @@ async function loadQuickSetupValues(automatic = false, preserveDirty = false) {
       && pendingDetectedVoteSite.key === quickName.value.trim() ? pendingDetectedVoteSite : null;
     const selectedProxyMethod = preserveDirty && preset === 'proxy-backend' ? quickMethod.value : null;
     const editedProxyServer = preserveDirty && preset === 'proxy-backend' ? quickName.value : null;
+    const editedVoteParty = preserveDirty && preset === 'vote-party' ? {
+      enabled: !quickPartyEnabled.disabled && !quickPartyEnabled.indeterminate ? quickPartyEnabled.checked : null,
+      votes: quickPartyVotes.value,
+      broadcast: quickPartyBroadcast.value,
+      giveAllPlayers: quickPartyAll.checked,
+      onlineOnly: quickPartyOnline.checked,
+      command: quickPartyCommand.value
+    } : null;
     populateQuickState(result.configuration.options);
     if (selectedProxyMethod != null) quickMethod.value = selectedProxyMethod;
     if (editedProxyServer != null) quickName.value = editedProxyServer;
+    if (editedVoteParty != null) {
+      if (editedVoteParty.enabled != null && !quickPartyEnabled.disabled) {
+        quickPartyEnabled.checked = editedVoteParty.enabled;
+      }
+      quickPartyVotes.value = editedVoteParty.votes;
+      quickPartyBroadcast.value = editedVoteParty.broadcast;
+      quickPartyAll.checked = editedVoteParty.giveAllPlayers;
+      quickPartyOnline.checked = editedVoteParty.onlineOnly;
+      quickPartyCommand.value = editedVoteParty.command;
+    }
     quickSetupDirty = preserveDirty;
     if (detected && result.configuration.options.exists === 'false') {
       quickSiteDisplayName.value = detected.service;

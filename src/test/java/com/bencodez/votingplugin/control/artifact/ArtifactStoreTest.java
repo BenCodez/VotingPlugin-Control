@@ -380,6 +380,38 @@ class ArtifactStoreTest {
         }
     }
 
+    @Test void collisionRecoveryCompletesEveryEvictionRecordedBeforeTheFirstMove() throws Exception {
+        Path artifacts = directory.resolve("partial-collision-recovery-artifacts");
+        Files.createDirectories(artifacts);
+        byte[] first = jar("name: VotingPlugin\n", "plugin/First.class", new byte[] {1});
+        byte[] second = jar("name: VotingPlugin\n", "plugin/Second.class", new byte[] {2});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/Incoming.class", new byte[] {3});
+        String firstId = sha256(first);
+        String secondId = sha256(second);
+        String incomingId = sha256(incoming);
+        Files.write(artifacts.resolve(firstId + ".jar"), first);
+        Files.write(artifacts.resolve(secondId + ".jar"), second);
+        Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
+        Path staged = Files.write(artifacts.resolve("upload-partial-collision.part"), incoming);
+        String transaction = "7".repeat(32);
+        Path firstBackup = artifacts.resolve("evict-" + transaction + "-" + firstId + ".part");
+        Files.move(artifacts.resolve(firstId + ".jar"), firstBackup);
+        Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending");
+        Files.writeString(marker, staged.getFileName() + "\n" + firstId + "\n" + secondId);
+
+        ArtifactStore recovered = new ArtifactStore(artifacts, 1_000_000, 1);
+
+        assertRejected(() -> recovered.open(firstId));
+        assertRejected(() -> recovered.open(secondId));
+        assertArrayEquals(incoming, recovered.open(incomingId).readAllBytes());
+        assertFalse(Files.exists(staged));
+        assertFalse(Files.exists(firstBackup));
+        assertFalse(Files.exists(marker));
+        try (var files = Files.list(artifacts)) {
+            assertEquals(1, files.filter(path -> path.getFileName().toString().endsWith(".jar")).count());
+        }
+    }
+
     @Test void startupRollsBackAHardLinkedPublicationBeforeCommit() throws Exception {
         Path artifacts = directory.resolve("hard-link-recovery-artifacts");
         byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
