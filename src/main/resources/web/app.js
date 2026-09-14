@@ -1171,7 +1171,7 @@ function writeProfiles(profiles) {
 }
 
 function currentProfileValues() {
-  return {
+  const values = {
     version: 1, preset: quickPreset.value, name: quickName.value, method: quickMethod.value,
     siteDisplayName: quickSiteDisplayName.value, service: quickService.value, url: quickUrl.value,
     delay: quickDelay.value, priority: quickSitePriority.value, material: quickSiteMaterial.value,
@@ -1180,7 +1180,7 @@ function currentProfileValues() {
     processRewards: quickProcessRewards.checked, autoSites: quickAutoSites.checked,
     extraCheck: quickExtraCheck.checked, countFake: quickCountFake.checked,
     hideWarning: quickHideSiteWarning.checked, disableUpdates: quickDisableUpdates.checked,
-    partyEnabled: quickPartyEnabled.checked, partyVotes: quickPartyVotes.value, partyCommand: quickPartyCommand.value,
+    partyVotes: quickPartyVotes.value, partyCommand: quickPartyCommand.value,
     partyBroadcast: quickPartyBroadcast.value, partyAll: quickPartyAll.checked, partyOnline: quickPartyOnline.checked,
     autoSitesOnly: quickAutoSitesOnly.checked, voteLogging: quickVoteLoggingEnabled.checked,
     voteLoggingDays: quickVoteLoggingDays.value, voteLoggingMainMysql: quickVoteLoggingMainMysql.checked,
@@ -1189,6 +1189,13 @@ function currentProfileValues() {
       broadcasts: rewardBroadcasts.value, permissions: rewardPermissions.value, items: rewardItems.value,
       onlineOnly: rewardOnlineOnly.checked}
   };
+  // A v1 target cannot report Enabled. Omitting it preserves the confirmed live
+  // value if this profile is later loaded against a v2-capable backend.
+  if (quickSetupCapability() === 'config.quick-setup.v2'
+      && !quickPartyEnabled.disabled && !quickPartyEnabled.indeterminate) {
+    values.partyEnabled = quickPartyEnabled.checked;
+  }
+  return values;
 }
 
 function populateProfilePicker() {

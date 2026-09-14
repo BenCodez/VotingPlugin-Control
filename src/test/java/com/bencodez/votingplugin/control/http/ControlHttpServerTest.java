@@ -132,6 +132,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("quickPartyEnabled.checked = enabledAvailable && options.enabled === 'true'"));
         assertTrue(script.body().contains("if (Object.hasOwn(profile, 'partyEnabled')) quickPartyEnabled.checked = Boolean(profile.partyEnabled);"),
                 "Legacy v1 profiles must preserve the live Vote Party enabled state when they omit that field.");
+        assertTrue(script.body().contains("if (quickSetupCapability() === 'config.quick-setup.v2'\n"
+                        + "      && !quickPartyEnabled.disabled && !quickPartyEnabled.indeterminate) {\n"
+                        + "    values.partyEnabled = quickPartyEnabled.checked;"),
+                "Profiles must omit an unavailable Vote Party Enabled value instead of fabricating false.");
         assertTrue(script.body().contains("config.proxy-method.v2"));
         assertTrue(script.body().contains("quickPreset.value === 'vote-party' && votePartyUsesV2()\n"
                         + "    ? 'config.quick-setup.v2'"),
