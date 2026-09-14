@@ -116,7 +116,7 @@ class ConfigurationOperationsTest {
         assertEquals("false", read.results().get("lobby").configuration().options().get("processRewards"));
     }
 
-    @Test void quickSetupReadAcceptsInstalledStateFromANewerCapability() throws Exception {
+    @Test void proxyBackendReadAcceptsInstalledMethodFromANewerCapability() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
         UUID session = UUID.randomUUID();
@@ -125,16 +125,16 @@ class ConfigurationOperationsTest {
         ConfigurationOperations operations = new ConfigurationOperations(registry,
                 new ConfigurationAuditLog(directory, clock), clock);
         ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
-                null, null, "vote-party", Map.of());
+                null, null, "proxy-backend", Map.of());
         ConfigurationOperations.OperationView read = operations.createRead(List.of("lobby"), selector);
         ConfigurationTask task = operations.claim("lobby", session);
         ManagedConfiguration v2 = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
-                null, null, "vote-party", Map.of("enabled", "true"));
+                null, null, "proxy-backend", Map.of("method", "HTTP"));
         read = operations.complete(read.operationId(), "lobby",
                 new ConfigurationTaskResult(session, true, "OK", "installed", "a".repeat(64), v2,
                         List.of(), false, false, task.attemptId()));
         assertEquals("SUCCEEDED", read.state());
-        assertEquals("true", read.results().get("lobby").configuration().options().get("enabled"));
+        assertEquals("HTTP", read.results().get("lobby").configuration().options().get("method"));
     }
 
     @Test void quickSetupPreviewRejectsAResultFromANewerCapability() throws Exception {
@@ -153,6 +153,25 @@ class ConfigurationOperationsTest {
                 null, null, "vote-party", Map.of("enabled", "true", "votesRequired", "100"));
         assertThrows(ValidationException.class, () -> operations.complete(preview.operationId(), "lobby",
                 new ConfigurationTaskResult(session, true, "OK", "previewed", "a".repeat(64), v2,
+                        List.of(), false, false, task.attemptId())));
+    }
+
+    @Test void votePartyReadRejectsAResultFromAnUnnegotiatedCapability() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("lobby", session, "Lobby", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-party", Map.of());
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("lobby"), selector);
+        ConfigurationTask task = operations.claim("lobby", session);
+        ManagedConfiguration v2 = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "vote-party", Map.of("enabled", "true"));
+        assertThrows(ValidationException.class, () -> operations.complete(read.operationId(), "lobby",
+                new ConfigurationTaskResult(session, true, "OK", "installed", "a".repeat(64), v2,
                         List.of(), false, false, task.attemptId())));
     }
 

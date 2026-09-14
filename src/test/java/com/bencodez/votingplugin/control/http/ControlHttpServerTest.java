@@ -204,6 +204,10 @@ class ControlHttpServerTest {
                 "Profile application must verify its selection after waiting for live values.");
         assertTrue(script.body().contains("selector: JSON.stringify(quickReadConfigurationOptions())"),
                 "The retained selector must reflect the method returned by the live backend read.");
+        assertTrue(script.body().contains("loadedQuickSetup = {...loadedQuickSetup, selector: JSON.stringify(quickReadConfigurationOptions())};"),
+                "Applying a proxy profile must rebind the confirmed read cache to its restored method.");
+        assertTrue(script.body().contains("if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);"),
+                "A clean active YAML editor must automatically reload after apply invalidates its cache.");
         assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
@@ -328,6 +332,7 @@ class ControlHttpServerTest {
                         + "  if (!configurationDirty) {\n"
                         + "    configurationContent.value = '';\n    configurationContentPresent = false;\n"
                         + "    text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');\n"
+                        + "    if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);\n"
                         + "  }\n  lastOverview = null;\n  lastDiagnostics = null;\n"
                         + "  dashboardConfigurationGeneration++;\n  invalidateDashboardInspection();"),
                 "Every successful apply must invalidate file and dashboard reads even after the view context changes.");

@@ -3310,6 +3310,7 @@ function invalidateConfigurationReads() {
     configurationContent.value = '';
     configurationContentPresent = false;
     text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');
+    if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);
   }
   lastOverview = null;
   lastDiagnostics = null;
@@ -5084,6 +5085,9 @@ loadProfile.addEventListener('click', async () => {
   applyProfileValues(profile);
   quickSetupDirty = true;
   inputGeneration++;
+  if (quickPreset.value === 'proxy-backend' && loadedQuickSetup) {
+    loadedQuickSetup = {...loadedQuickSetup, selector: JSON.stringify(quickReadConfigurationOptions())};
+  }
   updateQuickFields();
   clearApprovals();
   text(profileStatus, `Loaded “${profileName}” over the confirmed live values. Preview before applying.`);
