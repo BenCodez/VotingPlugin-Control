@@ -144,16 +144,29 @@ public final class ArtifactStore {
                 quarantined.add(new QuarantinedFile(artifactPath(artifactId), candidate));
             }
             Path incoming = artifactPath(incomingId);
-            if (committed) {
+            boolean pendingCollision = false;
+            if (!committed && Files.exists(incoming, LinkOption.NOFOLLOW_LINKS)) {
                 verifyExistingArtifact(incoming, incomingId);
+                if (stagedPresent) {
+                    // A pending marker normally rolls back a partially published hard link.
+                    // If the verified staged upload is a distinct file, however, publish()
+                    // lost a content-address collision to another verified publisher. That
+                    // publication is durable and its planned evictions must be committed.
+                    verifyExistingArtifact(staged, incomingId);
+                    pendingCollision = !Files.isSameFile(staged, incoming);
+                    if (!pendingCollision) Files.delete(incoming);
+                } else {
+                    boolean legacyCollision = legacyMarker && hasMatchingStagedUpload(files, incomingId);
+                    if (!legacyCollision) Files.delete(incoming);
+                }
+            }
+            if (committed || pendingCollision) {
+                if (committed) verifyExistingArtifact(incoming, incomingId);
+                // A verified competing publication is equivalent to the commit point: keeping
+                // the quarantined artifacts would violate the configured capacity bound.
+                // The staged upload is removed by removeIncompleteUploads after this marker.
                 for (QuarantinedFile file : quarantined) Files.delete(file.backup());
             } else {
-                if (Files.exists(incoming, LinkOption.NOFOLLOW_LINKS)) {
-                    verifyExistingArtifact(incoming, incomingId);
-                    boolean legacyCollision = legacyMarker && hasMatchingStagedUpload(files, incomingId);
-                    boolean interruptedPublication = stagedPresent && Files.isSameFile(staged, incoming);
-                    if (interruptedPublication || (!stagedPresent && !legacyCollision)) Files.delete(incoming);
-                }
                 restoreQuarantined(quarantined);
             }
             DurableFiles.forceDirectory(directory);
@@ -295,15 +308,16 @@ public final class ArtifactStore {
             if (!quarantined.isEmpty()) DurableFiles.forceDirectory(directory);
             moved = publish(temporary, artifact);
             if (!moved) {
-                restoreQuarantined(quarantined);
+                // A verified content-address collision is a successful publication
+                // by another process. Commit this capacity transition instead of
+                // restoring evictions and leaving the store over its configured bounds.
+                moveAtomically(pending, committed);
                 DurableFiles.forceDirectory(directory);
-                Files.delete(pending);
+            } else {
+                finishPublishedArtifact(artifact);
+                moveAtomically(pending, committed);
                 DurableFiles.forceDirectory(directory);
-                return false;
             }
-            finishPublishedArtifact(artifact);
-            moveAtomically(pending, committed);
-            DurableFiles.forceDirectory(directory);
         } catch (IOException | RuntimeException failure) {
             IOException rollbackFailure = rollbackPublication(artifact, quarantined, pending, committed, moved);
             if (rollbackFailure != null) failure.addSuppressed(rollbackFailure);

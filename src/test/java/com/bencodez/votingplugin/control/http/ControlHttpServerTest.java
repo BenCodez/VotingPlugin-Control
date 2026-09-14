@@ -149,6 +149,21 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("function quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("options: quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("loadedQuickSetup.selector === JSON.stringify(quickReadConfigurationOptions())"));
+        assertTrue(script.body().contains("reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability)"),
+                "Changing selected backend capability must discard and reload Vote Party state.");
+        assertTrue(script.body().contains("if (scheduleReload && tabFromHash() === 'quick-setup') void autoLoadTab('quick-setup');"),
+                "Vote Party capability transitions must use the quick-setup single-flight autoloader.");
+        assertFalse(script.body().contains("if (scheduleReload && tabFromHash() === 'quick-setup') void loadQuickSetupValues(true);"),
+                "Vote Party capability transitions must not start an overlapping direct READ.");
+        assertTrue(script.body().contains("const registry = await loadAllNodes();\n"
+                        + "    const previousQuickCapability = quickSetupCapability();\n"
+                        + "    const previousNodeIndex = nodeIndex;"));
+        assertTrue(script.body().contains("selectedNodes = filteredSelection;\n"
+                        + "    // A registry refresh can change the effective Vote Party contract without a\n"
+                        + "    // user selection event. Clear the old v2/v1 form before the normal tab\n"
+                        + "    // auto-load runs so a delayed or failed READ cannot expose stale values.\n"
+                        + "    reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability, false);"),
+                "Refresh-driven v2/v1 capability changes must clear stale Vote Party state before rereading.");
         assertTrue(script.body().contains("const autoLoadGeneration = inputGeneration;"));
         assertTrue(script.body().contains("if (inputGeneration !== autoLoadGeneration) {\n        autoLoadPending.add(tab);\n        return;\n      }"),
                 "A stale dedicated read must fence the remainder of the automatic quick-setup sequence.");

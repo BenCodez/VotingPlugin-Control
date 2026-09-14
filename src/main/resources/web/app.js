@@ -1421,6 +1421,7 @@ function nodeCard(node) {
   checkbox.checked = selectedNodes.has(node.nodeId);
   if (node.nodeId === selectedServerId) selector.title = 'The primary server remains included in configuration changes.';
   checkbox.addEventListener('change', () => {
+	const previousQuickCapability = quickSetupCapability();
     if (checkbox.checked && selectedNodes.size >= MAX_CONFIGURATION_TARGETS) {
       checkbox.checked = false;
       text(operationStatus, `At most ${MAX_CONFIGURATION_TARGETS} servers can be configured at once.`);
@@ -1432,6 +1433,7 @@ function nodeCard(node) {
     approvedQuickPreview = null;
     dedicatedSetupApprovals.clear();
     inputGeneration++;
+    reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability);
     updatePluginSuggestions();
     renderSelectedServer();
     updateConfigurationButtons();
@@ -2957,6 +2959,20 @@ function votePartyUsesV2() {
     && selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v2'));
 }
 
+function reloadVotePartyWhenTargetCapabilityChanges(previousCapability, scheduleReload = true) {
+  if (quickPreset.value !== 'vote-party' || previousCapability === quickSetupCapability()) return;
+  loadedQuickSetup = null;
+  quickSetupDirty = false;
+  approvedQuickPreview = null;
+  populateQuickState({});
+  text(quickOperationStatus, 'Selected backend capabilities changed. Loading confirmed Vote Party settings…');
+  updateConfigurationButtons();
+  // Funnel capability transitions through the tab's single-flight autoloader.
+  // A rapid v2/v1/v2 change therefore marks one follow-up read instead of
+  // starting overlapping READ operations that can race to populate the form.
+  if (scheduleReload && tabFromHash() === 'quick-setup') void autoLoadTab('quick-setup');
+}
+
 function quickSetupTargets() {
   return targets(quickSetupCapability())
     .filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
@@ -3496,6 +3512,7 @@ async function loadNodesOnce() {
   text(message, 'Loading…');
   try {
     const registry = await loadAllNodes();
+    const previousQuickCapability = quickSetupCapability();
     const previousNodeIndex = nodeIndex;
     allNodeItems = registry.items;
     nodePageMetadata = registry.pageMetadata;
@@ -3579,6 +3596,10 @@ async function loadNodesOnce() {
       text(operationStatus, routingDraftStatus('The selected nodes changed during refresh. Preview again before apply.'));
     }
     selectedNodes = filteredSelection;
+    // A registry refresh can change the effective Vote Party contract without a
+    // user selection event. Clear the old v2/v1 form before the normal tab
+    // auto-load runs so a delayed or failed READ cannot expose stale values.
+    reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability, false);
     renderNodeViews();
     updatePluginSuggestions();
     updateConfigurationButtons();
@@ -4473,6 +4494,7 @@ loadAutoSites.addEventListener('click', () => loadDedicatedSetup('auto-create-vo
 previewAutoSites.addEventListener('click', () => previewDedicatedSetup('auto-create-vote-sites'));
 applyAutoSites.addEventListener('click', () => applyDedicatedSetup('auto-create-vote-sites'));
 selectAllAutoSitesTargets.addEventListener('click', () => {
+  const previousQuickCapability = quickSetupCapability();
   const available = allNodeItems.filter(node => isBackend(node) && node.online
     && node.acceptedCapabilities.includes('config.quick-setup.v1'));
   const candidates = available
@@ -4484,6 +4506,7 @@ selectAllAutoSitesTargets.addEventListener('click', () => {
   approvedFilePreview = null;
   approvedQuickPreview = null;
   inputGeneration++;
+  reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability);
   renderNodeViews();
   updatePluginSuggestions();
   updateConfigurationButtons();
