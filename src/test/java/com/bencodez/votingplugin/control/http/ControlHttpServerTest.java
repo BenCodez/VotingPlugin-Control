@@ -205,6 +205,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("dedicatedSetupDirty.add(preset);"));
         assertTrue(script.body().contains("if (quickPreset.value !== 'vote-site') quickSetupDirty = true;"),
                 "The shared name field is a selector for vote sites but a dirty editable value for other presets.");
+        assertTrue(script.body().contains("quickSetupDirty = false;\n      quickSetupPreserveReadGeneration = -1;\n      quickPreset.value = 'vote-site';"),
+                "Opening a detected vote site must clear another preset's dirty guard before automatic READ.");
         assertTrue(script.body().contains("function exposeDirtyVoteSiteReload()"));
         assertTrue(script.body().contains("quickSetupDirty = true;\n  exposeDirtyVoteSiteReload();"),
                 "Becoming dirty during the selector debounce must also expose reload.");

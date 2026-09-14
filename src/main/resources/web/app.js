@@ -637,6 +637,8 @@ function renderSiteHealthResult(value) {
     button.className = 'secondary compact';
     button.addEventListener('click', () => {
       const key = String(service).replace(/[^A-Za-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 64) || 'vote-site';
+      quickSetupDirty = false;
+      quickSetupPreserveReadGeneration = -1;
       quickPreset.value = 'vote-site';
       quickName.value = key;
       quickSiteDisplayName.value = String(service).slice(0, 200);
@@ -649,7 +651,7 @@ function renderSiteHealthResult(value) {
       renderNodeViews();
       updatePluginSuggestions();
       setActiveTab('quick-setup', true);
-      text(quickOperationStatus, 'Detected service copied into the VoteSite setup. Load the generated key to confirm it is unused, complete the URL and delay, then preview before creating it.');
+      text(quickOperationStatus, 'Detected service copied into the VoteSite setup. Its generated key is loading automatically; complete the URL and delay, then preview before creating it.');
       scrollToAnchor(document.querySelector('#quick-setup-card'));
     });
     actions.append(button);
