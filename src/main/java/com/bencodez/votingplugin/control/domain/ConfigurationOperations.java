@@ -573,7 +573,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                 || cancelLostCapability(operation, node)) {
             return view(operation);
         }
-        validateResultConfiguration(operation, result);
+        validateResultConfiguration(operation, result, node);
         String priorState = operation.states.get(nodeId);
         ConfigurationTaskResult priorResult = operation.results.get(nodeId);
         Instant priorLease = operation.leasedAt.get(nodeId);
@@ -710,14 +710,17 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
     }
 
-    private static void validateResultConfiguration(StoredOperation operation, ConfigurationTaskResult result) {
+    private static void validateResultConfiguration(StoredOperation operation, ConfigurationTaskResult result,
+            NodeStatus node) {
         ManagedConfiguration actual = result.configuration();
         if (actual == null) return;
         ManagedConfiguration expected = operation.configuration;
         boolean mismatch = expected == null || !expected.domain().equals(actual.domain())
                 || (ManagedConfiguration.FILE.equals(expected.domain()) && !expected.fileName().equals(actual.fileName()))
                 || (ManagedConfiguration.QUICK_SETUP.equals(expected.domain()) && !expected.preset().equals(actual.preset()))
-                || (!activeMethodRead(operation, expected) && !expected.capability().equals(actual.capability()));
+                || (!expected.capability().equals(actual.capability())
+                && (!activeMethodRead(operation, expected)
+                || !node.acceptedCapabilities().contains(actual.capability())));
         if (mismatch) throw invalid("result configuration does not match the operation selector");
     }
 
