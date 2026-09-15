@@ -726,6 +726,11 @@ public final class ConfigurationOperations implements AutoCloseable {
     private static boolean compatibleActiveMethodRead(StoredOperation operation, ManagedConfiguration expected,
             ManagedConfiguration actual, NodeStatus node) {
         if (!activeMethodRead(operation, expected)) return false;
+        try {
+            actual.validateProposal();
+        } catch (IllegalArgumentException invalidMethod) {
+            return false;
+        }
         if (PROXY_METHOD_HTTP_CAPABILITY.equals(expected.capability())
                 && actual.options().containsKey("method")
                 && !"HTTP".equals(actual.options().get("method"))) return true;

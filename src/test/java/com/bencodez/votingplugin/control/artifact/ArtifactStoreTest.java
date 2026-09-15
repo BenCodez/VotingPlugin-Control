@@ -341,9 +341,10 @@ class ArtifactStoreTest {
         assertRejected(() -> store.upload(new ByteArrayInputStream(incoming), "incoming.jar", incomingId));
 
         assertArrayEquals(old, store.open(oldId).readAllBytes());
-        assertArrayEquals(incoming, store.open(incomingId).readAllBytes());
+        assertRejected(() -> store.open(incomingId));
+        assertRejected(() -> store.describe(incomingId));
         try (var entries = Files.list(artifacts)) {
-            assertTrue(entries.anyMatch(path -> path.getFileName().toString().endsWith(".pending")));
+            assertFalse(entries.anyMatch(path -> path.getFileName().toString().endsWith(".pending")));
         }
 
         ArtifactStore recovered = new ArtifactStore(artifacts, 1_000_000, 1);

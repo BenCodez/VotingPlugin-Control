@@ -161,6 +161,27 @@ class ConfigurationOperationsTest {
         assertEquals("PLUGINMESSAGING", read.results().get("lobby").configuration().options().get("method"));
     }
 
+    @Test void proxyBackendV2ReadRejectsAnUnknownInstalledMethod() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("lobby", session, "Lobby", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "proxy-backend", Map.of("method", "HTTP"));
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("lobby"), selector);
+        ConfigurationTask task = operations.claim("lobby", session);
+        ManagedConfiguration invalid = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "proxy-backend", Map.of("method", "NOT_A_METHOD"));
+
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(read.operationId(), "lobby",
+                        new ConfigurationTaskResult(session, true, "OK", "installed", "a".repeat(64), invalid,
+                                List.of(), false, false, task.attemptId()))).code());
+    }
+
     @Test void proxyBackendReadRejectsInstalledMethodFromAnUnnegotiatedCapability() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

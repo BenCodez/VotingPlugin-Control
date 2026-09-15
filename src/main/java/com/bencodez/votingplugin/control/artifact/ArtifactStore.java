@@ -501,6 +501,7 @@ public final class ArtifactStore {
         if (!isSha256(artifactId)) throw rejected();
         try {
             return withDirectoryLock(() -> {
+                removeIncompleteUploads();
                 Path artifact = artifactPath(artifactId);
                 verifyExistingArtifact(artifact, artifactId);
                 return Channels.newInputStream(FileChannel.open(artifact,
@@ -516,6 +517,7 @@ public final class ArtifactStore {
         if (!isSha256(artifactId)) throw rejected();
         try {
             return withDirectoryLock(() -> {
+                removeIncompleteUploads();
                 Path artifact = artifactPath(artifactId);
                 verifyExistingArtifact(artifact, artifactId);
                 return new Artifact(artifactId, "VotingPlugin.jar", Files.size(artifact));
