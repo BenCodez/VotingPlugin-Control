@@ -121,7 +121,8 @@ class ConfigurationOperationsTest {
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
         UUID session = UUID.randomUUID();
         registry.register(new NodeRegistration("lobby", session, "Lobby", "BUKKIT", "test", 1,
-                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY,
+                        ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY), Set.of()));
         ConfigurationOperations operations = new ConfigurationOperations(registry,
                 new ConfigurationAuditLog(directory, clock), clock);
         ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
@@ -135,6 +136,71 @@ class ConfigurationOperationsTest {
                         List.of(), false, false, task.attemptId()));
         assertEquals("SUCCEEDED", read.state());
         assertEquals("HTTP", read.results().get("lobby").configuration().options().get("method"));
+    }
+
+    @Test void proxyBackendV2ReadAcceptsInstalledLegacyMethodWithoutV1Negotiation() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("lobby", session, "Lobby", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "proxy-backend", Map.of("method", "HTTP"));
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("lobby"), selector);
+        ConfigurationTask task = operations.claim("lobby", session);
+        ManagedConfiguration installed = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "proxy-backend", Map.of("method", "PLUGINMESSAGING"));
+
+        read = operations.complete(read.operationId(), "lobby",
+                new ConfigurationTaskResult(session, true, "OK", "installed", "a".repeat(64), installed,
+                        List.of(), false, false, task.attemptId()));
+
+        assertEquals("SUCCEEDED", read.state());
+        assertEquals("PLUGINMESSAGING", read.results().get("lobby").configuration().options().get("method"));
+    }
+
+    @Test void proxyBackendV2ReadRejectsAnUnknownInstalledMethod() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("lobby", session, "Lobby", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "proxy-backend", Map.of("method", "HTTP"));
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("lobby"), selector);
+        ConfigurationTask task = operations.claim("lobby", session);
+        ManagedConfiguration invalid = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "proxy-backend", Map.of("method", "NOT_A_METHOD"));
+
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(read.operationId(), "lobby",
+                        new ConfigurationTaskResult(session, true, "OK", "installed", "a".repeat(64), invalid,
+                                List.of(), false, false, task.attemptId()))).code());
+    }
+
+    @Test void proxyBackendReadRejectsInstalledMethodFromAnUnnegotiatedCapability() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("lobby", session, "Lobby", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "proxy-backend", Map.of());
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("lobby"), selector);
+        ConfigurationTask task = operations.claim("lobby", session);
+        ManagedConfiguration v2 = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "proxy-backend", Map.of("method", "HTTP"));
+
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(read.operationId(), "lobby",
+                        new ConfigurationTaskResult(session, true, "OK", "installed", "a".repeat(64), v2,
+                                List.of(), false, false, task.attemptId()))).code());
     }
 
     @Test void quickSetupPreviewRejectsAResultFromANewerCapability() throws Exception {
@@ -963,6 +1029,7 @@ class ConfigurationOperationsTest {
         ConfigurationTask httpRead = operations.claim("http-backend", httpBackendSession);
         assertEquals("proxy-backend", httpRead.configuration().preset());
         assertEquals(Map.of(), httpRead.configuration().options());
+        assertEquals(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY, httpRead.capability());
         ManagedConfiguration lowercaseHttp = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null,
                 List.of(), null, null, "proxy-backend", Map.of("server", "lobby", "method", "http"));
         assertThrows(IllegalArgumentException.class, lowercaseHttp::validateProposal);
@@ -1243,6 +1310,28 @@ class ConfigurationOperationsTest {
         assertEquals("COMPLETED_WITH_ERRORS", read.state());
         assertEquals("TARGET_CHANGED", read.results().get("proxy-a").code());
         assertEquals(false, read.results().get("proxy-a").success());
+    }
+
+    @Test void claimCancelsBackendSetupWhenTheNodeChangesRoleWithinItsSession() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        Set<String> capabilities = Set.of(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY);
+        registry.register(new NodeRegistration("backend", session, "Backend", "BUKKIT", "test", 1,
+                capabilities, Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null,
+                List.of(), null, null, "proxy-backend", Map.of("method", "HTTP"));
+        UUID operation = operations.createRead(List.of("backend"), selector).operationId();
+
+        registry.register(new NodeRegistration("backend", session, "Backend", "VELOCITY", "test", 1,
+                capabilities, Set.of()));
+
+        assertNull(operations.claim("backend", session));
+        ConfigurationOperations.OperationView view = operations.get(operation);
+        assertEquals("COMPLETED_WITH_ERRORS", view.state());
+        assertEquals("TARGET_CHANGED", view.results().get("backend").code());
     }
 
     @Test void completionCancelsClaimedTaskWhenTheNodeLosesItsCapabilityWithinTheSession() throws Exception {
