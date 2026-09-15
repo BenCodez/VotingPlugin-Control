@@ -50,6 +50,7 @@ public final class ArtifactStore {
     private static final long MAX_EXPANDED_BYTES = 128L * 1024L * 1024L;
     private static final long MAX_COMPRESSION_RATIO = 200L;
     private static final int MAX_PLUGIN_YML_BYTES = 64 * 1024;
+    private static final int MAX_TRANSACTION_MARKER_BYTES = 4096;
     private static final Set<PosixFilePermission> DIRECTORY_PERMISSIONS = Set.of(
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE);
     private static final Set<PosixFilePermission> FILE_PERMISSIONS = Set.of(
@@ -122,17 +123,27 @@ public final class ArtifactStore {
             String name = marker.getFileName().toString();
             if (!name.matches("evict-[0-9a-f]{32}-[0-9a-f]{64}\\.(?:pending|committed)")) continue;
             if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(marker)
-                    || Files.size(marker) > 128) throw rejected();
-            String stagedName = Files.readString(marker, StandardCharsets.UTF_8);
+                    || Files.size(marker) > MAX_TRANSACTION_MARKER_BYTES) throw rejected();
+            String markerContents = Files.readString(marker, StandardCharsets.UTF_8);
+            String[] markerLines = markerContents.split("\n", -1);
+            String stagedName = markerLines[0];
             boolean legacyMarker = stagedName.isEmpty();
             if (!legacyMarker && (!stagedName.matches("upload-[A-Za-z0-9._-]+\\.part")
                     || stagedName.contains(".."))) throw rejected();
+            List<String> plannedArtifactIds = new ArrayList<>();
+            Set<String> uniquePlannedArtifactIds = new HashSet<>();
+            for (int index = 1; index < markerLines.length; index++) {
+                String artifactId = markerLines[index];
+                if (!isSha256(artifactId) || !uniquePlannedArtifactIds.add(artifactId)) throw rejected();
+                plannedArtifactIds.add(artifactId);
+            }
             Path staged = legacyMarker ? null : directory.resolve(stagedName);
             boolean stagedPresent = staged != null && Files.exists(staged, LinkOption.NOFOLLOW_LINKS);
             if (stagedPresent && (!Files.isRegularFile(staged, LinkOption.NOFOLLOW_LINKS)
                     || Files.isSymbolicLink(staged))) throw rejected();
             String transaction = name.substring("evict-".length(), "evict-".length() + 32);
             String incomingId = name.substring("evict-".length() + 33, "evict-".length() + 33 + 64);
+            if (uniquePlannedArtifactIds.contains(incomingId)) throw rejected();
             boolean committed = name.endsWith(".committed");
             List<QuarantinedFile> quarantined = new ArrayList<>();
             for (Path candidate : files) {
@@ -144,22 +155,64 @@ public final class ArtifactStore {
                 quarantined.add(new QuarantinedFile(artifactPath(artifactId), candidate));
             }
             Path incoming = artifactPath(incomingId);
-            if (committed) {
+            boolean pendingCollision = false;
+            if (!committed && Files.exists(incoming, LinkOption.NOFOLLOW_LINKS)) {
                 verifyExistingArtifact(incoming, incomingId);
+                if (stagedPresent) {
+                    // A pending marker normally rolls back a partially published hard link.
+                    // If the verified staged upload is a distinct file, however, publish()
+                    // lost a content-address collision to another verified publisher. That
+                    // publication is durable and its planned evictions must be committed.
+                    verifyExistingArtifact(staged, incomingId);
+                    pendingCollision = !Files.isSameFile(staged, incoming);
+                    if (!pendingCollision) Files.delete(incoming);
+                } else {
+                    boolean legacyCollision = legacyMarker && hasMatchingStagedUpload(files, incomingId);
+                    if (!legacyCollision) Files.delete(incoming);
+                }
+            }
+            if (committed || pendingCollision) {
+                if (committed) verifyExistingArtifact(incoming, incomingId);
+                // A verified competing publication is equivalent to the commit point: keeping
+                // the quarantined artifacts would violate the configured capacity bound.
+                // The staged upload is removed by removeIncompleteUploads after this marker.
+                completePlannedEvictions(transaction, plannedArtifactIds, quarantined);
                 for (QuarantinedFile file : quarantined) Files.delete(file.backup());
             } else {
-                if (Files.exists(incoming, LinkOption.NOFOLLOW_LINKS)) {
-                    verifyExistingArtifact(incoming, incomingId);
-                    boolean legacyCollision = legacyMarker && hasMatchingStagedUpload(files, incomingId);
-                    boolean interruptedPublication = stagedPresent && Files.isSameFile(staged, incoming);
-                    if (interruptedPublication || (!stagedPresent && !legacyCollision)) Files.delete(incoming);
-                }
                 restoreQuarantined(quarantined);
             }
             DurableFiles.forceDirectory(directory);
             Files.delete(marker);
             DurableFiles.forceDirectory(directory);
         }
+    }
+
+    /** Completes a durable eviction plan after the incoming artifact reached its commit point. */
+    private void completePlannedEvictions(String transaction, List<String> plannedArtifactIds,
+                                          List<QuarantinedFile> quarantined) throws IOException {
+        Set<String> alreadyQuarantined = new HashSet<>();
+        for (QuarantinedFile file : quarantined) {
+            alreadyQuarantined.add(file.original().getFileName().toString().substring(0, 64));
+        }
+        boolean moved = false;
+        for (String artifactId : plannedArtifactIds) {
+            if (alreadyQuarantined.contains(artifactId)) continue;
+            Path original = artifactPath(artifactId);
+            Path backup = directory.resolve("evict-" + transaction + "-" + artifactId + ".part");
+            if (Files.exists(backup, LinkOption.NOFOLLOW_LINKS)) {
+                verifyExistingArtifact(backup, artifactId);
+                quarantined.add(new QuarantinedFile(original, backup));
+                continue;
+            }
+            // A missing original and backup means cleanup already completed before
+            // the marker itself could be removed. Otherwise finish the planned move.
+            if (!Files.exists(original, LinkOption.NOFOLLOW_LINKS)) continue;
+            verifyExistingArtifact(original, artifactId);
+            moveAtomically(original, backup);
+            quarantined.add(new QuarantinedFile(original, backup));
+            moved = true;
+        }
+        if (moved) DurableFiles.forceDirectory(directory);
     }
 
     private boolean hasMatchingStagedUpload(List<Path> files, String incomingId) throws IOException {
@@ -207,7 +260,11 @@ public final class ArtifactStore {
         boolean published = false;
         try {
             verifyDirectory();
-            recoverEvictionTransactions();
+            // A prior rejected upload may have failed its best-effort finally
+            // cleanup. Reconcile every owned temporary before capacity planning;
+            // removeIncompleteUploads fails closed when a remnant cannot be
+            // safely verified or removed.
+            removeIncompleteUploads();
             temporary = Files.createTempFile(directory, "upload-", ".part");
             setPermissions(temporary, FILE_PERMISSIONS);
             DigestAndSize digest = copyBounded(source, temporary);
@@ -285,25 +342,26 @@ public final class ArtifactStore {
         Path committed = directory.resolve("evict-" + transaction + "-" + incomingId + ".committed");
         boolean moved = false;
         try {
-            createTransactionMarker(pending, temporary.getFileName().toString());
+            createTransactionMarker(pending, temporary.getFileName().toString(), evictionPlan);
             for (StoredFile candidate : evictionPlan) {
                 Path backup = directory.resolve("evict-" + transaction + "-" + candidate.artifactId() + ".part");
                 if (Files.exists(backup, LinkOption.NOFOLLOW_LINKS)) throw rejected();
-                move(candidate.path(), backup, false);
+                moveAtomically(candidate.path(), backup);
                 quarantined.add(new QuarantinedFile(candidate.path(), backup));
             }
             if (!quarantined.isEmpty()) DurableFiles.forceDirectory(directory);
             moved = publish(temporary, artifact);
             if (!moved) {
-                restoreQuarantined(quarantined);
+                // A verified content-address collision is a successful publication
+                // by another process. Commit this capacity transition instead of
+                // restoring evictions and leaving the store over its configured bounds.
+                moveAtomically(pending, committed);
                 DurableFiles.forceDirectory(directory);
-                Files.delete(pending);
+            } else {
+                finishPublishedArtifact(artifact);
+                moveAtomically(pending, committed);
                 DurableFiles.forceDirectory(directory);
-                return false;
             }
-            finishPublishedArtifact(artifact);
-            move(pending, committed, false);
-            DurableFiles.forceDirectory(directory);
         } catch (IOException | RuntimeException failure) {
             IOException rollbackFailure = rollbackPublication(artifact, quarantined, pending, committed, moved);
             if (rollbackFailure != null) failure.addSuppressed(rollbackFailure);
@@ -320,17 +378,43 @@ public final class ArtifactStore {
         return moved;
     }
 
-    private void createTransactionMarker(Path marker, String stagedName) throws IOException {
-        try (FileChannel channel = FileChannel.open(marker, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
+    private void createTransactionMarker(Path marker, String stagedName, List<StoredFile> evictionPlan)
+            throws IOException {
+        Path temporaryMarker = directory.resolve("upload-marker-" + UUID.randomUUID() + ".part");
+        boolean published = false;
+        StringBuilder serialized = new StringBuilder(stagedName);
+        for (StoredFile candidate : evictionPlan) serialized.append('\n').append(candidate.artifactId());
+        byte[] serializedBytes = serialized.toString().getBytes(StandardCharsets.UTF_8);
+        if (serializedBytes.length > MAX_TRANSACTION_MARKER_BYTES) throw rejected();
+        try (FileChannel channel = FileChannel.open(temporaryMarker,
+                StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
                 LinkOption.NOFOLLOW_LINKS)) {
-            setPermissions(marker, FILE_PERMISSIONS);
-            ByteBuffer contents = ByteBuffer.wrap(stagedName.getBytes(StandardCharsets.UTF_8));
+            setPermissions(temporaryMarker, FILE_PERMISSIONS);
+            ByteBuffer contents = ByteBuffer.wrap(serializedBytes);
             while (contents.hasRemaining()) {
                 if (channel.write(contents) <= 0) throw new IOException("Artifact transaction marker could not be written");
             }
             channel.force(true);
+        } catch (IOException | RuntimeException failure) {
+            cleanupTemporaryMarker(temporaryMarker, failure);
+            throw failure;
         }
-        DurableFiles.forceDirectory(directory);
+        try {
+            Files.move(temporaryMarker, marker, StandardCopyOption.ATOMIC_MOVE);
+            published = true;
+            DurableFiles.forceDirectory(directory);
+        } catch (IOException | RuntimeException failure) {
+            if (!published) cleanupTemporaryMarker(temporaryMarker, failure);
+            throw failure;
+        }
+    }
+
+    private void cleanupTemporaryMarker(Path temporaryMarker, Throwable original) {
+        try {
+            if (Files.deleteIfExists(temporaryMarker)) DurableFiles.forceDirectory(directory);
+        } catch (IOException cleanupFailure) {
+            original.addSuppressed(cleanupFailure);
+        }
     }
 
     private IOException rollbackPublication(Path artifact, List<QuarantinedFile> quarantined,
@@ -338,7 +422,7 @@ public final class ArtifactStore {
         IOException failure = null;
         if (Files.exists(committed, LinkOption.NOFOLLOW_LINKS)) {
             try {
-                move(committed, pending, false);
+                moveAtomically(committed, pending);
                 DurableFiles.forceDirectory(directory);
             } catch (IOException problem) {
                 return problem;
@@ -380,7 +464,7 @@ public final class ArtifactStore {
                 verifyExistingArtifact(file.original(), file.original().getFileName().toString().substring(0, 64));
                 Files.delete(file.backup());
             } else {
-                move(file.backup(), file.original(), false);
+                moveAtomically(file.backup(), file.original());
             }
         }
     }
@@ -544,13 +628,12 @@ public final class ArtifactStore {
         DurableFiles.forceDirectory(directory);
     }
 
-    private static void move(Path source, Path target, boolean replace) throws IOException {
+    /** Transaction state changes must never silently degrade to a non-atomic move. */
+    private static void moveAtomically(Path source, Path target) throws IOException {
         try {
-            if (replace) Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            else Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
         } catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
-            if (replace) Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
-            else Files.move(source, target);
+            throw new IOException("Artifact transaction marker transition is not atomic", unsupported);
         }
     }
 

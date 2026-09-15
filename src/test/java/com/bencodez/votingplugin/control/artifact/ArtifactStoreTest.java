@@ -99,6 +99,29 @@ class ArtifactStoreTest {
         assertRejected(() -> store.upload(new ByteArrayInputStream(duplicate), "VotingPlugin.jar", sha256(duplicate)));
     }
 
+    @Test void removesIncompleteUploadsBeforeEveryNewUpload() throws Exception {
+        Path artifacts = directory.resolve("artifacts-retry-cleanup");
+        ArtifactStore store = new ArtifactStore(artifacts);
+        Path incomplete = Files.writeString(artifacts.resolve("upload-rejected.part"), "partial");
+        byte[] valid = jar("name: VotingPlugin\n", "plugin/Main.class", new byte[] {1});
+
+        ArtifactStore.Artifact uploaded = store.upload(
+                new ByteArrayInputStream(valid), "VotingPlugin.jar", sha256(valid));
+
+        assertFalse(Files.exists(incomplete));
+        assertArrayEquals(valid, store.open(uploaded.artifactId()).readAllBytes());
+    }
+
+	@Test void removesAnUnpublishedTemporaryTransactionMarkerOnStartup() throws Exception {
+		Path artifacts = directory.resolve("artifacts");
+		Files.createDirectories(artifacts);
+		Path incomplete = Files.writeString(artifacts.resolve("upload-marker-crashed.part"), "truncated");
+
+		new ArtifactStore(artifacts);
+
+		assertFalse(Files.exists(incomplete));
+	}
+
     @Test void rejectsSymlinkedStorageAndExistingArtifactTargets() throws Exception {
         Path real = directory.resolve("real");
         Files.createDirectory(real);
@@ -189,7 +212,7 @@ class ArtifactStoreTest {
         assertRejected(() -> store.open(secondId));
     }
 
-    @Test void publicationCollisionRestoresPlannedEvictionsAndRemovesTheStagedUpload() throws Exception {
+    @Test void publicationCollisionCommitsPlannedEvictionsAndRemovesTheStagedUpload() throws Exception {
         Path artifacts = directory.resolve("collision-artifacts");
         byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
         byte[] incoming = jar("name: VotingPlugin\n", "plugin/Incoming.class", new byte[] {2});
@@ -205,7 +228,7 @@ class ArtifactStoreTest {
         ArtifactStore.Artifact duplicate = store.upload(new ByteArrayInputStream(incoming), "incoming.jar", incomingId);
 
         assertEquals(incomingId, duplicate.artifactId());
-        assertArrayEquals(old, store.open(oldId).readAllBytes());
+        assertRejected(() -> store.open(oldId));
         assertArrayEquals(incoming, store.open(incomingId).readAllBytes());
         try (var entries = Files.list(artifacts)) {
             assertFalse(entries.anyMatch(path -> path.getFileName().toString().startsWith("upload-")
@@ -343,11 +366,11 @@ class ArtifactStoreTest {
         }
     }
 
-    @Test void startupPreservesACompetingArtifactAfterAnInterruptedPublishCollision() throws Exception {
+    @Test void startupCommitsEvictionAfterCrashFollowingACompetingPublishCollision() throws Exception {
         Path artifacts = directory.resolve("collision-recovery-artifacts");
         byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
         byte[] incoming = jar("name: VotingPlugin\n", "plugin/Incoming.class", new byte[] {2});
-        ArtifactStore store = new ArtifactStore(artifacts);
+        ArtifactStore store = new ArtifactStore(artifacts, 1_000_000, 1);
         String oldId = store.upload(new ByteArrayInputStream(old), "old.jar", sha256(old)).artifactId();
         String incomingId = sha256(incoming);
         String transaction = "4".repeat(32);
@@ -358,13 +381,48 @@ class ArtifactStoreTest {
         Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending");
         Files.writeString(marker, staged.getFileName().toString());
 
-        ArtifactStore recovered = new ArtifactStore(artifacts);
+        ArtifactStore recovered = new ArtifactStore(artifacts, 1_000_000, 1);
 
-        assertArrayEquals(old, recovered.open(oldId).readAllBytes());
+        assertRejected(() -> recovered.open(oldId));
         assertArrayEquals(incoming, recovered.open(incomingId).readAllBytes());
         assertFalse(Files.exists(staged));
         assertFalse(Files.exists(quarantine));
         assertFalse(Files.exists(marker));
+        try (var files = Files.list(artifacts)) {
+            assertEquals(1, files.filter(path -> path.getFileName().toString().endsWith(".jar")).count());
+        }
+    }
+
+    @Test void collisionRecoveryCompletesEveryEvictionRecordedBeforeTheFirstMove() throws Exception {
+        Path artifacts = directory.resolve("partial-collision-recovery-artifacts");
+        Files.createDirectories(artifacts);
+        byte[] first = jar("name: VotingPlugin\n", "plugin/First.class", new byte[] {1});
+        byte[] second = jar("name: VotingPlugin\n", "plugin/Second.class", new byte[] {2});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/Incoming.class", new byte[] {3});
+        String firstId = sha256(first);
+        String secondId = sha256(second);
+        String incomingId = sha256(incoming);
+        Files.write(artifacts.resolve(firstId + ".jar"), first);
+        Files.write(artifacts.resolve(secondId + ".jar"), second);
+        Files.write(artifacts.resolve(incomingId + ".jar"), incoming);
+        Path staged = Files.write(artifacts.resolve("upload-partial-collision.part"), incoming);
+        String transaction = "7".repeat(32);
+        Path firstBackup = artifacts.resolve("evict-" + transaction + "-" + firstId + ".part");
+        Files.move(artifacts.resolve(firstId + ".jar"), firstBackup);
+        Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending");
+        Files.writeString(marker, staged.getFileName() + "\n" + firstId + "\n" + secondId);
+
+        ArtifactStore recovered = new ArtifactStore(artifacts, 1_000_000, 1);
+
+        assertRejected(() -> recovered.open(firstId));
+        assertRejected(() -> recovered.open(secondId));
+        assertArrayEquals(incoming, recovered.open(incomingId).readAllBytes());
+        assertFalse(Files.exists(staged));
+        assertFalse(Files.exists(firstBackup));
+        assertFalse(Files.exists(marker));
+        try (var files = Files.list(artifacts)) {
+            assertEquals(1, files.filter(path -> path.getFileName().toString().endsWith(".jar")).count());
+        }
     }
 
     @Test void startupRollsBackAHardLinkedPublicationBeforeCommit() throws Exception {
