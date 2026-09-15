@@ -63,6 +63,7 @@ public final class ArtifactStore {
     private final IoAction beforePublishMove;
     private final IoAction afterPublishMove;
     private final IoAction afterCollision;
+    private final IoAction publicationDelete;
 
     /** Creates or opens an empty private directory owned by Control. */
     public ArtifactStore(Path directory) throws IOException {
@@ -85,15 +86,24 @@ public final class ArtifactStore {
 
     ArtifactStore(Path directory, long maximumStoredBytes, int maximumStoredArtifacts,
                   IoAction beforePublishMove, IoAction afterPublishMove, IoAction afterCollision) throws IOException {
+        this(directory, maximumStoredBytes, maximumStoredArtifacts, beforePublishMove, afterPublishMove,
+                afterCollision, Files::delete);
+    }
+
+    ArtifactStore(Path directory, long maximumStoredBytes, int maximumStoredArtifacts,
+                  IoAction beforePublishMove, IoAction afterPublishMove, IoAction afterCollision,
+                  IoAction publicationDelete) throws IOException {
         if (directory == null) throw rejected();
         if (maximumStoredBytes < 1 || maximumStoredArtifacts < 1
-                || beforePublishMove == null || afterPublishMove == null || afterCollision == null) throw rejected();
+                || beforePublishMove == null || afterPublishMove == null || afterCollision == null
+                || publicationDelete == null) throw rejected();
         this.directory = directory.toAbsolutePath().normalize();
         this.maximumStoredBytes = maximumStoredBytes;
         this.maximumStoredArtifacts = maximumStoredArtifacts;
         this.beforePublishMove = beforePublishMove;
         this.afterPublishMove = afterPublishMove;
         this.afterCollision = afterCollision;
+        this.publicationDelete = publicationDelete;
         try {
             createPrivateDirectory(this.directory);
             withDirectoryLock(() -> {
@@ -353,6 +363,7 @@ public final class ArtifactStore {
         Path committed = directory.resolve("evict-" + transaction + "-" + incomingId + ".committed");
         boolean moved = false;
         boolean collision = false;
+        PublicationState publication = new PublicationState();
         try {
             createTransactionMarker(pending, temporary.getFileName().toString(), evictionPlan);
             for (StoredFile candidate : evictionPlan) {
@@ -362,7 +373,7 @@ public final class ArtifactStore {
                 quarantined.add(new QuarantinedFile(candidate.path(), backup));
             }
             if (!quarantined.isEmpty()) DurableFiles.forceDirectory(directory);
-            moved = publish(temporary, artifact);
+            moved = publish(temporary, artifact, publication);
             if (!moved) {
                 // A verified content-address collision is a successful publication
                 // by another process. Commit this capacity transition instead of
@@ -377,6 +388,7 @@ public final class ArtifactStore {
                 DurableFiles.forceDirectory(directory);
             }
         } catch (IOException | RuntimeException failure) {
+            moved |= publication.linked;
             if (collision) throw new RecoveryRequiredException(failure);
             IOException rollbackFailure = rollbackPublication(artifact, quarantined, pending, committed, moved);
             if (rollbackFailure != null) failure.addSuppressed(rollbackFailure);
@@ -448,7 +460,7 @@ public final class ArtifactStore {
                 if (!Files.isRegularFile(artifact, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(artifact)) {
                     throw rejected();
                 }
-                Files.delete(artifact);
+                publicationDelete.run(artifact);
             }
         } catch (IOException problem) {
             failure = problem;
@@ -618,18 +630,19 @@ public final class ArtifactStore {
         }
     }
 
-    private boolean publish(Path temporary, Path artifact) throws IOException {
+    private boolean publish(Path temporary, Path artifact, PublicationState publication) throws IOException {
         try {
             beforePublishMove.run(artifact);
             Files.createLink(artifact, temporary);
+            publication.linked = true;
         } catch (java.nio.file.FileAlreadyExistsException collision) {
             verifyExistingArtifact(artifact, artifact.getFileName().toString().substring(0, 64));
             return false;
         }
         try {
-            Files.delete(temporary);
+            publicationDelete.run(temporary);
         } catch (IOException failure) {
-            try { Files.deleteIfExists(artifact); }
+            try { publicationDelete.run(artifact); }
             catch (IOException rollbackFailure) { failure.addSuppressed(rollbackFailure); }
             throw failure;
         }
@@ -757,6 +770,7 @@ public final class ArtifactStore {
     private record DigestAndSize(String sha256, long size) { }
     private record StoredFile(Path path, String artifactId, long size, long modified) { }
     private record QuarantinedFile(Path original, Path backup) { }
+    private static final class PublicationState { private boolean linked; }
     @FunctionalInterface interface IoAction { void run(Path path) throws IOException; }
     @FunctionalInterface private interface IoSupplier<T> { T run() throws IOException; }
 }

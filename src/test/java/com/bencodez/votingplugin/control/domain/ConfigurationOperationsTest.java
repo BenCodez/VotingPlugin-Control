@@ -138,6 +138,29 @@ class ConfigurationOperationsTest {
         assertEquals("HTTP", read.results().get("lobby").configuration().options().get("method"));
     }
 
+    @Test void proxyBackendV2ReadAcceptsInstalledLegacyMethodWithoutV1Negotiation() throws Exception {
+        Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
+        InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("lobby", session, "Lobby", "BUKKIT", "test", 1,
+                Set.of(ConfigurationOperations.PROXY_METHOD_HTTP_CAPABILITY), Set.of()));
+        ConfigurationOperations operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock);
+        ManagedConfiguration selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "proxy-backend", Map.of("method", "HTTP"));
+        ConfigurationOperations.OperationView read = operations.createRead(List.of("lobby"), selector);
+        ConfigurationTask task = operations.claim("lobby", session);
+        ManagedConfiguration installed = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(),
+                null, null, "proxy-backend", Map.of("method", "PLUGINMESSAGING"));
+
+        read = operations.complete(read.operationId(), "lobby",
+                new ConfigurationTaskResult(session, true, "OK", "installed", "a".repeat(64), installed,
+                        List.of(), false, false, task.attemptId()));
+
+        assertEquals("SUCCEEDED", read.state());
+        assertEquals("PLUGINMESSAGING", read.results().get("lobby").configuration().options().get("method"));
+    }
+
     @Test void proxyBackendReadRejectsInstalledMethodFromAnUnnegotiatedCapability() throws Exception {
         Clock clock = Clock.fixed(Instant.parse("2026-08-25T00:00:00Z"), ZoneOffset.UTC);
         InMemoryNodeRegistry registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));

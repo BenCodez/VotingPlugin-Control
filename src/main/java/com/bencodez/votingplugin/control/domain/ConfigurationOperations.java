@@ -719,9 +719,17 @@ public final class ConfigurationOperations implements AutoCloseable {
                 || (ManagedConfiguration.FILE.equals(expected.domain()) && !expected.fileName().equals(actual.fileName()))
                 || (ManagedConfiguration.QUICK_SETUP.equals(expected.domain()) && !expected.preset().equals(actual.preset()))
                 || (!expected.capability().equals(actual.capability())
-                && (!activeMethodRead(operation, expected)
-                || !node.acceptedCapabilities().contains(actual.capability())));
+                && !compatibleActiveMethodRead(operation, expected, actual, node));
         if (mismatch) throw invalid("result configuration does not match the operation selector");
+    }
+
+    private static boolean compatibleActiveMethodRead(StoredOperation operation, ManagedConfiguration expected,
+            ManagedConfiguration actual, NodeStatus node) {
+        if (!activeMethodRead(operation, expected)) return false;
+        if (PROXY_METHOD_HTTP_CAPABILITY.equals(expected.capability())
+                && actual.options().containsKey("method")
+                && !"HTTP".equals(actual.options().get("method"))) return true;
+        return node.acceptedCapabilities().contains(actual.capability());
     }
 
     private static boolean activeMethodRead(StoredOperation operation, ManagedConfiguration expected) {

@@ -323,6 +323,38 @@ class ArtifactStoreTest {
         }
     }
 
+    @Test void hardLinkCleanupFailureRetainsRecoveryStateUntilStartupCanReconcile() throws Exception {
+        Path artifacts = directory.resolve("hard-link-cleanup-artifacts");
+        AtomicBoolean failPublicationDeletes = new AtomicBoolean();
+        byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/Incoming.class", new byte[] {2});
+        String oldId = sha256(old);
+        String incomingId = sha256(incoming);
+        ArtifactStore store = new ArtifactStore(artifacts, 1_000_000, 1,
+                path -> { }, path -> { }, path -> { }, path -> {
+                    if (failPublicationDeletes.get()) throw new IOException("simulated delete failure");
+                    Files.delete(path);
+                });
+        store.upload(new ByteArrayInputStream(old), "old.jar", oldId);
+
+        failPublicationDeletes.set(true);
+        assertRejected(() -> store.upload(new ByteArrayInputStream(incoming), "incoming.jar", incomingId));
+
+        assertArrayEquals(old, store.open(oldId).readAllBytes());
+        assertArrayEquals(incoming, store.open(incomingId).readAllBytes());
+        try (var entries = Files.list(artifacts)) {
+            assertTrue(entries.anyMatch(path -> path.getFileName().toString().endsWith(".pending")));
+        }
+
+        ArtifactStore recovered = new ArtifactStore(artifacts, 1_000_000, 1);
+        assertArrayEquals(old, recovered.open(oldId).readAllBytes());
+        assertRejected(() -> recovered.open(incomingId));
+        try (var entries = Files.list(artifacts)) {
+            assertFalse(entries.anyMatch(path -> path.getFileName().toString().startsWith("evict-")
+                    || path.getFileName().toString().startsWith("upload-")));
+        }
+    }
+
     @Test void startupRestoresAnInterruptedEvictionQuarantine() throws Exception {
         Path artifacts = directory.resolve("artifacts");
         byte[] jar = jar("name: VotingPlugin\n", "plugin/Main.class", new byte[] {1});
