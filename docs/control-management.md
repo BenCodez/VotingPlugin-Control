@@ -148,6 +148,13 @@ Each target state is `QUEUED`, `IN_PROGRESS`, or `COMPLETE`; the aggregate state
 `COMPLETED_WITH_ERRORS`. A claim has a two-minute lease and new `attemptId`. The result must echo that attempt and the
 current node session, preventing a stale execution from completing reissued work.
 
+The claimed `ConfigurationTask` also contains an exact `capability` field. Connectors must dispatch and validate the task
+against that field rather than deriving a contract from `configuration`. In particular, an HTTP `proxy-backend` `READ`
+uses `config.proxy-method.v2` while its task configuration deliberately omits the requested method so the current value is
+not supplied as an answer. Legacy proxy-method reads carry `config.proxy-method.v1`. A connector must implement this
+field and the matching v2 task/result contract before advertising `config.proxy-method.v2`; older connectors remain on
+v1 and reject unsupported capability work through normal negotiation.
+
 ### Retry behavior
 
 `POST /api/v1/operations/{operationId}/retry` creates a new operation; it never mutates the historical view.

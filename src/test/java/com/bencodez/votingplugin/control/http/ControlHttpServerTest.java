@@ -145,9 +145,15 @@ class ControlHttpServerTest {
                 "A failed logout must not leave a superseded deployment permanently in flight.");
         assertTrue(script.body().contains("deploymentRunGeneration++;\n  deploymentInFlight = false;"),
                 "Successful logout must invalidate the prior deployment completion guard.");
-		assertTrue(script.body().contains("if (error.code !== 'NODE_UNAVAILABLE') throw error;"));
-		assertTrue(script.body().contains("unavailableBatchNodes.push(...batch.map(node => node.displayName));"));
-		assertTrue(script.body().contains("No deployment batches were submitted."));
+        assertTrue(script.body().contains("if (error.code !== 'NODE_UNAVAILABLE') throw error;"));
+        assertTrue(script.body().contains("const unavailable = new Set((error.details || []).filter(nodeId => remaining.includes(nodeId)));"),
+                "Deployment retries must use the server's exact unavailable-node details when available.");
+        assertTrue(script.body().contains("remaining = remaining.filter(nodeId => !unavailable.has(nodeId));"),
+                "A temporarily unavailable node must not discard other eligible nodes in its batch.");
+        assertTrue(script.body().contains("attempt < MAX_OPERATION_TARGETS"),
+                "Deployment eligibility retries must remain bounded by the target limit.");
+        assertTrue(script.body().contains("Unavailable nodes skipped:"));
+        assertTrue(script.body().contains("No deployment batches were submitted."));
         assertTrue(script.body().contains("backendItemsTruncated"));
         assertTrue(script.body().contains("topologyComplete: !truncatedNodeIds.has(proxyId)"));
         assertTrue(script.body().contains("proxyReady: network.proxyReady"));
@@ -855,6 +861,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const readCapability = proxyMethodReadCapability();"));
         assertTrue(script.body().contains("readCapability === 'config.proxy-method.v2' ? 'HTTP' : 'PLUGINMESSAGING'"),
                 "A v2-only proxy must read its current method through the capability it advertises.");
+        assertTrue(script.body().contains("readCapability !== proxyMethodReadCapability()"),
+                "A proxy-method read must be discarded when the negotiated capability changes while it is in flight.");
         assertTrue(script.body().contains("autoLoadPending.clear();"));
         int globalShortcut = script.body().indexOf("function openGlobalShortcut(destination)");
         int selectConfigView = script.body().indexOf("setConfigView(destination.configView);", globalShortcut);

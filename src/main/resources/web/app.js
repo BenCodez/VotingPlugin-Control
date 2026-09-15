@@ -3212,6 +3212,7 @@ async function authorized(path, options = {}) {
   if (!response.ok) {
     const error = new Error(body?.error?.message || `Control request failed (${response.status}).`);
     error.code = body?.error?.code || '';
+    error.details = Array.isArray(body?.error?.details) ? body.error.details : [];
     throw error;
   }
   return body;
@@ -4480,7 +4481,8 @@ async function loadProxyMethod(automatic = false) {
     const method = result?.success ? result.configuration?.options?.method : '';
     if (!method) throw new Error('The proxy did not return its active communication method.');
     if (requestAuthenticationGeneration !== authenticationGeneration || proxyId !== proxyMethodProxyId
-        || sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId || result?.sessionId !== sessionId) return;
+        || sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId
+        || readCapability !== proxyMethodReadCapability() || result?.sessionId !== sessionId) return;
     proxyMethodCurrentFor = proxyId;
     proxyMethodCurrentSessionId = sessionId;
     proxyMethodCurrentReadCapability = readCapability;
@@ -5445,25 +5447,43 @@ deployPlugin.addEventListener('click', async () => {
       if (generation !== authenticationGeneration) {
         throw new Error('Authentication changed before every deployment batch was submitted.');
       }
-      try {
-        const operation = await authorized('/api/v1/deployments', {
-          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
-            artifactId: artifact.artifactId, sha256: verifiedSha256, size: file.size,
-            nodeIds: batch.map(node => node.nodeId)
-          })
-        });
-        operations.push(operation);
-        submittedOperations.push(operation);
-      } catch (error) {
-        if (error.code !== 'NODE_UNAVAILABLE') throw error;
-        unavailableBatchNodes.push(...batch.map(node => node.displayName));
+      let remaining = batch.map(node => node.nodeId);
+      for (let attempt = 0; remaining.length > 0 && attempt < MAX_OPERATION_TARGETS; attempt++) {
+        if (generation !== authenticationGeneration) {
+          throw new Error('Authentication changed before every deployment batch was submitted.');
+        }
+        try {
+          const operation = await authorized('/api/v1/deployments', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+              artifactId: artifact.artifactId, sha256: verifiedSha256, size: file.size,
+              nodeIds: remaining
+            })
+          });
+          operations.push(operation);
+          submittedOperations.push(operation);
+          remaining = [];
+        } catch (error) {
+          if (error.code !== 'NODE_UNAVAILABLE') throw error;
+          const unavailable = new Set((error.details || []).filter(nodeId => remaining.includes(nodeId)));
+          if (unavailable.size === 0) {
+            throw new Error('Deployment eligibility changed without identifying an unavailable node. Refresh and try again.');
+          }
+          unavailable.forEach(nodeId => {
+            const node = batch.find(candidate => candidate.nodeId === nodeId);
+            if (node && !unavailableBatchNodes.includes(node.displayName)) unavailableBatchNodes.push(node.displayName);
+          });
+          remaining = remaining.filter(nodeId => !unavailable.has(nodeId));
+        }
+      }
+      if (remaining.length > 0) {
+        throw new Error('Deployment eligibility could not be settled within the bounded retry limit.');
       }
     }
     for (const operation of operations) {
       completedOperations.push(await waitForDeployment(operation, generation));
     }
     const unavailableSummary = unavailableBatchNodes.length
-      ? `\nUnavailable batches skipped: ${unavailableBatchNodes.join(', ')}.` : '';
+      ? `\nUnavailable nodes skipped: ${unavailableBatchNodes.join(', ')}.` : '';
     text(deploymentStatus, completedOperations.length
       ? `${completedOperations.map(deploymentSummary).join('\n\n')}\nRestart each successfully staged server to activate this JAR.${unavailableSummary}`
       : `No deployment batches were submitted.${unavailableSummary}`);
@@ -5472,7 +5492,7 @@ deployPlugin.addEventListener('click', async () => {
       const submitted = submittedOperations.map(operation => completedOperations.find(completed =>
         completed.deploymentId === operation.deploymentId) || operation);
       const unavailableSummary = unavailableBatchNodes.length
-        ? `\nUnavailable batches skipped: ${unavailableBatchNodes.join(', ')}.` : '';
+        ? `\nUnavailable nodes skipped: ${unavailableBatchNodes.join(', ')}.` : '';
       text(deploymentStatus, submitted.length
         ? `${submitted.map(deploymentSummary).join('\n\n')}\nDeployment submission or monitoring stopped: ${error.message}`
           + `\nThe listed operations remain durable in Activity; verify them before retrying.${unavailableSummary}`

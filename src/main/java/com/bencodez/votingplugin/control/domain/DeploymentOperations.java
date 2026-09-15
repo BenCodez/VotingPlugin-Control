@@ -431,7 +431,7 @@ public final class DeploymentOperations {
             for (Target target : deployment.targets.values()) {
                 if ("SUCCEEDED".equals(target.state) || "FAILED".equals(target.state)) continue;
                 NodeStatus node = registry.find(target.nodeId);
-                if (node != null && node.online() && (!target.pinnedSession.equals(node.sessionId())
+                if (node != null && (!target.pinnedSession.equals(node.sessionId())
                         || !node.acceptedCapabilities().contains(CAPABILITY))) {
                     failures.add(new PendingFailure(deployment.id, target.nodeId, "CAPABILITY_LOST",
                             "Node session or deployment capability changed before staging completed"));

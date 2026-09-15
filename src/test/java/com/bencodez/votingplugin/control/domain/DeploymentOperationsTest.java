@@ -169,6 +169,25 @@ class DeploymentOperationsTest {
     }
 
     @Test
+    void knownCapabilityLossInvalidatesAnOfflineNodesActiveLease() {
+        FakeRegistry registry = new FakeRegistry();
+        registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+        DeploymentOperations operations = new DeploymentOperations(registry, clock);
+        DeploymentResult created = operations.create(request("backend"));
+        DeploymentTask claimed = operations.claim("backend", SESSION_A);
+
+        registry.add("backend", SESSION_A, Set.of(), false);
+
+        assertEquals("TASK_NOT_CLAIMED", assertThrows(ValidationException.class,
+                () -> operations.complete(created.deploymentId(), "backend",
+                        new DeploymentTaskResult(SESSION_A, true, "RESTART_REQUIRED", "staged",
+                                claimed.attemptId()))).code());
+        DeploymentResult failed = operations.get(created.deploymentId());
+        assertEquals("FAILED", failed.state());
+        assertEquals("CAPABILITY_LOST", failed.nodes().get(0).result().code());
+    }
+
+    @Test
     void auditFailureRollsBackTheUnauditedPruneBatch(@TempDir Path directory) throws Exception {
         Path auditDirectory = directory.resolve("audit");
         Path journalDirectory = directory.resolve("journal");
@@ -468,8 +487,12 @@ class DeploymentOperationsTest {
         private Runnable findCallback;
 
         void add(String nodeId, UUID session, Set<String> capabilities) {
+            add(nodeId, session, capabilities, true);
+        }
+
+        void add(String nodeId, UUID session, Set<String> capabilities, boolean online) {
             nodes.put(nodeId, new NodeStatus(nodeId, session, nodeId, "BUKKIT", "7.1.2-SNAPSHOT", 1,
-                    capabilities, capabilities, Set.of(), List.of(), 0, Instant.EPOCH, Instant.EPOCH, true));
+                    capabilities, capabilities, Set.of(), List.of(), 0, Instant.EPOCH, Instant.EPOCH, online));
         }
 
         void remove(String nodeId) { nodes.remove(nodeId); }
