@@ -105,7 +105,10 @@ public final class DeploymentOperations {
     public synchronized DeploymentResult create(DeploymentRequest request) {
         Objects.requireNonNull(request, "request");
         prune();
-        LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
+        // Creation only adds/removes map entries after prune has completed its
+        // own transaction, so the existing immutable entry references are a
+        // sufficient rollback snapshot.
+        LinkedHashMap<UUID, StoredDeployment> prior = new LinkedHashMap<>(deployments);
         try {
         List<Target> targets = new ArrayList<>();
         List<String> unavailable = new ArrayList<>();
@@ -150,20 +153,16 @@ public final class DeploymentOperations {
 
     private DeploymentTask claimCurrent(String nodeId, NodeStatus node) {
         prune();
-        LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
-        UUID changedDeployment = null;
-        try {
         if (!node.online() || !node.acceptedCapabilities().contains(CAPABILITY)) return null;
         Instant now = clock.instant();
         for (StoredDeployment deployment : deployments.values()) {
             Target target = deployment.targets.get(nodeId);
             if (target == null || target.state.equals("SUCCEEDED") || target.state.equals("FAILED")) continue;
             if (!target.pinnedSession.equals(node.sessionId())) {
-                changedDeployment = deployment.id;
                 failUnavailable(deployment, target, "Node reconnected before this artifact was staged");
-                prior = copyDeployments();
                 continue;
             }
+            TargetState prior = snapshot(target);
             if (target.state.equals("IN_PROGRESS")) {
                 if (target.leasedAt != null && now.isBefore(target.leasedAt.plus(LEASE))) return null;
                 target.state = "QUEUED";
@@ -171,20 +170,19 @@ public final class DeploymentOperations {
                 target.attemptId = null;
             }
             if (!target.pinnedSession.equals(node.sessionId())) continue;
-            changedDeployment = deployment.id;
             target.state = "IN_PROGRESS";
             target.leasedAt = now;
             target.attemptId = UUID.randomUUID();
-            commit(deployment.id, nodeId, "DEPLOYMENT_CLAIMED", "IN_PROGRESS");
-            return new DeploymentTask(deployment.id, deployment.artifactId, deployment.sha256, deployment.size,
-                    target.attemptId);
+            try {
+                commit(deployment.id, nodeId, "DEPLOYMENT_CLAIMED", "IN_PROGRESS");
+                return new DeploymentTask(deployment.id, deployment.artifactId, deployment.sha256, deployment.size,
+                        target.attemptId);
+            } catch (RuntimeException failure) {
+                restoreTarget(deployment.id, target, prior, failure);
+                throw failure;
+            }
         }
         return null;
-        } catch (RuntimeException failure) {
-            if (changedDeployment == null) restore(prior, failure);
-            else restore(prior, failure, changedDeployment);
-            throw failure;
-        }
     }
 
     /** Completes an attempt only while its session, attempt and two-minute lease remain current. */
@@ -228,8 +226,6 @@ public final class DeploymentOperations {
 
     private DeploymentResult completeCurrent(UUID deploymentId, NodeStatus node, DeploymentTaskResult result) {
         prune();
-        LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
-        try {
         StoredDeployment deployment = deployments.get(deploymentId);
         if (deployment == null) throw new ValidationException("OPERATION_NOT_FOUND", "Deployment was not found", List.of());
         Target target = deployment.targets.get(node.nodeId());
@@ -247,14 +243,16 @@ public final class DeploymentOperations {
             throw new ValidationException("TASK_NOT_CLAIMED", "Deployment attempt does not match", List.of());
         }
         validateResult(result);
-        target.result = safeResult(result);
-        target.state = result.success() ? "SUCCEEDED" : "FAILED";
-        target.leasedAt = null;
-        target.attemptId = null;
-        commit(deployment.id, node.nodeId(), "DEPLOYMENT_COMPLETED", result.code());
-        return view(deployment);
+        TargetState prior = snapshot(target);
+        try {
+            target.result = safeResult(result);
+            target.state = result.success() ? "SUCCEEDED" : "FAILED";
+            target.leasedAt = null;
+            target.attemptId = null;
+            commit(deployment.id, node.nodeId(), "DEPLOYMENT_COMPLETED", result.code());
+            return view(deployment);
         } catch (RuntimeException failure) {
-            restore(prior, failure, deploymentId);
+            restoreTarget(deployment.id, target, prior, failure);
             throw failure;
         }
     }
@@ -370,22 +368,28 @@ public final class DeploymentOperations {
         if (audit != null) audit.append(action, operationId, nodeId, outcome);
     }
 
-    private LinkedHashMap<UUID, StoredDeployment> copyDeployments() {
+    /** Copies only retention candidates; normal target transitions use {@link TargetState}. */
+    private LinkedHashMap<UUID, StoredDeployment> copyDeployments(Iterable<UUID> deploymentIds) {
         LinkedHashMap<UUID, StoredDeployment> result = new LinkedHashMap<>();
-        for (StoredDeployment deployment : deployments.values()) {
-            List<Target> targets = new ArrayList<>();
-            for (Target original : deployment.targets.values()) {
-                Target target = new Target(original.nodeId, original.pinnedSession);
-                target.state = original.state;
-                target.leasedAt = original.leasedAt;
-                target.attemptId = original.attemptId;
-                target.result = original.result;
-                targets.add(target);
-            }
-            result.put(deployment.id, new StoredDeployment(deployment.id, deployment.artifactId,
-                    deployment.sha256, deployment.size, deployment.createdAt, targets));
+        for (UUID id : deploymentIds) {
+            StoredDeployment deployment = deployments.get(id);
+            if (deployment != null) result.put(id, copyDeployment(deployment));
         }
         return result;
+    }
+
+    private static StoredDeployment copyDeployment(StoredDeployment deployment) {
+        List<Target> targets = new ArrayList<>();
+        for (Target original : deployment.targets.values()) {
+            Target target = new Target(original.nodeId, original.pinnedSession);
+            target.state = original.state;
+            target.leasedAt = original.leasedAt;
+            target.attemptId = original.attemptId;
+            target.result = original.result;
+            targets.add(target);
+        }
+        return new StoredDeployment(deployment.id, deployment.artifactId, deployment.sha256,
+                deployment.size, deployment.createdAt, targets);
     }
 
     private void restore(LinkedHashMap<UUID, StoredDeployment> prior, RuntimeException failure,
@@ -406,6 +410,18 @@ public final class DeploymentOperations {
         Set<UUID> changed = new java.util.LinkedHashSet<>(deployments.keySet());
         changed.addAll(prior.keySet());
         restore(prior, failure, changed.toArray(UUID[]::new));
+    }
+
+    /** Restores only the target changed by a failed durable state transition. */
+    private void restoreTarget(UUID deploymentId, Target target, TargetState prior, RuntimeException failure) {
+        copyTargetState(prior, target);
+        if (deploymentDirectory != null) {
+            try {
+                persistDeployment(deploymentId);
+            } catch (RuntimeException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+        }
     }
 
     private void prune() {
@@ -432,43 +448,78 @@ public final class DeploymentOperations {
         }
         applyPruneFailures(failures);
 
-        LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
         Instant cutoff = clock.instant().minus(COMPLETE_RETENTION);
-        Set<UUID> removed = new java.util.LinkedHashSet<>();
+        List<UUID> removed = removableDeployments(cutoff);
+        if (removed.isEmpty()) return;
+        List<UUID> priorOrder = new ArrayList<>(deployments.keySet());
+        LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments(removed);
         try {
-            deployments.values().removeIf(deployment -> {
-                boolean remove = isTerminal(deployment) && deployment.createdAt.isBefore(cutoff);
-                if (remove) removed.add(deployment.id);
-                return remove;
-            });
-            evictCompleted();
-            for (UUID id : prior.keySet()) {
-                if (!deployments.containsKey(id)) removed.add(id);
-            }
-            if (!removed.isEmpty() && deploymentDirectory != null) {
+            for (UUID id : removed) deployments.remove(id);
+            if (deploymentDirectory != null) {
                 persistIndex();
-                persistDeployments(removed);
+                persistDeployments(new java.util.LinkedHashSet<>(removed));
             }
         } catch (RuntimeException failure) {
-            restore(prior, failure, removed.toArray(UUID[]::new));
+            restoreRemoved(prior, priorOrder, failure);
             throw failure;
+        }
+    }
+
+    /** Determines retention removals before taking a rollback snapshot. */
+    private List<UUID> removableDeployments(Instant cutoff) {
+        List<UUID> removed = new ArrayList<>();
+        for (StoredDeployment deployment : deployments.values()) {
+            if (isTerminal(deployment) && deployment.createdAt.isBefore(cutoff)) removed.add(deployment.id);
+        }
+        int retained = deployments.size() - removed.size();
+        if (retained <= MAX_RETAINED) return removed;
+        for (StoredDeployment deployment : deployments.values()) {
+            if (retained <= MAX_RETAINED) break;
+            if (!removed.contains(deployment.id) && isTerminal(deployment)) {
+                removed.add(deployment.id);
+                retained--;
+            }
+        }
+        return removed;
+    }
+
+    /** Restores removed entries at their original positions without copying unaffected deployments. */
+    private void restoreRemoved(Map<UUID, StoredDeployment> prior, List<UUID> priorOrder,
+                                RuntimeException failure) {
+        LinkedHashMap<UUID, StoredDeployment> restored = new LinkedHashMap<>();
+        for (UUID id : priorOrder) {
+            StoredDeployment deployment = prior.containsKey(id) ? prior.get(id) : deployments.get(id);
+            if (deployment != null) restored.put(id, deployment);
+        }
+        for (Map.Entry<UUID, StoredDeployment> entry : deployments.entrySet()) {
+            restored.putIfAbsent(entry.getKey(), entry.getValue());
+        }
+        deployments.clear();
+        deployments.putAll(restored);
+        if (deploymentDirectory != null) {
+            try {
+                persistDeployments(prior.keySet());
+                persistIndex();
+            } catch (RuntimeException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
         }
     }
 
     private void applyPruneFailures(List<PendingFailure> failures) {
         if (failures.isEmpty()) return;
-        LinkedHashMap<UUID, StoredDeployment> prior = copyDeployments();
-        Set<UUID> changed = failures.stream().map(PendingFailure::deploymentId)
-                .collect(java.util.stream.Collectors.toSet());
+        Map<TargetReference, TargetState> prior = new LinkedHashMap<>();
+        Set<UUID> changed = new java.util.LinkedHashSet<>();
         for (PendingFailure failure : failures) {
-            markFailed(deployments.get(failure.deploymentId).targets.get(failure.nodeId),
-                    failure.code, failure.message);
+            Target target = deployments.get(failure.deploymentId).targets.get(failure.nodeId);
+            prior.put(new TargetReference(failure.deploymentId, failure.nodeId), snapshot(target));
+            changed.add(failure.deploymentId);
+            markFailed(target, failure.code, failure.message);
         }
         try {
-            if (deploymentDirectory != null) persistDeployments(failures.stream()
-                    .map(PendingFailure::deploymentId).collect(java.util.stream.Collectors.toSet()));
+            if (deploymentDirectory != null) persistDeployments(changed);
         } catch (RuntimeException failure) {
-            restore(prior, failure, changed.toArray(UUID[]::new));
+            restoreTargets(prior, changed, failure);
             throw failure;
         }
         if (audit == null) return;
@@ -480,8 +531,7 @@ public final class DeploymentOperations {
                 for (int rollback = index; rollback < failures.size(); rollback++) {
                     PendingFailure unapplied = failures.get(rollback);
                     Target current = deployments.get(unapplied.deploymentId).targets.get(unapplied.nodeId);
-                    Target previous = prior.get(unapplied.deploymentId).targets.get(unapplied.nodeId);
-                    copyTargetState(previous, current);
+                    copyTargetState(prior.get(new TargetReference(unapplied.deploymentId, unapplied.nodeId)), current);
                 }
                 if (deploymentDirectory != null) {
                     try { persistDeployments(failures.subList(index, failures.size()).stream()
@@ -493,8 +543,29 @@ public final class DeploymentOperations {
         }
     }
 
+    private void restoreTargets(Map<TargetReference, TargetState> prior, Set<UUID> changed,
+                                RuntimeException failure) {
+        for (Map.Entry<TargetReference, TargetState> entry : prior.entrySet()) {
+            TargetReference reference = entry.getKey();
+            copyTargetState(entry.getValue(), deployments.get(reference.deploymentId).targets.get(reference.nodeId));
+        }
+        if (deploymentDirectory != null) {
+            try {
+                persistDeployments(changed);
+            } catch (RuntimeException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+        }
+    }
+
     private void failUnavailable(StoredDeployment deployment, Target target, String message) {
-        failTarget(deployment, target, "CAPABILITY_LOST", message);
+        TargetState prior = snapshot(target);
+        try {
+            failTarget(deployment, target, "CAPABILITY_LOST", message);
+        } catch (RuntimeException failure) {
+            restoreTarget(deployment.id, target, prior, failure);
+            throw failure;
+        }
     }
 
     private void failTarget(StoredDeployment deployment, Target target, String code, String message) {
@@ -510,17 +581,15 @@ public final class DeploymentOperations {
         target.attemptId = null;
     }
 
-    private static void copyTargetState(Target source, Target destination) {
+    private static TargetState snapshot(Target target) {
+        return new TargetState(target.state, target.leasedAt, target.attemptId, target.result);
+    }
+
+    private static void copyTargetState(TargetState source, Target destination) {
         destination.state = source.state;
         destination.leasedAt = source.leasedAt;
         destination.attemptId = source.attemptId;
         destination.result = source.result;
-    }
-
-    private void evictCompleted() {
-        while (deployments.size() > MAX_RETAINED) {
-            if (!evictOldestCompleted()) return;
-        }
     }
 
     private boolean evictOldestCompleted() {
@@ -927,6 +996,11 @@ public final class DeploymentOperations {
     }
 
     private record PendingFailure(UUID deploymentId, String nodeId, String code, String message) { }
+
+    private record TargetReference(UUID deploymentId, String nodeId) { }
+
+    /** Mutable target state captured before one durable state transition. */
+    private record TargetState(String state, Instant leasedAt, UUID attemptId, DeploymentTaskResult result) { }
 
     private static final class StoredDeployment {
         private final UUID id;
