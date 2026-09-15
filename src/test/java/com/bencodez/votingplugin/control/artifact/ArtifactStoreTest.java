@@ -427,6 +427,32 @@ class ArtifactStoreTest {
         }
     }
 
+    @Test void legacyPendingCollisionBeforeAnyEvictionFailsClosedAtCapacity() throws Exception {
+        Path artifacts = directory.resolve("legacy-pre-eviction-collision-artifacts");
+        byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/New.class", new byte[] {2});
+        ArtifactStore store = new ArtifactStore(artifacts, 1_000_000, 1);
+        String oldId = store.upload(new ByteArrayInputStream(old), "old.jar", sha256(old)).artifactId();
+        String incomingId = sha256(incoming);
+        String transaction = "8".repeat(32);
+        Path oldArtifact = artifacts.resolve(oldId + ".jar");
+        Path incomingArtifact = artifacts.resolve(incomingId + ".jar");
+        Files.write(incomingArtifact, incoming);
+        Path staged = Files.write(artifacts.resolve("upload-legacy-pre-eviction.part"), incoming);
+        Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending");
+        Files.createFile(marker);
+
+        assertRejected(() -> new ArtifactStore(artifacts, 1_000_000, 1));
+
+        assertArrayEquals(old, Files.readAllBytes(oldArtifact));
+        assertArrayEquals(incoming, Files.readAllBytes(incomingArtifact));
+        assertArrayEquals(incoming, Files.readAllBytes(staged));
+        assertTrue(Files.exists(marker));
+        try (var files = Files.list(artifacts)) {
+            assertEquals(2, files.filter(path -> path.getFileName().toString().endsWith(".jar")).count());
+        }
+    }
+
     @Test void uploadsSharingADirectorySerializeCapacityPlanningAndPublication() throws Exception {
         Path artifacts = directory.resolve("shared-artifacts");
         CountDownLatch firstPublishing = new CountDownLatch(1);

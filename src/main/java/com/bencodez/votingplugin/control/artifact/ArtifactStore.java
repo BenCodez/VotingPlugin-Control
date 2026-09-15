@@ -193,6 +193,7 @@ public final class ArtifactStore {
                 // A verified competing publication is equivalent to the commit point: keeping
                 // the quarantined artifacts would violate the configured capacity bound.
                 // The staged upload is removed by removeIncompleteUploads after this marker.
+                requireRecoveredCapacity(plannedArtifactIds);
                 completePlannedEvictions(transaction, plannedArtifactIds, quarantined);
                 for (QuarantinedFile file : quarantined) Files.delete(file.backup());
             } else {
@@ -202,6 +203,32 @@ public final class ArtifactStore {
             Files.delete(marker);
             DurableFiles.forceDirectory(directory);
         }
+    }
+
+    /**
+     * Ensures that a recovered commit remains within the capacity that was configured for
+     * this store. Only evictions recorded in the durable marker may be projected away.
+     * In particular, an old-format empty pending marker has no authority to delete a
+     * canonical artifact merely because a matching competing publication exists.
+     */
+    private void requireRecoveredCapacity(List<String> plannedArtifactIds) throws IOException {
+        Set<String> planned = new HashSet<>(plannedArtifactIds);
+        long bytes = 0;
+        int count = 0;
+        try (var files = Files.list(directory)) {
+            for (Path file : files.toList()) {
+                String name = file.getFileName().toString();
+                if (!name.matches("[0-9a-f]{64}\\.jar")) continue;
+                String artifactId = name.substring(0, 64);
+                if (planned.contains(artifactId)) continue;
+                verifyExistingArtifact(file, artifactId);
+                bytes = Math.addExact(bytes, Files.size(file));
+                count = Math.addExact(count, 1);
+            }
+        } catch (ArithmeticException failure) {
+            throw rejected();
+        }
+        if (count > maximumStoredArtifacts || bytes > maximumStoredBytes) throw rejected();
     }
 
     /** Completes a durable eviction plan after the incoming artifact reached its commit point. */
