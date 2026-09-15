@@ -644,12 +644,14 @@ function renderSiteHealthResult(value) {
       pendingDetectedVoteSite = {nodeId: selectedServerId, key, service: String(service).slice(0, 200)};
       selectedNodes = new Set(selectedServerId ? [selectedServerId] : []);
       loadedQuickSetup = null;
+      quickSetupDirty = false;
+      quickSetupPreserveReadGeneration = -1;
       updateQuickFields();
       clearApprovals();
       renderNodeViews();
       updatePluginSuggestions();
       setActiveTab('quick-setup', true);
-      text(quickOperationStatus, 'Detected service copied into the VoteSite setup. Load the generated key to confirm it is unused, complete the URL and delay, then preview before creating it.');
+      text(quickOperationStatus, 'Detected service copied into the VoteSite setup. Control is checking that the generated key is unused; complete the URL and delay, then preview before creating it.');
       scrollToAnchor(document.querySelector('#quick-setup-card'));
     });
     actions.append(button);

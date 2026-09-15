@@ -793,6 +793,11 @@ class ControlHttpServerTest {
                         + "    quickSetupDirty = false;\n    quickSetupPreserveReadGeneration = -1;\n"
                         + "    pendingDetectedVoteSite = null;"),
                 "A shortcut replacing the preset must discard dirty state from the previous form before autoloading.");
+		assertTrue(script.body().contains("pendingDetectedVoteSite = {nodeId: selectedServerId, key, service: String(service).slice(0, 200)};\n"
+				+ "      selectedNodes = new Set(selectedServerId ? [selectedServerId] : []);\n"
+				+ "      loadedQuickSetup = null;\n      quickSetupDirty = false;\n"
+				+ "      quickSetupPreserveReadGeneration = -1;"),
+				"Detected-site navigation must discard dirty state from the previous preset before autoloading.");
         assertTrue(script.body().contains("if (autoLoadInFlight.has(tab)) {\n    autoLoadPending.add(tab);"));
         assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"),
                 "A preset change during an older read must queue a fresh autoload.");
