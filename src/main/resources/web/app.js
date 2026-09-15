@@ -4373,7 +4373,8 @@ async function loadProxyMethod(automatic = false) {
     const method = result?.success ? result.configuration?.options?.method : '';
     if (!method) throw new Error('The proxy did not return its active communication method.');
     if (requestAuthenticationGeneration !== authenticationGeneration || proxyId !== proxyMethodProxyId
-        || sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId || result?.sessionId !== sessionId) return;
+        || sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId
+        || readCapability !== proxyMethodReadCapability() || result?.sessionId !== sessionId) return;
     proxyMethodCurrentFor = proxyId;
     proxyMethodCurrentSessionId = sessionId;
     proxyMethodCurrentReadCapability = readCapability;

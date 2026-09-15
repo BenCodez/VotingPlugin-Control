@@ -814,6 +814,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const readCapability = proxyMethodReadCapability();"));
         assertTrue(script.body().contains("readCapability === 'config.proxy-method.v2' ? 'HTTP' : 'PLUGINMESSAGING'"),
                 "A v2-only proxy must read its current method through the capability it advertises.");
+        assertTrue(script.body().contains("readCapability !== proxyMethodReadCapability()"),
+                "A proxy-method read must be discarded when the negotiated capability changes while it is in flight.");
         assertTrue(script.body().contains("autoLoadPending.clear();"));
         int globalShortcut = script.body().indexOf("function openGlobalShortcut(destination)");
         int selectConfigView = script.body().indexOf("setConfigView(destination.configView);", globalShortcut);
