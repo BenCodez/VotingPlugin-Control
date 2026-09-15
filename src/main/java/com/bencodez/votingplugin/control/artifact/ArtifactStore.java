@@ -184,8 +184,8 @@ public final class ArtifactStore {
                     pendingCollision = !Files.isSameFile(staged, incoming);
                     if (!pendingCollision) Files.delete(incoming);
                 } else {
-                    boolean legacyCollision = legacyMarker && hasMatchingStagedUpload(files, incomingId);
-                    if (!legacyCollision) Files.delete(incoming);
+                    pendingCollision = legacyMarker && hasMatchingStagedUpload(files, incomingId);
+                    if (!pendingCollision) Files.delete(incoming);
                 }
             }
             if (committed || pendingCollision) {

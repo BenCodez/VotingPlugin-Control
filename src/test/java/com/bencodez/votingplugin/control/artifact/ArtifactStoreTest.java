@@ -404,7 +404,7 @@ class ArtifactStoreTest {
         Path artifacts = directory.resolve("legacy-collision-artifacts");
         byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
         byte[] incoming = jar("name: VotingPlugin\n", "plugin/New.class", new byte[] {2});
-        ArtifactStore store = new ArtifactStore(artifacts);
+        ArtifactStore store = new ArtifactStore(artifacts, 1_000_000, 1);
         String oldId = store.upload(new ByteArrayInputStream(old), "old.jar", sha256(old)).artifactId();
         String incomingId = sha256(incoming);
         String transaction = "6".repeat(32);
@@ -415,13 +415,16 @@ class ArtifactStoreTest {
         Path marker = artifacts.resolve("evict-" + transaction + "-" + incomingId + ".pending");
         Files.createFile(marker);
 
-        ArtifactStore recovered = new ArtifactStore(artifacts);
+        ArtifactStore recovered = new ArtifactStore(artifacts, 1_000_000, 1);
 
-        assertArrayEquals(old, recovered.open(oldId).readAllBytes());
+        assertRejected(() -> recovered.open(oldId));
         assertArrayEquals(incoming, recovered.open(incomingId).readAllBytes());
         assertFalse(Files.exists(staged));
         assertFalse(Files.exists(quarantine));
         assertFalse(Files.exists(marker));
+        try (var files = Files.list(artifacts)) {
+            assertEquals(1, files.filter(path -> path.getFileName().toString().endsWith(".jar")).count());
+        }
     }
 
     @Test void uploadsSharingADirectorySerializeCapacityPlanningAndPublication() throws Exception {
