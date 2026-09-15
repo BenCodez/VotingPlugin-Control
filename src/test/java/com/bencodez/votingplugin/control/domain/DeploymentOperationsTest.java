@@ -80,6 +80,29 @@ class DeploymentOperationsTest {
                         new DeploymentTaskResult(SESSION_A, true, "RESTART_REQUIRED", "restart", task.attemptId()))).code());
     }
 
+	@Test
+	void completionRechecksItsCapabilityEvenWhenBoundedPruningStopsEarlier() {
+		FakeRegistry registry = new FakeRegistry();
+		String[] stale = new String[DeploymentOperations.MAX_PRUNE_TRANSITIONS];
+		for (int index = 0; index < stale.length; index++) {
+			stale[index] = "stale-" + index;
+			registry.add(stale[index], SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+		}
+		DeploymentOperations operations = new DeploymentOperations(registry, clock);
+		operations.create(request(stale));
+		registry.add("target", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+		DeploymentResult deployment = operations.create(request("target"));
+		DeploymentTask task = operations.claim("target", SESSION_A);
+		for (String nodeId : stale) registry.add(nodeId, SESSION_REPLACED, Set.of());
+		registry.add("target", SESSION_A, Set.of());
+
+		DeploymentResult rejected = operations.complete(deployment.deploymentId(), "target",
+				new DeploymentTaskResult(SESSION_A, true, "RESTART_REQUIRED", "staged", task.attemptId()));
+		assertEquals("FAILED", rejected.state());
+		assertEquals("CAPABILITY_LOST", rejected.nodes().get(0).result().code());
+		assertEquals("FAILED", operations.get(deployment.deploymentId()).state());
+	}
+
     @Test
     void partialFailureRetryCreatesNewOperationForFailedNodesOnly() {
         FakeRegistry registry = new FakeRegistry();

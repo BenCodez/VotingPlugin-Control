@@ -5470,7 +5470,8 @@ deployPlugin.addEventListener('click', async () => {
           }
           unavailable.forEach(nodeId => {
             const node = batch.find(candidate => candidate.nodeId === nodeId);
-            if (node && !unavailableBatchNodes.includes(node.displayName)) unavailableBatchNodes.push(node.displayName);
+            const label = node ? `${node.displayName} (${node.nodeId})` : nodeId;
+            if (!unavailableBatchNodes.includes(label)) unavailableBatchNodes.push(label);
           });
           remaining = remaining.filter(nodeId => !unavailable.has(nodeId));
         }

@@ -242,6 +242,11 @@ public final class DeploymentOperations {
         if (!Objects.equals(target.attemptId, result.attemptId())) {
             throw new ValidationException("TASK_NOT_CLAIMED", "Deployment attempt does not match", List.of());
         }
+        if (!node.online() || !node.acceptedCapabilities().contains(CAPABILITY)) {
+            failUnavailable(deployment, target,
+                    "Node session or deployment capability changed before staging completed");
+            return view(deployment);
+        }
         validateResult(result);
         TargetState prior = snapshot(target);
         try {

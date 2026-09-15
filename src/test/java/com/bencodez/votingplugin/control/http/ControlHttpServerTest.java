@@ -107,6 +107,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("async function loadAllNodes()"));
         assertTrue(script.body().contains("let nodeLoadInFlight = null;"));
         assertTrue(script.body().contains("async function loadNodesOnce()"));
+		assertTrue(script.body().contains("`${node.displayName} (${node.nodeId})`"),
+				"Skipped deployment targets must retain their unique node ID in status output.");
         assertTrue(script.body().contains("nodeLoadQueued = true;"));
         assertTrue(script.body().contains("let nodeLoadQueuedPromise = null;"));
         assertTrue(script.body().contains("return nodeLoadQueuedPromise;"),
@@ -1331,6 +1333,14 @@ class ControlHttpServerTest {
                 + "Connection: close\r\n\r\n");
         assertTrue(oversizedArtifact.startsWith("HTTP/1.1 413"), oversizedArtifact);
         assertTrue(oversizedArtifact.contains(Long.toString(ArtifactStore.MAX_UPLOAD_BYTES)), oversizedArtifact);
+		String duplicateDigest = sendRaw("POST /api/v1/artifacts/votingplugin HTTP/1.1\r\n"
+				+ "Host: 127.0.0.1\r\nContent-Type: application/java-archive\r\n"
+				+ "Authorization: Bearer " + adminToken + "\r\nX-Filename: VotingPlugin.jar\r\n"
+				+ "X-Artifact-SHA256: " + "a".repeat(64) + "\r\n"
+				+ "X-Artifact-SHA256: " + "b".repeat(64) + "\r\n"
+				+ "Content-Length: 1\r\nConnection: close\r\n\r\nx");
+		assertTrue(duplicateDigest.startsWith("HTTP/1.1 400"), duplicateDigest);
+		assertTrue(duplicateDigest.contains("VALIDATION_ERROR"), duplicateDigest);
         assertError(send("POST", "/api/v1/nodes/register", registration().replace("Proxy A", "x".repeat(101)),
                 nodeToken), 400, "VALIDATION_ERROR");
         HttpRequest invalidUtf8 = HttpRequest.newBuilder(base.resolve("/api/v1/nodes/register"))

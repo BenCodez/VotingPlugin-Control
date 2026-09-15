@@ -61,6 +61,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -95,6 +98,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final int MAX_PASSWORD_FAILURE_CLIENTS = 4096;
     static final int MAX_BACKENDS_PER_NODE_PAGE = 4096;
     private static final int MAX_BACKENDS_PER_NODE_SUMMARY = 256;
+    private static final long ARTIFACT_TRANSFER_TIMEOUT_SECONDS = 120;
 
     private final HttpServer server;
     private final ObjectMapper json;
@@ -109,6 +113,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private final Object deploymentArtifactLifecycle = new Object();
     private final ThreadPoolExecutor executor;
     private final ThreadPoolExecutor passwordExecutor;
+    private final ScheduledExecutorService artifactTransferTimeouts;
     private final PasswordAdmission passwordAdmission = new PasswordAdmission(MAX_PASSWORD_ATTEMPTS_PER_CLIENT);
     private final PasswordFailureLimiter passwordFailureLimiter;
     private final AuthFailureLimiter authLimiter;
@@ -256,6 +261,11 @@ public final class ControlHttpServer implements AutoCloseable {
         };
         passwordExecutor = new ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(32), passwordThreads, new ThreadPoolExecutor.AbortPolicy());
+        artifactTransferTimeouts = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "votingplugin-control-artifact-timeout");
+            thread.setDaemon(true);
+            return thread;
+        });
         server.setExecutor(executor);
     }
 
@@ -281,9 +291,11 @@ public final class ControlHttpServer implements AutoCloseable {
         server.stop(0);
         executor.shutdownNow();
         passwordExecutor.shutdownNow();
+        artifactTransferTimeouts.shutdownNow();
         try {
             executor.awaitTermination(2, TimeUnit.SECONDS);
             passwordExecutor.awaitTermination(2, TimeUnit.SECONDS);
+            artifactTransferTimeouts.awaitTermination(2, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -505,11 +517,12 @@ public final class ControlHttpServer implements AutoCloseable {
             requireArtifactMediaType(exchange);
             requireBodyWithin(exchange, ArtifactStore.MAX_UPLOAD_BYTES);
             String filename = requiredHeader(exchange, "X-Filename");
-            String claimedSha256 = singleHeader(exchange, "X-Artifact-SHA256");
+            String claimedSha256 = optionalSingleHeader(exchange, "X-Artifact-SHA256");
             ArtifactStore.Artifact artifact;
             synchronized (deploymentArtifactLifecycle) {
-                artifact = artifactStore.upload(exchange.getRequestBody(), filename, claimedSha256,
-                        deploymentOperations.referencedArtifactIds());
+                artifact = withArtifactTransferDeadline(exchange,
+                        () -> artifactStore.upload(exchange.getRequestBody(), filename, claimedSha256,
+                                deploymentOperations.referencedArtifactIds()));
             }
             send(exchange, 201, Map.of("artifactId", artifact.artifactId(), "sha256", artifact.artifactId(),
                     "size", artifact.size(), "fileName", artifact.displayFilename()));
@@ -741,7 +754,10 @@ public final class ControlHttpServer implements AutoCloseable {
                     throw new ValidationException("ARTIFACT_MISMATCH",
                             "Deployment artifact no longer matches the claimed task", List.of());
                 }
-                sendArtifact(exchange, artifact, artifactStore.open(task.artifactId()));
+                withArtifactTransferDeadline(exchange, () -> {
+                    sendArtifact(exchange, artifact, artifactStore.open(task.artifactId()));
+                    return null;
+                });
                 return;
             }
         }
@@ -958,6 +974,16 @@ public final class ControlHttpServer implements AutoCloseable {
         }
     }
 
+    private <T> T withArtifactTransferDeadline(HttpExchange exchange, IoSupplier<T> transfer) throws IOException {
+        ScheduledFuture<?> timeout = artifactTransferTimeouts.schedule(exchange::close,
+                ARTIFACT_TRANSFER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        try {
+            return transfer.get();
+        } finally {
+            timeout.cancel(false);
+        }
+    }
+
     private static void requireRequest(Object request) {
         if (request == null) {
             throw new ValidationException("VALIDATION_ERROR", "Request validation failed",
@@ -1063,6 +1089,15 @@ public final class ControlHttpServer implements AutoCloseable {
     private static String singleHeader(HttpExchange exchange, String name) {
         List<String> values = exchange.getRequestHeaders().get(name);
         return values != null && values.size() == 1 ? values.get(0) : null;
+    }
+
+    private static String optionalSingleHeader(HttpExchange exchange, String name) {
+        List<String> values = exchange.getRequestHeaders().get(name);
+        if (values == null || values.isEmpty()) return null;
+        if (values.size() != 1) {
+            throw new ValidationException("VALIDATION_ERROR", name + " must be supplied at most once", List.of(name));
+        }
+        return values.get(0);
     }
 
     private static boolean constantTimeEquals(String expected, String actual) {
@@ -1332,5 +1367,10 @@ public final class ControlHttpServer implements AutoCloseable {
         }
 
         private record FailureWindow(long started, int failures) { }
+    }
+
+    @FunctionalInterface
+    private interface IoSupplier<T> {
+        T get() throws IOException;
     }
 }
