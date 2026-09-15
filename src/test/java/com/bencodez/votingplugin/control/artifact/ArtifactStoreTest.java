@@ -273,6 +273,34 @@ class ArtifactStoreTest {
         }
     }
 
+    @Test void collisionFinalizationFailureKeepsItsEvictionPlanForRecovery() throws Exception {
+        Path artifacts = directory.resolve("collision-finalization-artifacts");
+        byte[] old = jar("name: VotingPlugin\n", "plugin/Old.class", new byte[] {1});
+        byte[] incoming = jar("name: VotingPlugin\n", "plugin/Incoming.class", new byte[] {2});
+        String oldId = sha256(old);
+        String incomingId = sha256(incoming);
+        AtomicBoolean createCollision = new AtomicBoolean();
+        AtomicBoolean failFinalization = new AtomicBoolean();
+        ArtifactStore store = new ArtifactStore(artifacts, 1_000_000, 1, path -> {
+            if (createCollision.get()) Files.write(path, incoming);
+        }, path -> { }, path -> {
+            if (failFinalization.get()) throw new IOException("simulated collision finalization failure");
+        });
+        store.upload(new ByteArrayInputStream(old), "old.jar", oldId);
+
+        createCollision.set(true);
+        failFinalization.set(true);
+        assertRejected(() -> store.upload(new ByteArrayInputStream(incoming), "incoming.jar", incomingId));
+
+        ArtifactStore recovered = new ArtifactStore(artifacts, 1_000_000, 1);
+        assertRejected(() -> recovered.open(oldId));
+        assertArrayEquals(incoming, recovered.open(incomingId).readAllBytes());
+        try (var entries = Files.list(artifacts)) {
+            assertFalse(entries.anyMatch(path -> path.getFileName().toString().startsWith("upload-")
+                    || path.getFileName().toString().startsWith("evict-")));
+        }
+    }
+
     @Test void incompleteRollbackRetainsItsPendingRecoveryMarker() throws Exception {
         Path artifacts = directory.resolve("rollback-artifacts");
         AtomicBoolean failAfterMove = new AtomicBoolean();

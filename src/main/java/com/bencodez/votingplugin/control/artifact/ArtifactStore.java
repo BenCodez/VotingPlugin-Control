@@ -62,6 +62,7 @@ public final class ArtifactStore {
     private final int maximumStoredArtifacts;
     private final IoAction beforePublishMove;
     private final IoAction afterPublishMove;
+    private final IoAction afterCollision;
 
     /** Creates or opens an empty private directory owned by Control. */
     public ArtifactStore(Path directory) throws IOException {
@@ -79,14 +80,20 @@ public final class ArtifactStore {
 
     ArtifactStore(Path directory, long maximumStoredBytes, int maximumStoredArtifacts,
                   IoAction beforePublishMove, IoAction afterPublishMove) throws IOException {
+        this(directory, maximumStoredBytes, maximumStoredArtifacts, beforePublishMove, afterPublishMove, path -> { });
+    }
+
+    ArtifactStore(Path directory, long maximumStoredBytes, int maximumStoredArtifacts,
+                  IoAction beforePublishMove, IoAction afterPublishMove, IoAction afterCollision) throws IOException {
         if (directory == null) throw rejected();
         if (maximumStoredBytes < 1 || maximumStoredArtifacts < 1
-                || beforePublishMove == null || afterPublishMove == null) throw rejected();
+                || beforePublishMove == null || afterPublishMove == null || afterCollision == null) throw rejected();
         this.directory = directory.toAbsolutePath().normalize();
         this.maximumStoredBytes = maximumStoredBytes;
         this.maximumStoredArtifacts = maximumStoredArtifacts;
         this.beforePublishMove = beforePublishMove;
         this.afterPublishMove = afterPublishMove;
+        this.afterCollision = afterCollision;
         try {
             createPrivateDirectory(this.directory);
             withDirectoryLock(() -> {
@@ -258,6 +265,7 @@ public final class ArtifactStore {
                                   Set<String> protectedArtifactIds) throws IOException {
         Path temporary = null;
         boolean published = false;
+        boolean recoveryPending = false;
         try {
             verifyDirectory();
             // A prior rejected upload may have failed its best-effort finally
@@ -280,8 +288,11 @@ public final class ArtifactStore {
             List<StoredFile> evictionPlan = planCapacity(digest.size(), protectedArtifactIds);
             published = publishWithRollback(temporary, artifact, evictionPlan);
             return new Artifact(actual, displayFilename, digest.size());
+        } catch (RecoveryRequiredException failure) {
+            recoveryPending = true;
+            throw failure;
         } finally {
-            if (!published && temporary != null) deleteTemporary(temporary);
+            if (!published && !recoveryPending && temporary != null) deleteTemporary(temporary);
         }
     }
 
@@ -341,6 +352,7 @@ public final class ArtifactStore {
         Path pending = directory.resolve("evict-" + transaction + "-" + incomingId + ".pending");
         Path committed = directory.resolve("evict-" + transaction + "-" + incomingId + ".committed");
         boolean moved = false;
+        boolean collision = false;
         try {
             createTransactionMarker(pending, temporary.getFileName().toString(), evictionPlan);
             for (StoredFile candidate : evictionPlan) {
@@ -355,6 +367,8 @@ public final class ArtifactStore {
                 // A verified content-address collision is a successful publication
                 // by another process. Commit this capacity transition instead of
                 // restoring evictions and leaving the store over its configured bounds.
+                collision = true;
+                afterCollision.run(artifact);
                 moveAtomically(pending, committed);
                 DurableFiles.forceDirectory(directory);
             } else {
@@ -363,6 +377,7 @@ public final class ArtifactStore {
                 DurableFiles.forceDirectory(directory);
             }
         } catch (IOException | RuntimeException failure) {
+            if (collision) throw new RecoveryRequiredException(failure);
             IOException rollbackFailure = rollbackPublication(artifact, quarantined, pending, committed, moved);
             if (rollbackFailure != null) failure.addSuppressed(rollbackFailure);
             throw failure;
@@ -733,6 +748,10 @@ public final class ArtifactStore {
 
     public static final class ArtifactException extends IOException {
         private ArtifactException(String message) { super(message); }
+    }
+
+    private static final class RecoveryRequiredException extends IOException {
+        private RecoveryRequiredException(Throwable cause) { super("Artifact transaction requires recovery", cause); }
     }
 
     private record DigestAndSize(String sha256, long size) { }
