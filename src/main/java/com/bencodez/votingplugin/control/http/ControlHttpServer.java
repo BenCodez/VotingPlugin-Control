@@ -945,14 +945,16 @@ public final class ControlHttpServer implements AutoCloseable {
         }
     }
 
-    private void sendArtifact(HttpExchange exchange, ArtifactStore.Artifact artifact, InputStream input) throws IOException {
-        exchange.getResponseHeaders().set("Content-Type", "application/java-archive");
-        exchange.getResponseHeaders().set("Cache-Control", "no-store");
-        exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
-        exchange.getResponseHeaders().set("X-Artifact-SHA256", artifact.artifactId());
-        exchange.sendResponseHeaders(200, artifact.size());
-        try (input; OutputStream output = exchange.getResponseBody()) {
-            input.transferTo(output);
+    static void sendArtifact(HttpExchange exchange, ArtifactStore.Artifact artifact, InputStream input) throws IOException {
+        try (input) {
+            exchange.getResponseHeaders().set("Content-Type", "application/java-archive");
+            exchange.getResponseHeaders().set("Cache-Control", "no-store");
+            exchange.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+            exchange.getResponseHeaders().set("X-Artifact-SHA256", artifact.artifactId());
+            exchange.sendResponseHeaders(200, artifact.size());
+            try (OutputStream output = exchange.getResponseBody()) {
+                input.transferTo(output);
+            }
         }
     }
 

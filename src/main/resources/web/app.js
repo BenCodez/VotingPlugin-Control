@@ -653,12 +653,14 @@ function renderSiteHealthResult(value) {
       pendingDetectedVoteSite = {nodeId: selectedServerId, key, service: String(service).slice(0, 200)};
       selectedNodes = new Set(selectedServerId ? [selectedServerId] : []);
       loadedQuickSetup = null;
+      quickSetupDirty = false;
+      quickSetupPreserveReadGeneration = -1;
       updateQuickFields();
       clearApprovals();
       renderNodeViews();
       updatePluginSuggestions();
       setActiveTab('quick-setup', true);
-      text(quickOperationStatus, 'Detected service copied into the VoteSite setup. Load the generated key to confirm it is unused, complete the URL and delay, then preview before creating it.');
+      text(quickOperationStatus, 'Detected service copied into the VoteSite setup. Control is checking that the generated key is unused; complete the URL and delay, then preview before creating it.');
       scrollToAnchor(document.querySelector('#quick-setup-card'));
     });
     actions.append(button);
@@ -5406,6 +5408,7 @@ deployPlugin.addEventListener('click', async () => {
   const generation = authenticationGeneration;
   const submittedOperations = [];
   const completedOperations = [];
+  const unavailableBatchNodes = [];
   try {
     text(deploymentStatus, 'Calculating SHA-256 locally…');
     const sha256 = await deploymentFileSha256(file);
@@ -5428,27 +5431,38 @@ deployPlugin.addEventListener('click', async () => {
       if (generation !== authenticationGeneration) {
         throw new Error('Authentication changed before every deployment batch was submitted.');
       }
-      const operation = await authorized('/api/v1/deployments', {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
-          artifactId: artifact.artifactId, sha256: verifiedSha256, size: file.size,
-          nodeIds: batch.map(node => node.nodeId)
-        })
-      });
-      operations.push(operation);
-      submittedOperations.push(operation);
+      try {
+        const operation = await authorized('/api/v1/deployments', {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+            artifactId: artifact.artifactId, sha256: verifiedSha256, size: file.size,
+            nodeIds: batch.map(node => node.nodeId)
+          })
+        });
+        operations.push(operation);
+        submittedOperations.push(operation);
+      } catch (error) {
+        if (error.code !== 'NODE_UNAVAILABLE') throw error;
+        unavailableBatchNodes.push(...batch.map(node => node.displayName));
+      }
     }
     for (const operation of operations) {
       completedOperations.push(await waitForDeployment(operation, generation));
     }
-    text(deploymentStatus, `${completedOperations.map(deploymentSummary).join('\n\n')}\nRestart each successfully staged server to activate this JAR.`);
+    const unavailableSummary = unavailableBatchNodes.length
+      ? `\nUnavailable batches skipped: ${unavailableBatchNodes.join(', ')}.` : '';
+    text(deploymentStatus, completedOperations.length
+      ? `${completedOperations.map(deploymentSummary).join('\n\n')}\nRestart each successfully staged server to activate this JAR.${unavailableSummary}`
+      : `No deployment batches were submitted.${unavailableSummary}`);
   } catch (error) {
     if (generation === authenticationGeneration) {
       const submitted = submittedOperations.map(operation => completedOperations.find(completed =>
         completed.deploymentId === operation.deploymentId) || operation);
+      const unavailableSummary = unavailableBatchNodes.length
+        ? `\nUnavailable batches skipped: ${unavailableBatchNodes.join(', ')}.` : '';
       text(deploymentStatus, submitted.length
         ? `${submitted.map(deploymentSummary).join('\n\n')}\nDeployment submission or monitoring stopped: ${error.message}`
-          + '\nThe listed operations remain durable in Activity; verify them before retrying.'
-        : error.message);
+          + `\nThe listed operations remain durable in Activity; verify them before retrying.${unavailableSummary}`
+        : `${error.message}${unavailableSummary}`);
     }
   } finally {
     if (deploymentRun === deploymentRunGeneration) {

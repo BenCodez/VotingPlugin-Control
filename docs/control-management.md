@@ -7,13 +7,14 @@ when Control is stopped.
 
 ## Mental model
 
-There are three independent lanes:
+There are four independent lanes:
 
 | Lane | Capability examples | Direction | Can mutate a node? | Persistence |
 | --- | --- | --- | --- | --- |
 | Discovery | `discovery.read`, `presence.snapshot` | Node pushes registration/heartbeat/presence | No | Current topology is in memory |
 | Configuration | `config.files.v1`, `config.quick-setup.v1` | Browser queues; node polls and reports | Only after preview and approval | Redacted history and audit are durable; live task input is in memory |
 | Inspection | `data.inspect.v1` | Browser queues; Bukkit node polls and reports | Never | Short-lived result is in memory; kind-only audit is durable |
+| Deployment | `plugin.deploy.v1` | Browser queues; node polls and downloads under its exact session and attempt lease | Stages a verified JAR only; never reloads or restarts | Artifacts and deployment history are durable |
 
 Connectors always initiate outbound HTTP(S) to Control. No Control feature adds an inbound port to a Minecraft process.
 One node credential is bound to one stable node ID. Browser sessions and the API automation credential are separate from
@@ -477,7 +478,8 @@ tunnel/network outside loopback.
 
 | Boundary | Limit/behavior |
 | --- | --- |
-| HTTP request | 4 MiB; bounded Jackson depth/string/number constraints; duplicate and trailing JSON rejected |
+| Generic JSON request | 4 MiB; bounded Jackson depth/string/number constraints; duplicate and trailing JSON rejected |
+| VotingPlugin artifact upload | Separate bounded streaming route; 64 MiB maximum |
 | HTTP execution | 8 active request workers plus queue of 32; bounded request/response time |
 | Browser sessions | 100; 30-minute idle and 8-hour absolute expiry; HttpOnly, SameSite=Strict cookie |
 | Node operation targets | 1–100 distinct online capable nodes |

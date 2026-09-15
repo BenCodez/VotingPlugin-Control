@@ -352,7 +352,25 @@ class DeploymentOperationsTest {
                 () -> new DeploymentRequest(SHA.toUpperCase(), SHA.toUpperCase(), 1234, List.of("backend")));
         assertThrows(IllegalArgumentException.class,
                 () -> new DeploymentRequest("b".repeat(64), SHA, 1234, List.of("backend")));
+		assertThrows(IllegalArgumentException.class,
+				() -> new DeploymentRequest(SHA, SHA, 1234, java.util.Arrays.asList("backend", null)));
     }
+
+	@Test
+	void journalRejectsCoerciveOrOutOfRangeArtifactSizes(@TempDir Path directory) throws Exception {
+		FakeRegistry registry = new FakeRegistry();
+		registry.add("backend", SESSION_A, Set.of(DeploymentRequest.CAPABILITY));
+		DeploymentResult created = new DeploymentOperations(registry, directory, clock).create(request("backend"));
+		Path journal = deploymentFile(directory, created.deploymentId());
+		String valid = Files.readString(journal, StandardCharsets.UTF_8);
+
+		for (String invalid : List.of("\"1234\"", "1234.5", "9223372036854775808")) {
+			Files.writeString(journal, valid.replace("\"size\":1234", "\"size\":" + invalid),
+					StandardCharsets.UTF_8);
+			assertThrows(IllegalStateException.class,
+					() -> new DeploymentOperations(registry, directory, clock));
+		}
+	}
 
     @Test
     void journalRejectsNonCanonicalOrMismatchedArtifactIdentity(@TempDir Path directory) throws Exception {

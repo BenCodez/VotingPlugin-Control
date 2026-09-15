@@ -15,6 +15,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Files;
@@ -26,6 +30,11 @@ import java.util.HexFormat;
 import java.security.MessageDigest;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import java.util.concurrent.atomic.AtomicBoolean;
+import com.sun.net.httpserver.Headers;
+import com.sun.net.httpserver.HttpContext;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpPrincipal;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -62,6 +71,18 @@ class ControlHttpServerTest {
             server.close();
         }
     }
+
+	@Test void artifactInputClosesWhenResponseHeadersFail() {
+		AtomicBoolean closed = new AtomicBoolean();
+		InputStream input = new ByteArrayInputStream(new byte[] {1}) {
+			@Override public void close() throws IOException { closed.set(true); super.close(); }
+		};
+		ArtifactStore.Artifact artifact = new ArtifactStore.Artifact("a".repeat(64), "VotingPlugin.jar", 1);
+
+		assertThrows(IOException.class,
+				() -> ControlHttpServer.sendArtifact(new FailingHeadersExchange(), artifact, input));
+		assertTrue(closed.get());
+	}
 
     @Test void healthRouteIsExactUnknownRoutesAreStructuredAndMethodsAreIntentional() throws Exception {
         HttpResponse<String> web = get("/", null);
@@ -124,6 +145,9 @@ class ControlHttpServerTest {
                 "A failed logout must not leave a superseded deployment permanently in flight.");
         assertTrue(script.body().contains("deploymentRunGeneration++;\n  deploymentInFlight = false;"),
                 "Successful logout must invalidate the prior deployment completion guard.");
+		assertTrue(script.body().contains("if (error.code !== 'NODE_UNAVAILABLE') throw error;"));
+		assertTrue(script.body().contains("unavailableBatchNodes.push(...batch.map(node => node.displayName));"));
+		assertTrue(script.body().contains("No deployment batches were submitted."));
         assertTrue(script.body().contains("backendItemsTruncated"));
         assertTrue(script.body().contains("topologyComplete: !truncatedNodeIds.has(proxyId)"));
         assertTrue(script.body().contains("proxyReady: network.proxyReady"));
@@ -810,6 +834,11 @@ class ControlHttpServerTest {
                         + "    quickSetupDirty = false;\n    quickSetupPreserveReadGeneration = -1;\n"
                         + "    pendingDetectedVoteSite = null;"),
                 "A shortcut replacing the preset must discard dirty state from the previous form before autoloading.");
+		assertTrue(script.body().contains("pendingDetectedVoteSite = {nodeId: selectedServerId, key, service: String(service).slice(0, 200)};\n"
+				+ "      selectedNodes = new Set(selectedServerId ? [selectedServerId] : []);\n"
+				+ "      loadedQuickSetup = null;\n      quickSetupDirty = false;\n"
+				+ "      quickSetupPreserveReadGeneration = -1;"),
+				"Detected-site navigation must discard dirty state from the previous preset before autoloading.");
         assertTrue(script.body().contains("if (autoLoadInFlight.has(tab)) {\n    autoLoadPending.add(tab);"));
         assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"),
                 "A preset change during an older read must queue a fresh autoload.");
@@ -1425,4 +1454,25 @@ class ControlHttpServerTest {
         assertEquals(status, response.statusCode(), response.body());
         assertEquals(code, json.readTree(response.body()).at("/error/code").asText(), response.body());
     }
+
+	private static final class FailingHeadersExchange extends HttpExchange {
+		private final Headers responseHeaders = new Headers();
+		@Override public Headers getRequestHeaders() { return new Headers(); }
+		@Override public Headers getResponseHeaders() { return responseHeaders; }
+		@Override public URI getRequestURI() { return URI.create("/"); }
+		@Override public String getRequestMethod() { return "GET"; }
+		@Override public HttpContext getHttpContext() { return null; }
+		@Override public void close() {}
+		@Override public InputStream getRequestBody() { return InputStream.nullInputStream(); }
+		@Override public OutputStream getResponseBody() { throw new AssertionError("body must not be opened"); }
+		@Override public void sendResponseHeaders(int code, long length) throws IOException { throw new IOException("closed"); }
+		@Override public InetSocketAddress getRemoteAddress() { return new InetSocketAddress(0); }
+		@Override public int getResponseCode() { return -1; }
+		@Override public InetSocketAddress getLocalAddress() { return new InetSocketAddress(0); }
+		@Override public String getProtocol() { return "HTTP/1.1"; }
+		@Override public Object getAttribute(String name) { return null; }
+		@Override public void setAttribute(String name, Object value) {}
+		@Override public void setStreams(InputStream input, OutputStream output) {}
+		@Override public HttpPrincipal getPrincipal() { return null; }
+	}
 }

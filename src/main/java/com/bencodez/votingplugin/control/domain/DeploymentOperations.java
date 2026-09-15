@@ -864,7 +864,11 @@ public final class DeploymentOperations {
             if (!artifactId.matches("[0-9a-f]{64}") || !artifactId.equals(sha256)) {
                 throw new IOException("Invalid artifact identity");
             }
-            long size = item.path("size").asLong(-1);
+            JsonNode sizeNode = item.get("size");
+            if (sizeNode == null || !sizeNode.isIntegralNumber() || !sizeNode.canConvertToLong()) {
+                throw new IOException("Invalid artifact size");
+            }
+            long size = sizeNode.longValue();
             Instant createdAt = Instant.parse(item.path("createdAt").asText());
             validatePersistedInstant(createdAt, ACTIVE_RETENTION);
             JsonNode targetsNode = item.path("targets");

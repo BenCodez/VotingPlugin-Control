@@ -473,11 +473,12 @@ public final class ArtifactStore {
     public InputStream open(String artifactId) throws IOException {
         if (!isSha256(artifactId)) throw rejected();
         try {
-            verifyDirectory();
-            Path artifact = artifactPath(artifactId);
-            verifyExistingArtifact(artifact, artifactId);
-            return Channels.newInputStream(FileChannel.open(artifact,
-                    Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)));
+            return withDirectoryLock(() -> {
+                Path artifact = artifactPath(artifactId);
+                verifyExistingArtifact(artifact, artifactId);
+                return Channels.newInputStream(FileChannel.open(artifact,
+                        Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)));
+            });
         } catch (IOException failure) {
             throw rejected();
         }
@@ -487,10 +488,11 @@ public final class ArtifactStore {
     public Artifact describe(String artifactId) throws IOException {
         if (!isSha256(artifactId)) throw rejected();
         try {
-            verifyDirectory();
-            Path artifact = artifactPath(artifactId);
-            verifyExistingArtifact(artifact, artifactId);
-            return new Artifact(artifactId, "VotingPlugin.jar", Files.size(artifact));
+            return withDirectoryLock(() -> {
+                Path artifact = artifactPath(artifactId);
+                verifyExistingArtifact(artifact, artifactId);
+                return new Artifact(artifactId, "VotingPlugin.jar", Files.size(artifact));
+            });
         } catch (IOException failure) {
             throw rejected();
         }

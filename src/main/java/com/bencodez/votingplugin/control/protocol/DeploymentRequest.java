@@ -28,12 +28,12 @@ public record DeploymentRequest(String artifactId, String sha256, long size, Lis
         if (nodeIds == null || nodeIds.isEmpty() || nodeIds.size() > 100) {
             throw new IllegalArgumentException("nodeIds must contain between 1 and 100 nodes");
         }
-        nodeIds = List.copyOf(nodeIds);
         Set<String> unique = new HashSet<>();
         for (String nodeId : nodeIds) {
             if (nodeId == null || !NODE_ID.matcher(nodeId).matches() || !unique.add(nodeId)) {
                 throw new IllegalArgumentException("nodeIds must contain unique valid node IDs");
             }
         }
+        nodeIds = List.copyOf(nodeIds);
     }
 }

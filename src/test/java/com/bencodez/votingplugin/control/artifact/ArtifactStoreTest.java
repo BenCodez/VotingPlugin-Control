@@ -10,6 +10,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -18,9 +19,12 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import org.junit.jupiter.api.Test;
@@ -49,6 +53,39 @@ class ArtifactStoreTest {
             assertEquals(1, entries.filter(path -> path.getFileName().toString().endsWith(".jar")).count());
         }
     }
+
+	@Test void artifactAccessWaitsForDirectoryMutationLock() throws Exception {
+		Path artifacts = directory.resolve("locked-artifacts");
+		byte[] jar = jar("name: VotingPlugin\n", "plugin/Main.class", new byte[] {1, 2, 3});
+		ArtifactStore store = new ArtifactStore(artifacts);
+		String artifactId = store.upload(new ByteArrayInputStream(jar), "VotingPlugin.jar", sha256(jar)).artifactId();
+		Field locksField = ArtifactStore.class.getDeclaredField("DIRECTORY_LOCKS");
+		locksField.setAccessible(true);
+		@SuppressWarnings("unchecked")
+		ConcurrentMap<Path, ReentrantLock> locks = (ConcurrentMap<Path, ReentrantLock>) locksField.get(null);
+		ReentrantLock lock = locks.get(artifacts.toAbsolutePath().normalize());
+		CountDownLatch started = new CountDownLatch(1);
+		var executor = Executors.newSingleThreadExecutor();
+		lock.lock();
+		try {
+			var access = executor.submit(() -> {
+				started.countDown();
+				ArtifactStore.Artifact described = store.describe(artifactId);
+				try (InputStream input = store.open(artifactId)) {
+					return new Object[] {described, input.readAllBytes()};
+				}
+			});
+			assertTrue(started.await(5, TimeUnit.SECONDS));
+			assertThrows(TimeoutException.class, () -> access.get(200, TimeUnit.MILLISECONDS));
+			lock.unlock();
+			Object[] result = access.get(5, TimeUnit.SECONDS);
+			assertEquals(jar.length, ((ArtifactStore.Artifact) result[0]).size());
+			assertArrayEquals(jar, (byte[]) result[1]);
+		} finally {
+			if (lock.isHeldByCurrentThread()) lock.unlock();
+			executor.shutdownNow();
+		}
+	}
 
     @Test void rejectsWrongOrNonLowercaseClaimsAndDoesNotPublishPartialArtifacts() throws Exception {
         byte[] jar = jar("name: VotingPlugin\n", "plugin/Main.class", new byte[] {1});
