@@ -157,6 +157,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("proxyMethodNetworkSignature(refreshedNetwork)"));
         assertTrue(script.body().contains("proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')"));
         assertTrue(script.body().contains("sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId"));
+        assertTrue(script.body().contains("function proxyBackendCommonCapability()"));
+        assertTrue(script.body().contains("selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes(required))"));
+        assertTrue(script.body().contains("!proxyBackendCapabilityMismatch && primaryCapabilities.includes(quickCapability)"));
         assertTrue(script.body().contains("refreshedNetwork.proxy?.sessionId !== network.proxy.sessionId"));
         assertTrue(script.body().contains("if (approvedQuickPreview?.workflow === 'sync-vote-sites') approvedQuickPreview = null;"));
         assertTrue(script.body().contains("if (quickPreset.value !== 'sync-vote-sites') return;"));
@@ -177,8 +180,7 @@ class ControlHttpServerTest {
                         + "    values.partyEnabled = quickPartyEnabled.checked;"),
                 "Profiles must omit an unavailable Vote Party Enabled value instead of fabricating false.");
         assertTrue(script.body().contains("config.proxy-method.v2"));
-        assertTrue(script.body().contains("quickPreset.value === 'vote-party'\n"
-                        + "    ? votePartyCommonCapability() || 'config.quick-setup.unavailable'"),
+        assertTrue(script.body().contains("? votePartyCommonCapability() || 'config.quick-setup.unavailable' : 'config.quick-setup.v1';"),
                 "Vote Party must use v2 only when every selected backend supports it.");
         assertTrue(script.body().contains("selectedVotePartyBackends().length > 0 && !votePartyCommonCapability()"));
         assertTrue(script.body().contains("The selected backends do not share a Vote Party configuration capability."),

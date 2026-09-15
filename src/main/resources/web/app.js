@@ -2996,9 +2996,12 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   const quickCapability = quickSetupCapability();
   const votePartyCapabilityMismatch = quickPreset.value === 'vote-party'
     && selectedVotePartyBackends().length > 0 && !votePartyCommonCapability();
+  const proxyBackendCapabilityMismatch = quickPreset.value === 'proxy-backend'
+    && selectedVotePartyBackends().length > 0 && !proxyBackendCommonCapability();
   const quickReady = authenticated && !busy && (syncSelected
     ? Boolean(voteSitesSourceId && selectedVoteSitesTargets().length > 0)
-    : primaryCapabilities.includes(quickCapability) && quickSetupTargets().length > 0);
+    : !proxyBackendCapabilityMismatch && primaryCapabilities.includes(quickCapability)
+      && quickSetupTargets().length > 0);
   readConfiguration.disabled = !routingReadReady;
   previewConfiguration.disabled = !routingDraftReady;
   applyConfiguration.disabled = !routingDraftReady || !approvedPreview;
@@ -3011,6 +3014,10 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
   if (votePartyCapabilityMismatch && !busy) {
     text(quickOperationStatus,
       'The selected backends do not share a Vote Party configuration capability. Update their VotingPlugin versions or select compatible backends.');
+  }
+  if (proxyBackendCapabilityMismatch && !busy) {
+    text(quickOperationStatus,
+      'Every selected backend must support this proxy method. Update incompatible VotingPlugin versions or select compatible backends.');
   }
   runTransportTest.disabled = !authenticated || !transportTestProxyId || !transportTestBackendId || busy;
   const methodNetwork = proxyMethodReadNetwork();
@@ -3031,9 +3038,16 @@ function backendQuickTargets() {
 }
 
 function quickSetupCapability() {
-  return quickPreset.value === 'proxy-backend' && quickMethod.value === 'HTTP'
-    ? 'config.proxy-method.v2' : quickPreset.value === 'vote-party'
+  return quickPreset.value === 'proxy-backend'
+    ? proxyBackendCommonCapability() || 'config.proxy-method.unavailable' : quickPreset.value === 'vote-party'
     ? votePartyCommonCapability() || 'config.quick-setup.unavailable' : 'config.quick-setup.v1';
+}
+
+function proxyBackendCommonCapability() {
+  const selectedBackends = selectedVotePartyBackends();
+  if (!selectedBackends.length) return null;
+  const required = quickMethod.value === 'HTTP' ? 'config.proxy-method.v2' : 'config.quick-setup.v1';
+  return selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes(required)) ? required : null;
 }
 
 function votePartyUsesV2() {
