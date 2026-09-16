@@ -241,6 +241,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             if ("QUEUED".equals(state) || ("IN_PROGRESS".equals(state) && leased != null
                     && !now.isBefore(leased.plus(LEASE)))) {
                 if (cancelChangedFileRole(operation, node)) continue;
+                if (cancelChangedBackendSetupRole(operation, node)) continue;
                 if (cancelChangedProxyMethodRole(operation, node)) continue;
                 if (deferProxyMethodApply(operation, node)) continue;
                 if (cancelLostCapability(operation, node)) continue;
@@ -263,7 +264,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                     throw e;
                 }
                 return new ConfigurationTask(operation.id, operation.type, configurationForTask(operation),
-                        operation.expectedRevisions.get(nodeId), attemptId);
+                        operation.expectedRevisions.get(nodeId), attemptId, operation.configuration.capability());
             }
         }
         return null;
@@ -373,6 +374,16 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (expectedPlatform != null && expectedPlatform.equalsIgnoreCase(node.platform()) && currentRoleMatches) {
             return false;
         }
+        automaticCancellation(operation, node.nodeId(), sessionId(node), "TARGET_CHANGED",
+                "Node platform changed after the task was created; create it again", "TARGET_ROLE_CHANGED");
+        return true;
+    }
+
+    private boolean cancelChangedBackendSetupRole(StoredOperation operation, NodeStatus node) {
+        if (!ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
+                || !"proxy-backend".equals(operation.configuration.preset())) return false;
+        String expectedPlatform = operation.targetPlatforms.get(node.nodeId());
+        if ("BUKKIT".equalsIgnoreCase(expectedPlatform) && "BUKKIT".equalsIgnoreCase(node.platform())) return false;
         automaticCancellation(operation, node.nodeId(), sessionId(node), "TARGET_CHANGED",
                 "Node platform changed after the task was created; create it again", "TARGET_ROLE_CHANGED");
         return true;
@@ -557,11 +568,12 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (!Objects.equals(operation.claimSessions.get(nodeId), result.sessionId())) {
             throw new ValidationException("SESSION_MISMATCH", "Operation task belongs to another node session", List.of());
         }
-        if (cancelChangedFileRole(operation, node) || cancelChangedProxyMethodRole(operation, node)
+        if (cancelChangedFileRole(operation, node) || cancelChangedBackendSetupRole(operation, node)
+                || cancelChangedProxyMethodRole(operation, node)
                 || cancelLostCapability(operation, node)) {
             return view(operation);
         }
-        validateResultConfiguration(operation, result);
+        validateResultConfiguration(operation, result, node);
         String priorState = operation.states.get(nodeId);
         ConfigurationTaskResult priorResult = operation.results.get(nodeId);
         Instant priorLease = operation.leasedAt.get(nodeId);
@@ -698,15 +710,31 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
     }
 
-    private static void validateResultConfiguration(StoredOperation operation, ConfigurationTaskResult result) {
+    private static void validateResultConfiguration(StoredOperation operation, ConfigurationTaskResult result,
+            NodeStatus node) {
         ManagedConfiguration actual = result.configuration();
         if (actual == null) return;
         ManagedConfiguration expected = operation.configuration;
         boolean mismatch = expected == null || !expected.domain().equals(actual.domain())
                 || (ManagedConfiguration.FILE.equals(expected.domain()) && !expected.fileName().equals(actual.fileName()))
                 || (ManagedConfiguration.QUICK_SETUP.equals(expected.domain()) && !expected.preset().equals(actual.preset()))
-                || (!activeMethodRead(operation, expected) && !expected.capability().equals(actual.capability()));
+                || (!expected.capability().equals(actual.capability())
+                && !compatibleActiveMethodRead(operation, expected, actual, node));
         if (mismatch) throw invalid("result configuration does not match the operation selector");
+    }
+
+    private static boolean compatibleActiveMethodRead(StoredOperation operation, ManagedConfiguration expected,
+            ManagedConfiguration actual, NodeStatus node) {
+        if (!activeMethodRead(operation, expected)) return false;
+        try {
+            actual.validateProposal();
+        } catch (IllegalArgumentException invalidMethod) {
+            return false;
+        }
+        if (PROXY_METHOD_HTTP_CAPABILITY.equals(expected.capability())
+                && actual.options().containsKey("method")
+                && !"HTTP".equals(actual.options().get("method"))) return true;
+        return node.acceptedCapabilities().contains(actual.capability());
     }
 
     private static boolean activeMethodRead(StoredOperation operation, ManagedConfiguration expected) {

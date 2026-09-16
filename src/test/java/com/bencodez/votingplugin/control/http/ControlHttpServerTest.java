@@ -117,6 +117,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("proxyMethodNetworkSignature(refreshedNetwork)"));
         assertTrue(script.body().contains("proxyMethodCurrentSessionId !== (network.proxy?.sessionId || '')"));
         assertTrue(script.body().contains("sessionId !== proxyMethodNetwork(readCapability).proxy?.sessionId"));
+        assertTrue(script.body().contains("function proxyBackendCommonCapability()"));
+        assertTrue(script.body().contains("selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes(required))"));
+        assertTrue(script.body().contains("!proxyBackendCapabilityMismatch && primaryCapabilities.includes(quickCapability)"));
         assertTrue(script.body().contains("refreshedNetwork.proxy?.sessionId !== network.proxy.sessionId"));
         assertTrue(script.body().contains("if (approvedQuickPreview?.workflow === 'sync-vote-sites') approvedQuickPreview = null;"));
         assertTrue(script.body().contains("if (quickPreset.value !== 'sync-vote-sites') return;"));
@@ -132,27 +135,22 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("quickPartyEnabled.checked = enabledAvailable && options.enabled === 'true'"));
         assertTrue(script.body().contains("if (Object.hasOwn(profile, 'partyEnabled')) quickPartyEnabled.checked = Boolean(profile.partyEnabled);"),
                 "Legacy v1 profiles must preserve the live Vote Party enabled state when they omit that field.");
+        assertTrue(script.body().contains("if (quickSetupCapability() === 'config.quick-setup.v2'\n"
+                        + "      && !quickPartyEnabled.disabled && !quickPartyEnabled.indeterminate) {\n"
+                        + "    values.partyEnabled = quickPartyEnabled.checked;"),
+                "Profiles must omit an unavailable Vote Party Enabled value instead of fabricating false.");
         assertTrue(script.body().contains("config.proxy-method.v2"));
-		assertTrue(script.body().contains("return quickPreset.value === 'vote-party' ? votePartyCapability()"),
-				"Vote Party must select only a capability shared by every selected backend.");
+        assertTrue(script.body().contains("? votePartyCommonCapability() || 'config.quick-setup.unavailable' : 'config.quick-setup.v1';"),
+                "Vote Party must use v2 only when every selected backend supports it.");
+        assertTrue(script.body().contains("selectedVotePartyBackends().length > 0 && !votePartyCommonCapability()"));
+        assertTrue(script.body().contains("The selected backends do not share a Vote Party configuration capability."),
+                "Mixed v1-only/v2-only targets must be rejected explicitly instead of silently omitting a backend.");
         assertTrue(script.body().contains("if (quickSetupCapability() === 'config.quick-setup.v2') voteParty.enabled"),
                 "Vote Party Enabled must never be sent under the incompatible v1 quick-setup contract.");
         assertTrue(script.body().contains("quickPartyEnabled.indeterminate = !enabledAvailable;\n"
                         + "    quickPartyEnabled.disabled = !enabledAvailable;"),
                 "A legacy read must represent Enabled as unavailable instead of leaking another server's value.");
         assertTrue(script.body().contains("function quickSetupTargets()"));
-		assertTrue(script.body().contains("function votePartyCapability()"));
-		assertTrue(script.body().contains("return selectedBackendsSupport(capability) ? capability : null;"));
-		assertTrue(script.body().contains("function selectedBackendsSupport(capability)"));
-		assertTrue(script.body().contains("'config.quick-setup.v2', 'config.proxy-method.v1', 'config.proxy-method.v2'"));
-		assertTrue(script.body().contains("if (selectedCapabilitiesChanged || proxyMethodCapabilitiesChanged) {\n      invalidateGuidedSetupReads();"));
-		assertTrue(script.body().contains("const proxyMethodCapabilityNodes = new Set([...selectedNodes, proxyMethodProxyId].filter(Boolean));"));
-		assertTrue(script.body().contains("if (proxyMethodCapabilitiesChanged) {\n        proxyMethodReadGeneration++;"));
-		assertTrue(script.body().contains("readGeneration !== proxyMethodReadGeneration || readCapability !== proxyMethodReadCapability()"));
-		assertTrue(script.body().contains("if (selectedBackends.length === 0) return null;"));
-		assertTrue(script.body().contains("selectedBackends.every(nodeId => nodeCapabilities.get(nodeId)?.includes('config.quick-setup.v1'))"));
-		assertTrue(script.body().contains("return null;\n}"),
-				"Mixed Vote Party capability sets must be rejected instead of silently dropping selected backends.");
         assertTrue(script.body().contains("nodeIds = quickSetupTargets()"));
         assertTrue(script.body().contains("currentNodeIds = sync ? selectedVoteSitesTargets() : quickSetupTargets()"));
         assertTrue(script.body().contains("autoLoadPending.add(tab);"));
@@ -160,11 +158,25 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("function quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("options: quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("loadedQuickSetup.selector === JSON.stringify(quickReadConfigurationOptions())"));
-		assertTrue(script.body().contains("function handleQuickTargetCapabilityChange(previousCapability)"));
-		assertTrue(script.body().contains("The selected backends require a different Vote Party capability."),
-				"A target-driven v1/v2 change must expose an explicit reload when dirty.");
-		assertTrue(script.body().contains("handleQuickTargetCapabilityChange(previousQuickCapability);"),
-				"Target selection changes must reload or expose the capability-correct Vote Party read.");
+        assertTrue(script.body().contains("reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability)"),
+                "Changing selected backend capability must reload capability-dependent Vote Party state.");
+        assertTrue(script.body().contains("quickSetupPreserveReadGeneration = inputGeneration;\n"
+                        + "    text(quickOperationStatus,\n"
+                        + "      'Selected backend capabilities changed. Preserving unsaved Vote Party edits"),
+                "Capability changes must preserve unsaved common Vote Party fields during the confirmed read.");
+        assertTrue(script.body().contains("if (scheduleReload && tabFromHash() === 'quick-setup') void autoLoadTab('quick-setup');"),
+                "Vote Party capability transitions must use the quick-setup single-flight autoloader.");
+        assertFalse(script.body().contains("if (scheduleReload && tabFromHash() === 'quick-setup') void loadQuickSetupValues(true);"),
+                "Vote Party capability transitions must not start an overlapping direct READ.");
+        assertTrue(script.body().contains("const registry = await loadAllNodes();\n"
+                        + "    const previousQuickCapability = quickSetupCapability();\n"
+                        + "    const previousNodeIndex = nodeIndex;"));
+        assertTrue(script.body().contains("selectedNodes = filteredSelection;\n"
+                        + "    // A registry refresh can change the effective Vote Party contract without a\n"
+                        + "    // user selection event. Clear the old v2/v1 form before the normal tab\n"
+                        + "    // auto-load runs so a delayed or failed READ cannot expose stale values.\n"
+                        + "    reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability, false);"),
+                "Refresh-driven v2/v1 capability changes must clear stale Vote Party state before rereading.");
         assertTrue(script.body().contains("const autoLoadGeneration = inputGeneration;"));
         assertTrue(script.body().contains("if (inputGeneration !== autoLoadGeneration) {\n        autoLoadPending.add(tab);\n        return;\n      }"),
                 "A stale dedicated read must fence the remainder of the automatic quick-setup sequence.");
@@ -177,6 +189,14 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const editedProxyServer = preserveDirty && preset === 'proxy-backend' ? quickName.value : null;"));
         assertTrue(script.body().contains("if (editedProxyServer != null) quickName.value = editedProxyServer;"),
                 "A capability read must preserve an edited proxy destination.");
+        assertTrue(script.body().contains("const editedVoteParty = preserveDirty && preset === 'vote-party'"));
+        assertTrue(script.body().contains("if (editedVoteParty.enabled != null && !quickPartyEnabled.disabled)"));
+        assertTrue(script.body().contains("quickPartyCommand.value = editedVoteParty.command;"),
+                "A capability refresh must restore every unsaved common Vote Party value.");
+        assertTrue(script.body().contains("for (const capability of ['config.proxy-method.v2', 'config.proxy-method.v1'])"),
+                "A fully v2-capable network must retain HTTP current-state visibility instead of downgrading to v1.");
+        assertTrue(script.body().contains("network.proxyReady && network.topologyComplete && network.unavailable.length === 0"),
+                "Proxy-method reads must negotiate one capability shared by the full reported network.");
         assertTrue(script.body().contains("previewAutoSites.disabled = !quickReady || autoSitesState.textContent === 'Not loaded';"));
         assertTrue(script.body().contains("previewVoteLogging.disabled = !quickReady || voteLoggingState.textContent === 'Not loaded';"));
         assertTrue(script.body().contains("if (automatic && requestGeneration !== inputGeneration) void autoLoadTab('quick-setup');"),
@@ -191,24 +211,25 @@ class ControlHttpServerTest {
                 "Quick approvals must remain valid only for their selected capability version.");
         assertTrue(script.body().contains("'config.quick-setup.v1', 'config.quick-setup.v2', 'config.proxy-method.v2'"),
                 "Secondary versioned backends must remain selectable for HTTP and Vote Party setup.");
+		assertTrue(script.body().contains("'config.quick-setup.v2', 'config.proxy-method.v2', 'data.inspect.v1'"),
+				"HTTP capability transitions must invalidate cached guided configuration reads.");
+		assertTrue(script.body().contains("return {enabled: 'true'};"),
+				"The v2 read selector must be a constant capability hint, not editable Vote Party state.");
+		assertTrue(script.body().contains("proxyMethodCurrentReadCapability !== readCapability"),
+				"The active proxy method must be invalidated when its v1/v2 read capability changes.");
+		assertTrue(script.body().contains("proxyMethodCurrentReadCapability = readCapability;"),
+				"Successful proxy reads must remember the exact capability used.");
+		assertTrue(script.body().contains("const enabledAvailable = quickSetupCapability() === 'config.quick-setup.v2'"),
+				"Vote Party Enabled availability must come from v2 negotiation, not a legacy response field.");
+		assertTrue(script.body().contains("if (selectedCapabilitiesChanged) {\n      invalidateGuidedSetupReads();"),
+				"Capability transitions must invalidate cached guided reads.");
         assertTrue(script.body().contains("quickPresetReadable() && (!quickSetupDirty || quickSetupPreserveReadGeneration === inputGeneration)"));
-        assertTrue(script.body().contains("return {enabled: 'true'};"),
-                "Vote Party v2 reads must not use the editable Enabled value as their selector.");
-        assertTrue(script.body().contains("loadQuickSetupValues(true, true)"),
-                "Profile loading must preserve its requested proxy method through the live read.");
-        assertTrue(script.body().contains("const previousQuickCapability = quickSetupCapability();")
-                        && script.body().contains("selectedNodes = filteredSelection;\n    handleQuickTargetCapabilityChange(previousQuickCapability);"),
-                "Heartbeat capability changes must invalidate or re-expose Vote Party loading.");
         assertTrue(script.body().contains("!dedicatedSetupDirty.has('auto-create-vote-sites') && autoSitesState.textContent === 'Not loaded'"));
         assertTrue(script.body().contains("Configuration changed elsewhere; your unsaved guided edits were preserved."),
                 "External configuration changes must not overwrite unsaved guided edits.");
         assertTrue(script.body().contains("dedicatedSetupDirty.add(preset);"));
         assertTrue(script.body().contains("if (quickPreset.value !== 'vote-site') quickSetupDirty = true;"),
                 "The shared name field is a selector for vote sites but a dirty editable value for other presets.");
-        assertTrue(script.body().contains("quickSetupDirty = false;\n      quickSetupPreserveReadGeneration = -1;\n      quickPreset.value = 'vote-site';"),
-                "Opening a detected vote site must clear another preset's dirty guard before automatic READ.");
-        assertTrue(script.body().contains("if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);"),
-                "A clean active YAML editor must automatically reload after apply invalidates its cache.");
         assertTrue(script.body().contains("function exposeDirtyVoteSiteReload()"));
         assertTrue(script.body().contains("quickSetupDirty = true;\n  exposeDirtyVoteSiteReload();"),
                 "Becoming dirty during the selector debounce must also expose reload.");
@@ -219,6 +240,10 @@ class ControlHttpServerTest {
                 "Profile application must verify its selection after waiting for live values.");
         assertTrue(script.body().contains("selector: JSON.stringify(quickReadConfigurationOptions())"),
                 "The retained selector must reflect the method returned by the live backend read.");
+        assertTrue(script.body().contains("loadedQuickSetup = {...loadedQuickSetup, selector: JSON.stringify(quickReadConfigurationOptions())};"),
+                "Applying a proxy profile must rebind the confirmed read cache to its restored method.");
+        assertTrue(script.body().contains("if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);"),
+                "A clean active YAML editor must automatically reload after apply invalidates its cache.");
         assertTrue(web.body().contains("Add a simple vote reward"));
         assertTrue(web.body().contains("First-run setup"));
         assertTrue(web.body().contains("Node enrollment"));
@@ -398,7 +423,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("window.addEventListener('beforeunload'"));
         assertTrue(script.body().contains("loadedQuickSetup = {nodeId, sessionId, preset,"));
         assertTrue(script.body().contains("configurationOperationsInFlight"));
-		assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
+		assertTrue(script.body().contains("if (selectedCapabilitiesChanged) {\n      invalidateGuidedSetupReads();\n      approvedPreview = null;"));
+        assertTrue(script.body().contains("approvedPreview.nodeIds.every"));
         assertTrue(script.body().contains("selectedCapabilitiesChanged"));
         assertTrue(script.body().contains("proxyFile ? !isProxy(restoreNode) : !isBackend(restoreNode)"));
         assertTrue(script.body().contains("discardAuthenticationState"));
@@ -769,10 +795,15 @@ class ControlHttpServerTest {
                         + "    quickSetupDirty = false;\n    quickSetupPreserveReadGeneration = -1;\n"
                         + "    pendingDetectedVoteSite = null;"),
                 "A shortcut replacing the preset must discard dirty state from the previous form before autoloading.");
+		assertTrue(script.body().contains("pendingDetectedVoteSite = {nodeId: selectedServerId, key, service: String(service).slice(0, 200)};\n"
+				+ "      selectedNodes = new Set(selectedServerId ? [selectedServerId] : []);\n"
+				+ "      loadedQuickSetup = null;\n      quickSetupDirty = false;\n"
+				+ "      quickSetupPreserveReadGeneration = -1;"),
+				"Detected-site navigation must discard dirty state from the previous preset before autoloading.");
         assertTrue(script.body().contains("if (autoLoadInFlight.has(tab)) {\n    autoLoadPending.add(tab);"));
         assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"),
                 "A preset change during an older read must queue a fresh autoload.");
-        assertTrue(script.body().contains("quickPresetReadable() && !await loadQuickSetupValues(true, true)"),
+        assertTrue(script.body().contains("quickPresetReadable() && !await loadQuickSetupValues(true)"),
                 "Loading a saved profile must read live values before enabling the template.");
         assertTrue(script.body().contains("applyProfileValues(profile);"),
                 "The saved template must be restored after the live read rather than overwritten by it.");
@@ -783,6 +814,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const readCapability = proxyMethodReadCapability();"));
         assertTrue(script.body().contains("readCapability === 'config.proxy-method.v2' ? 'HTTP' : 'PLUGINMESSAGING'"),
                 "A v2-only proxy must read its current method through the capability it advertises.");
+        assertTrue(script.body().contains("readCapability !== proxyMethodReadCapability()"),
+                "A proxy-method read must be discarded when the negotiated capability changes while it is in flight.");
         assertTrue(script.body().contains("autoLoadPending.clear();"));
         int globalShortcut = script.body().indexOf("function openGlobalShortcut(destination)");
         int selectConfigView = script.body().indexOf("setConfigView(destination.configView);", globalShortcut);
