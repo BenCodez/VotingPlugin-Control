@@ -1,6 +1,7 @@
 package com.bencodez.votingplugin.control.http;
 
 import com.bencodez.votingplugin.control.auth.CredentialStore;
+import com.bencodez.votingplugin.control.artifact.ArtifactStore;
 import com.bencodez.votingplugin.control.domain.InMemoryNodeRegistry;
 import com.bencodez.votingplugin.control.protocol.ControlIdentity;
 import com.bencodez.votingplugin.control.protocol.BackendServerIdentity;
@@ -13,6 +14,11 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.io.ByteArrayOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Files;
@@ -20,6 +26,15 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.UUID;
 import java.util.Map;
+import java.util.HexFormat;
+import java.security.MessageDigest;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+import java.util.concurrent.atomic.AtomicBoolean;
+import com.sun.net.httpserver.Headers;
+import com.sun.net.httpserver.HttpContext;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpPrincipal;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -57,6 +72,18 @@ class ControlHttpServerTest {
         }
     }
 
+	@Test void artifactInputClosesWhenResponseHeadersFail() {
+		AtomicBoolean closed = new AtomicBoolean();
+		InputStream input = new ByteArrayInputStream(new byte[] {1}) {
+			@Override public void close() throws IOException { closed.set(true); super.close(); }
+		};
+		ArtifactStore.Artifact artifact = new ArtifactStore.Artifact("a".repeat(64), "VotingPlugin.jar", 1);
+
+		assertThrows(IOException.class,
+				() -> ControlHttpServer.sendArtifact(new FailingHeadersExchange(), artifact, input));
+		assertTrue(closed.get());
+	}
+
     @Test void healthRouteIsExactUnknownRoutesAreStructuredAndMethodsAreIntentional() throws Exception {
         HttpResponse<String> web = get("/", null);
         assertEquals(200, web.statusCode());
@@ -71,6 +98,8 @@ class ControlHttpServerTest {
         assertFalse(web.body().contains("Load current values"));
         assertTrue(web.body().contains("Retry read"));
         assertTrue(web.body().contains("id=\"quick-party-enabled\""));
+        assertTrue(web.body().contains("id=\"deployment-jar\""));
+        assertTrue(web.body().contains("Upload and stage on eligible servers"));
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
@@ -78,6 +107,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("async function loadAllNodes()"));
         assertTrue(script.body().contains("let nodeLoadInFlight = null;"));
         assertTrue(script.body().contains("async function loadNodesOnce()"));
+		assertTrue(script.body().contains("`${node.displayName} (${node.nodeId})`"),
+				"Skipped deployment targets must retain their unique node ID in status output.");
         assertTrue(script.body().contains("nodeLoadQueued = true;"));
         assertTrue(script.body().contains("let nodeLoadQueuedPromise = null;"));
         assertTrue(script.body().contains("return nodeLoadQueuedPromise;"),
@@ -108,6 +139,23 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("result.configuration?.content != null"));
         assertTrue(script.body().contains("authenticationGeneration"));
         assertTrue(script.body().contains("if (loginInFlight) return"));
+        assertTrue(script.body().contains("logoutInFlight && path !== '/api/v1/auth/logout'"));
+        assertTrue(script.body().contains("!authenticated || logoutInFlight || !file"));
+        assertTrue(script.body().contains("const deploymentRun = ++deploymentRunGeneration;"));
+        assertTrue(script.body().contains("if (deploymentRun === deploymentRunGeneration) {\n"
+                        + "      deploymentInFlight = false;"),
+                "A failed logout must not leave a superseded deployment permanently in flight.");
+        assertTrue(script.body().contains("deploymentRunGeneration++;\n  deploymentInFlight = false;"),
+                "Successful logout must invalidate the prior deployment completion guard.");
+        assertTrue(script.body().contains("if (error.code !== 'NODE_UNAVAILABLE') throw error;"));
+        assertTrue(script.body().contains("const unavailable = new Set((error.details || []).filter(nodeId => remaining.includes(nodeId)));"),
+                "Deployment retries must use the server's exact unavailable-node details when available.");
+        assertTrue(script.body().contains("remaining = remaining.filter(nodeId => !unavailable.has(nodeId));"),
+                "A temporarily unavailable node must not discard other eligible nodes in its batch.");
+        assertTrue(script.body().contains("attempt < MAX_OPERATION_TARGETS"),
+                "Deployment eligibility retries must remain bounded by the target limit.");
+        assertTrue(script.body().contains("Unavailable nodes skipped:"));
+        assertTrue(script.body().contains("No deployment batches were submitted."));
         assertTrue(script.body().contains("backendItemsTruncated"));
         assertTrue(script.body().contains("topologyComplete: !truncatedNodeIds.has(proxyId)"));
         assertTrue(script.body().contains("proxyReady: network.proxyReady"));
@@ -507,7 +555,8 @@ class ControlHttpServerTest {
         assertEquals(2, script.body().split(java.util.regex.Pattern.quote(
                 "if (!authenticated || historyGeneration !== authenticationGeneration) return;"), -1).length - 1,
                 "Delayed operation-history success and failure responses must not mutate a replaced session.");
-        assertTrue(script.body().contains("operationHistoryItems = [];\n    voteLoggingRestartPending = new Map();"),
+        assertTrue(script.body().contains(
+                "operationHistoryItems = [];\n    deploymentHistoryItems = [];\n    voteLoggingRestartPending = new Map();"),
                 "A failed history refresh must not leave stale operations or restart warnings on the dashboard.");
         assertTrue(script.body().contains(
                 "text(operationHistory, error.message || 'Operation history could not be loaded.');\n    updateSetupChecklist();"),
@@ -1019,6 +1068,49 @@ class ControlHttpServerTest {
         assertEquals("Feature: true\n", snapshot.at("/documents/0/content").asText());
     }
 
+    @Test void verifiedArtifactDeploymentIsCapabilityAndAttemptBoundEndToEnd() throws Exception {
+        String capableRegistration = registration().replace("\"presence.snapshot\"]",
+                "\"presence.snapshot\",\"plugin.deploy.v1\"]");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", capableRegistration, nodeToken).statusCode());
+        byte[] jar = votingPluginJar();
+        String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(jar));
+
+        HttpResponse<String> uploaded = sendBytes("POST", "/api/v1/artifacts/votingplugin", jar,
+                Map.of("Authorization", "Bearer " + adminToken, "Content-Type", "application/java-archive",
+                        "X-Filename", "VotingPlugin.jar", "X-Artifact-SHA256", sha256));
+        assertEquals(201, uploaded.statusCode(), uploaded.body());
+        assertEquals(sha256, json.readTree(uploaded.body()).get("artifactId").asText());
+
+        String request = "{\"artifactId\":\"" + sha256 + "\",\"sha256\":\"" + sha256
+                + "\",\"size\":" + jar.length + ",\"nodeIds\":[\"proxy-a\"]}";
+        HttpResponse<String> created = send("POST", "/api/v1/deployments", request, adminToken);
+        assertEquals(202, created.statusCode(), created.body());
+        String deploymentId = json.readTree(created.body()).get("deploymentId").asText();
+        JsonNode task = json.readTree(send("POST", "/api/v1/nodes/proxy-a/deployments",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        String attemptId = task.get("attemptId").asText();
+
+        assertError(get("/api/v1/nodes/proxy-a/deployments/" + deploymentId + "/artifact", nodeToken),
+                400, "VALIDATION_ERROR");
+        HttpResponse<byte[]> downloaded = sendBinaryResponse("GET",
+                "/api/v1/nodes/proxy-a/deployments/" + deploymentId + "/artifact", new byte[0],
+                Map.of("Authorization", "Bearer " + nodeToken, "X-Node-Session", SESSION,
+                        "X-Deployment-Attempt", attemptId));
+        assertEquals(200, downloaded.statusCode());
+        assertArrayEquals(jar, downloaded.body());
+        assertEquals(sha256, downloaded.headers().firstValue("X-Artifact-SHA256").orElseThrow());
+
+        String result = "{\"sessionId\":\"" + SESSION + "\",\"success\":true,"
+                + "\"code\":\"RESTART_REQUIRED\",\"message\":\"Staged for restart\","
+                + "\"attemptId\":\"" + attemptId + "\"}";
+        JsonNode completed = json.readTree(send("POST", "/api/v1/nodes/proxy-a/deployments/"
+                + deploymentId + "/result", result, nodeToken).body());
+        assertEquals("SUCCEEDED", completed.get("state").asText());
+        assertEquals("RESTART_REQUIRED", completed.at("/nodes/0/result/code").asText());
+        assertEquals(deploymentId, json.readTree(get("/api/v1/deployments", adminToken).body())
+                .at("/items/0/deploymentId").asText());
+    }
+
     @Test void missingInvalidWrongNodeRevokedAndRotatedCredentialsFailWithoutDisclosure() throws Exception {
         assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), null));
         assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), "wrong"));
@@ -1234,6 +1326,21 @@ class ControlHttpServerTest {
                 + "Connection: close\r\n\r\n");
         assertTrue(oversized.startsWith("HTTP/1.1 413"), oversized);
         assertTrue(oversized.contains("REQUEST_TOO_LARGE"), oversized);
+        String oversizedArtifact = sendRaw("POST /api/v1/artifacts/votingplugin HTTP/1.1\r\n"
+                + "Host: 127.0.0.1\r\nContent-Type: application/java-archive\r\n"
+                + "Authorization: Bearer " + adminToken + "\r\nX-Filename: VotingPlugin.jar\r\n"
+                + "Content-Length: " + (ArtifactStore.MAX_UPLOAD_BYTES + 1) + "\r\n"
+                + "Connection: close\r\n\r\n");
+        assertTrue(oversizedArtifact.startsWith("HTTP/1.1 413"), oversizedArtifact);
+        assertTrue(oversizedArtifact.contains(Long.toString(ArtifactStore.MAX_UPLOAD_BYTES)), oversizedArtifact);
+		String duplicateDigest = sendRaw("POST /api/v1/artifacts/votingplugin HTTP/1.1\r\n"
+				+ "Host: 127.0.0.1\r\nContent-Type: application/java-archive\r\n"
+				+ "Authorization: Bearer " + adminToken + "\r\nX-Filename: VotingPlugin.jar\r\n"
+				+ "X-Artifact-SHA256: " + "a".repeat(64) + "\r\n"
+				+ "X-Artifact-SHA256: " + "b".repeat(64) + "\r\n"
+				+ "Content-Length: 1\r\nConnection: close\r\n\r\nx");
+		assertTrue(duplicateDigest.startsWith("HTTP/1.1 400"), duplicateDigest);
+		assertTrue(duplicateDigest.contains("VALIDATION_ERROR"), duplicateDigest);
         assertError(send("POST", "/api/v1/nodes/register", registration().replace("Proxy A", "x".repeat(101)),
                 nodeToken), 400, "VALIDATION_ERROR");
         HttpRequest invalidUtf8 = HttpRequest.newBuilder(base.resolve("/api/v1/nodes/register"))
@@ -1316,6 +1423,36 @@ class ControlHttpServerTest {
         return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     }
 
+    private HttpResponse<String> sendBytes(String method, String path, byte[] body,
+                                           Map<String, String> headers) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(base.resolve(path)).timeout(Duration.ofSeconds(3));
+        headers.forEach(builder::header);
+        builder.method(method, HttpRequest.BodyPublishers.ofByteArray(body));
+        return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<byte[]> sendBinaryResponse(String method, String path, byte[] body,
+                                                     Map<String, String> headers) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(base.resolve(path)).timeout(Duration.ofSeconds(3));
+        headers.forEach(builder::header);
+        builder.method(method, body.length == 0 ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofByteArray(body));
+        return client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+    }
+
+    private static byte[] votingPluginJar() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(output)) {
+            zip.putNextEntry(new ZipEntry("plugin.yml"));
+            zip.write("name: VotingPlugin\nversion: test\n".getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("com/bencodez/votingplugin/VotingPluginMain.class"));
+            zip.write(new byte[] {1, 2, 3});
+            zip.closeEntry();
+        }
+        return output.toByteArray();
+    }
+
     private String sendRaw(String request) throws Exception {
         try (Socket socket = new Socket("127.0.0.1", server.port())) {
             socket.setSoTimeout(3000);
@@ -1337,4 +1474,25 @@ class ControlHttpServerTest {
         assertEquals(status, response.statusCode(), response.body());
         assertEquals(code, json.readTree(response.body()).at("/error/code").asText(), response.body());
     }
+
+	private static final class FailingHeadersExchange extends HttpExchange {
+		private final Headers responseHeaders = new Headers();
+		@Override public Headers getRequestHeaders() { return new Headers(); }
+		@Override public Headers getResponseHeaders() { return responseHeaders; }
+		@Override public URI getRequestURI() { return URI.create("/"); }
+		@Override public String getRequestMethod() { return "GET"; }
+		@Override public HttpContext getHttpContext() { return null; }
+		@Override public void close() {}
+		@Override public InputStream getRequestBody() { return InputStream.nullInputStream(); }
+		@Override public OutputStream getResponseBody() { throw new AssertionError("body must not be opened"); }
+		@Override public void sendResponseHeaders(int code, long length) throws IOException { throw new IOException("closed"); }
+		@Override public InetSocketAddress getRemoteAddress() { return new InetSocketAddress(0); }
+		@Override public int getResponseCode() { return -1; }
+		@Override public InetSocketAddress getLocalAddress() { return new InetSocketAddress(0); }
+		@Override public String getProtocol() { return "HTTP/1.1"; }
+		@Override public Object getAttribute(String name) { return null; }
+		@Override public void setAttribute(String name, Object value) {}
+		@Override public void setStreams(InputStream input, OutputStream output) {}
+		@Override public HttpPrincipal getPrincipal() { return null; }
+	}
 }

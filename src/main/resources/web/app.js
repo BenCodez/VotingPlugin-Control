@@ -56,6 +56,10 @@ const refresh = document.querySelector('#refresh');
 const previousPage = document.querySelector('#previous-page');
 const nextPage = document.querySelector('#next-page');
 const pageNumber = document.querySelector('#page-number');
+const deploymentJar = document.querySelector('#deployment-jar');
+const deployPlugin = document.querySelector('#deploy-plugin');
+const deploymentEligibility = document.querySelector('#deployment-eligibility');
+const deploymentStatus = document.querySelector('#deployment-status');
 const sendAll = document.querySelector('#send-all');
 const blockedServers = document.querySelector('#blocked-servers');
 const readConfiguration = document.querySelector('#read-configuration');
@@ -222,6 +226,7 @@ const PAGE_SIZE = 100;
 const MAX_CONFIGURATION_TARGETS = 100;
 const MAX_SYNC_TARGETS = 100;
 const MAX_OPERATION_TARGETS = 100;
+const MAX_DEPLOYMENT_BATCHES = 100;
 const MAX_TRACE_NODES = 12;
 const MAX_TRACE_EVENTS_PER_NODE = 100;
 const MAX_PLAYER_LAST_VOTES = 100;
@@ -271,6 +276,7 @@ let nodePlugins = new Map();
 let inputGeneration = 0;
 let authenticationGeneration = 0;
 let loginInFlight = false;
+let logoutInFlight = false;
 let setupRequired = false;
 let enrollmentInFlight = false;
 let enrollmentRefreshRequested = false;
@@ -280,6 +286,8 @@ let enrollmentMutationInFlight = false;
 let configurationOperationsInFlight = 0;
 let proxyMethodWorkflowInFlight = false;
 let voteSiteReadTimer = null;
+let deploymentInFlight = false;
+let deploymentRunGeneration = 0;
 const FILE_READ_CACHE_TTL_MS = 30_000;
 const MAX_FILE_READ_CACHE_ENTRIES = 12;
 const MAX_OPERATION_HISTORY = 50;
@@ -307,6 +315,7 @@ let dashboardTopologySignature = '';
 let dashboardConfigurationGeneration = 0;
 let dashboardLoading = false;
 let operationHistoryItems = [];
+let deploymentHistoryItems = [];
 let observedServerConfigurationGeneration = null;
 let operationHistoryStatus = 'not-loaded';
 let enrollmentStatus = 'not-loaded';
@@ -985,8 +994,8 @@ function rememberOperation(operation) {
 
 function renderOperationHistory() {
   operationHistory.replaceChildren();
-  if (operationHistoryItems.length === 0) {
-    text(operationHistory, 'No retained configuration operations.');
+  if (operationHistoryItems.length === 0 && deploymentHistoryItems.length === 0) {
+    text(operationHistory, 'No retained configuration or plugin deployment operations.');
     renderMetrics();
     return;
   }
@@ -1061,6 +1070,36 @@ function renderOperationHistory() {
     item.append(heading, detail);
     operationHistory.append(item);
   });
+  deploymentHistoryItems.forEach(deployment => {
+    const item = document.createElement('article');
+    item.className = 'result-item';
+    const heading = document.createElement('div');
+    heading.className = 'section-title';
+    const identity = document.createElement('div');
+    identity.append(text(document.createElement('strong'), `Plugin deployment · ${deployment.state}`));
+    identity.append(text(document.createElement('small'), `${deployment.deploymentId} · ${new Date(deployment.createdAt).toLocaleString()}`));
+    heading.append(identity);
+    if ((deployment.nodes || []).some(node => node.state === 'FAILED')) {
+      const retry = text(document.createElement('button'), 'Retry failed targets');
+      retry.type = 'button';
+      retry.className = 'secondary compact';
+      retry.addEventListener('click', async () => {
+        retry.disabled = true;
+        try {
+          const created = await authorized(`/api/v1/deployments/${deployment.deploymentId}/retry`, {method: 'POST'});
+          const completed = await waitForDeployment(created, authenticationGeneration);
+          text(deploymentStatus, deploymentSummary(completed));
+          await loadOperationHistory();
+        } catch (error) { text(message, error.message); }
+        finally { retry.disabled = false; }
+      });
+      heading.append(retry);
+    }
+    const detail = document.createElement('pre');
+    text(detail, deploymentSummary(deployment));
+    item.append(heading, detail);
+    operationHistory.append(item);
+  });
   renderMetrics();
 }
 
@@ -1069,7 +1108,9 @@ async function loadOperationHistoryOnce() {
   const historyGeneration = authenticationGeneration;
   operationHistoryStatus = 'loading';
   try {
-    const body = await authorized('/api/v1/operations');
+    const [body, deploymentBody] = await Promise.all([
+      authorized('/api/v1/operations'), authorized('/api/v1/deployments?offset=0&limit=50')
+    ]);
     if (!authenticated || historyGeneration !== authenticationGeneration) return;
     const retainedOperations = Array.isArray(body.items) ? body.items : [];
     const serverConfigurationGeneration = finiteCount(body.configurationGeneration);
@@ -1085,6 +1126,8 @@ async function loadOperationHistoryOnce() {
     operationHistoryItems = retainedOperations.slice(0, MAX_OPERATION_HISTORY).map(operation =>
       ({...operation, results: Object.fromEntries(Object.entries(operation.results || {}).map(([nodeId, result]) =>
         [nodeId, result ? {...result, configuration: null} : result]))}));
+    deploymentHistoryItems = Array.isArray(deploymentBody.items)
+      ? deploymentBody.items.slice(0, MAX_OPERATION_HISTORY) : [];
     if (observedSuccessfulApply) {
       invalidateConfigurationReads();
       invalidateGuidedSetupReads();
@@ -1113,6 +1156,7 @@ async function loadOperationHistoryOnce() {
   } catch (error) {
     if (!authenticated || historyGeneration !== authenticationGeneration) return;
     operationHistoryItems = [];
+    deploymentHistoryItems = [];
     voteLoggingRestartPending = new Map();
     operationHistoryStatus = 'failed';
     text(operationHistory, error.message || 'Operation history could not be loaded.');
@@ -1281,6 +1325,7 @@ function applyAuthenticatedSession(body) {
   dashboardInspectionStatus = emptyDashboardInspectionStatus();
   dashboardTopologySignature = '';
   operationHistoryItems = [];
+  deploymentHistoryItems = [];
   observedServerConfigurationGeneration = null;
   operationHistoryStatus = 'not-loaded';
   enrollmentStatus = 'not-loaded';
@@ -1347,7 +1392,8 @@ function friendlyCapability(capability) {
     'config.quick-setup.v1': 'Setup assistant',
     'config.quick-setup.v2': 'Vote Party setup',
     'config.proxy-routing.v1': 'Proxy routing',
-    'data.inspect.v1': 'Read-only data inspection'
+    'data.inspect.v1': 'Read-only data inspection',
+    'plugin.deploy.v1': 'Verified plugin staging'
   })[capability];
 }
 
@@ -2779,7 +2825,23 @@ function renderNodeViews() {
   renderVoteSitesSync();
   renderTransportTest();
   renderProxyMethod();
+  renderDeploymentEligibility();
   updateExtendedButtons();
+}
+
+function deploymentTargets() {
+  return allNodeItems.filter(node => node.online && node.acceptedCapabilities.includes('plugin.deploy.v1'));
+}
+
+function renderDeploymentEligibility() {
+  const eligible = deploymentTargets();
+  const connected = allNodeItems.filter(node => node.online);
+  const batches = Math.ceil(eligible.length / MAX_OPERATION_TARGETS);
+  text(deploymentEligibility, `${eligible.length}/${connected.length} connected nodes eligible`
+    + (batches > 1 ? ` · ${batches} bounded deployment batches` : ''));
+  deploymentEligibility.className = `pill ${eligible.length ? 'online' : 'neutral'}`;
+  deployPlugin.disabled = !authenticated || logoutInFlight || deploymentInFlight || !deploymentJar.files?.length
+    || eligible.length === 0 || batches > MAX_DEPLOYMENT_BATCHES;
 }
 
 function selectNodePage(offset) {
@@ -3129,6 +3191,9 @@ function updatePluginSuggestions() {
 }
 
 async function authorized(path, options = {}) {
+  if (logoutInFlight && path !== '/api/v1/auth/logout') {
+    throw new Error('Authentication is changing. Try again after it finishes.');
+  }
   const requestGeneration = authenticationGeneration;
   const method = (options.method || 'GET').toUpperCase();
   const response = await fetch(path, {
@@ -3147,9 +3212,43 @@ async function authorized(path, options = {}) {
   if (!response.ok) {
     const error = new Error(body?.error?.message || `Control request failed (${response.status}).`);
     error.code = body?.error?.code || '';
+    error.details = Array.isArray(body?.error?.details) ? body.error.details : [];
     throw error;
   }
   return body;
+}
+
+async function deploymentFileSha256(file) {
+  if (!window.isSecureContext || !window.crypto?.subtle) {
+    return null;
+  }
+  const digest = await window.crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
+function deploymentSummary(operation) {
+  const lines = [`Deployment ${operation.deploymentId} · ${operation.state}`];
+  (operation.nodes || []).forEach(node => {
+    const result = node.result;
+    lines.push(result ? `${result.success ? '✓' : '✗'} ${node.nodeId}: ${configurationFailureLabel(result.code)} — ${result.message}`
+      : `… ${node.nodeId}: ${String(node.state).toLowerCase()}`);
+  });
+  return lines.join('\n');
+}
+
+async function waitForDeployment(operation, generation) {
+  text(deploymentStatus, deploymentSummary(operation));
+  const deadline = Date.now() + 180_000;
+  while (operation.state === 'RUNNING' || operation.state === 'QUEUED' || operation.state === 'PARTIAL') {
+    if (Date.now() >= deadline) {
+      throw new Error(`Deployment ${operation.deploymentId} is still pending. Its durable state remains available in Activity.`);
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 1500));
+    if (generation !== authenticationGeneration) throw new Error('Authentication changed while deployment was running.');
+    operation = await authorized(`/api/v1/deployments/${operation.deploymentId}`);
+    text(deploymentStatus, deploymentSummary(operation));
+  }
+  return operation;
 }
 
 function discardAuthenticationState(reason) {
@@ -3201,6 +3300,11 @@ function discardAuthenticationState(reason) {
   dashboardInspectionStatus = emptyDashboardInspectionStatus();
   dashboardTopologySignature = '';
   operationHistoryItems = [];
+  deploymentHistoryItems = [];
+  deploymentJar.value = '';
+  deploymentRunGeneration++;
+  deploymentInFlight = false;
+  text(deploymentStatus, '');
   observedServerConfigurationGeneration = null;
   operationHistoryStatus = 'not-loaded';
   enrollmentStatus = 'not-loaded';
@@ -3745,9 +3849,11 @@ form.addEventListener('submit', async event => {
 logout.addEventListener('click', async () => {
   if (loginInFlight) return;
   loginInFlight = true;
+  logoutInFlight = true;
   const logoutGeneration = ++authenticationGeneration;
   loginButton.disabled = true;
   logout.disabled = true;
+  renderDeploymentEligibility();
   try {
     await authorized('/api/v1/auth/logout', {method: 'POST'});
     if (logoutGeneration === authenticationGeneration) discardAuthenticationState('Signed out.');
@@ -3756,9 +3862,11 @@ logout.addEventListener('click', async () => {
       text(message, 'Sign out could not be confirmed. Check your connection and try again.');
     }
   } finally {
+    logoutInFlight = false;
     loginInFlight = false;
     loginButton.disabled = false;
     logout.disabled = false;
+    renderDeploymentEligibility();
   }
 });
 
@@ -5286,6 +5394,118 @@ quickPreset.addEventListener('input', () => {
   void autoLoadTab('quick-setup');
 });
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
+deploymentJar.addEventListener('change', renderDeploymentEligibility);
+deployPlugin.addEventListener('click', async () => {
+  const file = deploymentJar.files?.[0];
+  const eligible = deploymentTargets();
+  if (!authenticated || logoutInFlight || !file || !eligible.length || deploymentInFlight) return;
+  const batches = [];
+  for (let offset = 0; offset < eligible.length; offset += MAX_OPERATION_TARGETS) {
+    batches.push(eligible.slice(offset, offset + MAX_OPERATION_TARGETS));
+  }
+  if (batches.length > MAX_DEPLOYMENT_BATCHES) {
+    text(deploymentStatus, `This deployment exceeds the ${MAX_DEPLOYMENT_BATCHES}-batch safety limit.`);
+    return;
+  }
+  if (!file.name.toLowerCase().endsWith('.jar') || file.size < 1 || file.size > 64 * 1024 * 1024) {
+    text(deploymentStatus, 'Choose a non-empty VotingPlugin JAR no larger than 64 MiB.');
+    return;
+  }
+  const ineligible = allNodeItems.filter(node => node.online
+    && !node.acceptedCapabilities.includes('plugin.deploy.v1')).map(node => node.displayName);
+  const confirmation = `Upload ${file.name} (${file.size.toLocaleString()} bytes) and stage it on `
+    + `${eligible.length} deployment-capable node(s)? Servers will require a restart. Automatic restart is disabled.`
+    + (batches.length > 1 ? ` Control will use ${batches.length} bounded operations.` : '')
+    + (ineligible.length ? ` Older/incompatible nodes excluded: ${ineligible.join(', ')}.` : '');
+  if (!window.confirm(confirmation)) return;
+  const deploymentRun = ++deploymentRunGeneration;
+  deploymentInFlight = true;
+  renderDeploymentEligibility();
+  const generation = authenticationGeneration;
+  const submittedOperations = [];
+  const completedOperations = [];
+  const unavailableBatchNodes = [];
+  try {
+    text(deploymentStatus, 'Calculating SHA-256 locally…');
+    const sha256 = await deploymentFileSha256(file);
+    if (generation !== authenticationGeneration) {
+      throw new Error('Authentication changed before the deployment upload started.');
+    }
+    text(deploymentStatus, sha256 ? `Uploading artifact ${sha256.slice(0, 12)} for server verification…`
+      : 'Uploading artifact for bounded server-side SHA-256 verification…');
+    const uploadHeaders = {'Content-Type': 'application/java-archive', 'X-Filename': file.name};
+    if (sha256) uploadHeaders['X-Artifact-SHA256'] = sha256;
+    const artifact = await authorized('/api/v1/artifacts/votingplugin', {
+      method: 'POST', headers: uploadHeaders, body: file
+    });
+    if (sha256 && artifact.sha256 !== sha256 || artifact.size !== file.size) {
+      throw new Error('Control returned artifact metadata that does not match the selected JAR.');
+    }
+    const verifiedSha256 = artifact.sha256;
+    const operations = [];
+    for (const batch of batches) {
+      if (generation !== authenticationGeneration) {
+        throw new Error('Authentication changed before every deployment batch was submitted.');
+      }
+      let remaining = batch.map(node => node.nodeId);
+      for (let attempt = 0; remaining.length > 0 && attempt < MAX_OPERATION_TARGETS; attempt++) {
+        if (generation !== authenticationGeneration) {
+          throw new Error('Authentication changed before every deployment batch was submitted.');
+        }
+        try {
+          const operation = await authorized('/api/v1/deployments', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
+              artifactId: artifact.artifactId, sha256: verifiedSha256, size: file.size,
+              nodeIds: remaining
+            })
+          });
+          operations.push(operation);
+          submittedOperations.push(operation);
+          remaining = [];
+        } catch (error) {
+          if (error.code !== 'NODE_UNAVAILABLE') throw error;
+          const unavailable = new Set((error.details || []).filter(nodeId => remaining.includes(nodeId)));
+          if (unavailable.size === 0) {
+            throw new Error('Deployment eligibility changed without identifying an unavailable node. Refresh and try again.');
+          }
+          unavailable.forEach(nodeId => {
+            const node = batch.find(candidate => candidate.nodeId === nodeId);
+            const label = node ? `${node.displayName} (${node.nodeId})` : nodeId;
+            if (!unavailableBatchNodes.includes(label)) unavailableBatchNodes.push(label);
+          });
+          remaining = remaining.filter(nodeId => !unavailable.has(nodeId));
+        }
+      }
+      if (remaining.length > 0) {
+        throw new Error('Deployment eligibility could not be settled within the bounded retry limit.');
+      }
+    }
+    for (const operation of operations) {
+      completedOperations.push(await waitForDeployment(operation, generation));
+    }
+    const unavailableSummary = unavailableBatchNodes.length
+      ? `\nUnavailable nodes skipped: ${unavailableBatchNodes.join(', ')}.` : '';
+    text(deploymentStatus, completedOperations.length
+      ? `${completedOperations.map(deploymentSummary).join('\n\n')}\nRestart each successfully staged server to activate this JAR.${unavailableSummary}`
+      : `No deployment batches were submitted.${unavailableSummary}`);
+  } catch (error) {
+    if (generation === authenticationGeneration) {
+      const submitted = submittedOperations.map(operation => completedOperations.find(completed =>
+        completed.deploymentId === operation.deploymentId) || operation);
+      const unavailableSummary = unavailableBatchNodes.length
+        ? `\nUnavailable nodes skipped: ${unavailableBatchNodes.join(', ')}.` : '';
+      text(deploymentStatus, submitted.length
+        ? `${submitted.map(deploymentSummary).join('\n\n')}\nDeployment submission or monitoring stopped: ${error.message}`
+          + `\nThe listed operations remain durable in Activity; verify them before retrying.${unavailableSummary}`
+        : `${error.message}${unavailableSummary}`);
+    }
+  } finally {
+    if (deploymentRun === deploymentRunGeneration) {
+      deploymentInFlight = false;
+      renderDeploymentEligibility();
+    }
+  }
+});
 tabButtons.forEach(button => button.addEventListener('click', () => {
   if (button.dataset.configShortcut) setConfigView(button.dataset.configShortcut);
   setActiveTab(button.dataset.tab, true);

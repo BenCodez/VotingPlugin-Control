@@ -1,12 +1,14 @@
 package com.bencodez.votingplugin.control;
 
 import com.bencodez.votingplugin.control.auth.CredentialStore;
+import com.bencodez.votingplugin.control.artifact.ArtifactStore;
 import com.bencodez.votingplugin.control.domain.InMemoryNodeRegistry;
 import com.bencodez.votingplugin.control.domain.ConfigurationAuditLog;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperationJournal;
 import com.bencodez.votingplugin.control.domain.ConfigurationSnapshots;
 import com.bencodez.votingplugin.control.domain.InspectionOperations;
+import com.bencodez.votingplugin.control.domain.DeploymentOperations;
 import com.bencodez.votingplugin.control.http.ControlHttpServer;
 import com.bencodez.votingplugin.control.protocol.ControlIdentity;
 import com.bencodez.votingplugin.control.protocol.Protocol;
@@ -162,9 +164,12 @@ public final class ControlApplication {
         ConfigurationOperations operations = new ConfigurationOperations(registry, audit, clock, operationJournal);
         InspectionOperations inspections = new InspectionOperations(registry, audit, clock);
         ConfigurationSnapshots snapshots = new ConfigurationSnapshots(configuration.dataDirectory(), clock);
+        ArtifactStore artifacts = new ArtifactStore(configuration.dataDirectory().resolve("plugin-artifacts"));
+        DeploymentOperations deployments = new DeploymentOperations(registry, audit,
+                configuration.dataDirectory(), clock);
         ControlHttpServer server = new ControlHttpServer(configuration.address(), registry, identity, credentials,
-                operations, inspections, snapshots, configuration.secureCookies(), configuration.trustedProxyAddresses(),
-                configuration.launchId());
+                operations, inspections, snapshots, artifacts, deployments, configuration.secureCookies(),
+                configuration.trustedProxyAddresses(), configuration.launchId());
         ProcessHandle parent = parentProcess(configuration.parentPid());
         CountDownLatch shutdown = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
