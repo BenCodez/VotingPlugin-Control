@@ -3467,6 +3467,12 @@ function operationSummary(operation) {
   return lines.join('\n');
 }
 
+function presentPreviewReady(statusElement, applyButton, operation) {
+  const action = applyButton?.textContent?.trim() || 'Approve and apply';
+  text(statusElement, `${operationSummary(operation)}\nPREVIEW ONLY — nothing has been saved yet. Click “${action}” to write these exact changes.`);
+  if (applyButton && !applyButton.disabled) applyButton.focus({preventScroll: true});
+}
+
 function operationContext() {
   return {authenticationGeneration, inputGeneration, selectedServerId,
     selectedSessionId: nodeIndex.get(selectedServerId)?.sessionId};
@@ -3982,6 +3988,7 @@ previewConfiguration.addEventListener('click', async () => {
       approvedPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken,
         nodeIds: targets('config.proxy-routing.v1')};
       updateConfigurationButtons();
+      presentPreviewReady(operationStatus, applyConfiguration, operation);
     } else if (previewGeneration !== inputGeneration) {
       text(operationStatus, 'The targets or proposal changed while previewing. Preview again before apply.');
     }
@@ -4123,10 +4130,10 @@ previewFileConfiguration.addEventListener('click', async () => {
       && previewTargets.every(nodeId => previewSessions.get(nodeId) === nodeIndex.get(nodeId)?.sessionId)
       && previewTargets.every(nodeId => fileTargetsForSelection(selectedFile).includes(nodeId));
     if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration && targetsCurrent) {
-      text(fileOperationStatus, operationSummary(operation));
       approvedFilePreview = {operationId: operation.operationId, approvalToken: operation.approvalToken,
         nodeIds: previewTargets, fileName: selectedFile, sessions: previewSessions};
       updateConfigurationButtons();
+      presentPreviewReady(fileOperationStatus, applyFileConfiguration, operation);
     } else if (previewGeneration !== inputGeneration || !targetsCurrent) {
       text(fileOperationStatus, 'The targets or file changed while previewing. Preview again before apply.');
     } else {
@@ -4365,11 +4372,13 @@ previewQuickSetup.addEventListener('click', async () => {
         nodeIds,
         configuration: {domain: 'quick-setup', preset: 'sync-vote-sites', options: {sourceContent: source}}
       }, quickOperationStatus);
-      text(quickOperationStatus, operationSummary(preview));
       if (preview.state === 'SUCCEEDED' && preview.approvalToken && previewGeneration === inputGeneration) {
         approvedQuickPreview = {workflow: 'sync-vote-sites', operationId: preview.operationId,
           approvalToken: preview.approvalToken, nodeIds, sourceId};
         updateConfigurationButtons();
+        presentPreviewReady(quickOperationStatus, applyQuickSetup, preview);
+      } else {
+        text(quickOperationStatus, operationSummary(preview));
       }
       return;
     }
@@ -4378,11 +4387,11 @@ previewQuickSetup.addEventListener('click', async () => {
       nodeIds,
       configuration: {domain: 'quick-setup', preset: quickPreset.value, options: quickOptions()}
     }, quickOperationStatus);
-    text(quickOperationStatus, operationSummary(operation));
     if (operation.state === 'SUCCEEDED' && operation.approvalToken && previewGeneration === inputGeneration) {
       approvedQuickPreview = {operationId: operation.operationId, approvalToken: operation.approvalToken,
         nodeIds};
       updateConfigurationButtons();
+      presentPreviewReady(quickOperationStatus, applyQuickSetup, operation);
     } else if (previewGeneration !== inputGeneration) {
       text(quickOperationStatus, 'The targets or setup changed while previewing. Preview again before apply.');
     }
@@ -4573,8 +4582,8 @@ function validatedPurgeDays(field) {
 
 function dedicatedSetupElements(preset) {
   return preset === 'auto-create-vote-sites'
-    ? {status: autoSitesStatus, state: autoSitesState, retry: loadAutoSites}
-    : {status: voteLoggingStatus, state: voteLoggingState, retry: loadVoteLogging};
+    ? {status: autoSitesStatus, state: autoSitesState, retry: loadAutoSites, apply: applyAutoSites}
+    : {status: voteLoggingStatus, state: voteLoggingState, retry: loadVoteLogging, apply: applyVoteLogging};
 }
 
 async function loadDedicatedSetup(preset, automatic = false) {
@@ -4635,6 +4644,8 @@ async function previewDedicatedSetup(preset) {
     } else if (operation.state === 'SUCCEEDED' && operation.approvalToken) {
       dedicatedSetupApprovals.set(preset, {operationId: operation.operationId,
         approvalToken: operation.approvalToken, nodeIds});
+      updateExtendedButtons();
+      presentPreviewReady(elements.status, elements.apply, operation);
     }
   } catch (error) { text(elements.status, error.message); }
   updateExtendedButtons();
@@ -5169,6 +5180,8 @@ previewReward.addEventListener('click', async () => {
     } else if (operation.state === 'SUCCEEDED' && operation.approvalToken) {
       dedicatedSetupApprovals.set('reward-builder', {operationId: operation.operationId,
         approvalToken: operation.approvalToken, nodeIds});
+      updateExtendedButtons();
+      presentPreviewReady(rewardSimulationResult, applyReward, operation);
     }
   } catch (error) { text(rewardSimulationResult, error.message); }
   updateExtendedButtons();
