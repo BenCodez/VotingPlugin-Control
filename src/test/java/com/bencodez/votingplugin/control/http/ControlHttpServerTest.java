@@ -410,6 +410,12 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("readConfiguration.disabled = !routingReadReady;"));
         assertTrue(script.body().contains("previewConfiguration.disabled = !routingDraftReady;"));
         assertTrue(script.body().contains("applyConfiguration.disabled = !routingDraftReady || !approvedPreview;"));
+        assertTrue(script.body().contains("PREVIEW ONLY — nothing has been saved yet."));
+        assertTrue(script.body().contains("presentPreviewReady(operationStatus, applyConfiguration, operation);"));
+        assertTrue(script.body().contains("presentPreviewReady(fileOperationStatus, applyFileConfiguration, operation);"));
+        assertTrue(script.body().contains("presentPreviewReady(quickOperationStatus, applyQuickSetup, operation);"));
+        assertTrue(script.body().contains("presentPreviewReady(elements.status, elements.apply, operation);"));
+        assertTrue(script.body().contains("presentPreviewReady(rewardSimulationResult, applyReward, operation);"));
         assertTrue(script.body().contains("Your unsaved proxy-routing draft is retained"));
         assertTrue(script.body().contains("function invalidateConfigurationReads() {\n  fileReadCache.clear();\n"
                         + "  lastFileReadOperation = null;\n  clearApprovals();\n  loadedQuickSetup = null;\n"
