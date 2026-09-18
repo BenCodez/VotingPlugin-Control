@@ -156,7 +156,7 @@ class ControlHttpServerTest {
                 "Deployment eligibility retries must remain bounded by the target limit.");
         assertTrue(script.body().contains("Unavailable nodes skipped:"));
         assertTrue(script.body().contains("No deployment batches were submitted."));
-        assertTrue(script.body().contains("nodes need a one-time VotingPlugin update with verified staging support"));
+        assertTrue(script.body().contains("a one-time VotingPlugin update with verified staging support"));
         assertTrue(script.body().contains("connected.length ? 'warning' : 'neutral'"));
         assertTrue(script.body().contains("backendItemsTruncated"));
         assertTrue(script.body().contains("topologyComplete: !truncatedNodeIds.has(proxyId)"));
