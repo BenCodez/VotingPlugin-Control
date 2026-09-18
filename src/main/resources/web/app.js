@@ -2836,10 +2836,14 @@ function deploymentTargets() {
 function renderDeploymentEligibility() {
   const eligible = deploymentTargets();
   const connected = allNodeItems.filter(node => node.online);
+  const incompatible = connected.filter(node => !node.acceptedCapabilities.includes('plugin.deploy.v1'));
   const batches = Math.ceil(eligible.length / MAX_OPERATION_TARGETS);
+  const bootstrap = incompatible.length
+    ? ` · ${incompatible.length} connected ${incompatible.length === 1 ? 'node needs' : 'nodes need'} a one-time VotingPlugin update with verified staging support`
+    : '';
   text(deploymentEligibility, `${eligible.length}/${connected.length} connected nodes eligible`
-    + (batches > 1 ? ` · ${batches} bounded deployment batches` : ''));
-  deploymentEligibility.className = `pill ${eligible.length ? 'online' : 'neutral'}`;
+    + bootstrap + (batches > 1 ? ` · ${batches} bounded deployment batches` : ''));
+  deploymentEligibility.className = `pill ${eligible.length ? 'online' : connected.length ? 'warning' : 'neutral'}`;
   deployPlugin.disabled = !authenticated || logoutInFlight || deploymentInFlight || !deploymentJar.files?.length
     || eligible.length === 0 || batches > MAX_DEPLOYMENT_BATCHES;
 }

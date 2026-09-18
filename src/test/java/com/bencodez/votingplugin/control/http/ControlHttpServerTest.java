@@ -31,6 +31,7 @@ import java.security.MessageDigest;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.TimeUnit;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpContext;
 import com.sun.net.httpserver.HttpExchange;
@@ -71,6 +72,107 @@ class ControlHttpServerTest {
             server.close();
         }
     }
+
+	@Test void deploymentEligibilityRendersEligibleBootstrapAndWarningStates() throws Exception {
+		org.junit.jupiter.api.Assumptions.assumeTrue(nodeAvailable(),
+				"Node.js is required to execute the WebUI behavior regression");
+
+		String app;
+		try (InputStream input = ControlHttpServerTest.class.getResourceAsStream("/web/app.js")) {
+			assertNotNull(input);
+			app = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+		}
+		int start = app.indexOf("function deploymentTargets()");
+		int end = app.indexOf("function selectNodePage(", start);
+		assertTrue(start >= 0 && end > start, "deployment eligibility functions must remain discoverable");
+		String actualFunctions = app.substring(start, end);
+
+		String harness = """
+				const MAX_OPERATION_TARGETS = 100;
+				const MAX_DEPLOYMENT_BATCHES = 100;
+				let authenticated = true;
+				let logoutInFlight = false;
+				let deploymentInFlight = false;
+				const deploymentJar = {files: [{}]};
+				const deploymentEligibility = {textContent: '', className: ''};
+				const deployPlugin = {disabled: false};
+				function text(element, value) { element.textContent = value; return element; }
+				let allNodeItems = [];
+				""" + actualFunctions + """
+				function capture(nodes) {
+				  allNodeItems = nodes;
+				  renderDeploymentEligibility();
+				  return {
+				    text: deploymentEligibility.textContent,
+				    className: deploymentEligibility.className,
+				    disabled: deployPlugin.disabled
+				  };
+				}
+				const capable = {online: true, acceptedCapabilities: ['plugin.deploy.v1']};
+				const oldA = {online: true, acceptedCapabilities: []};
+				const oldB = {online: true, acceptedCapabilities: ['config.files.v1']};
+				const mixed = capture([capable, oldA, oldB]);
+				const bootstrap = capture([oldA, oldB, {online: true, acceptedCapabilities: []}]);
+				const empty = capture([]);
+				process.stdout.write(JSON.stringify({mixed, bootstrap, empty}));
+				""";
+
+		Process process = new ProcessBuilder("node", "-e", harness).redirectErrorStream(true).start();
+		String output;
+		try {
+			if (!process.waitFor(5, TimeUnit.SECONDS)) fail("WebUI eligibility test timed out");
+			output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+			assertEquals(0, process.exitValue(), output);
+		} finally {
+			terminateProcess(process);
+		}
+
+		JsonNode states = json.readTree(output);
+		assertEquals("1/3 connected nodes eligible · 2 connected nodes need a one-time VotingPlugin update with verified staging support",
+				states.path("mixed").path("text").asText());
+		assertEquals("pill online", states.path("mixed").path("className").asText());
+		assertFalse(states.path("mixed").path("disabled").asBoolean());
+
+		assertEquals("0/3 connected nodes eligible · 3 connected nodes need a one-time VotingPlugin update with verified staging support",
+				states.path("bootstrap").path("text").asText());
+		assertEquals("pill warning", states.path("bootstrap").path("className").asText());
+		assertTrue(states.path("bootstrap").path("disabled").asBoolean());
+
+		assertEquals("0/0 connected nodes eligible", states.path("empty").path("text").asText());
+		assertEquals("pill neutral", states.path("empty").path("className").asText());
+		assertTrue(states.path("empty").path("disabled").asBoolean());
+	}
+
+	private static boolean nodeAvailable() {
+		Process process = null;
+		try {
+			process = new ProcessBuilder("node", "--version").redirectErrorStream(true).start();
+			if (!process.waitFor(5, TimeUnit.SECONDS)) return false;
+			return process.exitValue() == 0;
+		} catch (IOException | InterruptedException failure) {
+			if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
+			return false;
+		} finally {
+			terminateProcess(process);
+		}
+	}
+
+	private static void terminateProcess(Process process) {
+		if (process == null || !process.isAlive()) return;
+		process.destroyForcibly();
+		boolean interrupted = false;
+		long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+		while (process.isAlive()) {
+			long remaining = deadline - System.nanoTime();
+			if (remaining <= 0) break;
+			try {
+				if (process.waitFor(remaining, TimeUnit.NANOSECONDS)) break;
+			} catch (InterruptedException failure) {
+				interrupted = true;
+			}
+		}
+		if (interrupted) Thread.currentThread().interrupt();
+	}
 
 	@Test void artifactInputClosesWhenResponseHeadersFail() {
 		AtomicBoolean closed = new AtomicBoolean();
