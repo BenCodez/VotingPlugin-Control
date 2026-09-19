@@ -150,6 +150,27 @@ function backend(id, online = true) { return {nodeId: id, platform: 'BUKKIT', on
 function proxy(id, online = true) { return {nodeId: id, platform: 'VELOCITY', online}; }
 function run(context, source) { return vm.runInContext(source, context); }
 
+test('overview shortcuts keep the visible Data or Quick Setup route', () => {
+  const opened = [];
+  const context = {
+    workspace: {route: ''},
+    window: {location: {hash: ''}, history: {replaceState() { throw new Error('unexpected route rewrite'); }},
+      requestAnimationFrame(callback) { callback(); }},
+    document: {getElementById(id) { return {id}; }},
+    setActiveTab(tab) { context.workspace.route = `#workspace/${tab}`; context.window.location.hash = context.workspace.route; opened.push(tab); },
+    scrollToAnchor(element) { opened.push(element.id); }
+  };
+  vm.createContext(context);
+  vm.runInContext(declaration('openWorkspace'), context);
+  run(context, "openWorkspace('data', 'site-health-card')");
+  assert.equal(context.window.location.hash, '#workspace/data');
+  assert.equal(context.workspace.route, '#workspace/data');
+  run(context, "openWorkspace('quick-setup', 'reward-builder-card')");
+  assert.equal(context.window.location.hash, '#workspace/quick-setup');
+  assert.equal(context.workspace.route, '#workspace/quick-setup');
+  assert.deepEqual(opened, ['data', 'site-health-card', 'quick-setup', 'reward-builder-card']);
+});
+
 test('ordinaryTargetIds accepts only the readable selected source, including global proxy tools', () => {
   const context = harness();
   context.registryAvailable = true;

@@ -206,6 +206,24 @@ class RewardsDocumentTest {
         assertEquals("2", scope.fields().get("Items.diamond.Amount"));
     }
 
+    @Test void numericRewardEditsRejectQuotedOrAdvancedCurrentScalars() {
+        String path = "VoteSites.Alpha.Rewards";
+        String quoted = SOURCE.replace("      Unknown: preserve # important\n",
+                "      Money: '10'\n      Chance: '25'\n      Unknown: preserve # important\n");
+        RewardsDocument.Scope scope = RewardsDocument.inventory(quoted, "VoteSites.yml").get(0);
+        assertTrue(scope.advancedKeys().contains("Money"));
+        assertTrue(scope.advancedKeys().contains("Chance"));
+        for (String field : List.of("Money", "Chance")) {
+            assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(quoted, "VoteSites.yml", path,
+                    new RewardsDocument.Edit("SET_SCALAR", field, 20)));
+        }
+        String numeric = quoted.replace("Money: '10'", "Money: 10").replace("Chance: '25'", "Chance: 25.5");
+        String changed = RewardsDocument.patch(numeric, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Chance", 30));
+        assertTrue(changed.contains("Chance: 30\n"));
+        assertTrue(changed.contains("Money: 10\n"));
+    }
+
     @Test void itemEditingFailsClosedForUnsupportedOrUnsafeShapes() {
         String path = "VoteSites.Alpha.Rewards";
         assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", path,

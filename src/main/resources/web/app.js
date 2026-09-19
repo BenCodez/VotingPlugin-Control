@@ -1844,11 +1844,6 @@ function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = n
     clearApprovals();
   }
   setActiveTab(tab, true);
-  if (workspace.managementScope !== 'GLOBAL' && ['site-health-card', 'reward-builder-card'].includes(scrollTarget)) {
-    const section = scrollTarget === 'site-health-card' ? 'vote-sites' : 'rewards';
-    window.history.replaceState(null, '', `#workspace/${section}`);
-    activeNavigationHash = window.location.hash;
-  }
   if (navigationButton && primaryNavigation.contains(navigationButton)) {
     navigationButtons.forEach(button => button.removeAttribute('aria-current'));
     navigationButton.setAttribute('aria-current', 'page');

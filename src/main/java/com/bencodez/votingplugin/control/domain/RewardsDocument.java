@@ -109,6 +109,8 @@ public final class RewardsDocument {
         if ("SET_SCALAR".equals(edit.operation())) {
             String value = scalarValue(edit.field(), edit.value());
             if (!(current instanceof ScalarNode scalar) || Tag.NULL.equals(scalar.getTag())) throw invalid();
+            if (Set.of("Money", "Chance").contains(edit.field())
+                    && !Tag.INT.equals(scalar.getTag()) && !Tag.FLOAT.equals(scalar.getTag())) throw invalid();
             if (edit.field().endsWith(".Material") && !Tag.STR.equals(scalar.getTag())) throw invalid();
             if (edit.field().endsWith(".Amount") && !Tag.INT.equals(scalar.getTag())) throw invalid();
             int start = offset(content, current.getStartMark().getIndex());
