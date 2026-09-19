@@ -216,6 +216,28 @@ class RewardsDocumentTest {
         assertEquals(List.of("say valid"), RewardsDocument.inventory(added, "VoteSites.yml").get(0).fields().get("Commands"));
     }
 
+    @Test void missingFieldEditsDoNotCreateCaseFoldedDuplicateKeys() {
+        String path = "VoteSites.Alpha.Rewards";
+        String lowerMoney = SOURCE.replace("      Unknown: preserve # important", "      money: 1\n      Unknown: preserve # important");
+        assertTrue(RewardsDocument.inventory(lowerMoney, "VoteSites.yml").get(0).advancedKeys().contains("Money"));
+        assertFalse(RewardsDocument.inventory(lowerMoney, "VoteSites.yml").get(0).fields().containsKey("Money"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(lowerMoney, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Money", 2)));
+        String lowerCommands = SOURCE.replace("Commands:\n      - 'say one'\n      - 'say two'", "commands:\n      - 'say one'");
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(lowerCommands, "VoteSites.yml", path,
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say two")));
+        String lowerReward = "VoteSites:\n  Alpha:\n    rewards: {}\n";
+        assertEquals("UNSUPPORTED", RewardsDocument.inventory(lowerReward, "VoteSites.yml").get(0).status());
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(lowerReward, "VoteSites.yml", path,
+                new RewardsDocument.Edit("CREATE_REWARD", "Commands", "say new")));
+        String named = "chance: 5\n";
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(named, "Rewards/StandardVote.yml", "$",
+                new RewardsDocument.Edit("SET_SCALAR", "Chance", 10)));
+        String added = RewardsDocument.patch(named, "Rewards/StandardVote.yml", "$",
+                new RewardsDocument.Edit("SET_SCALAR", "Money", 2));
+        assertEquals("2", RewardsDocument.inventory(added, "Rewards/StandardVote.yml").get(0).fields().get("Money"));
+    }
+
     @Test void namedRewardEditsPatchOnlyRootFieldsAndPreserveUnknownChildren() {
         String source = "# owner note\nCommands:\n- 'say first'\nItems:\n  diamond:\n    Material: DIAMOND\n"
                 + "    Amount: 1\n    CustomModelData: 912\nCondition:\n  FutureKey: preserve\n";

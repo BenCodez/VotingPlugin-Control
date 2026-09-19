@@ -175,9 +175,12 @@
         for (const fileName of allFiles) {
           const wanted = requested.filter(item => item.fileName === fileName);
           if (!wanted.length || !current(captured, serial)) continue;
-          const eligible = wanted.filter(({target}) => target.online === true && target.supported !== false);
-          for (const {target} of wanted.filter(({target}) => target.online !== true || target.supported === false))
-            records.set(key(id(target), fileName), {status: target.supported === false ? 'UNSUPPORTED' : 'ERROR', message: target.supported === false ? 'Connector does not support file configuration' : 'Target offline', sessionId: target.sessionId, scopes: []});
+          const supportsFile = target => namedFile(fileName) ? target.rewardFilesSupported === true : target.supported !== false;
+          const eligible = wanted.filter(({target}) => target.online === true && supportsFile(target));
+          for (const {target} of wanted.filter(({target}) => target.online !== true || !supportsFile(target)))
+            records.set(key(id(target), fileName), {status: !supportsFile(target) ? 'UNSUPPORTED' : 'ERROR',
+              message: !supportsFile(target) ? namedFile(fileName) ? 'Connector does not support named reward files'
+                : 'Connector does not support file configuration' : 'Target offline', sessionId: target.sessionId, scopes: []});
           if (!eligible.length) continue;
           try {
             const operation = await adapter.operation('/api/v1/configuration/read', {nodeIds: eligible.map(({target}) => id(target)), configuration: {domain: 'file', fileName}});

@@ -190,6 +190,26 @@ test('named reward inventory is bounded, per-target, and read without writes', a
   assert.deepEqual(namedReads.map(([, body]) => body.configuration.fileName).sort(), ['Rewards/StandardVote.yml']);
 });
 
+test('named reward read and preview use reward-file capability without managed-file capability', async () => {
+  const node = {nodeId: 'a', sessionId: 'sa', online: true, supported: false, rewardFilesSupported: true};
+  const f = fixture([node]);
+  f.adapter.inspect = async () => ({files: ['StandardVote.yml']});
+  const originalRequest = f.adapter.request;
+  f.adapter.request = async (path, body) => path.endsWith('/state') && body.fileName === 'Rewards/StandardVote.yml'
+    ? {readOperationId: 'Rewards/StandardVote.yml-r1', nodeId: 'a', fileName: body.fileName,
+      sessionId: 'sa', revision: 'r1', scopes: [{path: '$', status: 'PRESENT', editable: true,
+        fields: {Commands: ['say old']}}]}
+    : originalRequest(path, body);
+  const editor = create(f.adapter); editor.select('Rewards/StandardVote.yml', '$'); await editor.read();
+  assert.equal(editor.record('a', 'VoteSites.yml').status, 'UNSUPPORTED');
+  assert.equal(editor.record('a', 'Rewards/StandardVote.yml').status, 'AVAILABLE');
+  editor.setEdit('APPEND_LIST_ENTRY', 'Commands', 'say new');
+  assert.deepEqual(editor.plan().map(item => item.status), ['READY']);
+  assert.equal(await editor.preview(), true);
+  assert.deepEqual(f.calls.filter(([path, body]) => path.endsWith('/read')).map(([, body]) => body.configuration.fileName),
+    ['Rewards/StandardVote.yml']);
+});
+
 test('invalid named inventory fails closed and forced reads refresh the cached union', async () => {
   const nodes = [{nodeId: 'a', sessionId: 'sa', online: true, rewardFilesSupported: true}];
   const f = fixture(nodes); let listing = ['StandardVote.yml']; let inspections = 0;

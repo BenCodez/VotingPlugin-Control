@@ -44,7 +44,12 @@ public final class RewardsDocument {
                 for (NodeTuple tuple : mapping.getValue()) {
                     String key = key(tuple.getKeyNode());
                     if (!(tuple.getValueNode() instanceof MappingNode site)) continue;
-                    addScope(result, "VoteSites." + key + ".Rewards", child(site, "Rewards"), SITE_KEY.matcher(key).matches());
+                    String rewardPath = "VoteSites." + key + ".Rewards";
+                    Node reward = child(site, "Rewards");
+                    if (reward == null && caseFoldedKey(site, "Rewards")) {
+                        if (result.size() >= MAX_REWARDS) throw invalid();
+                        result.add(new Scope(rewardPath, "UNSUPPORTED", false, Map.of(), List.of(), List.of()));
+                    } else addScope(result, rewardPath, reward, SITE_KEY.matcher(key).matches());
                     for (String extra : List.of("WaitUntilVoteDelayRewards", "CoolDownEndRewards")) {
                         if (child(site, extra) != null) addScope(result, "VoteSites." + key + "." + extra, child(site, extra), false);
                     }
@@ -77,7 +82,8 @@ public final class RewardsDocument {
         if (!(site instanceof MappingNode siteMap) || !block(siteMap)) throw invalid();
         NodeTuple rewardTuple = tuple(siteMap, "Rewards");
         if ("CREATE_REWARD".equals(edit.operation())) {
-            if (rewardTuple != null || !"Commands".equals(edit.field()) || !(edit.value() instanceof String command)) throw invalid();
+            if (caseFoldedKey(siteMap, "Rewards") || !"Commands".equals(edit.field())
+                    || !(edit.value() instanceof String command)) throw invalid();
             validateText(command);
             int at = blockEnd(content, afterLine(content, offset(content, siteMap.getStartMark().getIndex())), siteMap.getStartMark().getColumn());
             int indent = childIndent(siteMap, siteMap.getStartMark().getColumn() + 2);
@@ -201,6 +207,7 @@ public final class RewardsDocument {
     private static String addMissingField(String content, MappingNode reward, NodeTuple rewardTuple, Edit edit) {
         String field = edit.field();
         if (field.contains(".")) throw invalid(); // never synthesize a possibly conflicting parent map
+        if (caseFoldedKey(reward, field)) throw invalid();
         String value;
         if ("SET_SCALAR".equals(edit.operation())) value = scalarValue(field, edit.value());
         else {
@@ -259,7 +266,11 @@ public final class RewardsDocument {
                 addItemFields(fields, items);
                 advanced.add(name); // metadata and unsupported item shapes remain Advanced-only
             }
-            else advanced.add(name);
+            else {
+                advanced.add(name);
+                for (String canonical : List.of("Commands", "Messages", "Money", "Chance", "Items"))
+                    if (!canonical.equals(name) && canonical.equalsIgnoreCase(name)) advanced.add(canonical);
+            }
         }
         List<String> tree = new ArrayList<>();
         structure(reward, "", 0, tree);
@@ -344,6 +355,12 @@ public final class RewardsDocument {
     }
 
     private static Node child(MappingNode mapping, String name) { NodeTuple tuple = tuple(mapping, name); return tuple == null ? null : tuple.getValueNode(); }
+    private static boolean caseFoldedKey(MappingNode mapping, String name) {
+        String folded = name.toLowerCase(java.util.Locale.ROOT);
+        for (NodeTuple tuple : mapping.getValue())
+            if (folded.equals(key(tuple.getKeyNode()).toLowerCase(java.util.Locale.ROOT))) return true;
+        return false;
+    }
     private static NodeTuple tuple(MappingNode mapping, String name) {
         for (NodeTuple tuple : mapping.getValue()) if (name.equals(key(tuple.getKeyNode()))) return tuple;
         return null;
