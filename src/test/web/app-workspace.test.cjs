@@ -171,6 +171,33 @@ test('overview shortcuts keep the visible Data or Quick Setup route', () => {
   assert.deepEqual(opened, ['data', 'site-health-card', 'quick-setup', 'reward-builder-card']);
 });
 
+test('an empty reconciled workspace replaces stale routes with Home', () => {
+  const context = harness();
+  context.authenticated = true;
+  context.workspace.setTargets(['disappeared']);
+  context.window.location.hash = '#workspace/settings';
+  context.workspace.reconcile([]);
+  run(context, 'applyNavigationRoute()');
+  assert.equal(context.window.location.hash, '#home');
+  assert.deepEqual(context.calls.filter(call => call[0] === 'setActiveTab').at(-1), ['setActiveTab', 'home', undefined]);
+
+  const panels = [{dataset: {panel: 'home'}, hidden: true}, {dataset: {panel: 'general-settings'}, hidden: false}];
+  const active = {authenticated: true, tabPanels: panels, navigationButtons: [], tabButtons: [],
+    workspace: {managementScope: null, route: '', setRoute(route) { this.route = route; }},
+    window: {location: {hash: '#workspace/settings'}, history: {replaceState(_state, _title, hash) { active.window.location.hash = hash; }},
+      scrollTo() {}},
+    workspaceHash(tab) { return tab === 'home' ? '#home' : '#workspace/settings'; },
+    renderWorkspaceChrome() {}, renderScopeOverview() {}, renderOverviewActivity() {}, closeSidebar() {},
+    updateHeaderAction() {}, autoLoadTab() {}};
+  vm.createContext(active);
+  vm.runInContext(declaration('setActiveTab'), active);
+  vm.runInContext("setActiveTab('general-settings')", active);
+  assert.equal(active.window.location.hash, '#home');
+  assert.equal(active.workspace.route, '#home');
+  assert.equal(panels[0].hidden, false);
+  assert.equal(panels[1].hidden, true);
+});
+
 test('ordinaryTargetIds accepts only the readable selected source, including global proxy tools', () => {
   const context = harness();
   context.registryAvailable = true;

@@ -1703,8 +1703,15 @@ function applyNavigationRoute() {
     clearApprovals();
     selectPrimaryServer([...workspace.selectedTargetIds][0] || '');
   }
+  if (route.scope === 'WORKSPACE' && !workspace.managementScope) {
+    window.history.replaceState(null, '', '#home');
+    return setActiveTab('home');
+  }
   if (route.inspectedServerId) {
-    if (!isBackend(nodeIndex.get(route.inspectedServerId))) return setActiveTab('home');
+    if (!isBackend(nodeIndex.get(route.inspectedServerId))) {
+      window.history.replaceState(null, '', '#home');
+      return setActiveTab('home');
+    }
     if (!workspace.managementScope) workspace.setTargets([route.inspectedServerId]);
     if (selectPrimaryServer(route.inspectedServerId) === false) return cancelNavigation();
     workspace.inspect(route.inspectedServerId);
@@ -1806,6 +1813,7 @@ function updateHeaderAction(tab) {
 }
 
 function setActiveTab(tab, updateHash = false) {
+  const requestedTab = tab;
   const previousTab = tabPanels.find(panel => !panel.hidden)?.dataset.panel;
   if (!tabPanels.some(panel => panel.dataset.panel === tab)) tab = 'home';
   if (workspace.managementScope === 'GLOBAL' && tab === 'overview') tab = 'network';
@@ -1819,9 +1827,12 @@ function setActiveTab(tab, updateHash = false) {
   });
   tabPanels.forEach(panel => { panel.hidden = panel.dataset.panel !== tab; });
   if ((tab === 'general-settings' || tab === 'vote-sites' || tab === 'rewards') && previousTab !== tab) window.scrollTo({top: 0, behavior: 'instant'});
-  if (updateHash) {
+  if (updateHash || tab !== requestedTab) {
     const hash = workspaceHash(tab);
-    if (window.location.hash !== hash) window.history.pushState(null, '', hash);
+    if (window.location.hash !== hash) {
+      if (updateHash && tab === requestedTab) window.history.pushState(null, '', hash);
+      else window.history.replaceState(null, '', hash);
+    }
   }
   activeNavigationHash = window.location.hash || '#home';
   if (authenticated) workspace.setRoute(activeNavigationHash);
@@ -4099,6 +4110,7 @@ async function loadNodesOnce() {
     // auto-load runs so a delayed or failed READ cannot expose stale values.
     reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability, false);
     renderNodeViews();
+    if (workspaceTargetsChanged && !workspace.managementScope && previousWorkspaceTargets) setActiveTab(tabFromHash());
     updatePluginSuggestions();
     updateConfigurationButtons();
     if (suppressNodeAutoLoad === 0) void autoLoadTab(tabFromHash());

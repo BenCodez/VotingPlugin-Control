@@ -224,6 +224,20 @@ class RewardsDocumentTest {
         assertTrue(changed.contains("Money: 10\n"));
     }
 
+    @Test void messageEditsRejectNonstringsClassifiedAsAdvanced() {
+        String source = SOURCE.replace("Player: 'hello'", "Player: true\n        Broadcast: 42");
+        RewardsDocument.Scope scope = RewardsDocument.inventory(source, "VoteSites.yml").get(0);
+        assertTrue(scope.advancedKeys().contains("Messages.Player"));
+        assertTrue(scope.advancedKeys().contains("Messages.Broadcast"));
+        for (String field : List.of("Messages.Player", "Messages.Broadcast")) {
+            assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(source, "VoteSites.yml",
+                    "VoteSites.Alpha.Rewards", new RewardsDocument.Edit("SET_SCALAR", field, "safe text")));
+        }
+        String changed = RewardsDocument.patch(SOURCE, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("SET_SCALAR", "Messages.Player", "new hello"));
+        assertTrue(changed.contains("Player: \"new hello\""));
+    }
+
     @Test void itemEditingFailsClosedForUnsupportedOrUnsafeShapes() {
         String path = "VoteSites.Alpha.Rewards";
         assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", path,
