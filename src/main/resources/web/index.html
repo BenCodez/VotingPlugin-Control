@@ -10,7 +10,7 @@
   <header class="topbar">
     <button id="sidebar-toggle" class="sidebar-toggle secondary compact" type="button" aria-controls="primary-navigation"
             aria-expanded="false" aria-label="Open navigation" hidden>☰</button>
-    <a class="brand" href="#overview" aria-label="VotingPlugin Control overview">
+    <a class="brand" href="#home" aria-label="VotingPlugin Control home">
       <span class="brand-mark" aria-hidden="true">V</span>
       <span><strong>VotingPlugin</strong><small>Control</small></span>
     </a>
@@ -31,12 +31,6 @@
         </datalist>
         <button class="sr-only" type="submit">Open result</button>
       </form>
-      <label class="server-picker" id="server-picker-label" for="server-picker" hidden>
-        <span>VotingPlugin server</span>
-        <select id="server-picker" aria-label="Selected VotingPlugin server">
-          <option value="">Choose a server</option>
-        </select>
-      </label>
       <output id="health" class="status">Connecting…</output>
       <button id="header-action" class="compact" type="button" hidden>Refresh dashboard</button>
       <button id="logout" class="secondary compact" type="button" hidden>Sign out</button>
@@ -88,18 +82,19 @@
 
     <div id="app-shell" class="app-shell" hidden>
       <nav id="primary-navigation" class="sidebar" aria-label="Control sections">
+        <button type="button" data-tab="home"><span aria-hidden="true">▦</span>Choose workspace</button>
         <button type="button" aria-current="page" aria-controls="overview-panel" data-tab="overview"><span aria-hidden="true">⌂</span>Overview</button>
-        <p>Manage</p>
-        <button type="button" data-open-tab="data" data-scroll-target="site-health-card"><span aria-hidden="true">◆</span>Vote Sites</button>
-        <button type="button" data-open-tab="quick-setup" data-scroll-target="reward-builder-card"><span aria-hidden="true">✦</span>Rewards</button>
-        <button type="button" aria-controls="quick-setup-panel" data-tab="quick-setup"><span aria-hidden="true">＋</span>Setup</button>
-        <button type="button" data-open-tab="quick-setup" data-scroll-target="settings-catalog-card"><span aria-hidden="true">⚙</span>Settings</button>
-        <p>Network</p>
+        <p data-server-nav>Manage servers</p>
+        <button type="button" data-server-nav data-tab="general-settings"><span aria-hidden="true">⚙</span>General Settings</button>
+        <button type="button" data-server-nav aria-controls="vote-sites-panel" data-tab="vote-sites"><span aria-hidden="true">◆</span>Vote Sites</button>
+        <button type="button" data-server-nav aria-controls="rewards-panel" data-tab="rewards"><span aria-hidden="true">✦</span>Rewards</button>
+        <button type="button" data-server-nav aria-controls="configurations-panel" data-tab="configurations"><span aria-hidden="true">▤</span>Configuration</button>
+        <button type="button" data-server-nav aria-controls="data-panel" data-tab="data"><span aria-hidden="true">▥</span>Votes &amp; Data</button>
+        <p data-global-nav>Network tools</p>
         <button type="button" aria-controls="servers-panel" data-tab="servers"><span aria-hidden="true">▦</span>Servers</button>
         <button type="button" aria-controls="network-panel" data-tab="network"><span aria-hidden="true">⇄</span>Proxy &amp; Routing</button>
-        <button type="button" data-open-tab="quick-setup" data-quick-preset="sync-vote-sites" data-scroll-target="quick-setup-card"><span aria-hidden="true">↻</span>Sync</button>
-        <p>Insights</p>
-        <button type="button" aria-controls="data-panel" data-tab="data"><span aria-hidden="true">▥</span>Votes &amp; Data</button>
+        <button type="button" data-global-nav data-open-tab="quick-setup" data-quick-preset="sync-vote-sites" data-scroll-target="quick-setup-card"><span aria-hidden="true">↻</span>Synchronization</button>
+        <button type="button" data-global-nav data-tab="configurations"><span aria-hidden="true">▤</span>Proxy Configuration</button>
         <button type="button" aria-controls="activity-panel" data-tab="activity"><span aria-hidden="true">◷</span>Activity</button>
         <p>Tools</p>
         <button type="button" data-open-tab="network" data-scroll-target="network-doctor-card"><span aria-hidden="true">✚</span>Network Doctor</button>
@@ -110,26 +105,51 @@
 
       <div class="content-shell">
 
+      <section id="scope-bar" class="scope-bar" aria-label="Management workspace" hidden>
+        <div><p class="eyebrow" id="scope-kind">Managing</p><div id="scope-chips" class="scope-chips"></div></div>
+        <div class="scope-actions">
+          <label class="server-picker" id="server-picker-label" for="server-picker" hidden>
+            <span>Single-server tool source</span>
+            <select id="server-picker" aria-label="Selected VotingPlugin server"><option value="">Choose a server</option></select>
+          </label>
+          <button type="button" class="secondary compact" data-tab="home">＋ Add / choose servers</button>
+          <button id="scope-overview" type="button" class="secondary compact">Workspace overview</button>
+        </div>
+        <p id="scope-editing-notice" class="scope-notice" role="status"></p>
+      </section>
+
+      <section class="tab-panel" id="home-panel" data-panel="home" hidden>
+        <div class="page-heading"><div><p class="eyebrow">Management workspace</p><h2>What do you want to manage?</h2><p>Select one or more backend servers, or open Global Settings for the network tools.</p></div></div>
+        <button id="choose-global" class="global-choice secondary" type="button"><span class="setting-icon" aria-hidden="true">◎</span><span><strong>Global Settings / Network</strong><small>Topology, proxy communication, routing and explicit synchronization. Not a selection of every server.</small></span><span aria-hidden="true">→</span></button>
+        <div class="chooser-toolbar"><label>Search servers<input id="home-server-search" type="search" maxlength="100" placeholder="Name, node ID or platform…"></label><button id="home-select-all" type="button" class="secondary">Select eligible online backends</button><button id="home-clear" type="button" class="secondary">Clear</button><button id="home-refresh" type="button" class="secondary">Refresh</button></div>
+        <div id="home-nodes" class="nodes empty" aria-live="polite">Loading registered nodes…</div>
+        <div class="chooser-selection"><div><strong id="home-selection-count">No servers selected</strong><div id="home-selection-chips" class="scope-chips"></div></div><button id="home-restore" type="button" class="secondary" hidden>Return to previous servers</button><button id="home-continue" type="button" disabled>Continue</button></div>
+      </section>
+
       <section class="tab-panel" id="overview-panel" data-panel="overview">
         <div class="page-heading">
           <div>
-            <p class="eyebrow">Network overview</p>
-            <h2>Everything important, without the protocol noise</h2>
+            <p class="eyebrow" id="overview-eyebrow">Workspace overview</p>
+            <h2 id="overview-title">Server Overview</h2>
           </div>
           <button id="refresh-dashboard" class="secondary" type="button">Refresh dashboard</button>
         </div>
-        <div class="metrics" aria-label="Network summary">
+        <div id="workspace-overview-targets" class="nodes" hidden></div>
+        <div id="individual-overview">
+        <div class="metrics" aria-label="Observed server summary">
           <article><span>Network Health</span><strong id="metric-health">Unavailable</strong><small id="metric-health-detail">Choose a server</small></article>
           <article><span>Logged Votes · 24h</span><strong id="metric-votes-today">—</strong><small>Retained VOTE_RECEIVED events</small></article>
           <article><span>Vote Sites</span><strong id="metric-vote-sites">—</strong><small id="metric-vote-sites-detail">Not inspected</small></article>
           <article><span>Proxy Communication</span><strong id="metric-proxy">—</strong><small id="metric-proxy-detail">Method unavailable</small></article>
           <article><span>Logged Votes · 30d</span><strong id="metric-logged-events">—</strong><small>Retained VOTE_RECEIVED events</small></article>
           <article><span>Pending Issues</span><strong id="metric-issues">0</strong><small id="metric-issues-detail">Registry state only</small></article>
+          <article><span>Minecraft presence</span><strong id="metric-presence">Unknown</strong><small id="metric-presence-detail">Proxy-reported presence only</small></article>
+          <article><span>Last configuration operation</span><strong id="metric-last-operation">—</strong><small id="metric-last-operation-detail">No retained operation</small></article>
         </div>
         <section class="card selected-summary-card">
           <div class="section-title">
             <div>
-              <p class="eyebrow">Current context</p>
+              <p class="eyebrow">Inspected server</p>
               <h3 id="selected-server-name">Choose a VotingPlugin server</h3>
             </div>
             <span id="selected-server-state" class="pill neutral">No selection</span>
@@ -148,6 +168,8 @@
             <div class="section-title"><div><p class="eyebrow">Quick actions</p><h3>Safe next steps</h3></div></div>
             <div id="overview-quick-actions" class="quick-action-grid"></div>
           </section>
+        </div>
+        <section class="card"><div class="section-title"><div><h3>Vote Site Health</h3><p>Configuration and retained logged-event health; not website uptime.</p></div></div><div id="overview-site-health" class="result-panel">Inspection unavailable.</div></section>
         </div>
         <section class="card">
           <div class="section-title">
@@ -378,6 +400,108 @@
         </div>
       </section>
 
+      <section class="tab-panel" id="general-settings-panel" data-panel="general-settings" hidden>
+        <div class="section-title"><div><p class="eyebrow">Workspace configuration · Config.yml</p><h2>General Settings</h2><p>Read every selected server. Only explicit edits become changes; untouched server-specific values remain independent.</p></div>
+          <div class="action-row"><button type="button" class="secondary" id="general-settings-read">Read Current</button><button type="button" class="secondary" id="general-settings-retry">Retry failed targets</button></div></div>
+        <p id="general-settings-status" role="status" aria-live="polite"></p>
+        <div id="general-settings-targets" class="settings-targets" aria-label="Per-server read status"></div>
+        <div class="general-settings-layout">
+          <div id="general-settings-fields"></div>
+          <aside class="card change-summary" aria-label="Change Summary">
+            <h3>Change Summary</h3><div id="general-settings-summary"></div>
+            <label id="general-settings-ack-label" hidden><input type="checkbox" id="general-settings-ack"> I acknowledge that excluded targets/fields will not change. This is not an atomic network-wide apply.</label>
+            <div class="stacked-actions"><button type="button" id="general-settings-preview">Preview Changes</button><button type="button" id="general-settings-apply" disabled>Approve and Apply</button><button type="button" class="secondary" id="general-settings-reset">Reset explicit edits</button></div>
+          </aside>
+        </div>
+        <section class="card stacked-card"><h3>Per-target preview</h3><div id="general-settings-preview-results" aria-live="polite">Not previewed.</div></section>
+        <section class="card stacked-card"><h3>Apply and confirmed read results</h3><div id="general-settings-results" aria-live="polite">No apply performed.</div></section>
+        <p>Advanced settings remain in <button type="button" class="secondary compact" data-open-tab="configurations">Configuration · Full YAML / Compare</button>. Vote Logging and Vote Party remain in their capability-gated existing tools.</p>
+        <div class="action-row"><button type="button" class="secondary" data-open-tab="quick-setup" data-scroll-target="quick-setup-card" data-quick-preset="vote-logging">Vote Logging · source-only tool</button><button type="button" class="secondary" data-open-tab="quick-setup" data-scroll-target="quick-setup-card" data-quick-preset="vote-party">Vote Party · source-only tool</button></div>
+      </section>
+
+      <section class="tab-panel" id="vote-sites-panel" data-panel="vote-sites" hidden>
+        <div class="section-title vote-sites-heading">
+          <div><p class="eyebrow">Workspace configuration · VoteSites.yml</p><h2>Vote Sites</h2>
+            <p>Each selected backend is read independently. Only explicitly edited properties change; rewards and unknown configuration remain untouched.</p></div>
+          <div class="action-row"><button type="button" class="secondary" id="vote-sites-read">Read Current</button><button type="button" class="secondary" id="vote-sites-retry">Retry failed targets</button><button type="button" id="vote-site-add">＋ Add Vote Site</button></div>
+        </div>
+        <p id="vote-sites-status" role="status" aria-live="polite"></p>
+        <div id="vote-sites-read-targets" class="settings-targets" aria-label="Per-server VoteSites read status"></div>
+        <div class="vote-sites-layout">
+          <aside class="card vote-sites-list-card" aria-label="Configured Vote Sites">
+            <label for="vote-site-search">Search vote sites<input id="vote-site-search" type="search" maxlength="100" placeholder="Site key, Name, or ServiceSite…"></label>
+            <label for="vote-site-filter">Show<select id="vote-site-filter"><option value="all">All</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="mixed">Mixed</option><option value="partial">Missing on targets</option></select></label>
+            <div id="vote-site-list" class="vote-site-list" role="listbox" aria-label="Vote Sites">Read current VoteSites.yml to begin.</div>
+            <button type="button" class="secondary compact" data-open-tab="quick-setup" data-scroll-target="quick-setup-card" data-quick-preset="sync-vote-sites">Synchronize sites…</button>
+            <small>Synchronization copies definitions from one chosen source. It is separate from property editing.</small>
+          </aside>
+          <div class="vote-site-editor-column">
+            <section class="card" id="vote-site-empty"><h3>Select a Vote Site</h3><p>Choose a configured site, or add one explicitly. Opening a site never creates or changes it.</p></section>
+            <form class="card vote-site-editor" id="vote-site-form" hidden>
+              <div class="section-title"><div><p class="eyebrow">Vote Site details</p><h3 id="vote-site-title">Vote Site</h3><p id="vote-site-presence">Presence unavailable</p></div><span id="vote-site-state" class="pill neutral">Not loaded</span></div>
+              <dl class="site-identity"><div><dt>YAML site key</dt><dd><code id="vote-site-key"></code></dd></div><div><dt>Rewards</dt><dd id="vote-site-rewards">Unknown</dd></div></dl>
+              <div class="vote-site-fields">
+                <label for="vote-site-enabled">Enabled <small><code>Enabled</code></small><select id="vote-site-enabled" data-site-path="Enabled"><option value="">Read required</option><option value="true">On</option><option value="false">Off</option></select></label>
+                <label for="vote-site-name">Display name <small><code>Name</code></small><input id="vote-site-name" data-site-path="Name" maxlength="200"></label>
+                <label for="vote-site-service">Service site <small><code>ServiceSite</code></small><input id="vote-site-service" data-site-path="ServiceSite" maxlength="2048"></label>
+                <label for="vote-site-url">Vote URL <small><code>VoteURL</code></small><input id="vote-site-url" data-site-path="VoteURL" maxlength="500"></label>
+                <label for="vote-site-delay">Vote delay <small><code>VoteDelay</code></small><input id="vote-site-delay" data-site-path="VoteDelay" maxlength="64" placeholder="24h"></label>
+                <label for="vote-site-priority">Priority <small><code>Priority</code> · higher values appear first</small><input id="vote-site-priority" data-site-path="Priority" type="number" step="1"></label>
+                <label for="vote-site-material">Display material <small><code>DisplayItem.Material</code></small><input id="vote-site-material" data-site-path="DisplayItem.Material" maxlength="100" placeholder="DIAMOND"></label>
+                <label for="vote-site-amount">Display amount <small><code>DisplayItem.Amount</code></small><input id="vote-site-amount" data-site-path="DisplayItem.Amount" type="number" min="1" max="64" step="1"></label>
+                <label for="vote-site-hidden">Hidden <small><code>Hidden</code></small><select id="vote-site-hidden" data-site-path="Hidden"><option value="">Read required</option><option value="true">On</option><option value="false">Off</option></select></label>
+              </div>
+              <details><summary>Per-server values and advanced paths</summary><div id="vote-site-target-values"></div><p>Advanced and unrepresented data remains available in Configuration → Full YAML.</p><button id="vote-site-open-yaml" type="button" class="secondary compact">Open VoteSites.yml</button><button id="vote-site-edit-rewards" type="button" class="secondary compact">Edit Rewards in existing tools</button></details>
+              <label id="vote-site-partial-choice-label" hidden>Partial presence<select id="vote-site-partial-choice"><option value="existing">Edit existing targets only</option><option value="missing">Create on missing targets</option><option value="both">Edit existing and create on missing targets</option></select></label>
+              <div class="operation-actions"><button type="button" class="secondary" id="vote-site-reset">Reset explicit edits</button><button type="button" class="danger secondary" id="vote-site-remove">Remove from targets…</button></div>
+            </form>
+            <section class="card change-summary"><h3>Change Summary</h3><div id="vote-site-summary">No explicit changes.</div>
+              <label id="vote-site-ack-label" hidden><input type="checkbox" id="vote-site-ack"> I acknowledge excluded, failed, unsupported, or missing targets. This is not an atomic network-wide apply.</label>
+              <div class="stacked-actions"><button type="button" id="vote-site-preview" disabled>Preview Changes</button><button type="button" id="vote-site-apply" disabled>Approve and Apply</button></div>
+            </section>
+          </div>
+        </div>
+        <section class="card stacked-card"><h3>Per-target preview</h3><div id="vote-site-preview-results" aria-live="polite">Not previewed.</div></section>
+        <section class="card stacked-card"><h3>Apply and confirmed read results</h3><div id="vote-site-results" aria-live="polite">No apply performed.</div></section>
+        <section class="card stacked-card"><div class="section-title"><div><h3>Detected services</h3><p>Observed service names from VotingPlugin data, not remote website uptime checks.</p></div><button id="vote-sites-health-refresh" type="button" class="secondary">Refresh observations</button></div><div id="vote-sites-detected" class="result-panel">Choose an inspection-capable server to load observations.</div></section>
+      </section>
+
+      <section class="tab-panel" id="rewards-panel" data-panel="rewards" hidden>
+        <div class="section-title vote-sites-heading"><div><p class="eyebrow">Workspace rewards · per-target configuration</p><h2>Rewards</h2><p>Read each selected backend. Existing rewards are preserved; only explicit bounded edits are previewed.</p></div><div class="action-row"><button type="button" class="secondary" id="rewards-read">Read Current</button><button type="button" class="secondary" id="rewards-retry">Retry failed targets</button><button type="button" id="rewards-add">＋ Add Reward</button></div></div>
+        <p id="rewards-status" role="status" aria-live="polite"></p>
+        <div id="rewards-targets" class="settings-targets" aria-label="Per-server rewards read status"></div>
+        <div class="rewards-layout">
+          <aside class="card rewards-list-card" aria-label="Reward scopes"><label for="rewards-search">Search reward scopes<input id="rewards-search" type="search" maxlength="100" placeholder="Site or reward path…"></label><div id="rewards-scope-list" class="vote-site-list" role="listbox" aria-label="Reward scopes">Read current configuration to begin.</div><small>Current connectors can list existing named Rewards/*.yml files. Older connectors mark them unsupported; named files are never created or deleted here.</small></aside>
+          <div class="rewards-editor-column">
+            <section class="card" id="rewards-empty"><h3>Select a reward scope</h3><p>Open an existing inline reward or inspect an advanced-only scope. Merely opening it does not change configuration.</p></section>
+            <section class="card" id="rewards-detail" hidden><div class="section-title"><div><p class="eyebrow">Existing reward</p><h3 id="rewards-title">Reward</h3><p id="rewards-path"></p></div><span id="rewards-presence" class="pill neutral">Not loaded</span></div>
+              <div id="rewards-values" class="result-panel" aria-label="Per-target reward values"></div>
+              <details><summary>Advanced structure and safe fallback</summary><div id="rewards-advanced"></div><button type="button" id="rewards-open-yaml" class="secondary compact">Open source in Full YAML</button></details>
+              <div id="rewards-editable"><h4>Simple edit · explicit operation</h4><p>Commands are ordered. Append preserves each server's own list. Remove requires one exact match; duplicate entries require Full YAML. Existing item Material and Amount leaves can be changed independently; unknown material names and all item metadata are preserved until explicitly edited in Full YAML.</p>
+                <label for="rewards-operation">Operation<select id="rewards-operation"><option value="APPEND_LIST_ENTRY">Append command</option><option value="REMOVE_LIST_ENTRY">Remove exact command</option><option value="REPLACE_LIST">Replace command list (destructive)</option><option value="SET_SCALAR">Set existing scalar</option><option value="CREATE_REWARD">Create missing inline reward</option><option value="REMOVE_REWARD">Remove inline reward</option></select></label>
+                <label for="rewards-field">Field<select id="rewards-field"><option value="Commands">Commands</option><option value="Messages.Player">Messages.Player</option><option value="Messages.Broadcast">Messages.Broadcast</option><option value="Money">Money</option><option value="Chance">Chance</option></select></label>
+                <div id="rewards-field-state" class="result-panel" aria-live="polite">Select a field to inspect target values.</div>
+                <label for="rewards-value">Explicit value<textarea id="rewards-value" maxlength="10020" rows="3" autocomplete="off" placeholder="One command, message, number, or one command per line for Replace"></textarea></label>
+                <div class="operation-actions"><button type="button" class="secondary" id="rewards-stage">Stage explicit edit</button><button type="button" class="secondary" id="rewards-reset">Reset</button></div>
+              </div>
+            </section>
+            <section class="card change-summary"><h3>Change Summary</h3><div id="rewards-summary">No explicit reward edit.</div><label id="rewards-ack-label" hidden><input id="rewards-ack" type="checkbox"> I acknowledge unavailable, unsupported, missing, or excluded targets. This is not an atomic network-wide apply.</label><div class="stacked-actions"><button type="button" id="rewards-preview" disabled>Preview Changes</button><button type="button" id="rewards-apply" disabled>Approve and Apply</button></div></section>
+          </div>
+        </div>
+        <section class="card stacked-card"><h3>Exact per-target preview</h3><div id="rewards-preview-results" aria-live="polite">Not previewed.</div></section>
+        <section class="card stacked-card"><h3>Apply and confirmed read results</h3><div id="rewards-results" aria-live="polite">No apply performed.</div></section>
+      </section>
+
+      <dialog id="vote-site-add-dialog" class="vote-site-dialog" aria-labelledby="vote-site-add-title">
+        <form method="dialog" id="vote-site-add-form"><div class="section-title"><div><p class="eyebrow">Explicit creation</p><h2 id="vote-site-add-title">Add Vote Site</h2><p>Creation is previewed independently for each target. Existing keys are never overwritten silently.</p></div><button type="button" id="vote-site-add-close" class="secondary compact" aria-label="Close">×</button></div>
+          <div class="form-grid"><label>Site key<input id="vote-site-add-key" required maxlength="64" pattern="[A-Za-z0-9_-]{1,64}" placeholder="PlanetMinecraft"></label><label>Display name · <code>Name</code><input id="vote-site-add-name" required maxlength="200" placeholder="Planet Minecraft"></label><label>Service site · <code>ServiceSite</code><input id="vote-site-add-service" required maxlength="2048" placeholder="PlanetMinecraft.com"></label><label>Vote URL · <code>VoteURL</code><input id="vote-site-add-url" required maxlength="500" placeholder="https://..."></label><label>Vote delay · <code>VoteDelay</code><input id="vote-site-add-delay" required maxlength="64" value="24h"></label><label>Priority · <code>Priority</code><input id="vote-site-add-priority" type="number" step="1" value="5" required></label><label>Display material · <code>DisplayItem.Material</code><input id="vote-site-add-material" required maxlength="100" value="DIAMOND"></label><label>Display amount · <code>DisplayItem.Amount</code><input id="vote-site-add-amount" type="number" min="1" max="64" step="1" value="1" required></label></div>
+          <div class="form-grid"><label class="check-row"><input id="vote-site-add-enabled" type="checkbox" checked> Enabled</label><label class="check-row"><input id="vote-site-add-hidden" type="checkbox"> Hidden</label></div>
+          <div id="vote-site-add-conflicts" class="result-panel">Enter a key to check the current workspace inventory.</div>
+          <label id="vote-site-add-existing-label" hidden>When this key already exists on some targets<select id="vote-site-add-existing"><option value="cancel">Cancel; do not overwrite</option><option value="missing">Create on missing targets only</option><option value="existing">Edit existing targets only</option><option value="both">Edit existing and create on missing targets</option></select></label>
+          <div class="operation-actions"><button value="cancel" type="button" class="secondary" id="vote-site-add-cancel">Cancel</button><button value="default" type="submit" id="vote-site-add-confirm">Prepare explicit changes</button></div>
+        </form>
+      </dialog>
+
       <section class="tab-panel" id="quick-setup-panel" data-panel="quick-setup" hidden>
         <div class="page-heading">
           <div>
@@ -406,7 +530,7 @@
           <section class="card highlight-card">
             <div class="section-title"><div><p class="eyebrow">Vote-site discovery</p><h3>Auto-create vote sites</h3><p>Change only <code>AutoCreateVoteSites</code>. Disabling it keeps unknown services visible in health data without generating entries; explicit admin creation remains available.</p></div><span class="pill neutral" id="auto-sites-state">Not loaded</span></div>
             <label class="check-row"><input id="auto-sites-enabled" type="checkbox"> Automatically create unknown vote sites</label>
-            <div class="target-scope"><span id="auto-sites-target-count">0 selected backends</span><button id="select-all-auto-sites-targets" class="secondary compact" type="button" disabled>Select all online backends</button></div>
+            <div class="target-scope"><span id="auto-sites-target-count">0 source backends</span><button id="select-all-auto-sites-targets" class="secondary compact" type="button" disabled>Choose workspace servers</button></div>
             <div class="operation-actions"><button id="load-auto-sites" class="secondary" type="button" disabled hidden>Retry read</button><button id="preview-auto-sites" type="button" disabled>Preview</button><button id="apply-auto-sites" type="button" disabled>Approve and apply</button></div>
             <pre id="auto-sites-status" aria-live="polite">Choose a capable Bukkit node.</pre>
           </section>
@@ -531,7 +655,7 @@
           <pre id="quick-operation-status" aria-live="polite">Choose an online Bukkit node with setup assistant control.</pre>
         </section>
         <section class="card stacked-card" id="reward-builder-card">
-          <div class="section-title"><div><p class="eyebrow">Build, simulate, then approve</p><h3>Reward builder &amp; simulator</h3><p>Describe reward actions, simulate the normalized proposal without side effects, then preview and approve the exact Rewards subtree.</p></div><span class="pill neutral" id="reward-simulation-capability">Choose a capable node</span></div>
+          <div class="section-title"><div><p class="eyebrow">Legacy source-only builder</p><h3>New reward builder</h3><p>Validate a normalized proposal without executing a vote or granting rewards. This tool replaces the selected Rewards subtree; use the Rewards workspace to edit existing configuration safely.</p></div><span class="pill neutral" id="reward-simulation-capability">Choose a capable node</span></div>
           <form id="reward-simulation-form">
             <div class="form-grid"><label>Scope<select id="reward-scope"><option value="site">One vote site</option><option value="every-site">Every site</option><option value="vote-party">Vote party</option></select></label><label id="reward-site-label">Site key<input id="reward-site" maxlength="64" placeholder="PlanetMinecraft"></label><label>Chance percent<input id="reward-chance" type="number" min="0" max="100" step="0.1" value="100"></label><label>Money amount<input id="reward-money" type="number" min="0" max="1000000000" step="0.01" value="0"></label></div>
             <label>Console commands <span>(one per line, maximum 20)</span><textarea id="reward-commands" rows="3" maxlength="10020" placeholder="give %player% diamond 1"></textarea></label>
@@ -541,9 +665,9 @@
             <label>Items <span>(one MATERIAL and amount per line, maximum 20)</span><textarea id="reward-items" rows="3" maxlength="2020" placeholder="DIAMOND 1"></textarea></label>
             <label class="check-row"><input id="reward-online-only" type="checkbox"> Online players only</label>
             <p class="warning-text"><strong>Save behavior:</strong> the selected scope's Rewards subtree is replaced; sibling sites, scopes, and settings are preserved. Permissions are stored as long-duration temporary permissions by VotingPlugin.</p>
-            <div class="operation-actions"><button id="simulate-reward" type="submit" disabled>Simulate reward</button><button id="preview-reward" type="button" disabled>Preview saved reward</button><button id="apply-reward" type="button" disabled>Approve and apply</button><button id="copy-reward-to-setup" class="secondary" type="button" disabled>Use first command in simple setup</button></div>
+            <div class="operation-actions"><button id="simulate-reward" type="submit" disabled>Validate reward proposal</button><button id="preview-reward" type="button" disabled>Preview saved reward</button><button id="apply-reward" type="button" disabled>Approve and apply</button><button id="copy-reward-to-setup" class="secondary" type="button" disabled>Use first command in simple setup</button></div>
           </form>
-          <div id="reward-simulation-result" class="result-panel" role="status">Add an action, then simulate it safely.</div>
+          <div id="reward-simulation-result" class="result-panel" role="status">Add an action, then validate it without side effects.</div>
         </section>
         <section class="card stacked-card" id="settings-catalog-card">
           <div class="section-title"><div><p class="eyebrow">Schema-driven reference</p><h3>Settings catalog</h3><p>Known settings include their file, type, default, and effect. Guided forms use these same constraints.</p></div></div>
@@ -603,6 +727,12 @@
       </div>
     </div>
   </main>
+  <script src="/workspace.js" defer></script>
+  <script src="/configuration-state.js" defer></script>
+  <script src="/general-settings.js" defer></script>
+  <script src="/vote-sites-state.js" defer></script>
+  <script src="/vote-sites.js" defer></script>
+  <script src="/rewards.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>

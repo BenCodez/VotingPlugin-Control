@@ -28,6 +28,7 @@ public final class InspectionOperations {
     private static final int MAX_PLAYER_COLUMN_VALUE_BYTES = 16 * 1024;
     private static final Pattern NODE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
     private static final Pattern PLAYER_NAME = Pattern.compile("[A-Za-z0-9_]{1,16}");
+    private static final Pattern REWARD_FILE_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]{0,99}\\.yml");
     private static final Pattern PLAYER_MONTH_TOTAL = Pattern.compile(
             "MonthTotal-(?:JANUARY|FEBRUARY|MARCH|APRIL|MAY|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)-[0-9]{4}");
     private static final Pattern PLAYER_VOTE_SHOP_LIMIT = Pattern.compile("VoteShopLimit[A-Za-z0-9_-]{1,64}");
@@ -70,7 +71,8 @@ public final class InspectionOperations {
         if (nodeId == null || !NODE_ID.matcher(nodeId).matches()) throw invalid("nodeId is invalid");
         NodeStatus node = registry.find(nodeId);
         if (node == null) throw new ValidationException("NODE_NOT_FOUND", "Node was not found", List.of(nodeId));
-        if (!node.online() || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)) {
+        if (!node.online() || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)
+                || query.requiresRewardFiles() && !node.acceptedCapabilities().contains(InspectionQuery.REWARD_FILE_CAPABILITY)) {
             throw new ValidationException("NODE_UNAVAILABLE", "Node cannot answer inspection queries", List.of(nodeId));
         }
         evictOldestCompletedAtCapacity();
@@ -110,7 +112,9 @@ public final class InspectionOperations {
         Instant now = clock.instant();
         for (StoredInspection stored : inspections.values()) {
             if (!stored.nodeId.equals(nodeId) || "COMPLETE".equals(stored.state)) continue;
-            if (!node.online() || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)) {
+            if (!node.online() || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)
+                    || stored.query.requiresRewardFiles()
+                    && !node.acceptedCapabilities().contains(InspectionQuery.REWARD_FILE_CAPABILITY)) {
                 completeUnavailable(stored, node.sessionId());
                 continue;
             }
@@ -237,6 +241,10 @@ public final class InspectionOperations {
             if ("player".equals(expectedKind) && !validPlayerResult(result.data().path("result"))) {
                 throw invalid("player inspection data is invalid");
             }
+            if ("reward-file-inventory".equals(expectedKind)
+                    && !validRewardFileInventory(result.data().path("result"))) {
+                throw invalid("named reward file inventory is invalid");
+            }
         }
         if (jsonBytes(result.data()) > MAX_DATA_BYTES || bytes(result.message()) > MAX_MESSAGE_BYTES) {
             throw invalid("inspection result exceeds retention limits");
@@ -245,6 +253,17 @@ public final class InspectionOperations {
 
     private static int jsonBytes(com.fasterxml.jackson.databind.JsonNode value) {
         return value == null ? 0 : value.toString().getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private static boolean validRewardFileInventory(JsonNode value) {
+        if (!exactFields(value, Set.of("files")) || !value.path("files").isArray()
+                || value.path("files").size() > 100) return false;
+        Set<String> names = new HashSet<>();
+        for (JsonNode file : value.path("files")) {
+            if (!file.isTextual() || !REWARD_FILE_NAME.matcher(file.textValue()).matches()
+                    || !names.add(file.textValue().toLowerCase(java.util.Locale.ROOT))) return false;
+        }
+        return true;
     }
 
     /**

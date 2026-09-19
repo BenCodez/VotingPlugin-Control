@@ -11,12 +11,21 @@ import org.junit.jupiter.api.Test;
 class InspectionQueryTest {
     @Test void supportsOnlyTheBoundedReadOnlyInspectionCatalog() {
         for (String kind : InspectionQuery.KINDS) {
-            InspectionQuery query = new InspectionQuery(kind, Map.of("player", "Example"));
+            InspectionQuery query = new InspectionQuery(kind,
+                    "reward-file-inventory".equals(kind) ? Map.of() : Map.of("player", "Example"));
             assertEquals(kind, query.kind());
-            assertEquals("Example", query.filters().get("player"));
+            if (!query.requiresRewardFiles()) assertEquals("Example", query.filters().get("player"));
         }
         assertEquals("data.inspect.v1", InspectionQuery.CAPABILITY);
         assertThrows(IllegalArgumentException.class, () -> new InspectionQuery("raw-sql", Map.of()));
+    }
+
+    @Test void rewardFileInventoryHasNoFiltersAndRequiresItsVersionedCapability() {
+        InspectionQuery inventory = new InspectionQuery("reward-file-inventory", Map.of());
+        assertTrue(inventory.requiresRewardFiles());
+        assertEquals("config.reward-files.v1", InspectionQuery.REWARD_FILE_CAPABILITY);
+        assertThrows(IllegalArgumentException.class, () -> new InspectionQuery("reward-file-inventory",
+                Map.of("name", "StandardVote")));
     }
 
     @Test void normalizesNullFiltersAndDefensivelyCopiesThem() {

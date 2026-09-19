@@ -13,6 +13,7 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
                                    @JsonIgnore boolean redacted) {
     public static final String PROXY_ROUTING = "proxy-routing";
     public static final String FILE = "file";
+    public static final String REWARD_FILE_CAPABILITY = "config.reward-files.v1";
     public static final String QUICK_SETUP = "quick-setup";
     public static final String VOTE_SITES_SYNC = "sync-vote-sites";
     public static final String COMMUNICATION_TEST = "communication-test";
@@ -130,7 +131,8 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
     public String capability() {
         return switch (domain) {
             case PROXY_ROUTING -> "config.proxy-routing.v1";
-            case FILE -> "bungeeconfig.yml".equals(fileName) ? "config.proxy-files.v1" : "config.files.v1";
+            case FILE -> "bungeeconfig.yml".equals(fileName) ? "config.proxy-files.v1"
+                    : fileName.startsWith("Rewards/") ? REWARD_FILE_CAPABILITY : "config.files.v1";
             case QUICK_SETUP -> VOTE_SITES_SYNC.equals(preset)
                     ? "config.vote-sites-sync.v1" : COMMUNICATION_TEST.equals(preset)
                     ? "config.transport-test.v1" : PROXY_METHOD.equals(preset)
@@ -170,7 +172,7 @@ public record ManagedConfiguration(String domain, Boolean sendVotesToAllServers,
 
     private static void validateFileName(String value) {
         if (value == null || value.length() > 160
-                || !value.matches("(?:Config|VoteSites|SpecialRewards|GUI|Shop|BungeeSettings)\\.yml|bungeeconfig\\.yml|VoteSites/[A-Za-z0-9._-]{1,100}\\.yml")) {
+                || !value.matches("(?:Config|VoteSites|SpecialRewards|GUI|Shop|BungeeSettings)\\.yml|bungeeconfig\\.yml|VoteSites/[A-Za-z0-9._-]{1,100}\\.yml|Rewards/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\\.yml")) {
             throw new IllegalArgumentException("configuration file name is not managed");
         }
     }
