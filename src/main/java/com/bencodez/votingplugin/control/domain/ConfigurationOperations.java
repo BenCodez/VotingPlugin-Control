@@ -149,6 +149,191 @@ public final class ConfigurationOperations implements AutoCloseable {
         return view(apply);
     }
 
+    /** Typed view of a retained, successful read of this particular backend's Config.yml. */
+    public synchronized SettingsState generalSettingsState(UUID readId, String nodeId) {
+        ConfigurationTaskResult snapshot = settingsSnapshot(readId, nodeId);
+        try {
+            return new SettingsState(readId, nodeId, snapshot.sessionId(), snapshot.revision(),
+                    GeneralSettingsDocument.fields(snapshot.configuration().content()));
+        } catch (IllegalArgumentException malformed) {
+            throw new ValidationException("INVALID_CONFIGURATION", "General Settings requires an unambiguous YAML mapping", List.of(nodeId));
+        }
+    }
+
+    public synchronized OperationView createGeneralSettingsPreview(UUID readId, String nodeId,
+            Map<String, Object> overrides) {
+        ConfigurationTaskResult snapshot = settingsSnapshot(readId, nodeId);
+        if (overrides == null || overrides.isEmpty() || overrides.size() > 9
+                || overrides.values().stream().anyMatch(value -> !(value instanceof Boolean))) {
+            throw invalid("General Settings requires one to nine boolean edits");
+        }
+        Map<String, Boolean> edits = new LinkedHashMap<>();
+        overrides.forEach((key, value) -> edits.put(key, (Boolean) value));
+        String proposal;
+        try {
+            proposal = GeneralSettingsDocument.patch(snapshot.configuration().content(), edits);
+        } catch (IllegalArgumentException unsupported) {
+            throw invalid("Only present, supported General Settings booleans can be edited");
+        }
+        ManagedConfiguration configuration = ManagedConfiguration.file("Config.yml", proposal);
+        ValidatedTargets targets = validateTargets(List.of(nodeId), FILE_CAPABILITY);
+        validateConfigurationTargets(targets, configuration);
+        byte[] token = new byte[32];
+        random.nextBytes(token);
+        return create("PREVIEW", targets, configuration,
+                Base64.getUrlEncoder().withoutPadding().encodeToString(token), Map.of(nodeId, snapshot.revision()));
+    }
+
+    private ConfigurationTaskResult settingsSnapshot(UUID readId, String nodeId) {
+        return fileSnapshot(readId, nodeId, "Config.yml");
+    }
+
+    private ConfigurationTaskResult fileSnapshot(UUID readId, String nodeId, String fileName) {
+        prune();
+        ManagedConfiguration selector = ManagedConfiguration.file(fileName, null);
+        ValidatedTargets targets = validateTargets(nodeId == null ? List.of() : List.of(nodeId), selector.capability());
+        validateConfigurationTargets(targets, selector);
+        StoredOperation read = operations.get(readId);
+        ConfigurationTaskResult result = read == null ? null : read.results.get(nodeId);
+        if (read == null || !"READ".equals(read.type)
+                || !ManagedConfiguration.FILE.equals(read.configuration.domain())
+                || !fileName.equals(read.configuration.fileName()) || result == null || !result.success()
+                || result.configuration() == null || result.configuration().content() == null) {
+            throw new ValidationException("READ_REQUIRED", "A retained successful " + fileName + " read is required",
+                    List.of(nodeId));
+        }
+        if (!Objects.equals(result.sessionId(), targets.sessions().get(nodeId))) {
+            throw new ValidationException("TARGET_CHANGED", "The backend reconnected; read it again", List.of(nodeId));
+        }
+        return result;
+    }
+
+    public record SettingsState(UUID readOperationId, String nodeId, UUID sessionId, String revision,
+            Map<String, GeneralSettingsDocument.Field> fields) { }
+
+    /** Typed, secret-bounded inventory from one retained successful VoteSites.yml read. */
+    public synchronized VoteSitesState voteSitesState(UUID readId, String nodeId) {
+        ConfigurationTaskResult snapshot = fileSnapshot(readId, nodeId, "VoteSites.yml");
+        try {
+            List<VoteSiteState> sites = VoteSitesDocument.inventory(snapshot.configuration().content()).sites().stream()
+                    .map(site -> new VoteSiteState(site.key(), site.editable(), site.fields(), site.rewardsConfigured()))
+                    .toList();
+            return new VoteSitesState(readId, nodeId, snapshot.sessionId(), snapshot.revision(), sites);
+        } catch (IllegalArgumentException malformed) {
+            throw new ValidationException("INVALID_CONFIGURATION",
+                    "Vote Sites requires one unambiguous main VoteSites.yml mapping", List.of(nodeId));
+        }
+    }
+
+    /** Creates one revision-bound preview for one exact typed site action on one target. */
+    public synchronized OperationView createVoteSitesPreview(UUID readId, String nodeId, String action,
+            String siteKey, Map<String, Object> fields) {
+        ConfigurationTaskResult snapshot = fileSnapshot(readId, nodeId, "VoteSites.yml");
+        String proposal;
+        try {
+            proposal = switch (action == null ? "" : action) {
+                case "ADD" -> VoteSitesDocument.add(snapshot.configuration().content(), siteKey, fields);
+                case "EDIT" -> VoteSitesDocument.edit(snapshot.configuration().content(), siteKey, fields);
+                case "REMOVE" -> {
+                    if (fields != null && !fields.isEmpty()) throw new IllegalArgumentException();
+                    yield VoteSitesDocument.remove(snapshot.configuration().content(), siteKey);
+                }
+                default -> throw new IllegalArgumentException();
+            };
+        } catch (IllegalArgumentException invalidSiteOperation) {
+            throw invalid("Vote Site action, key, fields, or source structure is invalid");
+        }
+        if (proposal.equals(snapshot.configuration().content())) {
+            throw invalid("Vote Site action does not change this target");
+        }
+        ManagedConfiguration configuration = ManagedConfiguration.file("VoteSites.yml", proposal);
+        ValidatedTargets targets = validateTargets(List.of(nodeId), FILE_CAPABILITY);
+        validateConfigurationTargets(targets, configuration);
+        byte[] token = new byte[32];
+        random.nextBytes(token);
+        return create("PREVIEW", targets, configuration,
+                Base64.getUrlEncoder().withoutPadding().encodeToString(token), Map.of(nodeId, snapshot.revision()));
+    }
+
+    public record VoteSitesState(UUID readOperationId, String nodeId, UUID sessionId, String revision,
+            List<VoteSiteState> sites) { }
+
+    public record VoteSiteState(String siteKey, boolean editable, Map<String, VoteSitesDocument.Field> fields,
+            boolean rewardsConfigured) { }
+
+    private static boolean isNamedRewardFile(String fileName) {
+        return fileName != null && fileName.matches("Rewards/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\\.yml");
+    }
+
+    /** Narrow typed reward inventory from the retained READ, never raw YAML or approval material. */
+    public synchronized RewardsState rewardsState(UUID readId, String nodeId, String fileName) {
+        if (fileName == null || !Set.of("VoteSites.yml", "Config.yml", "SpecialRewards.yml").contains(fileName)
+                && !isNamedRewardFile(fileName))
+            throw invalid("Unsupported reward file");
+        ConfigurationTaskResult snapshot = fileSnapshot(readId, nodeId, fileName);
+        try {
+            return new RewardsState(readId, nodeId, fileName, snapshot.sessionId(), snapshot.revision(),
+                    RewardsDocument.inventory(snapshot.configuration().content(), fileName));
+        } catch (IllegalArgumentException malformed) {
+            throw new ValidationException("INVALID_CONFIGURATION", "Reward inventory requires an unambiguous YAML mapping", List.of(nodeId));
+        }
+    }
+
+    /** Source-preserving one-target reward edit, approved through the existing PREVIEW/APPLY path. */
+    public synchronized OperationView createRewardsPreview(UUID readId, String nodeId, String fileName,
+            String rewardPath, String action, String field, Object value) {
+        if (!"VoteSites.yml".equals(fileName) && !isNamedRewardFile(fileName))
+            throw invalid("This reward scope is advanced-only");
+        ConfigurationTaskResult snapshot = fileSnapshot(readId, nodeId, fileName);
+        String proposal;
+        try {
+            proposal = RewardsDocument.patch(snapshot.configuration().content(), fileName, rewardPath,
+                    new RewardsDocument.Edit(action, field, value));
+        } catch (IllegalArgumentException unsupported) {
+            throw invalid("Reward edit is invalid, unsafe, or unsupported for this source structure");
+        }
+        if (proposal.equals(snapshot.configuration().content())) throw invalid("Reward edit does not change this target");
+        ManagedConfiguration configuration = ManagedConfiguration.file(fileName, proposal);
+        ValidatedTargets targets = validateTargets(List.of(nodeId), configuration.capability());
+        validateConfigurationTargets(targets, configuration);
+        byte[] token = new byte[32];
+        random.nextBytes(token);
+        return create("PREVIEW", targets, configuration,
+                Base64.getUrlEncoder().withoutPadding().encodeToString(token), Map.of(nodeId, snapshot.revision()));
+    }
+
+    public record RewardsState(UUID readOperationId, String nodeId, String fileName, UUID sessionId, String revision,
+            List<RewardsDocument.Scope> scopes) { }
+
+    public synchronized OperationView discardRewardsPreview(UUID id, String token) {
+        return discardVisualPreview(id, token, "REWARDS");
+    }
+
+    /** Releases abandoned visual approvals without scheduling any work on a node. */
+    public synchronized OperationView discardGeneralSettingsPreview(UUID id, String token) {
+        return discardVisualPreview(id, token, "GENERAL_SETTINGS");
+    }
+
+    public synchronized OperationView discardVoteSitesPreview(UUID id, String token) {
+        return discardVisualPreview(id, token, "VOTE_SITES");
+    }
+
+    private OperationView discardVisualPreview(UUID id, String token, String source) {
+        prune();
+        StoredOperation preview = operations.get(id);
+        if (preview == null || !"PREVIEW".equals(preview.type) || preview.expectedRevisions.isEmpty()
+                || token == null || token.length() > 128 || preview.approvalToken == null
+                || !MessageDigest.isEqual(token.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    preview.approvalToken.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+            throw new ValidationException("APPROVAL_REQUIRED", "The exact visual preview approval is required", List.of());
+        }
+        // Tokens are intentionally never journaled and recovered previews are always non-applicable.
+        // Append the audit event before changing the sole in-memory approval bit.
+        audit.append("PREVIEW_DISCARDED", preview.id, null, source);
+        preview.approvalUsed = true;
+        return view(preview);
+    }
+
     public synchronized OperationView get(UUID id) {
         prune();
         StoredOperation operation = operations.get(id);
@@ -182,6 +367,9 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (!original.complete()) {
             throw new ValidationException("OPERATION_INCOMPLETE", "Wait for the operation to finish before retrying",
                     List.of());
+        }
+        if ("PREVIEW".equals(original.type) && !original.expectedRevisions.isEmpty()) {
+            throw new ValidationException("PREVIEW_REQUIRED", "Visual settings require a fresh read and preview", List.of());
         }
         List<String> failed = original.results.entrySet().stream().filter(entry -> !entry.getValue().success())
                 .map(Map.Entry::getKey).toList();
@@ -574,6 +762,13 @@ public final class ConfigurationOperations implements AutoCloseable {
             return view(operation);
         }
         validateResultConfiguration(operation, result, node);
+        if ("PREVIEW".equals(operation.type) && result.success()
+                && operation.expectedRevisions.containsKey(nodeId)
+                && !Objects.equals(operation.expectedRevisions.get(nodeId), result.revision())) {
+            result = new ConfigurationTaskResult(result.sessionId(), false, "STALE_REVISION",
+                    "Configuration changed since READ; read and preview again", null,
+                    (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
+        }
         String priorState = operation.states.get(nodeId);
         ConfigurationTaskResult priorResult = operation.results.get(nodeId);
         Instant priorLease = operation.leasedAt.get(nodeId);
@@ -608,11 +803,16 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private OperationView create(String type, ValidatedTargets targets, ManagedConfiguration config, String token) {
+        return create(type, targets, config, token, Map.of());
+    }
+
+    private OperationView create(String type, ValidatedTargets targets, ManagedConfiguration config, String token,
+            Map<String, String> revisions) {
         LinkedHashMap<UUID, StoredOperation> priorOperations = new LinkedHashMap<>(operations);
         long priorChanges = retainedChangeBytes;
         long priorMessages = retainedMessageBytes;
         long priorFiles = retainedFileBytes;
-        StoredOperation operation = store(type, targets, config, token, Map.of(), null);
+        StoredOperation operation = store(type, targets, config, token, revisions, null);
         try {
             audit.append("OPERATION_CREATED", operation.id, null, type);
             persist();
@@ -650,7 +850,11 @@ public final class ConfigurationOperations implements AutoCloseable {
         Iterator<Map.Entry<UUID, StoredOperation>> iterator = operations.entrySet().iterator();
         while (retained >= MAX_FILE_OPERATIONS && iterator.hasNext()) {
             StoredOperation candidate = iterator.next().getValue();
-            if (candidate.fileOperation() && candidate.complete() && !candidate.id.equals(protectedOperation)) {
+            boolean boundApprovalPending = "PREVIEW".equals(candidate.type) && !candidate.expectedRevisions.isEmpty()
+                    && !candidate.approvalUsed && candidate.createdAt.plus(ACTIVE_RETENTION).isAfter(clock.instant())
+                    && candidate.results.values().stream().allMatch(ConfigurationTaskResult::success);
+            if (candidate.fileOperation() && candidate.complete() && !candidate.id.equals(protectedOperation)
+                    && !boundApprovalPending) {
                 audit.append("OPERATION_EVICTED", candidate.id, null, "FILE_RETENTION_LIMIT");
                 releaseResultDetails(candidate);
                 iterator.remove();
@@ -856,6 +1060,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     private static boolean retryable(StoredOperation operation) {
         if (operation.recovered || !operation.complete()
                 || operation.results.values().stream().allMatch(ConfigurationTaskResult::success)) return false;
+        if ("PREVIEW".equals(operation.type) && !operation.expectedRevisions.isEmpty()) return false;
         return !("APPLY".equals(operation.type)
                 && ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
                 && ManagedConfiguration.PROXY_METHOD.equals(operation.configuration.preset()));

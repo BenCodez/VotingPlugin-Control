@@ -1,0 +1,181 @@
+package com.bencodez.votingplugin.control.domain;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.util.List;
+
+import org.junit.jupiter.api.Test;
+
+class RewardsDocumentTest {
+    private static final String SOURCE = "VoteSites:\n  Alpha:\n    Name: Alpha\n    Rewards:\n"
+            + "      Commands:\n      - 'say one'\n      - 'say two'\n"
+            + "      Messages:\n        Player: 'hello'\n"
+            + "      Items:\n        diamond:\n          Material: DIAMOND\n          Amount: 2\n          CustomModelData: 123\n"
+            + "      AdvancedPriority:\n        Rare:\n          Chance: 20\n          Commands:\n          - 'say rare'\n"
+            + "      Unknown: preserve # important\n"
+            + "  Beta:\n    Name: Beta\n    Rewards:\n      Commands:\n      - 'say beta'\n"
+            + "EverySiteReward: {}\n";
+
+    @Test void inventoryShowsExistingAndAdvancedStructureWithoutCopyingUnknownValues() {
+        List<RewardsDocument.Scope> scopes = RewardsDocument.inventory(SOURCE, "VoteSites.yml");
+        assertEquals(3, scopes.size());
+        assertEquals("VoteSites.Alpha.Rewards", scopes.get(0).path());
+        assertEquals(List.of("say one", "say two"), scopes.get(0).fields().get("Commands"));
+        assertTrue(scopes.get(0).advancedKeys().contains("AdvancedPriority"));
+        assertTrue(scopes.get(0).advancedKeys().contains("Items"));
+        assertTrue(scopes.get(0).structurePaths().contains("Items.diamond.CustomModelData"));
+        assertFalse(scopes.get(0).toString().contains("123"));
+    }
+
+    @Test void appendAndRemoveCommandsKeepDifferentTargetDocumentsIndependent() {
+        String a = RewardsDocument.patch(SOURCE, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say three"));
+        assertTrue(a.contains("- \"say three\""));
+        assertTrue(a.contains("CustomModelData: 123"));
+        assertTrue(a.contains("Unknown: preserve # important"));
+        String b = RewardsDocument.patch(SOURCE.replace("say one", "say other"), "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say three"));
+        assertTrue(b.contains("say other"));
+        assertFalse(a.contains("say other"));
+        String removed = RewardsDocument.patch(a, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say two"));
+        assertFalse(removed.contains("say two"));
+        assertTrue(removed.contains("say one"));
+    }
+
+    @Test void scalarEditPreservesNestedRewardAndOtherSite() {
+        String changed = RewardsDocument.patch(SOURCE, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("SET_SCALAR", "Messages.Player", "new hello"));
+        assertEquals(SOURCE.replace("Player: 'hello'", "Player: \"new hello\""), changed);
+        assertTrue(changed.contains("say beta"));
+        assertTrue(changed.contains("AdvancedPriority"));
+    }
+
+    @Test void explicitReplaceAndLastEntryRemovalHaveBoundedNonAmbiguousSemantics() {
+        String replaced = RewardsDocument.patch(SOURCE, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("REPLACE_LIST", "Commands", List.of("say replacement")));
+        assertTrue(replaced.contains("Commands:\n      - \"say replacement\"\n      Messages:"));
+        assertTrue(replaced.contains("CustomModelData: 123"));
+        String single = SOURCE.replace("      - 'say two'\n", "");
+        String removed = RewardsDocument.patch(single, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say one"));
+        assertTrue(removed.contains("Commands: []\n      Messages:"));
+        String withComment = SOURCE.replace("      - 'say one'", "      - 'say one' # keep");
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(withComment, "VoteSites.yml",
+                "VoteSites.Alpha.Rewards", new RewardsDocument.Edit("REPLACE_LIST", "Commands", List.of("changed"))));
+    }
+
+    @Test void explicitCreateOnlyWhenAbsentAndUnicodeSourceMarksRemainCorrect() {
+        String source = "# 😀\nVoteSites:\n  Alpha:\n    Name: Alpha\n  Beta:\n    Name: Beta\n";
+        String created = RewardsDocument.patch(source, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("CREATE_REWARD", "Commands", "say 😀"));
+        assertTrue(created.contains("    Rewards:\n      Commands:\n      - \"say 😀\"\n  Beta:"));
+        assertTrue(created.startsWith("# 😀\n"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(created, "VoteSites.yml",
+                "VoteSites.Alpha.Rewards", new RewardsDocument.Edit("CREATE_REWARD", "Commands", "again")));
+    }
+
+    @Test void exactRemovalLeavesSiteAndOtherRewards() {
+        String changed = RewardsDocument.patch(SOURCE, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("REMOVE_REWARD", null, null));
+        assertTrue(changed.contains("Alpha:\n    Name: Alpha"));
+        assertFalse(changed.contains("say one"));
+        assertTrue(changed.contains("say beta"));
+    }
+
+    @Test void rejectsTraversalAmbiguousYamlAndDuplicateCommands() {
+        RewardsDocument.Scope nullReward = RewardsDocument.inventory(
+                "VoteSites:\n  Alpha:\n    Rewards: null\n", "VoteSites.yml").get(0);
+        assertEquals("UNSUPPORTED", nullReward.status());
+        assertFalse(nullReward.editable());
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", "VoteSites...Rewards",
+                new RewardsDocument.Edit("REMOVE_REWARD", null, null)));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "not there")));
+        String duplicate = SOURCE.replace("say two", "say one");
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(duplicate, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say one")));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.inventory("A: 1\nA: 2\n", "SpecialRewards.yml"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.inventory("A: &x {B: 1}\nC: *x\n", "SpecialRewards.yml"));
+    }
+
+    @Test void escapesSupportedWhitespaceAndRejectsInvalidYamlControlCharacters() {
+        String changed = RewardsDocument.patch(SOURCE, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say\tplayer"));
+        assertTrue(changed.contains("- \"say\\tplayer\""));
+        assertEquals(List.of("say one", "say two", "say\tplayer"),
+                RewardsDocument.inventory(changed, "VoteSites.yml").get(0).fields().get("Commands"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml",
+                "VoteSites.Alpha.Rewards", new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say\u0001player")));
+    }
+
+    @Test void malformedEditPayloadsFailAsValidationErrors() {
+        String path = "VoteSites.Alpha.Rewards";
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", path,
+                new RewardsDocument.Edit(null, "Commands", "say no")));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", null, "say no")));
+        String withoutCommands = SOURCE.replace("      Commands:\n      - 'say one'\n      - 'say two'\n", "");
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(withoutCommands, "VoteSites.yml", path,
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", 42)));
+    }
+
+    @Test void namedRewardEditsPatchOnlyRootFieldsAndPreserveUnknownChildren() {
+        String source = "# owner note\nCommands:\n- 'say first'\nItems:\n  diamond:\n    Material: DIAMOND\n"
+                + "    Amount: 1\n    CustomModelData: 912\nCondition:\n  FutureKey: preserve\n";
+        String file = "Rewards/StandardVote.yml";
+        RewardsDocument.Scope root = RewardsDocument.inventory(source, file).get(0);
+        assertEquals("$", root.path());
+        assertEquals(List.of("say first"), root.fields().get("Commands"));
+        String appended = RewardsDocument.patch(source, file, "$",
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say second"));
+        assertTrue(appended.contains("- \"say second\""));
+        assertTrue(appended.contains("CustomModelData: 912"));
+        assertTrue(appended.contains("FutureKey: preserve"));
+        String scalar = RewardsDocument.patch(appended, file, "$",
+                new RewardsDocument.Edit("SET_SCALAR", "Money", 2));
+        assertTrue(scalar.contains("Money: 2\n"));
+        assertTrue(scalar.startsWith("# owner note\n"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(source, file, "$",
+                new RewardsDocument.Edit("REMOVE_REWARD", null, null)));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.inventory(source, "Rewards/../Config.yml"));
+    }
+
+    @Test void itemLeafEditsPreserveMetadataCommentsAndOtherItems() {
+        String source = "Items:\n  diamond: # keep identity\n    Material: DIAMOND\n    Amount: 1\n"
+                + "    Name: '&bVote diamond'\n    Lore:\n    - first\n    Enchantments:\n      sharpness: 5\n"
+                + "    CustomModelData: 912\n  future_item:\n    Material: FUTURE_MATERIAL\n    Amount: 2\n    FutureMetadata: preserve\n";
+        String material = RewardsDocument.patch(source, "Rewards/StandardVote.yml", "$",
+                new RewardsDocument.Edit("SET_SCALAR", "Items.diamond.Material", "NETHERITE_INGOT"));
+        assertTrue(material.contains("Material: \"NETHERITE_INGOT\""));
+        assertTrue(material.contains("Name: '&bVote diamond'"));
+        assertTrue(material.contains("sharpness: 5"));
+        assertTrue(material.contains("CustomModelData: 912"));
+        assertTrue(material.contains("FutureMetadata: preserve"));
+        String amount = RewardsDocument.patch(material, "Rewards/StandardVote.yml", "$",
+                new RewardsDocument.Edit("SET_SCALAR", "Items.diamond.Amount", 2));
+        assertTrue(amount.contains("Amount: 2"));
+        assertTrue(amount.contains("future_item:"));
+        RewardsDocument.Scope scope = RewardsDocument.inventory(amount, "Rewards/StandardVote.yml").get(0);
+        assertEquals("NETHERITE_INGOT", scope.fields().get("Items.diamond.Material"));
+        assertEquals("2", scope.fields().get("Items.diamond.Amount"));
+    }
+
+    @Test void itemEditingFailsClosedForUnsupportedOrUnsafeShapes() {
+        String path = "VoteSites.Alpha.Rewards";
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Items.diamond.Amount", 65)));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Items.diamond.Material", "not-a-material")));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Items.diamond.Amount", 1.5)));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "AdvancedPriority.Rare.Items.diamond.Amount", 2)));
+        String missing = SOURCE.replace("          Amount: 2\n", "");
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(missing, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Items.diamond.Amount", 2)));
+    }
+}

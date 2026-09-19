@@ -15,6 +15,15 @@ const logout = document.querySelector('#logout');
 const message = document.querySelector('#message');
 const welcome = document.querySelector('#welcome');
 const appShell = document.querySelector('#app-shell');
+const workspace = new ControlWorkspace.Workspace();
+let settingsEditor = null;
+let voteSitesEditor = null;
+let rewardsEditor = null;
+const scopeBar = document.querySelector('#scope-bar');
+const homeNodes = document.querySelector('#home-nodes');
+const homeSearch = document.querySelector('#home-server-search');
+let registryAvailable = false;
+let activeNavigationHash = '#home';
 const sidebarToggle = document.querySelector('#sidebar-toggle');
 const primaryNavigation = document.querySelector('#primary-navigation');
 const topbar = document.querySelector('.topbar');
@@ -342,6 +351,7 @@ function syncTopbarOffset() {
   const searchBounds = globalSearch.hidden ? topbarBounds : globalSearch.getBoundingClientRect();
   const height = Math.ceil(Math.max(topbarBounds.bottom, searchBounds.bottom));
   rootStyleRule?.['style'].setProperty('--topbar-height', `${height}px`);
+  rootStyleRule?.['style'].setProperty('--workspace-scope-height', `${scopeBar.hidden ? 0 : Math.ceil(scopeBar.getBoundingClientRect().height)}px`);
 }
 
 function scrollToAnchor(target) {
@@ -351,7 +361,11 @@ function scrollToAnchor(target) {
 }
 
 syncTopbarOffset();
-if (typeof ResizeObserver === 'function') new ResizeObserver(syncTopbarOffset).observe(topbar);
+if (typeof ResizeObserver === 'function') {
+  const chromeObserver = new ResizeObserver(syncTopbarOffset);
+  chromeObserver.observe(topbar);
+  chromeObserver.observe(scopeBar);
+}
 window.addEventListener('resize', syncTopbarOffset);
 
 function text(element, value) {
@@ -386,14 +400,16 @@ function connectedInspectionNodes() {
 }
 
 function selectedFileCapability(fileName = configurationFile.value) {
-  return fileName === 'bungeeconfig.yml' ? 'config.proxy-files.v1' : 'config.files.v1';
+  return fileName === 'bungeeconfig.yml' ? 'config.proxy-files.v1'
+    : /^Rewards\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\.yml$/.test(fileName) ? 'config.reward-files.v1'
+      : 'config.files.v1';
 }
 
 function fileTargetsForSelection(fileName = configurationFile.value) {
   const capability = selectedFileCapability(fileName);
   const selected = nodeIndex.get(selectedServerId);
   if (capability === 'config.proxy-files.v1') {
-    return selected?.online && isProxy(selected) && selected.acceptedCapabilities.includes(capability)
+    return workspace.managementScope === 'GLOBAL' && selected?.online && isProxy(selected) && selected.acceptedCapabilities.includes(capability)
       ? [selected.nodeId] : [];
   }
   return targets(capability).filter(nodeId => isBackend(nodeIndex.get(nodeId)));
@@ -1295,6 +1311,13 @@ async function loadSetupState() {
 }
 
 function applyAuthenticatedSession(body) {
+  settingsEditor?.clear();
+  voteSitesEditor?.clear();
+  rewardsEditor?.clear();
+  workspace.login();
+  workspace.clearPersisted();
+  registryAvailable = false;
+  window.history.replaceState(null, '', '#home');
   authenticated = true;
   csrfToken = body.csrfToken;
   approvedPreview = null;
@@ -1352,12 +1375,12 @@ function applyAuthenticatedSession(body) {
   authCard.hidden = true;
   welcome.hidden = true;
   appShell.hidden = false;
-  serverPickerLabel.hidden = false;
+  serverPickerLabel.hidden = true;
   enrollmentCard.hidden = false;
   pageOffset = 0;
   renderOperationHistory();
   populateProfilePicker();
-  setActiveTab(tabFromHash());
+  setActiveTab('home');
 }
 
 function isProxy(node) {
@@ -1365,11 +1388,11 @@ function isProxy(node) {
 }
 
 function isBackend(node) {
-  return !isProxy(node);
+  return String(node?.platform || '').toUpperCase() === 'BUKKIT';
 }
 
 function roleLabel(node) {
-  return isProxy(node) ? 'Proxy' : 'Backend';
+  return isProxy(node) ? 'Proxy' : isBackend(node) ? 'Backend' : 'Unknown role';
 }
 
 function platformLabel(platform) {
@@ -1433,7 +1456,7 @@ function backendCard(backend, reporterOnline) {
 
 function nodeCard(node) {
   const article = document.createElement('article');
-  article.className = `node${selectedServerId === node.nodeId ? ' selected' : ''}`;
+  article.className = `node${workspace.selectedTargetIds.has(node.nodeId) ? ' selected' : ''}`;
   article.dataset.nodeId = node.nodeId;
   const header = document.createElement('div');
   header.className = 'node-header';
@@ -1447,7 +1470,7 @@ function nodeCard(node) {
 
   const meta = document.createElement('div');
   meta.className = 'node-meta';
-  [roleLabel(node), platformLabel(node.platform), `VotingPlugin ${node.pluginVersion}`,
+  [roleLabel(node), platformLabel(node.platform), `VotingPlugin ${node.pluginVersion || 'version unknown'}`,
     ...managedCapabilities(node)].forEach(value => {
     const pill = text(document.createElement('span'), value);
     pill.className = 'pill neutral';
@@ -1469,32 +1492,21 @@ function nodeCard(node) {
   selector.className = 'node-select';
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
-  const controllable = ['config.proxy-routing.v1', 'config.files.v1', 'config.proxy-files.v1',
-    'config.quick-setup.v1', 'config.quick-setup.v2', 'config.proxy-method.v2']
-    .some(capability => node.acceptedCapabilities.includes(capability));
-  checkbox.disabled = !node.online || !controllable || node.nodeId === selectedServerId;
-  checkbox.checked = selectedNodes.has(node.nodeId);
-  if (node.nodeId === selectedServerId) selector.title = 'The primary server remains included in configuration changes.';
+  checkbox.disabled = !isBackend(node);
+  checkbox.checked = workspace.selectedTargetIds.has(node.nodeId);
+  selector.title = isBackend(node) ? 'Select a management target. Selection never writes configuration.'
+    : 'Proxy nodes are managed through Global Settings, not Bukkit configuration.';
   checkbox.addEventListener('change', () => {
-	const previousQuickCapability = quickSetupCapability();
-    if (checkbox.checked && selectedNodes.size >= MAX_CONFIGURATION_TARGETS) {
+    if (checkbox.checked && workspace.selectedTargetIds.size >= MAX_CONFIGURATION_TARGETS) {
       checkbox.checked = false;
       text(operationStatus, `At most ${MAX_CONFIGURATION_TARGETS} servers can be configured at once.`);
       return;
     }
-    if (checkbox.checked) selectedNodes.add(node.nodeId); else selectedNodes.delete(node.nodeId);
-    approvedPreview = null;
-    approvedFilePreview = null;
-    approvedQuickPreview = null;
-    dedicatedSetupApprovals.clear();
-    inputGeneration++;
-    reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability);
-    updatePluginSuggestions();
-    renderSelectedServer();
-    updateConfigurationButtons();
-    updateExtendedButtons();
+    if (!changeWorkspaceTargets(() => workspace.toggleTarget(node.nodeId))) {
+      checkbox.checked = workspace.selectedTargetIds.has(node.nodeId);
+    }
   });
-  selector.append(checkbox, document.createTextNode('Include in configuration changes'));
+  selector.append(checkbox, document.createTextNode(isBackend(node) ? 'Select backend workspace target' : 'Global / Network only'));
 
   const list = document.createElement('ul');
   list.className = 'node-backends';
@@ -1511,13 +1523,245 @@ function nodeCard(node) {
       ? `Reported by ${proxies.map(proxy => proxy.displayName).join(', ')}.`
       : 'No connected proxy reports this backend ID.'));
   }
-  article.append(header, meta, detail, list, selector);
+  const seen = text(document.createElement('p'), `Last seen: ${node.lastSeen ? new Date(node.lastSeen).toLocaleString() : 'Unknown'} · ${nodePresence(node)}`);
+  seen.className = 'node-detail';
+  article.append(header, meta, detail, seen, list, selector);
+  if (!managedCapabilities(node).length) {
+    article.append(text(document.createElement('p'), 'No supported management capability reported. Configuration tools are unavailable.'));
+  }
+  if (isBackend(node)) {
+    const inspect = text(document.createElement('button'), 'Inspect server overview');
+    inspect.type = 'button';
+    inspect.className = 'secondary compact';
+    inspect.addEventListener('click', () => inspectWorkspaceServer(node.nodeId));
+    article.append(inspect);
+  }
   return article;
 }
 
+// Workspace selection is independent from the source of legacy single-server tools.
+function ordinaryTargetIds() {
+  if (!registryAvailable || !selectedServerId) return [];
+  const source = nodeIndex.get(selectedServerId);
+  if (!source?.online) return [];
+  if (workspace.managementScope === 'GLOBAL') return isProxy(source) ? [selectedServerId] : [];
+  return workspace.selectedTargetIds.has(selectedServerId) ? [selectedServerId] : [];
+}
+
+function comparisonTargetIds() {
+  return [...workspace.selectedTargetIds].filter(id => nodeIndex.get(id)?.online
+    && isBackend(nodeIndex.get(id)) && nodeCapabilities.get(id)?.includes('config.files.v1'));
+}
+
+function isWorkspaceOverview() {
+  return workspace.managementScope === 'GLOBAL'
+    || workspace.managementScope === 'MULTI_SERVER' && !workspace.inspectedServerId;
+}
+
+function nodePresence(node) {
+  const reports = proxyReportsFor(node.nodeId).filter(proxy => proxy.online)
+    .flatMap(proxy => proxy.backends.filter(backend => backend.backendId === node.nodeId && backend.presenceKnown));
+  if (!reports.length) return 'Minecraft presence unknown';
+  if (reports.some(report => report.available !== reports[0].available || report.playerCount !== reports[0].playerCount)) {
+    return 'Minecraft presence conflicting between proxies';
+  }
+  return reports[0].available ? `${reports[0].playerCount} players · proxy-reported`
+    : 'Minecraft unavailable · proxy-reported';
+}
+
+function workspaceHash(tab) {
+  if (tab === 'home') return '#home';
+  if (tab === 'access' || tab === 'servers') return `#${tab}`;
+  if (workspace.managementScope === 'GLOBAL') {
+    return `#global/${tab === 'quick-setup' ? 'synchronization' : tab === 'configurations' ? 'configuration' : tab === 'overview' ? 'network' : tab}`;
+  }
+  if (tab === 'overview' && workspace.inspectedServerId) return `#servers/${encodeURIComponent(workspace.inspectedServerId)}/overview`;
+  const section = tab === 'general-settings' ? 'settings' : tab === 'quick-setup'
+    ? quickPreset.value === 'sync-vote-sites' ? 'sync' : 'quick-setup' : tab === 'configurations' ? 'configuration' : tab;
+  return `#workspace/${section}`;
+}
+
+function renderChips(element) {
+  element.replaceChildren();
+  workspace.selectedTargetIds.forEach(id => {
+    const chip = text(document.createElement('button'), `${nodeIndex.get(id)?.displayName || id} ×`);
+    chip.type = 'button';
+    chip.className = 'scope-chip secondary compact';
+    chip.setAttribute('aria-label', `Remove ${nodeIndex.get(id)?.displayName || id} from workspace`);
+    chip.addEventListener('click', () => changeWorkspaceTargets(() => workspace.toggleTarget(id)));
+    element.append(chip);
+  });
+}
+
+function renderHomeChooser() {
+  const filter = homeSearch.value.trim().toLocaleLowerCase();
+  const items = allNodeItems.filter(node => `${node.displayName} ${node.nodeId} ${node.platform}`.toLocaleLowerCase().includes(filter));
+  homeNodes.replaceChildren();
+  // Registry scans are already bounded; render one page at a time in the chooser.
+  items.slice(0, 100).forEach(node => homeNodes.append(nodeCard(node)));
+  if (!items.length) text(homeNodes, registryAvailable ? 'No registered servers match this filter.' : 'Network data unavailable. Refresh to retry.');
+  if (items.length > 100) homeNodes.append(text(document.createElement('p'), 'Showing the first 100 matches. Refine your search to find more nodes.'));
+  homeNodes.classList.toggle('empty', !items.length);
+  text(document.querySelector('#home-selection-count'), `${workspace.selectedTargetIds.size} backend${workspace.selectedTargetIds.size === 1 ? '' : 's'} selected`);
+  renderChips(document.querySelector('#home-selection-chips'));
+  document.querySelector('#home-continue').disabled = !registryAvailable || !workspace.selectedTargetIds.size;
+  document.querySelector('#home-restore').hidden = workspace.managementScope !== 'GLOBAL' || !workspace.previousTargetIds.size;
+}
+
+function renderWorkspaceChrome(tab) {
+  settingsEditor?.scopeChanged();
+  voteSitesEditor?.scopeChanged();
+  rewardsEditor?.scopeChanged();
+  const global = workspace.managementScope === 'GLOBAL';
+  const chooser = tab === 'home' || !workspace.managementScope;
+  appShell.classList.toggle('chooser-mode', chooser);
+  primaryNavigation.hidden = chooser;
+  sidebarToggle.hidden = !authenticated || chooser;
+  scopeBar.hidden = !authenticated || chooser;
+  document.querySelectorAll('[data-server-nav]').forEach(element => { element.hidden = global; });
+  document.querySelectorAll('[data-global-nav]').forEach(element => { element.hidden = !global; });
+  text(document.querySelector('#scope-kind'), global ? 'Global Settings / Network' : 'Managing backend workspace');
+  renderChips(document.querySelector('#scope-chips'));
+  if (global) text(document.querySelector('#scope-chips'), 'Network tools · targets are chosen explicitly for each operation');
+  serverPickerLabel.hidden = chooser || tab === 'overview' || tab === 'general-settings' || tab === 'vote-sites' || tab === 'rewards';
+  text(serverPickerLabel.querySelector('span'), global ? 'Tool source (proxy or diagnostics backend)' : 'Single-server tool source');
+  const source = nodeIndex.get(selectedServerId);
+  text(document.querySelector('#scope-editing-notice'), global
+    ? 'Global mode is not “all servers”. Proxy switches and synchronization retain their explicit preview and target rules.'
+    : tab === 'general-settings' ? 'General Settings reads each workspace target independently. Only explicit edits are proposed, with per-target revision protection.'
+    : tab === 'vote-sites' ? 'Vote Sites reads each workspace target independently. Site keys are identity; property editing never invokes synchronization or rewrites rewards.'
+    : tab === 'rewards' ? 'Rewards reads each workspace target independently. Only explicit bounded operations can be previewed and applied.'
+    : `Legacy tools: rewards, guided presets and YAML use only ${source?.displayName || 'a selected source server'} (${selectedServerId || 'not selected'}). They do not copy its configuration to the workspace.${source && !workspace.selectedTargetIds.has(source.nodeId) ? ' This inspected server is outside the workspace; its configuration tools are disabled.' : ''}`);
+  document.querySelector('#scope-overview').hidden = global;
+}
+
+function changeWorkspaceTargets(change) {
+  if (!confirmDiscardUnsavedConfiguration('changing workspace targets')) return false;
+  if (settingsEditor?.model.dirty.size && !window.confirm('Discard explicit General Settings edits before changing workspace targets?')) return false;
+  if (voteSitesHasDraft() && !window.confirm('Discard explicit Vote Site edits before changing workspace targets?')) return false;
+  resetServerContextValues('Workspace changed. Loading the selected source when needed.');
+  change();
+  clearApprovals();
+  if (!workspace.selectedTargetIds.has(selectedServerId) && workspace.managementScope !== 'GLOBAL') {
+    selectPrimaryServer([...workspace.selectedTargetIds][0] || '');
+    workspace.inspect('');
+  }
+  renderNodeViews();
+  updateConfigurationButtons();
+  return true;
+}
+
+function inspectWorkspaceServer(id) {
+  if (!isBackend(nodeIndex.get(id))) return;
+  if (workspace.managementScope === 'GLOBAL') {
+    if (!confirmDiscardUnsavedConfiguration('returning to the server workspace')) return;
+    resetServerContextValues('Returning to server tools.');
+    workspace.returnToServers();
+    clearApprovals();
+  }
+  if (!workspace.managementScope) workspace.setTargets([id]);
+  if (selectPrimaryServer(id) === false) return;
+  workspace.inspect(id);
+  setActiveTab('overview', true);
+}
+
+function openScopeOverview() {
+  if (!workspace.selectedTargetIds.size) return setActiveTab('home', true);
+  if (!workspace.selectedTargetIds.has(selectedServerId) && selectPrimaryServer([...workspace.selectedTargetIds][0]) === false) return;
+  workspace.inspect(workspace.managementScope === 'SERVER' ? [...workspace.selectedTargetIds][0] : '');
+  setActiveTab('overview', true);
+}
+
+function enterGlobalWorkspace() {
+  if (!confirmDiscardUnsavedConfiguration('opening Global Settings')) return;
+  if (settingsEditor?.model.dirty.size && !window.confirm('Discard explicit General Settings edits before opening Global Settings?')) return;
+  if (voteSitesHasDraft() && !window.confirm('Discard explicit Vote Site edits before opening Global Settings?')) return;
+  resetServerContextValues('Opening global tools.');
+  workspace.enterGlobal();
+  clearApprovals();
+  selectPrimaryServer(allNodeItems.find(node => isProxy(node) && node.online)?.nodeId || '');
+  workspace.inspect('');
+  setActiveTab('network', true);
+}
+
+function applyNavigationRoute() {
+  if (!authenticated) return;
+  const route = ControlWorkspace.parseRoute(window.location.hash);
+  const cancelNavigation = () => window.history.replaceState(null, '', activeNavigationHash);
+  if (route.scope === 'GLOBAL' && workspace.managementScope !== 'GLOBAL') {
+    if (!confirmDiscardUnsavedConfiguration('opening Global Settings')) return cancelNavigation();
+    if (settingsEditor?.model.dirty.size && !window.confirm('Discard explicit General Settings edits before opening Global Settings?')) return cancelNavigation();
+    if (voteSitesHasDraft() && !window.confirm('Discard explicit Vote Site edits before opening Global Settings?')) return cancelNavigation();
+    resetServerContextValues('Opening global tools.');
+    workspace.enterGlobal();
+    clearApprovals();
+    selectPrimaryServer(allNodeItems.find(node => isProxy(node) && node.online)?.nodeId || '');
+  } else if ((route.scope === 'WORKSPACE' || route.inspectedServerId) && workspace.managementScope === 'GLOBAL') {
+    if (!confirmDiscardUnsavedConfiguration('returning to the server workspace')) return cancelNavigation();
+    resetServerContextValues('Returning to server tools.');
+    workspace.returnToServers();
+    clearApprovals();
+    selectPrimaryServer([...workspace.selectedTargetIds][0] || '');
+  }
+  if (route.inspectedServerId) {
+    if (!isBackend(nodeIndex.get(route.inspectedServerId))) return setActiveTab('home');
+    if (!workspace.managementScope) workspace.setTargets([route.inspectedServerId]);
+    if (selectPrimaryServer(route.inspectedServerId) === false) return cancelNavigation();
+    workspace.inspect(route.inspectedServerId);
+  } else if (route.page === 'overview') workspace.inspect('');
+  const preset = route.section === 'sync' ? 'sync-vote-sites' : '';
+  if (preset && preset !== quickPreset.value) {
+    quickPreset.value = preset;
+    loadedQuickSetup = null;
+    quickSetupDirty = false;
+    clearApprovals();
+  }
+  if (route.page === 'quick-setup') updateQuickFields();
+  setActiveTab(route.page);
+  if (route.section === 'rewards') scrollToAnchor(document.querySelector('#reward-builder-card'));
+}
+
+function renderScopeOverview() {
+  const aggregate = isWorkspaceOverview();
+  const source = nodeIndex.get(selectedServerId);
+  text(document.querySelector('#overview-title'), aggregate ? workspace.managementScope === 'GLOBAL'
+    ? 'Network Overview' : `${workspace.selectedTargetIds.size} Servers — Workspace Overview`
+    : `${source?.displayName || 'Selected server'} — Server Overview`);
+  text(document.querySelector('#overview-eyebrow'), aggregate ? 'Management workspace' : 'Individual server inspection');
+  document.querySelector('#individual-overview').hidden = aggregate;
+  voteActivity.closest('section').hidden = aggregate;
+  const grid = document.querySelector('#workspace-overview-targets');
+  grid.hidden = !aggregate;
+  grid.replaceChildren();
+  if (aggregate) {
+    const ids = workspace.managementScope === 'GLOBAL' ? allNodeItems.map(node => node.nodeId) : [...workspace.selectedTargetIds];
+    ids.slice(0, 100).forEach(id => {
+      const node = nodeIndex.get(id);
+      if (node) grid.append(nodeCard(node));
+    });
+    grid.prepend(text(document.createElement('p'), 'Registry connectivity and capabilities only. Individual health requires a server inspection; unknown is not healthy.'));
+  }
+  text(document.querySelector('#metric-presence'), source ? nodePresence(source) : 'Unknown');
+  text(document.querySelector('#metric-presence-detail'), 'Known only when a connected proxy reports it');
+  const recent = overviewOperations()[0];
+  text(document.querySelector('#metric-last-operation'), recent ? operationPhase(recent) : '—');
+  text(document.querySelector('#metric-last-operation-detail'), recent ? `${operationLabel(recent)} · ${recent.createdAt ? new Date(recent.createdAt).toLocaleString() : 'Time unknown'}` : 'No retained operation for this scope');
+  const health = document.querySelector('#overview-site-health');
+  health.replaceChildren();
+  const sites = dashboardLoadedContext === dashboardContext() ? dashboardVoteSiteHealth?.sites : null;
+  if (!Array.isArray(sites)) text(health, 'Vote-site inspection unavailable or not loaded. Refresh or use Vote Sites.');
+  else sites.slice(0, 100).forEach(site => health.append(text(document.createElement('p'), `${site.displayName || site.siteKey || site.serviceSite || 'Site'} — ${site.status || 'Unknown'}`)));
+  if (Array.isArray(sites) && !sites.length) text(health, 'No configured sites reported.');
+}
+
+function overviewOperations() {
+  const ids = isWorkspaceOverview() ? workspace.selectedTargetIds : new Set(selectedServerId ? [selectedServerId] : []);
+  return operationHistoryItems.filter(operation => workspace.managementScope === 'GLOBAL'
+    || Object.keys(operation.nodeStates || {}).some(id => ids.has(id)));
+}
+
 function tabFromHash() {
-  const requested = window.location.hash.replace(/^#/, '');
-  return tabPanels.some(panel => panel.dataset.panel === requested) ? requested : 'overview';
+  return ControlWorkspace.parseRoute(window.location.hash).page;
 }
 
 function closeSidebar() {
@@ -1531,6 +1775,10 @@ function closeSidebar() {
 
 function updateHeaderAction(tab) {
   const actions = {
+    home: ['Refresh servers', () => loadNodes()],
+    'general-settings': ['Read Current', () => void settingsEditor?.read(true)],
+    'vote-sites': ['Read Vote Sites', () => void voteSitesEditor?.read(true)],
+    rewards: ['Read Rewards', () => void rewardsEditor?.read(true)],
     overview: ['Refresh dashboard', () => refreshDashboard()],
     servers: ['Refresh servers', () => loadNodes()],
     network: ['Run Network Doctor', () => runNetworkDoctor.click()],
@@ -1558,13 +1806,28 @@ function updateHeaderAction(tab) {
 }
 
 function setActiveTab(tab, updateHash = false) {
-  if (!tabPanels.some(panel => panel.dataset.panel === tab)) tab = 'overview';
+  const previousTab = tabPanels.find(panel => !panel.hidden)?.dataset.panel;
+  if (!tabPanels.some(panel => panel.dataset.panel === tab)) tab = 'home';
+  if (workspace.managementScope === 'GLOBAL' && tab === 'overview') tab = 'network';
+  if (workspace.managementScope === 'GLOBAL' && tab === 'general-settings') tab = 'network';
+  if (workspace.managementScope === 'GLOBAL' && tab === 'vote-sites') tab = 'network';
+  if (workspace.managementScope === 'GLOBAL' && tab === 'rewards') tab = 'network';
+  if (authenticated && !workspace.managementScope && tab !== 'home' && tab !== 'access') tab = 'home';
   navigationButtons.forEach(button => button.removeAttribute('aria-current'));
   tabButtons.forEach(button => {
     if (button.dataset.tab === tab) button.setAttribute('aria-current', 'page');
   });
   tabPanels.forEach(panel => { panel.hidden = panel.dataset.panel !== tab; });
-  if (updateHash && window.location.hash !== `#${tab}`) window.history.replaceState(null, '', `#${tab}`);
+  if ((tab === 'general-settings' || tab === 'vote-sites' || tab === 'rewards') && previousTab !== tab) window.scrollTo({top: 0, behavior: 'instant'});
+  if (updateHash) {
+    const hash = workspaceHash(tab);
+    if (window.location.hash !== hash) window.history.pushState(null, '', hash);
+  }
+  activeNavigationHash = window.location.hash || '#home';
+  if (authenticated) workspace.setRoute(activeNavigationHash);
+  renderWorkspaceChrome(tab);
+  renderScopeOverview();
+  renderOverviewActivity();
   closeSidebar();
   updateHeaderAction(tab);
   void autoLoadTab(tab);
@@ -1581,6 +1844,11 @@ function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = n
     clearApprovals();
   }
   setActiveTab(tab, true);
+  if (workspace.managementScope !== 'GLOBAL' && ['site-health-card', 'reward-builder-card'].includes(scrollTarget)) {
+    const section = scrollTarget === 'site-health-card' ? 'vote-sites' : 'rewards';
+    window.history.replaceState(null, '', `#workspace/${section}`);
+    activeNavigationHash = window.location.hash;
+  }
   if (navigationButton && primaryNavigation.contains(navigationButton)) {
     navigationButtons.forEach(button => button.removeAttribute('aria-current'));
     navigationButton.setAttribute('aria-current', 'page');
@@ -1658,6 +1926,14 @@ function finishAutoLoad(tab) {
 
 async function autoLoadTab(tab) {
   if (!authenticated) return;
+  if (tab === 'general-settings') { await settingsEditor?.read(false); return; }
+  if (tab === 'vote-sites') {
+    await voteSitesEditor?.read(false);
+    if (voteSiteHealthLoadedContext !== voteSitesContext()) void refreshVoteSiteObservations();
+    return;
+  }
+  if (tab === 'rewards') { await rewardsEditor?.read(false); return; }
+  if (tab === 'overview' && isWorkspaceOverview()) return;
   if (autoLoadInFlight.has(tab)) {
     autoLoadPending.add(tab);
     return;
@@ -1740,7 +2016,8 @@ function chooseDefaultServer(items) {
 
 function renderServerPicker() {
   const previousValue = selectedServerId;
-  const ordered = [...allNodeItems].sort((left, right) => {
+  const ordered = allNodeItems.filter(node => workspace.managementScope === 'GLOBAL'
+    || isBackend(node) && (workspace.selectedTargetIds.has(node.nodeId) || node.nodeId === workspace.inspectedServerId)).sort((left, right) => {
     const roleOrder = Number(isProxy(left)) - Number(isProxy(right));
     return roleOrder || left.displayName.localeCompare(right.displayName);
   });
@@ -1753,7 +2030,7 @@ function renderServerPicker() {
     return option;
   }));
   if (!nodeIndex.has(previousValue)) {
-    selectedServerId = chooseDefaultServer(ordered)?.nodeId || '';
+    selectedServerId = '';
     if (previousValue) {
       resetServerContextValues('The selected server is no longer available. Load current values from its replacement.', true);
     }
@@ -1784,7 +2061,7 @@ function renderSelectedServer() {
   const relationshipText = relationships.length
     ? ` Reported by ${relationships.map(proxy => proxy.displayName).join(', ')}.` : '';
   text(selectedServerSummary,
-    `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion}.${relationshipText}`);
+    `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion || 'version unknown'}.${relationshipText} Last seen: ${selected.lastSeen ? new Date(selected.lastSeen).toLocaleString() : 'unknown'}. ${nodePresence(selected)}.`);
   text(configurationContext,
     `${selected.displayName} (${selected.nodeId}) · ${roleLabel(selected)} · ${selected.online ? 'Control connected' : 'Control disconnected'}`);
   const fileTargets = fileTargetsForSelection();
@@ -1805,6 +2082,7 @@ function topologyLink(backend, reporterOnline) {
   const registered = nodeIndex.get(backend.backendId);
   const link = document.createElement('span');
   link.className = `topology-link ${registered?.online ? 'online' : 'warning'}`;
+  link.classList.toggle('inspected', backend.backendId === workspace.inspectedServerId);
   link.append(text(document.createElement('strong'), backend.displayName));
   link.append(text(document.createElement('small'), !enrollmentsLoaded
     ? 'Control enrollment unavailable'
@@ -2364,17 +2642,24 @@ function renderAttention(issues, total = issues.length) {
   if (total > 8) attentionFeed.append(text(document.createElement('small'), `${total - 8} additional issues are available in their related pages.`));
 }
 
-function addQuickAction(label, tab, scrollTarget = '', preset = '') {
+function addQuickAction(label, tab, scrollTarget = '', preset = '', configView = '') {
   const button = text(document.createElement('button'), label);
   button.type = 'button';
   button.className = 'secondary';
-  button.addEventListener('click', () => openWorkspace(tab, scrollTarget, preset));
+  button.addEventListener('click', () => {
+    openWorkspace(tab, scrollTarget, preset);
+    if (configView) setConfigView(configView);
+  });
   overviewQuickActions.append(button);
 }
 
 function renderQuickActions() {
   overviewQuickActions.replaceChildren();
   const selected = nodeIndex.get(selectedServerId);
+  if (workspace.selectedTargetIds.size) addQuickAction('General Settings', 'general-settings');
+  if (inspectionCapableNode()) addQuickAction('Vote Sites', 'data', 'site-health-card');
+  if (fileTargetsForSelection().length) addQuickAction('Configuration', 'configurations', '', '', 'yaml');
+  if (comparisonTargetIds().length >= 2) addQuickAction('Compare Configuration', 'configurations', '', '', 'compare');
   if (selected?.online && isBackend(selected) && selected.acceptedCapabilities.includes('config.quick-setup.v1')) {
     addQuickAction('Add Vote Site', 'quick-setup', 'quick-setup-card', 'vote-site');
     addQuickAction('Build Reward', 'quick-setup', 'reward-builder-card');
@@ -2434,11 +2719,12 @@ function operationLabel(operation) {
 
 function renderOverviewActivity() {
   overviewActivity.replaceChildren();
-  if (operationHistoryItems.length === 0) {
+  const relevantOperations = overviewOperations();
+  if (relevantOperations.length === 0) {
     text(overviewActivity, 'No retained configuration operations.');
     return;
   }
-  operationHistoryItems.slice(0, 5).forEach(operation => {
+  relevantOperations.slice(0, 5).forEach(operation => {
     const item = document.createElement('article');
     item.className = 'activity-item';
     const results = Object.values(operation.results || {});
@@ -2494,6 +2780,7 @@ function renderMetrics() {
   renderQuickActions();
   renderVoteActivity();
   renderOverviewActivity();
+  renderScopeOverview();
 }
 
 function finiteCount(value) {
@@ -2771,7 +3058,7 @@ function updateExtendedButtons() {
   const quickReady = authenticated && Boolean(node?.online && isBackend(node)
     && node.acceptedCapabilities.includes('config.quick-setup.v1')) && backendTargets.length > 0
     && configurationOperationsInFlight === 0;
-  const fileTargets = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
+  const fileTargets = comparisonTargetIds();
   const driftReady = authenticated && fileTargets.length >= 2 && configurationOperationsInFlight === 0;
   refreshDashboardButton.disabled = !authenticated || inspectionInFlight || dashboardLoading;
   runNetworkDoctor.disabled = !inspectionReady;
@@ -2792,7 +3079,7 @@ function updateExtendedButtons() {
   applyAutoSites.disabled = !quickReady || !dedicatedSetupApprovals.get('auto-create-vote-sites');
   selectAllAutoSitesTargets.disabled = !authenticated || allQuickBackends.length === 0
     || configurationOperationsInFlight > 0;
-  text(autoSitesTargetCount, `${backendTargets.length} selected ${backendTargets.length === 1 ? 'backend' : 'backends'}`);
+  text(autoSitesTargetCount, `${backendTargets.length} source ${backendTargets.length === 1 ? 'backend' : 'backends'} (not a bulk editor)`);
   loadVoteLogging.disabled = !quickReady;
   previewVoteLogging.disabled = !quickReady || voteLoggingState.textContent === 'Not loaded';
   applyVoteLogging.disabled = !quickReady || !dedicatedSetupApprovals.get('vote-logging');
@@ -2812,6 +3099,8 @@ function updateExtendedButtons() {
 }
 
 function renderNodeViews() {
+  renderServerPicker();
+  renderHomeChooser();
   nodes.replaceChildren();
   nodes.classList.toggle('empty', visibleNodeItems.length === 0);
   if (visibleNodeItems.length === 0) {
@@ -2827,6 +3116,7 @@ function renderNodeViews() {
   renderProxyMethod();
   renderDeploymentEligibility();
   updateExtendedButtons();
+  renderWorkspaceChrome(tabFromHash());
 }
 
 function deploymentTargets() {
@@ -2964,23 +3254,24 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
 }
 
 function selectPrimaryServer(nodeId) {
-  if (nodeId && !nodeIndex.has(nodeId)) return;
+  if (nodeId && !nodeIndex.has(nodeId)) return false;
   if (nodeId && nodeId === selectedServerId) {
     serverPicker.value = selectedServerId;
-    return;
+    return true;
   }
   if (nodeId !== selectedServerId && !confirmDiscardUnsavedConfiguration('switching servers')) {
     serverPicker.value = selectedServerId;
-    return;
+    return false;
   }
   selectedServerId = nodeId;
+  workspace.inspect(nodeId);
   serverPicker.value = nodeId;
-  selectedNodes.clear();
-  if (nodeId) selectedNodes.add(nodeId);
+  selectedNodes = new Set(nodeId ? [nodeId] : []);
   resetServerContextValues('Server changed. Load current values before continuing.');
   updatePluginSuggestions();
   renderNodeViews();
   void autoLoadTab(tabFromHash());
+  return true;
 }
 
 function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 || proxyMethodWorkflowInFlight) {
@@ -3030,7 +3321,7 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
 }
 
 function targets(capability) {
-  return [...selectedNodes].filter(node => nodeCapabilities.get(node)?.includes(capability));
+  return ordinaryTargetIds().filter(node => nodeCapabilities.get(node)?.includes(capability));
 }
 
 function backendQuickTargets() {
@@ -3055,7 +3346,7 @@ function votePartyUsesV2() {
 }
 
 function selectedVotePartyBackends() {
-  return [...selectedNodes].filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
+  return ordinaryTargetIds().filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)));
 }
 
 function votePartyCommonCapability() {
@@ -3252,6 +3543,11 @@ async function waitForDeployment(operation, generation) {
 }
 
 function discardAuthenticationState(reason) {
+  settingsEditor?.clear();
+  voteSitesEditor?.clear();
+  rewardsEditor?.clear();
+  workspace.logout();
+  registryAvailable = false;
   authenticationGeneration++;
   authenticated = false;
   csrfToken = '';
@@ -3485,6 +3781,18 @@ function operationContextCurrent(context) {
 }
 
 function invalidateConfigurationReads() {
+  settingsEditor?.invalidateReads();
+  voteSitesEditor?.invalidateReads();
+  if (authenticated && tabFromHash() === 'general-settings' && !settingsEditor?.state.busy) {
+    window.setTimeout(() => void settingsEditor?.read(false), 0);
+  }
+  if (authenticated && tabFromHash() === 'vote-sites' && !voteSitesEditor?.state.busy) {
+    window.setTimeout(() => void voteSitesEditor?.read(false), 0);
+  }
+  rewardsEditor?.invalidateReads();
+  if (authenticated && tabFromHash() === 'rewards' && !rewardsEditor?.state.busy) {
+    window.setTimeout(() => void rewardsEditor?.read(false), 0);
+  }
   fileReadCache.clear();
   lastFileReadOperation = null;
   clearApprovals();
@@ -3531,6 +3839,16 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
 }
 
 async function startConfigurationOperation(path, body, statusElement = operationStatus) {
+  // Legacy forms remain source-only; coordinated workflows keep explicit targets.
+  if (path.endsWith('/preview') && path !== '/api/v1/configuration/general-settings/preview'
+      && path !== '/api/v1/configuration/vote-sites/preview'
+      && path !== '/api/v1/configuration/rewards/preview'
+      && !['proxy-method', 'sync-vote-sites', 'communication-test'].includes(body.configuration?.preset)) {
+    const allowed = ordinaryTargetIds();
+    if (!Array.isArray(body.nodeIds) || body.nodeIds.length !== 1 || !allowed.includes(body.nodeIds[0])) {
+      throw new Error('Choose a workspace source server. This form previews only that server, not the whole workspace.');
+    }
+  }
   const applyOperation = path.endsWith('/apply');
   if (applyOperation) {
     approvedPreview = null;
@@ -3688,6 +4006,11 @@ async function loadNodesOnce() {
     backendTopologyTruncated = registry.truncated;
     backendTopologyTruncatedNodeIds = registry.truncatedNodeIds;
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
+    registryAvailable = true;
+    const previousWorkspaceTargets = [...workspace.selectedTargetIds].join('\u0000');
+    // The node registry is complete here; truncated refers only to proxy topology.
+    workspace.reconcile(registry.items);
+    const workspaceTargetsChanged = previousWorkspaceTargets !== [...workspace.selectedTargetIds].join('\u0000');
     const primarySessionChanged = selectedServerId && previousNodeIndex.get(selectedServerId)?.sessionId
       && previousNodeIndex.get(selectedServerId)?.sessionId !== nodeIndex.get(selectedServerId)?.sessionId;
     const selectedSessionChanged = primarySessionChanged || [...selectedNodes].some(node => previousNodeIndex.get(node)?.sessionId
@@ -3762,6 +4085,7 @@ async function loadNodesOnce() {
       inputGeneration++;
       text(operationStatus, routingDraftStatus('The selected nodes changed during refresh. Preview again before apply.'));
     }
+    if (workspaceTargetsChanged) clearApprovals();
     selectedNodes = filteredSelection;
     // A registry refresh can change the effective Vote Party contract without a
     // user selection event. Clear the old v2/v1 form before the normal tab
@@ -3772,6 +4096,7 @@ async function loadNodesOnce() {
     updateConfigurationButtons();
     if (suppressNodeAutoLoad === 0) void autoLoadTab(tabFromHash());
   } catch (error) {
+    registryAvailable = false;
     visibleNodeItems = [];
     allNodeItems = [];
     nodePageMetadata = new Map();
@@ -3878,6 +4203,8 @@ logout.addEventListener('click', async () => {
 
 async function restoreSession() {
   const restoreGeneration = authenticationGeneration;
+  let savedWorkspace = null;
+  try { savedWorkspace = window.sessionStorage.getItem(ControlWorkspace.SESSION_KEY); } catch (_) { /* unavailable */ }
   try {
     const response = await fetch('/api/v1/auth/session', {cache: 'no-store', credentials: 'same-origin'});
     if (!response.ok || response.status === 204) return;
@@ -3885,6 +4212,12 @@ async function restoreSession() {
     if (restoreGeneration !== authenticationGeneration) return;
     applyAuthenticatedSession(body);
     await Promise.all([loadEnrollments(), loadNodes(), loadOperationHistory(), loadSnapshots()]);
+    if (restoreGeneration === authenticationGeneration && savedWorkspace) {
+      try { window.sessionStorage.setItem(ControlWorkspace.SESSION_KEY, savedWorkspace); } catch (_) { /* unavailable */ }
+      workspace.restore(allNodeItems);
+      window.history.replaceState(null, '', workspace.currentRoute);
+      applyNavigationRoute();
+    }
   } catch (_) { /* The login form remains available. */ }
 }
 
@@ -4689,24 +5022,8 @@ loadAutoSites.addEventListener('click', () => loadDedicatedSetup('auto-create-vo
 previewAutoSites.addEventListener('click', () => previewDedicatedSetup('auto-create-vote-sites'));
 applyAutoSites.addEventListener('click', () => applyDedicatedSetup('auto-create-vote-sites'));
 selectAllAutoSitesTargets.addEventListener('click', () => {
-  const previousQuickCapability = quickSetupCapability();
-  const available = allNodeItems.filter(node => isBackend(node) && node.online
-    && node.acceptedCapabilities.includes('config.quick-setup.v1'));
-  const candidates = available
-    .sort((left, right) => Number(right.nodeId === selectedServerId) - Number(left.nodeId === selectedServerId))
-    .slice(0, MAX_CONFIGURATION_TARGETS);
-  selectedNodes = new Set(candidates.map(node => node.nodeId));
-  dedicatedSetupApprovals.clear();
-  approvedPreview = null;
-  approvedFilePreview = null;
-  approvedQuickPreview = null;
-  inputGeneration++;
-  reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability);
-  renderNodeViews();
-  updatePluginSuggestions();
-  updateConfigurationButtons();
-  text(autoSitesStatus, `${candidates.length} online ${candidates.length === 1 ? 'backend is' : 'backends are'} selected${available.length > candidates.length
-    ? ` (limited to ${MAX_CONFIGURATION_TARGETS} per operation)` : ''}. Choose enabled or disabled, then preview every target.`);
+  setActiveTab('home', true);
+  text(autoSitesStatus, 'Choose workspace targets on Home. This form edits only its identified source server until mixed-aware editing is available.');
 });
 loadVoteLogging.addEventListener('click', () => loadDedicatedSetup('vote-logging'));
 previewVoteLogging.addEventListener('click', () => previewDedicatedSetup('vote-logging'));
@@ -4742,6 +5059,12 @@ async function refreshOverview(target = dataOverview) {
 }
 
 async function refreshDashboard() {
+  if (isWorkspaceOverview()) {
+    await Promise.all([loadNodes(), loadOperationHistory()]);
+    renderScopeOverview();
+    renderOverviewActivity();
+    return;
+  }
   if (dashboardLoading || inspectionInFlight) {
     renderMetrics();
     return;
@@ -4905,7 +5228,7 @@ downloadNetworkDiagnostics.addEventListener('click', () => {
 
 runDriftCheck.addEventListener('click', async () => {
   setConfigView('compare');
-  const nodeIds = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
+  const nodeIds = comparisonTargetIds();
   const selectedFile = driftFile.value;
   const requestAuthenticationGeneration = authenticationGeneration;
   const requestInputGeneration = inputGeneration;
@@ -4916,7 +5239,7 @@ runDriftCheck.addEventListener('click', async () => {
     const operation = await startConfigurationOperation('/api/v1/configuration/read', {
       nodeIds, configuration: {domain: 'file', fileName: selectedFile}
     }, driftResults);
-    const currentTargets = targets('config.files.v1').filter(nodeId => isBackend(nodeIndex.get(nodeId)));
+    const currentTargets = comparisonTargetIds();
     const targetsStillCurrent = selectedFile === driftFile.value && nodeIds.length >= 2
       && nodeIds.length === currentTargets.length && nodeIds.every(nodeId => currentTargets.includes(nodeId))
       && nodeIds.every(nodeId => requestSessions.get(nodeId) === nodeIndex.get(nodeId)?.sessionId
@@ -5407,6 +5730,16 @@ quickPreset.addEventListener('input', () => {
   void autoLoadTab('quick-setup');
 });
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
+homeSearch.addEventListener('input', renderHomeChooser);
+document.querySelector('#home-refresh').addEventListener('click', () => loadNodes());
+document.querySelector('#home-select-all').addEventListener('click', () => changeWorkspaceTargets(() => workspace.selectEligible(allNodeItems, MAX_CONFIGURATION_TARGETS)));
+document.querySelector('#home-clear').addEventListener('click', () => changeWorkspaceTargets(() => workspace.clearTargets()));
+document.querySelector('#home-continue').addEventListener('click', openScopeOverview);
+document.querySelector('#home-restore').addEventListener('click', () => {
+  if (changeWorkspaceTargets(() => workspace.returnToServers())) openScopeOverview();
+});
+document.querySelector('#choose-global').addEventListener('click', enterGlobalWorkspace);
+document.querySelector('#scope-overview').addEventListener('click', openScopeOverview);
 deploymentJar.addEventListener('change', renderDeploymentEligibility);
 deployPlugin.addEventListener('click', async () => {
   const file = deploymentJar.files?.[0];
@@ -5521,6 +5854,7 @@ deployPlugin.addEventListener('click', async () => {
 });
 tabButtons.forEach(button => button.addEventListener('click', () => {
   if (button.dataset.configShortcut) setConfigView(button.dataset.configShortcut);
+  if (button.dataset.tab === 'overview' && workspace.managementScope !== 'GLOBAL') return openScopeOverview();
   setActiveTab(button.dataset.tab, true);
 }));
 configViewButtons.forEach(button => button.addEventListener('click', () => setConfigView(button.dataset.configView)));
@@ -5535,7 +5869,8 @@ document.querySelectorAll('[data-open-config-view]').forEach(button => button.ad
     configurationFile.dispatchEvent(new Event('input'));
   }
 }));
-window.addEventListener('hashchange', () => setActiveTab(tabFromHash()));
+window.addEventListener('hashchange', applyNavigationRoute);
+window.addEventListener('popstate', applyNavigationRoute);
 sidebarToggle.addEventListener('click', () => {
   const open = document.body.classList.toggle('sidebar-open');
   sidebarToggle.setAttribute('aria-expanded', String(open));
@@ -5571,7 +5906,10 @@ document.addEventListener('click', event => {
 function populateGlobalSearch() {
   const values = ['Add Vote Site', 'Vote Sites', 'Rewards', 'Setup', 'Settings', 'Vote logging',
     'Servers', 'Proxy & Routing', 'Sync Vote Sites', 'Votes & Data', 'Activity', 'Network Doctor',
-    'Configuration Compare', 'Access', ...SETTINGS_SCHEMA.map(setting => setting.key),
+    'Configuration Compare', 'Access', ...GENERAL_SETTING_FIELDS.map(setting => setting.path),
+    ...SETTINGS_SCHEMA.map(setting => setting.key),
+    ...new Set([...(voteSitesEditor?.model?.targets?.values?.() || [])].flatMap(target =>
+      (target.sites || []).map(site => site.siteKey))),
     ...allNodeItems.flatMap(node => [node.displayName, node.nodeId])];
   const unique = [...new Set(values.filter(Boolean))].slice(0, 300);
   globalSearchOptions.replaceChildren(...unique.map(value => {
@@ -5582,11 +5920,11 @@ function populateGlobalSearch() {
 }
 
 const GLOBAL_PAGE_SHORTCUTS = new Map([
-  ['add vote site', {tab: 'quick-setup', scrollTarget: 'quick-setup-card', preset: 'vote-site'}],
-  ['vote sites', {tab: 'data', scrollTarget: 'site-health-card'}],
-  ['rewards', {tab: 'quick-setup', scrollTarget: 'reward-builder-card'}],
+  ['add vote site', {tab: 'vote-sites', action: 'add-site'}],
+  ['vote sites', {tab: 'vote-sites'}],
+  ['rewards', {tab: 'rewards'}],
   ['setup', {tab: 'quick-setup', scrollTarget: 'quick-setup-card'}],
-  ['settings', {tab: 'quick-setup', scrollTarget: 'settings-catalog-card'}],
+  ['settings', {tab: 'general-settings'}],
   ['vote logging', {tab: 'quick-setup', scrollTarget: 'quick-setup-card', preset: 'vote-logging'}],
   ['servers', {tab: 'servers'}],
   ['proxy & routing', {tab: 'network'}],
@@ -5601,6 +5939,7 @@ const GLOBAL_PAGE_SHORTCUTS = new Map([
 function openGlobalShortcut(destination) {
   if (destination.configView) setConfigView(destination.configView);
   openWorkspace(destination.tab, destination.scrollTarget || '', destination.preset || '');
+  if (destination.action === 'add-site' && tabFromHash() === 'vote-sites') openVoteSiteAdd();
 }
 
 globalSearch.addEventListener('submit', event => {
@@ -5629,14 +5968,18 @@ globalSearch.addEventListener('submit', event => {
     globalSearchInput.value = '';
     return;
   }
-  const setting = SETTINGS_SCHEMA.find(item => Object.values(item).join(' ').toLowerCase().includes(normalized));
+  const setting = GENERAL_SETTING_FIELDS.find(item => Object.values(item).join(' ').toLowerCase().includes(normalized));
+  const site = voteSitesEditor?.model && [...voteSitesEditor.model.targets.values()]
+    .flatMap(target => target.sites || []).find(candidate => candidate.siteKey.toLowerCase() === normalized);
   if (setting) {
-    settingsFilter.value = query;
-    renderSettingsCatalog();
-    openWorkspace('quick-setup', 'settings-catalog-card');
+    openWorkspace('general-settings');
+  } else if (site) {
+    openWorkspace('vote-sites');
+    voteSitesEditor.selectSite(site.siteKey);
+    renderVoteSites();
   } else if (normalized.includes('sync')) openWorkspace('quick-setup', 'quick-setup-card', 'sync-vote-sites');
-  else if (normalized.includes('reward')) openWorkspace('quick-setup', 'reward-builder-card');
-  else if (normalized.includes('vote site') || normalized.includes('service') || normalized.includes('planet')) openWorkspace('data', 'site-health-card');
+  else if (normalized.includes('reward')) openWorkspace('rewards');
+  else if (normalized.includes('vote site') || normalized.includes('service') || normalized.includes('planet')) openWorkspace('vote-sites');
   else if (normalized.includes('vote logging')) openWorkspace('quick-setup', 'quick-setup-card', 'vote-logging');
   else if (normalized.includes('doctor') || normalized.includes('diagnostic')) openWorkspace('network', 'network-doctor-card');
   else if (['proxy', 'routing', 'redis', 'mqtt', 'mysql', 'sockets', 'transport'].some(value => normalized.includes(value))) openWorkspace('network');
@@ -5655,10 +5998,806 @@ globalSearch.addEventListener('submit', event => {
   globalSearchInput.value = '';
 });
 window.addEventListener('beforeunload', event => {
-  if (!configurationDirty && !routingDirty) return;
+  if (!configurationDirty && !routingDirty && !settingsEditor?.model.dirty.size && !voteSitesHasDraft() && !rewardsEditor?.edit) return;
   event.preventDefault();
   event.returnValue = '';
 });
+const VOTE_SITE_FIELDS = [
+  {path: 'Enabled', label: 'Enabled', control: '#vote-site-enabled', type: 'boolean'},
+  {path: 'Name', label: 'Display name', control: '#vote-site-name', type: 'string'},
+  {path: 'ServiceSite', label: 'Service site', control: '#vote-site-service', type: 'string'},
+  {path: 'VoteURL', label: 'Vote URL', control: '#vote-site-url', type: 'string'},
+  {path: 'VoteDelay', label: 'Vote delay', control: '#vote-site-delay', type: 'string'},
+  {path: 'Priority', label: 'Priority', control: '#vote-site-priority', type: 'integer'},
+  {path: 'DisplayItem.Material', label: 'Display material', control: '#vote-site-material', type: 'string'},
+  {path: 'DisplayItem.Amount', label: 'Display amount', control: '#vote-site-amount', type: 'integer'},
+  {path: 'Hidden', label: 'Hidden', control: '#vote-site-hidden', type: 'boolean'}
+];
+let voteSiteHealthByNode = new Map();
+let voteSiteHealthLoadedContext = '';
+let voteSiteHealthFlight = null;
+
+function voteSitesHasDraft() {
+  const model = voteSitesEditor?.model;
+  return Boolean(model && (model.dirty.size || Object.keys(model.addFields || {}).length
+    || model.workflow === 'REMOVE'));
+}
+
+function voteSitesContext() {
+  return JSON.stringify([authenticated, authenticationGeneration, workspace.managementScope,
+    [...workspace.selectedTargetIds].map(id => [id, nodeIndex.get(id)?.sessionId || '',
+      nodeIndex.get(id)?.online === true, nodeIndex.get(id)?.acceptedCapabilities?.includes('config.files.v1') === true])]);
+}
+
+function voteSiteKeys(model) {
+  const keys = new Set();
+  model.targets.forEach(target => (target.sites || []).forEach(site => keys.add(site.siteKey)));
+  return [...keys].sort((left, right) => left.localeCompare(right, undefined, {sensitivity: 'base'}));
+}
+
+function voteSiteValueLabel(value) {
+  if (value === true) return 'On';
+  if (value === false) return 'Off';
+  return value == null ? 'Unavailable' : String(value);
+}
+
+function voteSiteFieldInput(field, aggregate) {
+  const control = document.querySelector(field.control);
+  const model = voteSitesEditor.model;
+  const dirty = model.dirty.has(field.path);
+  const addDraft = model.workflow === 'CREATE_MISSING' && Object.hasOwn(model.addFields, field.path);
+  const requested = dirty ? model.dirty.get(field.path) : addDraft ? model.addFields[field.path] : undefined;
+  // Missing sites do not erase the value shared by sites that exist. Failed or
+  // unsupported reads, however, must never look like a fully-known workspace.
+  const same = aggregate.supportedState === 'SAME' && !['ERROR', 'UNSUPPORTED'].includes(aggregate.state);
+  const value = requested !== undefined ? requested : same ? aggregate.value : undefined;
+  control.title = aggregate.state === 'MISSING' && same
+    ? `Same on ${aggregate.targets.filter(target => target.status === 'AVAILABLE').length} present sites; other workspace targets are missing this site.` : '';
+  control.dataset.dirty = String(dirty || addDraft);
+  control.dataset.mixed = String(!dirty && !addDraft && aggregate.supportedState === 'MIXED');
+  control.dataset.partial = String(!dirty && !addDraft && aggregate.state === 'MISSING' && same);
+  if (field.type === 'boolean') {
+    control.options[0].textContent = aggregate.supportedState === 'MIXED' ? '— Mixed values —'
+      : aggregate.state === 'MISSING' ? 'Missing on one or more targets' : aggregate.state;
+    control.value = typeof value === 'boolean' ? String(value) : '';
+  } else {
+    control.value = value === undefined ? '' : String(value);
+    control.placeholder = aggregate.supportedState === 'MIXED' ? 'Mixed values'
+      : aggregate.state === 'MISSING' ? 'Missing on one or more targets' : aggregate.state === 'SAME' ? '' : aggregate.state;
+  }
+  control.disabled = voteSitesEditor.state.busy || !aggregate.targets.some(target => target.status === 'AVAILABLE') && !addDraft;
+}
+
+function voteSiteStatusForList(model, key) {
+  const aggregate = model.aggregate(key);
+  const enabled = model.aggregateField('Enabled', key);
+  if (aggregate.targets.some(target => target.status === 'ERROR')) return ['Read error', 'error'];
+  if (aggregate.targets.some(target => target.status === 'UNSUPPORTED')) return ['Unsupported target', 'warning'];
+  if (aggregate.presence === 'PARTIAL') return ['Missing on targets', 'warning'];
+  if (Object.values(aggregate.fields).some(field => field.supportedState === 'MIXED')) return ['Mixed', 'warning'];
+  if (enabled.supportedState === 'SAME' && enabled.value === false) return ['Disabled', 'neutral'];
+  return ['Configured', 'online'];
+}
+
+function renderVoteSiteList(model) {
+  const list = document.querySelector('#vote-site-list');
+  const query = document.querySelector('#vote-site-search').value.trim().toLocaleLowerCase();
+  const filter = document.querySelector('#vote-site-filter').value;
+  list.replaceChildren();
+  const keys = voteSiteKeys(model).filter(key => {
+    const aggregate = model.aggregate(key);
+    const haystack = [key, ...aggregate.targets.flatMap(target => target.site
+      ? [target.site.fields.Name?.value, target.site.fields.ServiceSite?.value] : [])]
+      .filter(value => typeof value === 'string').join(' ').toLocaleLowerCase();
+    if (query && !haystack.includes(query)) return false;
+    const enabled = model.aggregateField('Enabled', key);
+    if (filter === 'enabled') return enabled.supportedState === 'SAME' && enabled.value === true;
+    if (filter === 'disabled') return enabled.supportedState === 'SAME' && enabled.value === false;
+    if (filter === 'mixed') return Object.values(aggregate.fields).some(field => field.supportedState === 'MIXED');
+    if (filter === 'partial') return aggregate.presence === 'PARTIAL';
+    return true;
+  });
+  keys.forEach(key => {
+    const aggregate = model.aggregate(key);
+    const name = model.aggregateField('Name', key);
+    const service = model.aggregateField('ServiceSite', key);
+    const present = aggregate.targets.filter(target => target.site).length;
+    const [status, statusClass] = voteSiteStatusForList(model, key);
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'vote-site-list-item';
+    button.setAttribute('role', 'option'); button.setAttribute('aria-selected', String(model.selectedSiteKey === key));
+    button.append(text(document.createElement('strong'), name.supportedState === 'SAME' && name.value ? name.value : key),
+      text(document.createElement('small'), key),
+      text(document.createElement('small'), service.supportedState === 'SAME' && service.value ? `Service: ${service.value}` : `ServiceSite: ${service.supportedState.toLowerCase()}`));
+    const pills = document.createElement('div'); pills.className = 'pills';
+    const state = text(document.createElement('span'), status); state.className = `pill ${statusClass}`;
+    pills.append(state, text(document.createElement('span'), `Targets ${present}/${model.targets.size}`));
+    const observed = [...voteSiteHealthByNode.values()].flatMap(value => Array.isArray(value?.sites) ? value.sites : [])
+      .filter(site => site.siteKey === key).map(site => site.status).filter(Boolean);
+    if (observed.length) { const health = text(document.createElement('span'), [...new Set(observed)].join(', ')); health.className = 'pill neutral'; pills.append(health); }
+    button.append(pills);
+    button.addEventListener('click', () => {
+      if (voteSitesHasDraft() && model.selectedSiteKey !== key && !window.confirm('Discard the current Vote Site draft and inspect another site?')) return;
+      voteSitesEditor.selectSite(key); renderVoteSites();
+    });
+    list.append(button);
+  });
+  if (!keys.length) text(list, voteSiteKeys(model).length ? 'No Vote Sites match this filter.' : 'No configured Vote Sites were returned.');
+}
+
+function renderVoteSites() {
+  if (!voteSitesEditor) return;
+  if (voteSiteHealthLoadedContext && voteSiteHealthLoadedContext !== voteSitesContext()) {
+    voteSiteHealthByNode.clear();
+    voteSiteHealthLoadedContext = '';
+    text(document.querySelector('#vote-sites-detected'), 'Workspace changed; loading fresh observations when available.');
+  }
+  const model = voteSitesEditor.model;
+  const state = voteSitesEditor.state;
+  document.querySelector('#vote-sites-panel').setAttribute('aria-busy', String(Boolean(state.busy)));
+  text(document.querySelector('#vote-sites-status'), state.error || state.message || (state.busy ? 'Loading / processing…' : 'Only explicit site changes will be proposed.'));
+  const targets = document.querySelector('#vote-sites-read-targets'); targets.replaceChildren();
+  model.targets.forEach(target => {
+    const item = text(document.createElement('div'), `${nodeIndex.get(target.nodeId)?.displayName || target.nodeId} · ${target.status === 'AVAILABLE' ? `${target.sites.length} sites loaded` : target.code || target.status}${target.message ? ` · ${target.message}` : ''}`);
+    item.className = `settings-target ${target.status === 'AVAILABLE' ? 'loaded' : 'warning'}`; targets.append(item);
+  });
+  renderVoteSiteList(model);
+  const key = model.selectedSiteKey;
+  const editor = document.querySelector('#vote-site-form');
+  document.querySelector('#vote-site-empty').hidden = Boolean(key);
+  editor.hidden = !key;
+  if (!key) {
+    document.querySelector('#vote-site-preview').disabled = true;
+    document.querySelector('#vote-site-apply').disabled = true;
+    return;
+  }
+  const aggregate = model.aggregate(key);
+  const present = aggregate.targets.filter(target => target.site).length;
+  const existingSites = aggregate.targets.map(target => target.site).filter(Boolean);
+  text(document.querySelector('#vote-site-title'), model.workflow === 'REMOVE' ? `Remove ${key}` : key);
+  text(document.querySelector('#vote-site-key'), key);
+  text(document.querySelector('#vote-site-presence'), `${aggregate.presence} · present on ${present} of ${model.targets.size} selected targets`);
+  const [status, statusClass] = voteSiteStatusForList(model, key);
+  text(document.querySelector('#vote-site-state'), status); document.querySelector('#vote-site-state').className = `pill ${statusClass}`;
+  const rewardStates = existingSites.map(site => site.rewardsConfigured);
+  text(document.querySelector('#vote-site-rewards'), !rewardStates.length ? 'Unavailable'
+    : rewardStates.every(Boolean) ? 'Configured on all present targets'
+      : rewardStates.some(Boolean) ? 'Mixed · configured on some targets' : 'Not configured');
+  VOTE_SITE_FIELDS.forEach(field => voteSiteFieldInput(field, model.aggregateField(field.path, key)));
+  const details = document.querySelector('#vote-site-target-values'); details.replaceChildren();
+  aggregate.targets.forEach(target => {
+    const values = target.site ? VOTE_SITE_FIELDS.map(field => {
+      const snapshot = target.site.fields[field.path];
+      return `${field.label}: ${snapshot?.status === 'AVAILABLE' ? voteSiteValueLabel(snapshot.value) : snapshot?.status || 'MISSING'}`;
+    }).join(' · ') : target.status === 'MISSING' ? 'Site missing' : `${target.status}${target.message ? ` · ${target.message}` : ''}`;
+    details.append(text(document.createElement('p'), `${nodeIndex.get(target.nodeId)?.displayName || target.nodeId}: ${values}`));
+  });
+  const partialLabel = document.querySelector('#vote-site-partial-choice-label');
+  partialLabel.hidden = aggregate.presence !== 'PARTIAL' || model.workflow === 'REMOVE';
+  document.querySelector('#vote-site-partial-choice').value = model.partialPolicy || 'existing';
+  document.querySelector('#vote-site-remove').disabled = state.busy || !existingSites.some(site => site.editable);
+  document.querySelector('#vote-site-reset').disabled = state.busy || !voteSitesHasDraft();
+  const plans = model.plans(); const changed = plans.filter(plan => ['ADD', 'EDIT', 'REMOVE'].includes(plan.operation));
+  const summary = document.querySelector('#vote-site-summary'); summary.replaceChildren(
+    text(document.createElement('p'), `Target servers: ${model.targets.size}`),
+    text(document.createElement('p'), `Site: ${key}`),
+    text(document.createElement('p'), `Explicit dirty properties: ${model.dirty.size}`),
+    text(document.createElement('p'), `Changed targets: ${changed.length}`),
+    text(document.createElement('p'), `Affected file: ${changed.length ? 'VoteSites.yml' : 'none'}`),
+    text(document.createElement('p'), `Runtime impact: ${changed.length ? 'VotingPlugin configuration reload required' : 'No runtime action required'}`),
+    text(document.createElement('p'), `Preview: ${model.previewCurrent() ? 'Ready' : state.previewState}`));
+  plans.forEach(plan => {
+    const changes = plan.operation === 'EDIT' ? Object.entries(plan.changes).map(([path, value]) => `${path} → ${voteSiteValueLabel(value)}`).join(', ')
+      : plan.operation === 'ADD' ? 'Site will be created with the reviewed fields'
+        : plan.operation === 'REMOVE' ? `VoteSites.${key} will be removed` : plan.skipped.length ? plan.skipped.map(item => item.field ? `${item.field} (${item.status})` : item.status).join(', ') : 'No change';
+    summary.append(text(document.createElement('p'), `${nodeIndex.get(plan.nodeId)?.displayName || plan.nodeId}: ${plan.operation} · ${changes}`));
+  });
+  const exclusions = plans.some(plan => plan.operation === 'SKIP' || plan.skipped.length);
+  document.querySelector('#vote-site-ack-label').hidden = !exclusions;
+  document.querySelector('#vote-site-ack').disabled = state.busy;
+  document.querySelector('#vote-sites-read').disabled = state.busy || !model.targets.size;
+  document.querySelector('#vote-sites-retry').disabled = state.busy || ![...model.targets.values()].some(target => target.status === 'ERROR');
+  document.querySelector('#vote-site-preview').disabled = state.busy || !changed.length || model.exceedsChangedTargetLimit(8);
+  document.querySelector('#vote-site-apply').disabled = state.busy || !model.previewCurrent() || (exclusions && !document.querySelector('#vote-site-ack').checked);
+  const previewResults = document.querySelector('#vote-site-preview-results'); previewResults.replaceChildren();
+  const previewItems = model.previewCurrent()?.items || state.previewItems || [];
+  if (!previewItems.length) text(previewResults, state.previewState === 'Stale' ? 'Stale — read/re-preview required.' : 'Not previewed.');
+  previewItems.forEach(item => {
+    const plan = plans.find(candidate => candidate.nodeId === item.nodeId);
+    const section = document.createElement('section'); section.className = 'target-operation';
+    section.append(text(document.createElement('h4'), nodeIndex.get(item.nodeId)?.displayName || item.nodeId),
+      text(document.createElement('p'), `${item.status}${item.operationId ? ` · operation ${item.operationId}` : ''}${item.message ? ` · ${item.message}` : ''}`));
+    if (plan?.operation === 'EDIT') Object.entries(plan.changes).forEach(([path, value]) => {
+      const before = model.targets.get(item.nodeId)?.sites.find(site => site.siteKey === key)?.fields[path]?.value;
+      section.append(text(document.createElement('p'), `VoteSites.yml → VoteSites.${key}.${path}: ${voteSiteValueLabel(before)} → ${voteSiteValueLabel(value)}`));
+    });
+    if (plan?.operation === 'ADD') VOTE_SITE_FIELDS.forEach(field => section.append(text(document.createElement('p'), `VoteSites.${key}.${field.path}: ${voteSiteValueLabel(plan.fields[field.path])}`)));
+    if (plan?.operation === 'REMOVE') section.append(text(document.createElement('p'), `VoteSites.yml → remove VoteSites.${key}`));
+    (item.skipped || []).forEach(skipped => section.append(text(document.createElement('p'), `Excluded: ${skipped.field || 'site'} (${skipped.status})`)));
+    previewResults.append(section);
+  });
+  const results = document.querySelector('#vote-site-results'); results.replaceChildren();
+  if (!model.results.size) text(results, 'No apply performed.');
+  model.results.forEach((data, nodeId) => {
+    const result = data.result || data.operation?.results?.[nodeId] || data;
+    const section = document.createElement('section'); section.className = 'target-operation';
+    section.append(text(document.createElement('h4'), nodeIndex.get(nodeId)?.displayName || nodeId),
+      text(document.createElement('p'), `${result.success ? '✓ written' : `✗ ${result.code || data.status || 'not applied'}: ${result.message || data.message || ''}`} · ${result.reloaded ? '✓ reloaded' : 'reload not confirmed'}${result.rolledBack ? ' · ✓ automatic local rollback' : ''}${data.operation?.operationId ? ` · operation ${data.operation.operationId}` : ''}`),
+      text(document.createElement('p'), data.confirmed ? '✓ Confirmed by a fresh VoteSites.yml read' : '✗ Requested site state was not confirmed; do not assume it is active.'));
+    results.append(section);
+  });
+}
+
+function voteSiteAddValues() {
+  return {Enabled: document.querySelector('#vote-site-add-enabled').checked,
+    Name: document.querySelector('#vote-site-add-name').value,
+    ServiceSite: document.querySelector('#vote-site-add-service').value,
+    VoteURL: document.querySelector('#vote-site-add-url').value,
+    VoteDelay: document.querySelector('#vote-site-add-delay').value,
+    Priority: Number(document.querySelector('#vote-site-add-priority').value),
+    Hidden: document.querySelector('#vote-site-add-hidden').checked,
+    'DisplayItem.Material': document.querySelector('#vote-site-add-material').value,
+    'DisplayItem.Amount': Number(document.querySelector('#vote-site-add-amount').value)};
+}
+
+function updateVoteSiteAddConflicts() {
+  const key = document.querySelector('#vote-site-add-key').value.trim();
+  const caseConflict = voteSiteKeys(voteSitesEditor.model).find(siteKey => siteKey !== key && siteKey.toLowerCase() === key.toLowerCase());
+  const aggregate = key && voteSitesEditor ? voteSitesEditor.model.aggregate(key) : null;
+  const existing = aggregate ? aggregate.targets.filter(target => target.site).map(target => nodeIndex.get(target.nodeId)?.displayName || target.nodeId) : [];
+  const missing = aggregate ? aggregate.targets.filter(target => target.status === 'MISSING' && !target.site).map(target => nodeIndex.get(target.nodeId)?.displayName || target.nodeId) : [];
+  text(document.querySelector('#vote-site-add-conflicts'), caseConflict ? `A site named ${caseConflict} already exists; site keys differing only by case are ambiguous.`
+    : !key ? 'Enter a key to check the current workspace inventory.'
+    : `Existing: ${existing.join(', ') || 'none'} · Missing: ${missing.join(', ') || 'none'}${aggregate?.targets.some(target => !['AVAILABLE', 'MISSING'].includes(target.status)) ? ' · Some targets are unavailable or unsupported.' : ''}`);
+  document.querySelector('#vote-site-add-existing-label').hidden = !existing.length;
+  if (!existing.length) document.querySelector('#vote-site-add-existing').value = 'missing';
+}
+
+function openVoteSiteAdd(prefill = {}) {
+  const dialog = document.querySelector('#vote-site-add-dialog');
+  document.querySelector('#vote-site-add-form').reset();
+  document.querySelector('#vote-site-add-key').value = prefill.siteKey || '';
+  document.querySelector('#vote-site-add-name').value = prefill.Name || prefill.siteKey || '';
+  document.querySelector('#vote-site-add-service').value = prefill.ServiceSite || '';
+  document.querySelector('#vote-site-add-url').value = prefill.VoteURL || '';
+  document.querySelector('#vote-site-add-delay').value = prefill.VoteDelay || '24h';
+  document.querySelector('#vote-site-add-priority').value = prefill.Priority ?? 5;
+  document.querySelector('#vote-site-add-material').value = prefill['DisplayItem.Material'] || 'DIAMOND';
+  document.querySelector('#vote-site-add-amount').value = prefill['DisplayItem.Amount'] ?? 1;
+  document.querySelector('#vote-site-add-enabled').checked = prefill.Enabled !== false;
+  document.querySelector('#vote-site-add-hidden').checked = prefill.Hidden === true;
+  document.querySelector('#vote-site-add-existing').value = 'cancel';
+  updateVoteSiteAddConflicts(); dialog.showModal();
+}
+
+async function refreshVoteSiteObservations() {
+  const context = voteSitesContext();
+  if (voteSiteHealthFlight && voteSiteHealthFlight.context === context) return voteSiteHealthFlight.promise;
+  const eligible = [...workspace.selectedTargetIds].map(id => nodeIndex.get(id)).filter(node => node?.online
+    && node.acceptedCapabilities?.includes('data.inspect.v1')).slice(0, 8);
+  const container = document.querySelector('#vote-sites-detected');
+  if (!eligible.length) { text(container, 'No selected backend currently supports read-only vote-site health inspection.'); return; }
+  text(container, 'Reading observed service names and configured-site health…');
+  const flight = {context, promise: null};
+  flight.promise = Promise.all(eligible.map(async node => {
+    try { return [node.nodeId, normalizeDashboardVoteSiteHealth((await runInspectionOnNode(node, 'vote-site-health', {days: '30'}, {manageBusy: false, contextCurrent: () => voteSitesContext() === context})).result).result]; }
+    catch (error) { return [node.nodeId, {error: error.message || 'Inspection failed'}]; }
+  })).then(entries => {
+    if (voteSitesContext() !== context) return;
+    voteSiteHealthByNode = new Map(entries); voteSiteHealthLoadedContext = context; container.replaceChildren();
+    entries.forEach(([nodeId, result]) => {
+      const section = document.createElement('section'); section.className = 'target-operation';
+      section.append(text(document.createElement('h4'), nodeIndex.get(nodeId)?.displayName || nodeId));
+      if (result.error) section.append(text(document.createElement('p'), `Read unavailable: ${result.error}`));
+      else {
+        section.append(text(document.createElement('p'), `${Array.isArray(result.sites) ? result.sites.length : 0} configured site health records. “No recent votes” is not an external website failure.`));
+        (result.detectedUnconfiguredServices || []).forEach(service => {
+          const row = document.createElement('div'); row.className = 'detected-actions';
+          row.append(text(document.createElement('span'), `${service} · observed but not configured`));
+          const create = text(document.createElement('button'), 'Create Vote Site'); create.type = 'button'; create.className = 'secondary compact';
+          create.addEventListener('click', () => openVoteSiteAdd({siteKey: String(service).replace(/[.\s]+/g, '_').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64), Name: String(service).slice(0, 200), ServiceSite: String(service).slice(0, 2048)}));
+          row.append(create); section.append(row);
+        });
+      }
+      container.append(section);
+    });
+    if (workspace.selectedTargetIds.size > eligible.length) container.append(text(document.createElement('p'), `Health inspection is bounded to 8 capable targets per refresh; configuration inventory still includes all ${workspace.selectedTargetIds.size} workspace targets.`));
+    renderVoteSiteList(voteSitesEditor.model);
+  }).finally(() => { if (voteSiteHealthFlight === flight) voteSiteHealthFlight = null; });
+  voteSiteHealthFlight = flight; return flight.promise;
+}
+const GENERAL_SETTING_FIELDS = [
+  {path: 'ProcessRewards', label: 'Process rewards', category: 'Voting & rewards', defaultValue: true, description: 'Allow VotingPlugin to process vote rewards.'},
+  {path: 'ExtraAllSitesCheck', label: 'Extra all-sites check', category: 'Voting & rewards', defaultValue: false, description: 'Enable the additional duplicate all-sites reward check.'},
+  {path: 'CountFakeVotes', label: 'Count fake votes', category: 'Voting & rewards', defaultValue: true, description: 'Include fake votes in vote totals.'},
+  {path: 'AutoCreateVoteSites', label: 'Auto-create vote sites', category: 'Vote sites', defaultValue: true, description: 'Automatically create a site when an unknown service sends a vote.'},
+  {path: 'DisableNoServiceSiteMessage', label: 'Hide unknown service-site warnings', category: 'Vote sites', defaultValue: false, description: 'Suppress the missing service-site warning.'},
+  {path: 'ExtraVoteShopCheck', label: 'Extra vote shop check', category: 'Vote shop', defaultValue: true, description: 'Apply the additional vote shop purchase check.'},
+  {path: 'UseVoteGUIMainCommand', label: 'Open vote GUI from main command', category: 'Interface', defaultValue: false, description: 'Use the vote GUI for the main vote command.'},
+  {path: 'CloseInventoryOnVote', label: 'Close inventory when voting', category: 'Interface', defaultValue: true, description: 'Close the open vote inventory after a vote.'},
+  {path: 'DisableUpdateChecking', label: 'Disable update checking', category: 'Maintenance', defaultValue: false, restart: true, description: 'Disable update checks. A backend restart is required to reconcile the update-check scheduler lifecycle.'}
+];
+
+function generalSettingsContext() {
+  return JSON.stringify([authenticated, authenticationGeneration, workspace.managementScope,
+    [...workspace.selectedTargetIds].map(id => [id, nodeIndex.get(id)?.sessionId || '',
+      nodeIndex.get(id)?.online === true, nodeIndex.get(id)?.acceptedCapabilities?.includes('config.files.v1') === true])]);
+}
+
+function settingValueLabel(value) { return value === true ? 'On' : value === false ? 'Off' : 'Unavailable'; }
+
+function renderGeneralSettings() {
+  if (!settingsEditor) return;
+  const model = settingsEditor.model;
+  const state = settingsEditor.state;
+  const plans = model.plans();
+  const preview = model.previewCurrent();
+  const container = document.querySelector('#general-settings-fields');
+  // Keep focused controls stable during refreshes and status updates.
+  if (!container.children.length) {
+    [...new Set(GENERAL_SETTING_FIELDS.map(field => field.category))].forEach(category => {
+      const card = document.createElement('section');
+      card.className = 'card stacked-card';
+      card.append(text(document.createElement('h3'), category));
+      GENERAL_SETTING_FIELDS.filter(field => field.category === category).forEach(field => {
+        const row = document.createElement('div'); row.className = 'general-setting-row';
+        const label = text(document.createElement('label'), field.label);
+        label.htmlFor = `general-setting-${field.path}`;
+        label.append(text(document.createElement('small'), `${field.description} Config.yml → ${field.path}. Documented default: ${settingValueLabel(field.defaultValue)} (not substituted for missing values).`));
+        const select = document.createElement('select'); select.id = label.htmlFor;
+        ['', 'true', 'false'].forEach(value => {
+          const option = document.createElement('option'); option.value = value;
+          option.textContent = value ? value === 'true' ? 'On' : 'Off' : 'Read required';
+          option.disabled = !value; select.append(option);
+        });
+        select.addEventListener('change', () => {
+          if (select.value === 'true' || select.value === 'false') {
+            document.querySelector('#general-settings-ack').checked = false;
+            settingsEditor.edit(field.path, select.value === 'true');
+          }
+        });
+        const reset = text(document.createElement('button'), 'Reset'); reset.type = 'button'; reset.className = 'secondary compact';
+        reset.id = `general-setting-reset-${field.path}`;
+        reset.addEventListener('click', () => { document.querySelector('#general-settings-ack').checked = false; settingsEditor.reset(field.path); });
+        const details = document.createElement('details');
+        details.append(text(document.createElement('summary'), 'Per-server values'));
+        const values = document.createElement('div'); values.id = `general-setting-values-${field.path}`; details.append(values);
+        row.append(label, select, reset, details); card.append(row);
+      });
+      container.append(card);
+    });
+  }
+  GENERAL_SETTING_FIELDS.forEach(field => {
+    const aggregate = model.aggregate(field.path);
+    const dirty = model.dirty.has(field.path);
+    const select = document.querySelector(`#general-setting-${field.path}`);
+    select.options[0].textContent = aggregate.state === 'SAME' ? 'Current value'
+      : aggregate.state === 'MIXED' ? '— Mixed values —' : `${aggregate.state} · ${aggregate.supportedState === 'SAME' ? `supported targets ${settingValueLabel(aggregate.value)}` : aggregate.supportedState.toLowerCase()}`;
+    select.value = dirty ? String(model.dirty.get(field.path)) : aggregate.state === 'SAME' ? String(aggregate.value) : '';
+    select.disabled = state.busy || !aggregate.targets.some(target => target.status === 'AVAILABLE');
+    select.setAttribute('aria-describedby', `general-setting-values-${field.path}`);
+    const reset = document.querySelector(`#general-setting-reset-${field.path}`); reset.disabled = state.busy || !dirty;
+    const values = document.querySelector(`#general-setting-values-${field.path}`);
+    values.replaceChildren(...aggregate.targets.map(target => text(document.createElement('p'),
+      `${nodeIndex.get(target.id)?.displayName || target.id}: ${target.status === 'AVAILABLE' ? settingValueLabel(target.value) : target.status}${dirty ? ` · requested ${settingValueLabel(model.dirty.get(field.path))}` : ''}`)));
+  });
+  text(document.querySelector('#general-settings-status'), state.error || state.message || (state.busy ? 'Loading / processing…' : 'Only explicit changes will be proposed.'));
+  document.querySelector('#general-settings-panel').setAttribute('aria-busy', String(Boolean(state.busy)));
+  const targetList = document.querySelector('#general-settings-targets');
+  targetList.replaceChildren(...[...model.targets.values()].map(target => {
+    const item = text(document.createElement('div'), `${nodeIndex.get(target.id)?.displayName || target.id} · ${target.status === 'AVAILABLE' ? 'Loaded' : target.status}${target.code ? ` · ${target.code}` : ''}${target.message ? ` · ${target.message}` : ''}`);
+    item.className = `settings-target ${target.status === 'AVAILABLE' ? 'loaded' : 'warning'}`;
+    const chip = [...document.querySelectorAll('#scope-chips button')].find(button => button.textContent.startsWith(nodeIndex.get(target.id)?.displayName || target.id));
+    if (chip) {
+      chip.title = `Configuration: ${target.status}`;
+      text(chip, `${nodeIndex.get(target.id)?.displayName || target.id} · Config ${target.status === 'AVAILABLE' ? 'loaded' : target.code || target.status} ×`);
+    }
+    return item;
+  }));
+  const summary = document.querySelector('#general-settings-summary');
+  summary.replaceChildren(text(document.createElement('p'), `Target servers: ${model.targets.size}`),
+    text(document.createElement('p'), `Explicit dirty settings: ${model.dirty.size}`),
+    text(document.createElement('p'), `Affected files: ${model.dirty.size ? 'Config.yml' : 'none'}`),
+    text(document.createElement('p'), `Preview: ${preview ? 'Ready' : state.previewState || 'Not previewed'}`));
+  model.dirty.forEach((value, path) => {
+    const field = GENERAL_SETTING_FIELDS.find(item => item.path === path);
+    const aggregate = model.aggregate(path);
+    summary.append(text(document.createElement('p'), `${field?.label || path}: ${aggregate.state === 'SAME' ? settingValueLabel(aggregate.value) : aggregate.state} → ${settingValueLabel(value)}`));
+  });
+  plans.forEach(plan => {
+    const keys = Object.keys(plan.overrides);
+    const impact = keys.some(path => GENERAL_SETTING_FIELDS.find(field => field.path === path)?.restart)
+      ? 'Config reload + full backend restart required (restart is not performed by this editor)' : keys.length ? 'VotingPlugin configuration reload required' : 'No runtime action required';
+    summary.append(text(document.createElement('p'), `${plan.id}: ${impact}${plan.skipped.length ? ` · excluded: ${plan.skipped.map(item => `${item.field} (${item.status})`).join(', ')}` : ''}`));
+  });
+  const exclusions = plans.some(plan => plan.skipped.length);
+  document.querySelector('#general-settings-ack-label').hidden = !exclusions;
+  document.querySelector('#general-settings-ack').disabled = state.busy;
+  document.querySelector('#general-settings-read').disabled = state.busy || !model.targets.size;
+  document.querySelector('#general-settings-retry').disabled = state.busy || ![...model.targets.values()].some(target => target.status === 'ERROR');
+  document.querySelector('#general-settings-reset').disabled = state.busy || !model.dirty.size;
+  document.querySelector('#general-settings-preview').disabled = state.busy || !plans.some(plan => Object.keys(plan.overrides).length);
+  document.querySelector('#general-settings-apply').disabled = state.busy || !preview || (exclusions && !document.querySelector('#general-settings-ack').checked);
+  const previewResults = document.querySelector('#general-settings-preview-results');
+  previewResults.replaceChildren();
+  const previewItems = preview?.items || state.previewItems || [];
+  if (!previewItems.length) text(previewResults, state.previewState === 'Stale' ? 'Stale — read/re-preview required.' : 'Not previewed.');
+  else previewItems.forEach(item => {
+    const section = document.createElement('section'); section.className = 'target-operation';
+    section.append(text(document.createElement('h4'), item.id));
+    const operation = item.operation;
+    const result = operation?.results?.[item.id];
+    section.append(text(document.createElement('p'), result ? `${result.success ? 'Config.yml · preview ready' : `${result.code} · ${result.message}`}${operation?.operationId ? ` · operation ${operation.operationId}` : ''}` : `${item.status || 'Unchanged / excluded'}${item.message ? ` · ${item.message}` : ''}`));
+    (item.skipped || []).forEach(skipped => section.append(text(document.createElement('p'), `${skipped.field}: excluded (${skipped.status})`)));
+    const plan = plans.find(plan => plan.id === item.id);
+    if (plan) Object.entries(plan.overrides).forEach(([path, value]) => section.append(text(document.createElement('p'),
+      `Config.yml → ${path}: ${settingValueLabel(model.targets.get(item.id)?.fields[path]?.value)} → ${settingValueLabel(value)}`)));
+    (result?.changes || []).forEach(change => section.append(text(document.createElement('p'), change)));
+    previewResults.append(section);
+  });
+  const results = document.querySelector('#general-settings-results'); results.replaceChildren();
+  if (!model.results.size) text(results, 'No apply performed.');
+  model.results.forEach((data, id) => {
+    const result = data.result || data.operation?.results?.[id] || data;
+    const current = model.targets.get(id);
+    const section = document.createElement('section'); section.className = 'target-operation';
+    if (data.status === 'UNCHANGED' || data.status === 'EXCLUDED') {
+      section.append(text(document.createElement('h4'), id), text(document.createElement('p'), data.status === 'UNCHANGED' ? '— unchanged' : '— excluded / unsupported or unavailable; not applied'));
+      results.append(section); return;
+    }
+    section.append(text(document.createElement('h4'), id), text(document.createElement('p'),
+      `${result.success ? '✓ written' : `✗ ${result.code || data.status || 'not applied'}: ${result.message || data.message || ''}`} · ${result.reloaded ? '✓ reloaded' : 'reload not confirmed'}${result.rolledBack ? ' · ✓ automatic local rollback' : ''}${data.operation?.operationId ? ` · operation ${data.operation.operationId}` : ''}`),
+      text(document.createElement('p'), data.confirmed === true ? '✓ Confirmed requested persisted configuration after apply (not proof of a backend restart)'
+        : current?.status === 'AVAILABLE' ? 'Current configuration re-read; requested values are not confirmed as successfully applied.' : '✗ Confirmed read unavailable; do not assume requested values are active.'));
+    results.append(section);
+  });
+}
+
+settingsEditor = ControlGeneralSettings.create({
+  targets: () => workspace.managementScope === 'GLOBAL' || !authenticated ? [] : [...workspace.selectedTargetIds].map(id => {
+    const node = nodeIndex.get(id);
+    return {id, sessionId: node?.sessionId || '', online: node?.online === true,
+      supported: isBackend(node) && node?.acceptedCapabilities?.includes('config.files.v1') === true};
+  }),
+  context: generalSettingsContext,
+  active: () => authenticated && tabFromHash() === 'general-settings',
+  operation: (path, body) => startConfigurationOperation(path, body, document.querySelector('#general-settings-status')),
+  request: (path, body) => authorized(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}),
+  changed: renderGeneralSettings
+});
+document.querySelector('#general-settings-read').addEventListener('click', () => void settingsEditor.read(true));
+document.querySelector('#general-settings-retry').addEventListener('click', () => void settingsEditor.read(true, true));
+document.querySelector('#general-settings-preview').addEventListener('click', () => { document.querySelector('#general-settings-ack').checked = false; void settingsEditor.preview(); });
+document.querySelector('#general-settings-apply').addEventListener('click', () => void settingsEditor.apply(document.querySelector('#general-settings-ack').checked));
+document.querySelector('#general-settings-reset').addEventListener('click', () => { document.querySelector('#general-settings-ack').checked = false; settingsEditor.resetAll(); });
+document.querySelector('#general-settings-ack').addEventListener('change', renderGeneralSettings);
+
+voteSitesEditor = ControlVoteSitesEditor.create({
+  targets: () => workspace.managementScope === 'GLOBAL' || !authenticated ? [] : [...workspace.selectedTargetIds].map(id => {
+    const node = nodeIndex.get(id);
+    return {nodeId: id, sessionId: node?.sessionId || '', online: node?.online === true,
+      supported: isBackend(node) && node?.acceptedCapabilities?.includes('config.files.v1') === true};
+  }),
+  context: voteSitesContext,
+  active: () => authenticated && tabFromHash() === 'vote-sites',
+  operation: (path, body) => startConfigurationOperation(path, body, document.querySelector('#vote-sites-status')),
+  request: (path, body) => authorized(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}),
+  changed: renderVoteSites
+});
+document.querySelector('#vote-sites-read').addEventListener('click', () => void voteSitesEditor.read(true));
+document.querySelector('#vote-sites-retry').addEventListener('click', () => void voteSitesEditor.read(true, true));
+document.querySelector('#vote-site-search').addEventListener('input', () => renderVoteSiteList(voteSitesEditor.model));
+document.querySelector('#vote-site-filter').addEventListener('change', () => renderVoteSiteList(voteSitesEditor.model));
+document.querySelector('#vote-site-add').addEventListener('click', () => openVoteSiteAdd());
+document.querySelector('#vote-site-add-key').addEventListener('input', updateVoteSiteAddConflicts);
+document.querySelector('#vote-site-add-cancel').addEventListener('click', () => document.querySelector('#vote-site-add-dialog').close());
+document.querySelector('#vote-site-add-close').addEventListener('click', () => document.querySelector('#vote-site-add-dialog').close());
+document.querySelector('#vote-site-add-form').addEventListener('submit', event => {
+  event.preventDefault();
+  const dialog = document.querySelector('#vote-site-add-dialog');
+  const key = document.querySelector('#vote-site-add-key').value.trim();
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(key)) { text(document.querySelector('#vote-site-add-conflicts'), 'Use 1–64 letters, digits, underscores or hyphens; dots and spaces are unsafe site keys.'); return; }
+  if (voteSiteKeys(voteSitesEditor.model).some(siteKey => siteKey !== key && siteKey.toLowerCase() === key.toLowerCase())) {
+    text(document.querySelector('#vote-site-add-conflicts'), 'A site key differing only by letter case exists. Choose another key.'); return;
+  }
+  const inventory = voteSitesEditor.model.aggregate(key);
+  const existing = inventory.targets.filter(target => target.site);
+  const missing = inventory.targets.filter(target => target.status === 'MISSING' && !target.site);
+  const policy = existing.length ? document.querySelector('#vote-site-add-existing').value : 'missing';
+  if ((existing.length && policy === 'cancel') || !missing.length && policy === 'missing'
+      || existing.length && missing.length && !window.confirm(`Site ${key} exists on ${existing.length} target(s) and is missing on ${missing.length}. Explicit choice: ${policy}. Continue to preview only?`)) return;
+  if (!missing.length && policy !== 'existing' && policy !== 'both') return;
+  const fields = voteSiteAddValues();
+  if (!Number.isInteger(fields.Priority) || !Number.isInteger(fields['DisplayItem.Amount'])
+      || fields['DisplayItem.Amount'] < 1 || fields['DisplayItem.Amount'] > 64) {
+    text(document.querySelector('#vote-site-add-conflicts'), 'Priority must be an integer and DisplayItem.Amount must be 1–64.'); return;
+  }
+  voteSitesEditor.beginAdd(key, fields, policy);
+  document.querySelector('#vote-site-partial-choice').value = policy === 'cancel' ? 'existing' : policy;
+  document.querySelector('#vote-site-ack').checked = false;
+  dialog.close(); renderVoteSites();
+});
+document.querySelector('#vote-site-partial-choice').addEventListener('change', event => {
+  const policy = event.target.value;
+  if (policy !== 'existing' && !Object.keys(voteSitesEditor.model.addFields || {}).length) {
+    openVoteSiteAdd({siteKey: voteSitesEditor.model.selectedSiteKey}); event.target.value = 'existing'; return;
+  }
+  document.querySelector('#vote-site-ack').checked = false;
+  voteSitesEditor.setPartialPolicy(policy);
+});
+VOTE_SITE_FIELDS.forEach(field => {
+  const control = document.querySelector(field.control);
+  control.addEventListener('change', () => {
+    let value = control.value;
+    if (field.type === 'boolean') {
+      if (value !== 'true' && value !== 'false') return;
+      value = value === 'true';
+    } else if (field.type === 'integer') {
+      if (!/^-?(0|[1-9][0-9]*)$/.test(value)) {
+        text(document.querySelector('#vote-sites-status'), `${field.label} must be a whole number.`); return;
+      }
+      value = Number(value);
+      if (!Number.isSafeInteger(value)) { text(document.querySelector('#vote-sites-status'), `${field.label} is outside the supported integer range.`); return; }
+    }
+    document.querySelector('#vote-site-ack').checked = false;
+    voteSitesEditor.edit(field.path, value);
+  });
+});
+document.querySelector('#vote-site-reset').addEventListener('click', () => { document.querySelector('#vote-site-ack').checked = false; voteSitesEditor.cancelDraft(); });
+document.querySelector('#vote-site-remove').addEventListener('click', () => {
+  const key = voteSitesEditor.model.selectedSiteKey;
+  const present = voteSitesEditor.model.aggregate(key).targets.filter(target => target.site).map(target => target.nodeId);
+  if (!present.length || !window.confirm(`Prepare removal of VoteSites.${key} on: ${present.join(', ')}? This also removes that site's inline Rewards on affected targets. Other sites and separate reward files are not touched. No configuration changes occur until an exact preview is approved and applied.`)) return;
+  document.querySelector('#vote-site-ack').checked = false;
+  voteSitesEditor.remove(key);
+});
+document.querySelector('#vote-site-preview').addEventListener('click', () => { document.querySelector('#vote-site-ack').checked = false; void voteSitesEditor.preview(); });
+document.querySelector('#vote-site-apply').addEventListener('click', () => void voteSitesEditor.apply(document.querySelector('#vote-site-ack').checked));
+document.querySelector('#vote-site-ack').addEventListener('change', renderVoteSites);
+document.querySelector('#vote-site-open-yaml').addEventListener('click', () => {
+  configurationFile.value = 'VoteSites.yml'; setActiveTab('configurations', true); setConfigView('yaml');
+});
+document.querySelector('#vote-site-edit-rewards').addEventListener('click', () => {
+  const key = voteSitesEditor.model.selectedSiteKey;
+  openWorkspace('rewards');
+  rewardsEditor?.select('VoteSites.yml', `VoteSites.${key}.Rewards`);
+  renderRewards();
+});
+
+function rewardsContext() {
+  return JSON.stringify({generation: authenticationGeneration, scope: workspace.managementScope,
+    targets: [...workspace.selectedTargetIds].map(id => [id, nodeIndex.get(id)?.sessionId || ''])});
+}
+
+async function inspectNamedRewardFiles(target) {
+  const captured = rewardsContext();
+  const sessionId = target.sessionId;
+  const request = {nodeId: target.nodeId, query: {kind: 'reward-file-inventory', filters: {}}};
+  let inspection = await authorized('/api/v1/inspections', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(request)
+  });
+  const deadline = Date.now() + 30_000;
+  while (inspection.state === 'RUNNING') {
+    if (Date.now() >= deadline) throw new Error('Named reward inventory is still running; retry later');
+    await new Promise(resolve => window.setTimeout(resolve, 250));
+    inspection = await authorized(`/api/v1/inspections/${inspection.inspectionId}`);
+  }
+  if (captured !== rewardsContext() || nodeIndex.get(target.nodeId)?.sessionId !== sessionId) {
+    throw new Error('Target reconnected or workspace changed; read again');
+  }
+  if (inspection.state !== 'SUCCEEDED' || inspection.result?.success !== true) {
+    throw new Error(inspection.result?.message || inspection.result?.code || 'Named reward inventory failed');
+  }
+  let envelope = inspection.result.data;
+  if (typeof envelope === 'string') envelope = JSON.parse(envelope);
+  if (envelope?.schemaVersion !== 1 || envelope.kind !== 'reward-file-inventory'
+      || !Array.isArray(envelope.result?.files)) throw new Error('Named reward inventory schema is unsupported');
+  return envelope.result;
+}
+
+function rewardText(value) {
+  if (value === undefined) return 'Missing';
+  if (Array.isArray(value)) return value.length ? value.join(' · ') : 'Empty list';
+  return String(value);
+}
+
+function renderRewards() {
+  if (!rewardsEditor) return;
+  const state = rewardsEditor.state;
+  const selected = rewardsEditor.selected;
+  const targets = rewardsEditor.targets();
+  const targetBox = document.querySelector('#rewards-targets'); targetBox.replaceChildren();
+  targets.forEach(target => {
+    const files = rewardsEditor.files().map(file => rewardsEditor.record(target.nodeId, file));
+    const loaded = files.filter(item => item?.status === 'AVAILABLE').length;
+    const failed = files.filter(item => item?.status === 'ERROR').length;
+    const named = target.rewardFilesSupported ? '' : ' · named files unsupported';
+    targetBox.append(text(document.createElement('span'), `${nodeIndex.get(target.nodeId)?.displayName || target.nodeId}: ${loaded}/${files.length} files loaded${failed ? ` · ${failed} failed` : ''}${named}`));
+  });
+  text(document.querySelector('#rewards-status'), state.error || state.message || (state.busy ? 'Reading…' : ''));
+  const list = document.querySelector('#rewards-scope-list'); list.replaceChildren();
+  const search = document.querySelector('#rewards-search').value.trim().toLowerCase();
+  const scopes = rewardsEditor.scopes().filter(scope => `${scope.fileName} ${scope.path}`.toLowerCase().includes(search));
+  scopes.forEach(scope => {
+    const button = document.createElement('button'); button.type = 'button';
+    button.className = 'vote-site-list-item'; button.setAttribute('role', 'option');
+    button.setAttribute('aria-selected', String(scope.fileName === selected.fileName && scope.path === selected.rewardPath));
+    const present = targets.filter(target => rewardsEditor.record(target.nodeId, scope.fileName)?.scopes?.some(item => item.path === scope.path && item.status === 'PRESENT')).length;
+    button.append(text(document.createElement('strong'), scope.path), text(document.createElement('small'), `${scope.fileName} · ${present}/${targets.length} configured`));
+    button.addEventListener('click', () => { rewardsEditor.select(scope.fileName, scope.path); renderRewards(); void rewardsEditor.read(false); });
+    list.append(button);
+  });
+  if (!scopes.length) text(list, state.busy ? 'Reading reward scopes…' : 'No reward scopes match, or no successful reads are available.');
+  const hasSelection = Boolean(selected.rewardPath);
+  document.querySelector('#rewards-empty').hidden = hasSelection;
+  document.querySelector('#rewards-detail').hidden = !hasSelection;
+  if (hasSelection) {
+    text(document.querySelector('#rewards-title'), selected.rewardPath === '$'
+      ? selected.fileName.slice('Rewards/'.length) : selected.rewardPath.split('.').at(-2) || selected.rewardPath);
+    text(document.querySelector('#rewards-path'), `${selected.fileName} → ${selected.rewardPath}`);
+    const details = targets.map(target => rewardsEditor.targetScope(target));
+    const present = details.filter(item => item.scope?.status === 'PRESENT').length;
+    text(document.querySelector('#rewards-presence'), `${present}/${targets.length} configured`);
+    const values = document.querySelector('#rewards-values'); values.replaceChildren();
+    details.forEach(info => {
+      const section = document.createElement('section'); section.className = 'target-operation';
+      section.append(text(document.createElement('h4'), nodeIndex.get(info.nodeId)?.displayName || info.nodeId),
+        text(document.createElement('p'), info.status !== 'AVAILABLE' ? `${info.status}: ${info.message || 'Read unavailable'}` : info.scope?.status || 'Missing'));
+      if (info.status === 'AVAILABLE' && info.scope) Object.entries(info.scope.fields || {}).forEach(([field, value]) => {
+        section.append(text(document.createElement('p'), `${field}: ${rewardText(value)}`));
+      });
+      values.append(section);
+    });
+    const advanced = document.querySelector('#rewards-advanced'); advanced.replaceChildren();
+    details.forEach(info => {
+      const section = document.createElement('section'); section.className = 'target-operation';
+      section.append(text(document.createElement('h4'), nodeIndex.get(info.nodeId)?.displayName || info.nodeId),
+        text(document.createElement('p'), info.scope?.advancedKeys?.length ? `Advanced keys preserved: ${info.scope.advancedKeys.join(', ')}` : 'No advanced keys reported'));
+      (info.scope?.structurePaths || []).forEach(path => {
+        const row = text(document.createElement('p'), path);
+        row.className = `reward-tree-depth-${Math.min(8, path.split('.').length - 1)}`;
+        section.append(row);
+      });
+      advanced.append(section);
+    });
+    const editable = selected.fileName === 'VoteSites.yml' && /^VoteSites\.[A-Za-z0-9_-]{1,64}\.Rewards$/.test(selected.rewardPath)
+      || /^Rewards\/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\.yml$/.test(selected.fileName) && selected.rewardPath === '$';
+    document.querySelector('#rewards-editable').hidden = !editable;
+    if (editable) {
+      const fieldSelect = document.querySelector('#rewards-field');
+      const priorField = fieldSelect.value;
+      const itemFields = [...new Set(details.flatMap(info => Object.keys(info.scope?.fields || {})))]
+        .filter(field => /^Items\.[A-Za-z0-9_-]{1,64}\.(Material|Amount)$/.test(field)).sort();
+      [...fieldSelect.querySelectorAll('option[data-item-field]')].forEach(option => option.remove());
+      itemFields.forEach(field => {
+        const option = document.createElement('option'); option.value = field;
+        option.dataset.itemField = 'true'; option.textContent = field; fieldSelect.append(option);
+      });
+      fieldSelect.value = [...fieldSelect.options].some(option => option.value === priorField) ? priorField : 'Commands';
+      const field = fieldSelect.value;
+      const aggregate = rewardsEditor.aggregate(field);
+      const fieldState = document.querySelector('#rewards-field-state'); fieldState.replaceChildren();
+      fieldState.append(text(document.createElement('strong'), `${field}: ${aggregate.status}${aggregate.status === 'SAME' ? ` · ${rewardText(aggregate.value)}` : ''}`));
+      if (aggregate.status !== 'SAME') aggregate.targets.forEach(target => fieldState.append(text(document.createElement('p'),
+        `${nodeIndex.get(target.nodeId)?.displayName || target.nodeId}: ${target.status === 'AVAILABLE' ? rewardText(target.value) : target.status}`)));
+    }
+  }
+  const plans = rewardsEditor.plan(); const ready = plans.filter(item => item.status === 'READY');
+  const summary = document.querySelector('#rewards-summary'); summary.replaceChildren();
+  if (!rewardsEditor.edit) text(summary, 'No explicit reward edit. Reading or selecting a scope never stages a change.');
+  else {
+    summary.append(text(document.createElement('p'), `${rewardsEditor.edit.operation} · ${selected.fileName} → ${selected.rewardPath}${rewardsEditor.edit.field ? `.${rewardsEditor.edit.field}` : ''}${rewardsEditor.edit.value != null ? ` · ${rewardText(rewardsEditor.edit.value)}` : ''}`),
+      text(document.createElement('p'), `${ready.length} target${ready.length === 1 ? '' : 's'} would change · VotingPlugin reload required`));
+    plans.forEach(item => summary.append(text(document.createElement('p'), `${nodeIndex.get(item.nodeId)?.displayName || item.nodeId}: ${item.status}`)));
+  }
+  const excluded = plans.some(item => item.status !== 'READY');
+  document.querySelector('#rewards-ack-label').hidden = !rewardsEditor.edit || !excluded;
+  document.querySelector('#rewards-read').disabled = state.busy || !targets.length;
+  document.querySelector('#rewards-retry').disabled = state.busy || !targets.some(target => rewardsEditor.files().some(file => rewardsEditor.record(target.nodeId, file)?.status === 'ERROR'));
+  document.querySelector('#rewards-preview').disabled = state.busy || !ready.length || ready.length > 8;
+  document.querySelector('#rewards-apply').disabled = state.busy || state.previewState !== 'Ready' || excluded && !document.querySelector('#rewards-ack').checked;
+  const preview = document.querySelector('#rewards-preview-results'); preview.replaceChildren();
+  if (!state.previews.length) text(preview, state.previewState === 'Stale' ? 'Stale — read and preview again.' : 'Not previewed.');
+  state.previews.forEach(item => {
+    const section = document.createElement('section'); section.className = 'target-operation';
+    section.append(text(document.createElement('h4'), nodeIndex.get(item.nodeId)?.displayName || item.nodeId),
+      text(document.createElement('p'), `${item.status}${item.operationId ? ` · operation ${item.operationId}` : ''}${item.message ? ` · ${item.message}` : ''}`));
+    if (item.status === 'READY') {
+      const change = rewardsEditor.edit;
+      const scope = rewardsEditor.targetScope({nodeId: item.nodeId}).scope;
+      const before = scope?.fields?.[change?.field];
+      const after = change?.operation === 'APPEND_LIST_ENTRY' && Array.isArray(before) ? [...before, change.value]
+        : change?.operation === 'REMOVE_LIST_ENTRY' && Array.isArray(before) ? before.filter(value => value !== change.value)
+          : change?.operation === 'REPLACE_LIST' ? change.value
+          : change?.operation === 'SET_SCALAR' ? change.value : change?.operation === 'REMOVE_REWARD' ? 'Removed' : 'Created';
+      section.append(text(document.createElement('p'), `${selected.fileName} → ${selected.rewardPath}${change?.field ? `.${change.field}` : ''}: ${rewardText(before)} → ${rewardText(after)}`));
+    } else if (item.status === 'SKIP') section.append(text(document.createElement('p'), `Excluded: ${item.reason || 'unavailable'}`));
+    preview.append(section);
+  });
+  const results = document.querySelector('#rewards-results'); results.replaceChildren();
+  if (!state.results.length) text(results, 'No apply performed.');
+  state.results.forEach(item => {
+    const section = document.createElement('section'); section.className = 'target-operation';
+    section.append(text(document.createElement('h4'), nodeIndex.get(item.nodeId)?.displayName || item.nodeId),
+      text(document.createElement('p'), `${item.status} · ${item.confirmed ? 'confirmed by fresh READ' : 'not confirmed'}${item.result?.rolledBack ? ' · previous file restored' : ''}${item.result?.code ? ` · ${item.result.code}` : ''}${item.result?.message ? ` · ${item.result.message}` : ''}${item.message ? ` · ${item.message}` : ''}`));
+    results.append(section);
+  });
+}
+
+rewardsEditor = ControlRewardsEditor.create({
+  targets: () => workspace.managementScope === 'GLOBAL' || !authenticated ? [] : [...workspace.selectedTargetIds].map(id => {
+    const node = nodeIndex.get(id);
+    return {nodeId: id, sessionId: node?.sessionId || '', online: node?.online === true,
+      supported: isBackend(node) && node?.acceptedCapabilities?.includes('config.files.v1') === true,
+      rewardFilesSupported: isBackend(node) && node?.acceptedCapabilities?.includes('config.reward-files.v1') === true};
+  }),
+  context: rewardsContext,
+  active: () => authenticated && tabFromHash() === 'rewards',
+  operation: (path, body) => startConfigurationOperation(path, body, document.querySelector('#rewards-status')),
+  request: (path, body) => authorized(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}),
+  inspect: inspectNamedRewardFiles,
+  changed: renderRewards
+});
+document.querySelector('#rewards-read').addEventListener('click', () => void rewardsEditor.read(true));
+document.querySelector('#rewards-retry').addEventListener('click', () => void rewardsEditor.read(true, true));
+document.querySelector('#rewards-add').addEventListener('click', () => {
+  const selected = rewardsEditor.selected;
+  if (!selected.rewardPath || selected.fileName !== 'VoteSites.yml' || !/^VoteSites\.[A-Za-z0-9_-]{1,64}\.Rewards$/.test(selected.rewardPath)) {
+    text(document.querySelector('#rewards-status'), 'Choose a Vote Site reward scope first. Only an absent inline Rewards section can be created here.'); return;
+  }
+  if (!rewardsEditor.targets().some(target => rewardsEditor.targetScope(target).scope?.status === 'MISSING')) {
+    text(document.querySelector('#rewards-status'), 'This reward already exists on the selected targets. Use an explicit edit operation instead.'); return;
+  }
+  document.querySelector('#rewards-operation').value = 'CREATE_REWARD';
+  document.querySelector('#rewards-field').value = 'Commands';
+  document.querySelector('#rewards-value').focus();
+  text(document.querySelector('#rewards-status'), 'Enter one console command, then stage and preview creation for missing targets. Existing rewards will be excluded.');
+});
+document.querySelector('#rewards-search').addEventListener('input', renderRewards);
+document.querySelector('#rewards-field').addEventListener('change', renderRewards);
+document.querySelector('#rewards-reset').addEventListener('click', () => { document.querySelector('#rewards-ack').checked = false; rewardsEditor.reset(); });
+document.querySelector('#rewards-stage').addEventListener('click', () => {
+  const operation = document.querySelector('#rewards-operation').value;
+  const field = document.querySelector('#rewards-field').value;
+  const raw = document.querySelector('#rewards-value').value;
+  if (['APPEND_LIST_ENTRY', 'REMOVE_LIST_ENTRY', 'REPLACE_LIST'].includes(operation) && field !== 'Commands'
+      || operation === 'SET_SCALAR' && field === 'Commands') {
+    text(document.querySelector('#rewards-status'), 'Choose a field supported by this operation. Commands use append/remove; existing messages and numbers use Set.'); return;
+  }
+  if (operation === 'REMOVE_REWARD' && !window.confirm(`Stage removal of ${rewardsEditor.selected.rewardPath} from present targets? The site and named reward files remain.`)) return;
+  if (operation !== 'REMOVE_REWARD' && operation !== 'REPLACE_LIST' && !raw.trim()) { text(document.querySelector('#rewards-status'), 'Enter an explicit value.'); return; }
+  if (operation === 'REPLACE_LIST' && !window.confirm('Replace the entire Commands list on every eligible target? Existing target-specific commands will be removed. Preview each proposal before applying.')) return;
+  const lines = operation === 'REPLACE_LIST' ? raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : null;
+  if (lines && (lines.length > 100 || lines.some(line => line.length > 500))) { text(document.querySelector('#rewards-status'), 'Use at most 100 commands of 500 characters each.'); return; }
+  if (['APPEND_LIST_ENTRY', 'REMOVE_LIST_ENTRY', 'CREATE_REWARD'].includes(operation) && raw.includes('\n')) { text(document.querySelector('#rewards-status'), 'Enter exactly one command.'); return; }
+  const numericScalar = operation === 'SET_SCALAR' && (['Money', 'Chance'].includes(field) || /^Items\.[A-Za-z0-9_-]{1,64}\.Amount$/.test(field));
+  const value = operation === 'REMOVE_REWARD' ? null : operation === 'REPLACE_LIST' ? lines
+    : numericScalar ? Number(raw) : raw;
+  if (numericScalar && (!Number.isFinite(value) || value < 0)) { text(document.querySelector('#rewards-status'), 'Enter a nonnegative finite number.'); return; }
+  if (operation === 'SET_SCALAR' && /^Items\.[A-Za-z0-9_-]{1,64}\.Amount$/.test(field)
+      && (!Number.isInteger(value) || value < 1 || value > 64)) {
+    text(document.querySelector('#rewards-status'), 'Item Amount must be a whole number from 1 to 64.'); return;
+  }
+  if (operation === 'SET_SCALAR' && /^Items\.[A-Za-z0-9_-]{1,64}\.Material$/.test(field)
+      && !/^[A-Z0-9_]{1,80}$/.test(raw)) {
+    text(document.querySelector('#rewards-status'), 'Enter the exact current Minecraft material name (uppercase letters, digits and underscores).'); return;
+  }
+  document.querySelector('#rewards-ack').checked = false;
+  rewardsEditor.setEdit(operation, operation === 'REMOVE_REWARD' ? null : operation === 'CREATE_REWARD' ? 'Commands' : field, value);
+});
+document.querySelector('#rewards-preview').addEventListener('click', () => { document.querySelector('#rewards-ack').checked = false; void rewardsEditor.preview(); });
+document.querySelector('#rewards-apply').addEventListener('click', () => void rewardsEditor.apply(document.querySelector('#rewards-ack').checked));
+document.querySelector('#rewards-ack').addEventListener('change', renderRewards);
+document.querySelector('#rewards-open-yaml').addEventListener('click', () => {
+  const selected = rewardsEditor.selected;
+  if (selected.fileName.startsWith('Rewards/') && ![...configurationFile.options].some(option => option.value === selected.fileName)) {
+    const option = document.createElement('option'); option.value = selected.fileName;
+    option.textContent = selected.fileName; configurationFile.append(option);
+  }
+  setActiveTab('configurations', true); setConfigView('yaml');
+  if (configurationFile.value !== selected.fileName) { configurationFile.value = selected.fileName; configurationFile.dispatchEvent(new Event('input')); }
+});
+document.querySelector('#vote-sites-health-refresh').addEventListener('click', () => void refreshVoteSiteObservations());
+
 refresh.addEventListener('click', loadNodes);
 refreshDashboardButton.addEventListener('click', () => refreshDashboard());
 previousPage.addEventListener('click', () => {

@@ -93,6 +93,45 @@ class InspectionOperationsTest {
         assertEquals("CAPABILITY_LOST", result.result().code());
     }
 
+    @Test void namedRewardInventoryRequiresBothInspectionAndRewardFileCapabilities() {
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        InspectionOperations operations = new InspectionOperations(registry, clock);
+        InspectionQuery query = new InspectionQuery("reward-file-inventory", Map.of());
+        assertEquals("NODE_UNAVAILABLE", assertThrows(ValidationException.class,
+                () -> operations.create("backend-a", query)).code());
+
+        register(session, Set.of(InspectionQuery.CAPABILITY, InspectionQuery.REWARD_FILE_CAPABILITY));
+        UUID id = operations.create("backend-a", query).inspectionId();
+        registry.heartbeat("backend-a", new Heartbeat(session, 1, Set.of(InspectionQuery.CAPABILITY), Set.of()));
+        assertNull(operations.claim("backend-a", session));
+        assertEquals("CAPABILITY_LOST", operations.get(id).result().code());
+    }
+
+    @Test void namedRewardInventoryRejectsUnboundedOrUnsafeRemoteResults() {
+        register(session, Set.of(InspectionQuery.CAPABILITY, InspectionQuery.REWARD_FILE_CAPABILITY));
+        InspectionOperations operations = new InspectionOperations(registry, clock);
+        InspectionQuery query = new InspectionQuery("reward-file-inventory", Map.of());
+        UUID id = operations.create("backend-a", query).inspectionId();
+        InspectionTask task = operations.claim("backend-a", session);
+        ObjectNode data = envelope("reward-file-inventory");
+        data.withObject("result").putArray("files").add("Daily.yml").add("daily.yml");
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(id, "backend-a",
+                        new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId()))).code());
+        data.withObject("result").putArray("files").add("../secret.yml");
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(id, "backend-a",
+                        new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId()))).code());
+        data.withObject("result").putArray("files").add("Daily.yml");
+        data.withObject("result").put("raw", "must not be retained");
+        assertEquals("VALIDATION_ERROR", assertThrows(ValidationException.class,
+                () -> operations.complete(id, "backend-a",
+                        new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId()))).code());
+        data.withObject("result").remove("raw");
+        assertEquals("SUCCEEDED", operations.complete(id, "backend-a",
+                new InspectionTaskResult(session, true, "OK", "done", data, task.attemptId())).state());
+    }
+
     @Test void completionRequiresTheCurrentAttemptAndAnActiveLease() {
         register(session, Set.of(InspectionQuery.CAPABILITY));
         InspectionOperations operations = new InspectionOperations(registry, clock);
