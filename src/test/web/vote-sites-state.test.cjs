@@ -1,6 +1,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {VoteSitesState, ADD_FIELDS} = require('../../main/resources/web/vote-sites-state.js');
+const {VoteSitesState, ADD_FIELDS, parseIntegerField} = require('../../main/resources/web/vote-sites-state.js');
+
+test('Vote Site integer input matches server-side field ranges before staging', () => {
+  assert.equal(parseIntegerField('Priority', '-2147483648'), -2147483648);
+  assert.equal(parseIntegerField('Priority', '2147483647'), 2147483647);
+  assert.equal(parseIntegerField('Priority', '2147483648'), null);
+  assert.equal(parseIntegerField('Priority', '-2147483649'), null);
+  assert.equal(parseIntegerField('DisplayItem.Amount', '1'), 1);
+  assert.equal(parseIntegerField('DisplayItem.Amount', '64'), 64);
+  for (const raw of ['0', '65', '-1', '1.5', '', 'abc']) assert.equal(parseIntegerField('DisplayItem.Amount', raw), null);
+  assert.equal(parseIntegerField('Enabled', '1'), null);
+});
 
 const allFields = (overrides = {}) => Object.assign({Enabled: true, Name: 'Planet', ServiceSite: 'PlanetMinecraft', VoteURL: 'https://vote.example', VoteDelay: 24, Priority: 1, Hidden: false, 'DisplayItem.Material': 'DIAMOND', 'DisplayItem.Amount': 2}, overrides);
 const site = (key, overrides = {}) => {

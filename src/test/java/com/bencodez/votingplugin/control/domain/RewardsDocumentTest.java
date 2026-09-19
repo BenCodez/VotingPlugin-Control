@@ -66,6 +66,57 @@ class RewardsDocumentTest {
         String withComment = SOURCE.replace("      - 'say one'", "      - 'say one' # keep");
         assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(withComment, "VoteSites.yml",
                 "VoteSites.Alpha.Rewards", new RewardsDocument.Edit("REPLACE_LIST", "Commands", List.of("changed"))));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(withComment, "VoteSites.yml",
+                "VoteSites.Alpha.Rewards", new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say one")));
+        String hashInCommand = SOURCE.replace("      - 'say one'", "      - 'say # one'");
+        assertFalse(RewardsDocument.patch(hashInCommand, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say # one")).contains("say # one"));
+    }
+
+    @Test void multilineAndFlowCommandsRemainAdvancedAndCannotBePartiallyRemoved() {
+        String multiline = SOURCE.replace("      - 'say one'\n", "      - >\n        say one\n        continued\n");
+        String path = "VoteSites.Alpha.Rewards";
+        RewardsDocument.Scope scope = RewardsDocument.inventory(multiline, "VoteSites.yml").get(0);
+        assertFalse(scope.fields().containsKey("Commands"));
+        assertTrue(scope.advancedKeys().contains("Commands"));
+        for (RewardsDocument.Edit edit : List.of(
+                new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say one continued\n"),
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say three"),
+                new RewardsDocument.Edit("REPLACE_LIST", "Commands", List.of("say replacement")))) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> RewardsDocument.patch(multiline, "VoteSites.yml", path, edit));
+        }
+        String changed = RewardsDocument.patch(multiline, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Money", 5));
+        assertTrue(changed.contains("      - >\n        say one\n        continued\n"));
+
+        String flow = SOURCE.replace("Commands:\n      - 'say one'\n      - 'say two'", "Commands: ['say one', 'say two']");
+        assertTrue(RewardsDocument.inventory(flow, "VoteSites.yml").get(0).advancedKeys().contains("Commands"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(flow, "VoteSites.yml", path,
+                new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say one")));
+        String escaped = SOURCE.replace("      - 'say one'", "      - \"say one\\ncontinued\"");
+        assertEquals(List.of("say one\ncontinued", "say two"),
+                RewardsDocument.inventory(escaped, "VoteSites.yml").get(0).fields().get("Commands"));
+        assertFalse(RewardsDocument.patch(escaped, "VoteSites.yml", path,
+                new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say one\ncontinued")).contains("say one"));
+
+        String multilineMessage = SOURCE.replace("Player: 'hello'", "Player: >\n          hello\n          continued");
+        RewardsDocument.Scope messageScope = RewardsDocument.inventory(multilineMessage, "VoteSites.yml").get(0);
+        assertFalse(messageScope.fields().containsKey("Messages.Player"));
+        assertTrue(messageScope.advancedKeys().contains("Messages.Player"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(multilineMessage, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Messages.Player", "replacement")));
+
+        String multilineMoney = SOURCE.replace("      Unknown: preserve # important", "      Money: !!int >-\n        10\n      Unknown: preserve # important");
+        RewardsDocument.Scope moneyScope = RewardsDocument.inventory(multilineMoney, "VoteSites.yml").get(0);
+        assertFalse(moneyScope.fields().containsKey("Money"));
+        assertTrue(moneyScope.advancedKeys().contains("Money"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(multilineMoney, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Money", 20)));
+        String multilineAmount = SOURCE.replace("          Amount: 2", "          Amount: !!int >-\n            2");
+        assertFalse(RewardsDocument.inventory(multilineAmount, "VoteSites.yml").get(0).fields().containsKey("Items.diamond.Amount"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(multilineAmount, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Items.diamond.Amount", 3)));
     }
 
     @Test void emptyCommandsCanBeRepopulatedAfterExplicitRemovalOrReplacement() {

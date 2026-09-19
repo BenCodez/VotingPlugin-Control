@@ -12,6 +12,15 @@
   const ADD_FIELDS = ['Enabled', 'Name', 'ServiceSite', 'VoteURL', 'VoteDelay', 'Priority', 'Hidden',
     'DisplayItem.Material', 'DisplayItem.Amount'];
 
+  function parseIntegerField(path, raw) {
+    if (typeof raw !== 'string' || !/^-?(0|[1-9][0-9]*)$/.test(raw)) return null;
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value)) return null;
+    if (path === 'Priority') return value >= -2147483648 && value <= 2147483647 ? value : null;
+    if (path === 'DisplayItem.Amount') return value >= 1 && value <= 64 ? value : null;
+    return null;
+  }
+
   function text(value) { return typeof value === 'string' ? value : ''; }
   function clone(value) {
     if (value === undefined) return undefined;
@@ -255,5 +264,5 @@
     }
   }
 
-  return {VoteSitesState, ADD_FIELDS};
+  return {VoteSitesState, ADD_FIELDS, parseIntegerField};
 }));

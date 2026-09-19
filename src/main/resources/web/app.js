@@ -6267,10 +6267,10 @@ function voteSiteAddValues() {
     ServiceSite: document.querySelector('#vote-site-add-service').value,
     VoteURL: document.querySelector('#vote-site-add-url').value,
     VoteDelay: document.querySelector('#vote-site-add-delay').value,
-    Priority: Number(document.querySelector('#vote-site-add-priority').value),
+    Priority: ControlVoteSites.parseIntegerField('Priority', document.querySelector('#vote-site-add-priority').value),
     Hidden: document.querySelector('#vote-site-add-hidden').checked,
     'DisplayItem.Material': document.querySelector('#vote-site-add-material').value,
-    'DisplayItem.Amount': Number(document.querySelector('#vote-site-add-amount').value)};
+    'DisplayItem.Amount': ControlVoteSites.parseIntegerField('DisplayItem.Amount', document.querySelector('#vote-site-add-amount').value)};
 }
 
 function updateVoteSiteAddConflicts() {
@@ -6541,9 +6541,8 @@ document.querySelector('#vote-site-add-form').addEventListener('submit', event =
       || existing.length && missing.length && !window.confirm(`Site ${key} exists on ${existing.length} target(s) and is missing on ${missing.length}. Explicit choice: ${policy}. Continue to preview only?`)) return;
   if (!missing.length && policy !== 'existing' && policy !== 'both') return;
   const fields = voteSiteAddValues();
-  if (!Number.isInteger(fields.Priority) || !Number.isInteger(fields['DisplayItem.Amount'])
-      || fields['DisplayItem.Amount'] < 1 || fields['DisplayItem.Amount'] > 64) {
-    text(document.querySelector('#vote-site-add-conflicts'), 'Priority must be an integer and DisplayItem.Amount must be 1–64.'); return;
+  if (fields.Priority === null || fields['DisplayItem.Amount'] === null) {
+    text(document.querySelector('#vote-site-add-conflicts'), 'Priority must be a signed 32-bit integer and DisplayItem.Amount must be 1–64.'); return;
   }
   voteSitesEditor.beginAdd(key, fields, policy);
   document.querySelector('#vote-site-partial-choice').value = policy === 'cancel' ? 'existing' : policy;
@@ -6566,11 +6565,11 @@ VOTE_SITE_FIELDS.forEach(field => {
       if (value !== 'true' && value !== 'false') return;
       value = value === 'true';
     } else if (field.type === 'integer') {
-      if (!/^-?(0|[1-9][0-9]*)$/.test(value)) {
-        text(document.querySelector('#vote-sites-status'), `${field.label} must be a whole number.`); return;
+      value = ControlVoteSites.parseIntegerField(field.path, value);
+      if (value === null) {
+        voteSiteFieldInput(field, voteSitesEditor.model.aggregateField(field.path));
+        text(document.querySelector('#vote-sites-status'), `${field.label} is outside its supported integer range; the last staged value was retained.`); return;
       }
-      value = Number(value);
-      if (!Number.isSafeInteger(value)) { text(document.querySelector('#vote-sites-status'), `${field.label} is outside the supported integer range.`); return; }
     }
     document.querySelector('#vote-site-ack').checked = false;
     voteSitesEditor.edit(field.path, value);

@@ -125,7 +125,7 @@ public final class RewardsDocument {
         }
         if (!(current instanceof SequenceNode sequence) || sequence.getFlowStyle() != DumperOptions.FlowStyle.BLOCK
                 || sequence.getValue().isEmpty() || sequence.getValue().size() > MAX_LIST) throw invalid();
-        for (Node node : sequence.getValue()) if (!(node instanceof ScalarNode scalar) || !Tag.STR.equals(scalar.getTag())) throw invalid();
+        for (Node node : sequence.getValue()) if (!simpleCommandScalar(node)) throw invalid();
         if ("REPLACE_LIST".equals(edit.operation())) {
             if (!(edit.value() instanceof List<?> requested) || requested.size() > MAX_LIST) throw invalid();
             List<String> replacement = new ArrayList<>();
@@ -155,9 +155,13 @@ public final class RewardsDocument {
         if ("REMOVE_LIST_ENTRY".equals(edit.operation())) {
             List<Node> matches = sequence.getValue().stream().filter(node -> entry.equals(((ScalarNode) node).getValue())).toList();
             if (matches.size() != 1) throw invalid(); // duplicates need an explicit index, never guess
-            int start = lineStart(content, offset(content, matches.get(0).getStartMark().getIndex()));
+            Node selected = matches.get(0);
+            int start = lineStart(content, offset(content, selected.getStartMark().getIndex()));
             int end = afterLine(content, start);
             if (!content.substring(start, end).stripLeading().startsWith("-")) throw invalid();
+            // The simple operation removes one physical line. An inline note after
+            // the scalar is not part of the command value and must not be lost.
+            if (content.substring(offset(content, selected.getEndMark().getIndex()), end).contains("#")) throw invalid();
             if (sequence.getValue().size() == 1) {
                 int keyStart = lineStart(content, offset(content, field.getKeyNode().getStartMark().getIndex()));
                 if (content.substring(keyStart, end).contains("#")) throw invalid();
@@ -244,10 +248,13 @@ public final class RewardsDocument {
             else if ("Messages".equals(name) && value instanceof MappingNode messages) {
                 for (NodeTuple message : messages.getValue()) {
                     String label = key(message.getKeyNode());
-                    if (Set.of("Player", "Broadcast").contains(label) && message.getValueNode() instanceof ScalarNode scalar && Tag.STR.equals(scalar.getTag())) fields.put("Messages." + label, scalar.getValue());
+                    if (Set.of("Player", "Broadcast").contains(label) && message.getValueNode() instanceof ScalarNode scalar
+                            && Tag.STR.equals(scalar.getTag()) && oneSourceLine(scalar)) fields.put("Messages." + label, scalar.getValue());
                     else advanced.add("Messages." + label);
                 }
-            } else if (Set.of("Money", "Chance").contains(name) && value instanceof ScalarNode scalar && (Tag.INT.equals(scalar.getTag()) || Tag.FLOAT.equals(scalar.getTag()))) fields.put(name, scalar.getValue());
+            } else if (Set.of("Money", "Chance").contains(name) && value instanceof ScalarNode scalar
+                    && (Tag.INT.equals(scalar.getTag()) || Tag.FLOAT.equals(scalar.getTag())) && oneSourceLine(scalar))
+                fields.put(name, scalar.getValue());
             else if ("Items".equals(name) && value instanceof MappingNode items && block(items)) {
                 addItemFields(fields, items);
                 advanced.add(name); // metadata and unsupported item shapes remain Advanced-only
@@ -273,13 +280,24 @@ public final class RewardsDocument {
     }
 
     private static List<String> stringList(SequenceNode node) {
-        if (node.getValue().size() > MAX_LIST) return null;
+        if (node.getValue().size() > MAX_LIST || (node.getFlowStyle() != DumperOptions.FlowStyle.BLOCK
+                && !node.getValue().isEmpty())) return null;
         List<String> result = new ArrayList<>();
         for (Node child : node.getValue()) {
-            if (!(child instanceof ScalarNode scalar) || !Tag.STR.equals(scalar.getTag())) return null;
+            if (!simpleCommandScalar(child)) return null;
+            ScalarNode scalar = (ScalarNode) child;
             result.add(scalar.getValue());
         }
         return result;
+    }
+
+    private static boolean simpleCommandScalar(Node node) {
+        return node instanceof ScalarNode scalar && Tag.STR.equals(scalar.getTag())
+                && oneSourceLine(scalar);
+    }
+
+    private static boolean oneSourceLine(ScalarNode scalar) {
+        return scalar.getStartMark().getLine() == scalar.getEndMark().getLine();
     }
 
     /**
@@ -292,9 +310,11 @@ public final class RewardsDocument {
             String itemKey = key(item.getKeyNode());
             if (!ITEM_KEY.matcher(itemKey).matches() || !(item.getValueNode() instanceof MappingNode itemMap) || !block(itemMap)) continue;
             Node material = child(itemMap, "Material");
-            if (material instanceof ScalarNode scalar && Tag.STR.equals(scalar.getTag())) fields.put("Items." + itemKey + ".Material", scalar.getValue());
+            if (material instanceof ScalarNode scalar && Tag.STR.equals(scalar.getTag()) && oneSourceLine(scalar))
+                fields.put("Items." + itemKey + ".Material", scalar.getValue());
             Node amount = child(itemMap, "Amount");
-            if (amount instanceof ScalarNode scalar && Tag.INT.equals(scalar.getTag())) fields.put("Items." + itemKey + ".Amount", scalar.getValue());
+            if (amount instanceof ScalarNode scalar && Tag.INT.equals(scalar.getTag()) && oneSourceLine(scalar))
+                fields.put("Items." + itemKey + ".Amount", scalar.getValue());
         }
     }
 
