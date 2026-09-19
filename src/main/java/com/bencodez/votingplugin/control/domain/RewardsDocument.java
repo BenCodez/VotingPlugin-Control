@@ -1,6 +1,7 @@
 package com.bencodez.votingplugin.control.domain;
 
 import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -25,6 +26,9 @@ public final class RewardsDocument {
     private static final int MAX_SOURCE = 512 * 1024;
     private static final int MAX_REWARDS = 200;
     private static final int MAX_LIST = 100;
+    private static final int MAX_STRUCTURE_KEY_BYTES = 128;
+    private static final int MAX_STRUCTURE_PATH_BYTES = 512;
+    private static final int MAX_STRUCTURE_TOTAL_BYTES = 16 * 1024;
     private static final Pattern SITE_KEY = Pattern.compile("[A-Za-z0-9_-]{1,64}");
     private static final Pattern ITEM_KEY = Pattern.compile("[A-Za-z0-9_-]{1,64}");
     private static final Pattern MATERIAL = Pattern.compile("[A-Z0-9_]{1,80}");
@@ -273,20 +277,38 @@ public final class RewardsDocument {
             }
         }
         List<String> tree = new ArrayList<>();
-        structure(reward, "", 0, tree);
+        structure(reward, "", 0, tree, new StructureBudget());
         result.add(new Scope(path, reward.getValue().isEmpty() ? "EMPTY" : "PRESENT", editable && block(reward),
                 Map.copyOf(fields), List.copyOf(advanced), List.copyOf(tree)));
     }
 
-    private static void structure(Node node, String prefix, int depth, List<String> result) {
+    private static void structure(Node node, String prefix, int depth, List<String> result, StructureBudget budget) {
         if (depth > 8 || result.size() > 120) throw invalid();
         if (!(node instanceof MappingNode mapping)) return;
         for (NodeTuple tuple : mapping.getValue()) {
-            String name = key(tuple.getKeyNode());
+            String name = boundedStructureKey(key(tuple.getKeyNode()));
             String path = prefix.isEmpty() ? name : prefix + "." + name;
+            if (utf8Bytes(path) > MAX_STRUCTURE_PATH_BYTES) throw invalid();
+            budget.add(path);
             result.add(tuple.getValueNode() instanceof SequenceNode ? path + "[]" : path);
             if (result.size() > 120) throw invalid();
-            if (tuple.getValueNode() instanceof MappingNode child) structure(child, path, depth + 1, result);
+            if (tuple.getValueNode() instanceof MappingNode child) structure(child, path, depth + 1, result, budget);
+        }
+    }
+
+    private static String boundedStructureKey(String value) {
+        if (utf8Bytes(value) > MAX_STRUCTURE_KEY_BYTES) throw invalid();
+        return value;
+    }
+
+    private static int utf8Bytes(String value) { return value.getBytes(StandardCharsets.UTF_8).length; }
+
+    private static final class StructureBudget {
+        private int bytes;
+
+        void add(String path) {
+            bytes += utf8Bytes(path);
+            if (bytes > MAX_STRUCTURE_TOTAL_BYTES) throw invalid();
         }
     }
 

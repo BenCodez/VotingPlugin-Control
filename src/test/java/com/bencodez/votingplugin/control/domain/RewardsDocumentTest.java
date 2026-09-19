@@ -30,6 +30,18 @@ class RewardsDocumentTest {
         assertFalse(scopes.get(0).toString().contains("123"));
     }
 
+    @Test void inventoryRejectsStructurePathsThatWouldExpandBeyondTheBoundedTypedResponse() {
+        String key = "x".repeat(129);
+        assertThrows(IllegalArgumentException.class,
+                () -> RewardsDocument.inventory("VoteSites:\n  Alpha:\n    Rewards:\n      " + key + ": value\n", "VoteSites.yml"));
+
+        StringBuilder source = new StringBuilder("VoteSites:\n  Alpha:\n    Rewards:\n      " + "p".repeat(120) + ":\n");
+        for (int index = 0; index < 120; index++) {
+            source.append("        ").append("c".repeat(125)).append(String.format("%03d", index)).append(": value\n");
+        }
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.inventory(source.toString(), "VoteSites.yml"));
+    }
+
     @Test void appendAndRemoveCommandsKeepDifferentTargetDocumentsIndependent() {
         String a = RewardsDocument.patch(SOURCE, "VoteSites.yml", "VoteSites.Alpha.Rewards",
                 new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say three"));

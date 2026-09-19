@@ -190,6 +190,16 @@ test('named reward inventory is bounded, per-target, and read without writes', a
   assert.deepEqual(namedReads.map(([, body]) => body.configuration.fileName).sort(), ['Rewards/StandardVote.yml']);
 });
 
+test('named reward discovery requires the inspection capability supplied by the production adapter', async () => {
+  const node = {nodeId: 'a', sessionId: 'sa', online: true, rewardFilesSupported: true, rewardFileInventorySupported: false};
+  const f = fixture([node]); let inspections = 0;
+  f.adapter.inspect = async () => { inspections++; return {files: ['StandardVote.yml']}; };
+  const editor = create(f.adapter); await editor.read();
+  assert.equal(inspections, 0);
+  assert.equal((await editor.inventory(node)).status, 'UNSUPPORTED');
+  assert.equal(editor.files().includes('Rewards/StandardVote.yml'), false);
+});
+
 test('named reward read and preview use reward-file capability without managed-file capability', async () => {
   const node = {nodeId: 'a', sessionId: 'sa', online: true, supported: false, rewardFilesSupported: true};
   const f = fixture([node]);

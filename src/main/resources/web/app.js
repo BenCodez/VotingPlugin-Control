@@ -6641,7 +6641,13 @@ function chooseRewardScope(fileName, rewardPath) {
 
 function rewardsContext() {
   return JSON.stringify({generation: authenticationGeneration, scope: workspace.managementScope,
-    targets: [...workspace.selectedTargetIds].map(id => [id, nodeIndex.get(id)?.sessionId || ''])});
+    targets: [...workspace.selectedTargetIds].map(id => {
+      const node = nodeIndex.get(id);
+      const capabilities = node?.acceptedCapabilities || [];
+      return [id, node?.sessionId || '', node?.online === true, isBackend(node),
+        capabilities.includes('config.files.v1'), capabilities.includes('config.reward-files.v1'),
+        capabilities.includes('data.inspect.v1')];
+    })});
 }
 
 async function inspectNamedRewardFiles(target) {
@@ -6686,7 +6692,8 @@ function renderRewards() {
     const files = rewardsEditor.files().map(file => rewardsEditor.record(target.nodeId, file));
     const loaded = files.filter(item => item?.status === 'AVAILABLE').length;
     const failed = files.filter(item => item?.status === 'ERROR').length;
-    const named = target.rewardFilesSupported ? '' : ' · named files unsupported';
+    const named = !target.rewardFilesSupported ? ' · named files unsupported'
+      : !target.rewardFileInventorySupported ? ' · named file discovery unsupported' : '';
     targetBox.append(text(document.createElement('span'), `${nodeIndex.get(target.nodeId)?.displayName || target.nodeId}: ${loaded}/${files.length} files loaded${failed ? ` · ${failed} failed` : ''}${named}`));
   });
   text(document.querySelector('#rewards-status'), state.error || state.message || (state.busy ? 'Reading…' : ''));
@@ -6807,7 +6814,9 @@ rewardsEditor = ControlRewardsEditor.create({
     const node = nodeIndex.get(id);
     return {nodeId: id, sessionId: node?.sessionId || '', online: node?.online === true,
       supported: isBackend(node) && node?.acceptedCapabilities?.includes('config.files.v1') === true,
-      rewardFilesSupported: isBackend(node) && node?.acceptedCapabilities?.includes('config.reward-files.v1') === true};
+      rewardFilesSupported: isBackend(node) && node?.acceptedCapabilities?.includes('config.reward-files.v1') === true,
+      rewardFileInventorySupported: isBackend(node) && node?.acceptedCapabilities?.includes('config.reward-files.v1') === true
+        && node?.acceptedCapabilities?.includes('data.inspect.v1') === true};
   }),
   context: rewardsContext,
   active: () => authenticated && tabFromHash() === 'rewards',

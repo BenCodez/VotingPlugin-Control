@@ -32,6 +32,12 @@
     function current(captured, serial) { return String(adapter.context()) === captured && generation === serial; }
     function key(nodeId, fileName) { return nodeId + ':' + fileName; }
     function namedFile(fileName) { return typeof fileName === 'string' && fileName.startsWith(REWARD_DIR); }
+    // Listing named files uses the read-only inspection lane in addition to the
+    // reward-file capability. Older adapters omit this field, where the
+    // reward-file flag remains the backwards-compatible indication.
+    function namedInventorySupported(target) {
+      return target.rewardFilesSupported === true && target.rewardFileInventorySupported !== false;
+    }
     function displayFile(fileName) { return namedFile(fileName) ? fileName.slice(REWARD_DIR.length) : fileName; }
     function validNamedFile(fileName) { return /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}\.yml$/.test(fileName); }
     function release(items) { return Promise.all((items || []).filter(item => item.operationId && item.approvalToken).map(item =>
@@ -60,8 +66,8 @@
     async function inventory(target, force) {
       sync();
       const nodeId = id(target); if (!nodeId) return {status: 'ERROR', files: [], message: 'Target has no node ID'};
-      if (target.rewardFilesSupported !== true) {
-        const unsupported = {status: 'UNSUPPORTED', files: [], message: 'Named reward files are unsupported by this connector', sessionId: target.sessionId};
+      if (!namedInventorySupported(target)) {
+        const unsupported = {status: 'UNSUPPORTED', files: [], message: 'Named reward file discovery is unsupported by this connector', sessionId: target.sessionId};
         inventories.set(nodeId, unsupported); return unsupported;
       }
       const cached = inventories.get(nodeId);
