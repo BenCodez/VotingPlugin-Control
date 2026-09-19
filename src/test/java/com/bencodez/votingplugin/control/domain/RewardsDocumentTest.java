@@ -42,6 +42,23 @@ class RewardsDocumentTest {
         assertThrows(IllegalArgumentException.class, () -> RewardsDocument.inventory(source.toString(), "VoteSites.yml"));
     }
 
+    @Test void discoveredRewardScopePathsUseTheSameResponseBoundsAsTheirStructure() {
+        String key = "n".repeat(128);
+        String overlongPath = key + ":\n  " + key + ":\n    " + key + ":\n      " + key + ":\n        Rewards: {}\n";
+        assertThrows(IllegalArgumentException.class,
+                () -> RewardsDocument.inventory(overlongPath, "SpecialRewards.yml"));
+
+        StringBuilder cumulative = new StringBuilder();
+        for (int index = 0; index < 50; index++) {
+            String suffix = String.format("%03d", index);
+            cumulative.append("a".repeat(125)).append(suffix).append(":\n  ")
+                    .append("b".repeat(125)).append(suffix).append(":\n    ")
+                    .append("c".repeat(125)).append(suffix).append(":\n      Rewards: {}\n");
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> RewardsDocument.inventory(cumulative.toString(), "SpecialRewards.yml"));
+    }
+
     @Test void appendAndRemoveCommandsKeepDifferentTargetDocumentsIndependent() {
         String a = RewardsDocument.patch(SOURCE, "VoteSites.yml", "VoteSites.Alpha.Rewards",
                 new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say three"));
@@ -83,6 +100,9 @@ class RewardsDocumentTest {
         String hashInCommand = SOURCE.replace("      - 'say one'", "      - 'say # one'");
         assertFalse(RewardsDocument.patch(hashInCommand, "VoteSites.yml", "VoteSites.Alpha.Rewards",
                 new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say # one")).contains("say # one"));
+        String replacedHash = RewardsDocument.patch(hashInCommand, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("REPLACE_LIST", "Commands", List.of("say changed")));
+        assertTrue(replacedHash.contains("- \"say changed\""));
     }
 
     @Test void multilineAndFlowCommandsRemainAdvancedAndCannotBePartiallyRemoved() {

@@ -61,7 +61,7 @@ public final class RewardsDocument {
             }
             addScope(result, "EverySiteReward", child(root, "EverySiteReward"), false);
         } else if ("SpecialRewards.yml".equals(fileName) || "Config.yml".equals(fileName)) {
-            walkRewards(result, root, "", 0);
+            walkRewards(result, root, "", 0, new StructureBudget());
             if ("SpecialRewards.yml".equals(fileName) && child(root, "AnySiteRewards") == null)
                 addScope(result, "AnySiteRewards", null, false);
         } else throw invalid();
@@ -145,7 +145,7 @@ public final class RewardsDocument {
             }
             int start = lineStart(content, offset(content, field.getKeyNode().getStartMark().getIndex()));
             int end = afterLine(content, offset(content, sequence.getValue().get(sequence.getValue().size() - 1).getEndMark().getIndex()));
-            if (content.substring(start, end).contains("#")) throw invalid(); // comments inside this field must not be erased
+            if (containsCommentOutsideScalars(content, start, end, sequence.getValue())) throw invalid();
             int keyIndent = field.getKeyNode().getStartMark().getColumn();
             int itemIndent = lineIndent(content, offset(content, sequence.getValue().get(0).getStartMark().getIndex()));
             StringBuilder text = new StringBuilder(spaces(keyIndent)).append(edit.field()).append(replacement.isEmpty() ? ": []\n" : ":\n");
@@ -231,14 +231,19 @@ public final class RewardsDocument {
         return fileName != null && fileName.matches("Rewards/[A-Za-z0-9][A-Za-z0-9_-]{0,99}\\.yml");
     }
 
-    private static void walkRewards(List<Scope> result, MappingNode mapping, String prefix, int depth) {
+    private static void walkRewards(List<Scope> result, MappingNode mapping, String prefix, int depth,
+            StructureBudget budget) {
         if (depth > 12 || result.size() >= MAX_REWARDS) throw invalid();
         for (NodeTuple tuple : mapping.getValue()) {
-            String name = key(tuple.getKeyNode());
+            String name = boundedStructureKey(key(tuple.getKeyNode()));
             String path = prefix.isEmpty() ? name : prefix + "." + name;
-            if (Set.of("Rewards", "EverySiteReward", "AnySiteRewards", "LostRewards").contains(name))
+            if (Set.of("Rewards", "EverySiteReward", "AnySiteRewards", "LostRewards").contains(name)) {
+                if (utf8Bytes(path) > MAX_STRUCTURE_PATH_BYTES) throw invalid();
+                budget.add(path);
                 addScope(result, path, tuple.getValueNode(), false);
-            if (tuple.getValueNode() instanceof MappingNode child && block(child)) walkRewards(result, child, path, depth + 1);
+            }
+            if (tuple.getValueNode() instanceof MappingNode child && block(child))
+                walkRewards(result, child, path, depth + 1, budget);
         }
     }
 
@@ -409,6 +414,19 @@ public final class RewardsDocument {
     private static int lineStart(String source, int at) { int pos = Math.min(at, source.length()); while (pos > 0 && source.charAt(pos - 1) != '\n') pos--; return pos; }
     private static int afterLine(String source, int at) { int end = source.indexOf('\n', lineStart(source, at)); return end < 0 ? source.length() : end + 1; }
     private static int lineIndent(String source, int at) { int pos = lineStart(source, at); while (pos < source.length() && source.charAt(pos) == ' ') pos++; return pos - lineStart(source, at); }
+    /** Replacing a list may discard comments, but hashes inside quoted command values are data. */
+    private static boolean containsCommentOutsideScalars(String source, int start, int end, List<Node> scalars) {
+        for (int hash = source.indexOf('#', start); hash >= 0 && hash < end; hash = source.indexOf('#', hash + 1)) {
+            boolean scalarValue = false;
+            for (Node scalar : scalars) {
+                int scalarStart = offset(source, scalar.getStartMark().getIndex());
+                int scalarEnd = offset(source, scalar.getEndMark().getIndex());
+                if (hash >= scalarStart && hash < scalarEnd) { scalarValue = true; break; }
+            }
+            if (!scalarValue) return true;
+        }
+        return false;
+    }
     private static int blockEnd(String source, int at, int parentIndent) {
         while (at < source.length()) {
             int end = afterLine(source, at); int cursor = at;

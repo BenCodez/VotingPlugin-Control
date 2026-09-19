@@ -6856,6 +6856,10 @@ document.querySelector('#rewards-stage').addEventListener('click', () => {
   if (operation === 'REPLACE_LIST' && !window.confirm('Replace the entire Commands list on every eligible target? Existing target-specific commands will be removed. Preview each proposal before applying.')) return;
   const lines = operation === 'REPLACE_LIST' ? raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : null;
   if (lines && (lines.length > 100 || lines.some(line => line.length > 500))) { text(document.querySelector('#rewards-status'), 'Use at most 100 commands of 500 characters each.'); return; }
+  if (['APPEND_LIST_ENTRY', 'REMOVE_LIST_ENTRY', 'CREATE_REWARD'].includes(operation)
+      || operation === 'SET_SCALAR' && ['Messages.Player', 'Messages.Broadcast'].includes(field)) {
+    if (raw.length > 500) { text(document.querySelector('#rewards-status'), 'Use at most 500 characters.'); return; }
+  }
   if (['APPEND_LIST_ENTRY', 'REMOVE_LIST_ENTRY', 'CREATE_REWARD'].includes(operation) && raw.includes('\n')) { text(document.querySelector('#rewards-status'), 'Enter exactly one command.'); return; }
   const numericScalar = operation === 'SET_SCALAR' && (['Money', 'Chance'].includes(field) || /^Items\.[A-Za-z0-9_-]{1,64}\.Amount$/.test(field));
   const value = operation === 'REMOVE_REWARD' ? null : operation === 'REPLACE_LIST' ? lines

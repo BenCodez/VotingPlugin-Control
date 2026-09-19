@@ -86,3 +86,32 @@ test('selecting the current reward scope leaves its draft without a discard prom
   assert.equal(f.editor.edit.value, 'say staged');
   assert.equal(f.calls.some(([name]) => name === 'confirm'), false);
 });
+
+test('Rewards staging rejects oversized scalar and single-command values before creating an edit', () => {
+  const listener = new Map(); const values = new Map(); const status = {};
+  const element = selector => values.get(selector) || (selector === '#rewards-status' ? status : {
+    value: '', checked: false, addEventListener: (name, handler) => listener.set(`${selector}:${name}`, handler)
+  });
+  const editor = {selected: {rewardPath: 'VoteSites.Alpha.Rewards'}, setEdit: (...args) => { editor.edit = args; }};
+  const context = {
+    rewardsEditor: editor,
+    window: {confirm: () => true},
+    document: {querySelector: element},
+    text: (node, value) => { node.textContent = value; return node; }
+  };
+  const stage = section("document.querySelector('#rewards-stage').addEventListener", "document.querySelector('#rewards-preview')");
+  vm.createContext(context); vm.runInContext(stage, context);
+  const click = listener.get('#rewards-stage:click');
+  for (const [operation, field] of [
+    ['APPEND_LIST_ENTRY', 'Commands'], ['REMOVE_LIST_ENTRY', 'Commands'], ['CREATE_REWARD', 'Commands'],
+    ['SET_SCALAR', 'Messages.Player'], ['SET_SCALAR', 'Messages.Broadcast']
+  ]) {
+    values.set('#rewards-operation', {value: operation});
+    values.set('#rewards-field', {value: field});
+    values.set('#rewards-value', {value: 'x'.repeat(501)});
+    values.set('#rewards-ack', {checked: true});
+    editor.edit = null; click();
+    assert.equal(editor.edit, null, `${operation}/${field} must not be staged`);
+    assert.equal(status.textContent, 'Use at most 500 characters.');
+  }
+});
