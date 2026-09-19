@@ -6613,10 +6613,18 @@ document.querySelector('#vote-site-open-yaml').addEventListener('click', () => {
 });
 document.querySelector('#vote-site-edit-rewards').addEventListener('click', () => {
   const key = voteSitesEditor.model.selectedSiteKey;
+  if (!chooseRewardScope('VoteSites.yml', `VoteSites.${key}.Rewards`)) return;
   openWorkspace('rewards');
-  rewardsEditor?.select('VoteSites.yml', `VoteSites.${key}.Rewards`);
   renderRewards();
 });
+
+function chooseRewardScope(fileName, rewardPath) {
+  const current = rewardsEditor.selected;
+  if ((current.fileName !== fileName || current.rewardPath !== rewardPath) && rewardsEditor.edit
+      && !window.confirm('Discard the staged Rewards edit and inspect another reward scope?')) return false;
+  rewardsEditor.select(fileName, rewardPath);
+  return true;
+}
 
 function rewardsContext() {
   return JSON.stringify({generation: authenticationGeneration, scope: workspace.managementScope,
@@ -6678,7 +6686,10 @@ function renderRewards() {
     button.setAttribute('aria-selected', String(scope.fileName === selected.fileName && scope.path === selected.rewardPath));
     const present = targets.filter(target => rewardsEditor.record(target.nodeId, scope.fileName)?.scopes?.some(item => item.path === scope.path && item.status === 'PRESENT')).length;
     button.append(text(document.createElement('strong'), scope.path), text(document.createElement('small'), `${scope.fileName} · ${present}/${targets.length} configured`));
-    button.addEventListener('click', () => { rewardsEditor.select(scope.fileName, scope.path); renderRewards(); void rewardsEditor.read(false); });
+    button.addEventListener('click', () => {
+      if (!chooseRewardScope(scope.fileName, scope.path)) return;
+      renderRewards(); void rewardsEditor.read(false);
+    });
     list.append(button);
   });
   if (!scopes.length) text(list, state.busy ? 'Reading reward scopes…' : 'No reward scopes match, or no successful reads are available.');

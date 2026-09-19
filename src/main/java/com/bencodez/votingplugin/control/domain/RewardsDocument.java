@@ -28,7 +28,7 @@ public final class RewardsDocument {
     private static final Pattern SITE_KEY = Pattern.compile("[A-Za-z0-9_-]{1,64}");
     private static final Pattern ITEM_KEY = Pattern.compile("[A-Za-z0-9_-]{1,64}");
     private static final Pattern MATERIAL = Pattern.compile("[A-Z0-9_]{1,80}");
-    private static final Set<String> EDITABLE_FIELDS = Set.of("Commands", "Commands.Console", "Commands.Player",
+    private static final Set<String> EDITABLE_FIELDS = Set.of("Commands",
             "Messages.Player", "Messages.Broadcast", "Money", "Chance");
 
     private RewardsDocument() { }
@@ -245,7 +245,7 @@ public final class RewardsDocument {
             String name = key(tuple.getKeyNode());
             Node value = tuple.getValueNode();
             if ("Commands".equals(name) && value instanceof SequenceNode list && stringList(list) != null) fields.put(name, stringList(list));
-            else if ("Messages".equals(name) && value instanceof MappingNode messages) {
+            else if ("Messages".equals(name) && value instanceof MappingNode messages && block(messages)) {
                 for (NodeTuple message : messages.getValue()) {
                     String label = key(message.getKeyNode());
                     if (Set.of("Player", "Broadcast").contains(label) && message.getValueNode() instanceof ScalarNode scalar

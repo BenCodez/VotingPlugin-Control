@@ -304,6 +304,42 @@ class RewardsDocumentTest {
         assertTrue(changed.contains("Player: \"new hello\""));
     }
 
+    @Test void flowMessagesAreAdvancedWhileBlockMessagesRemainEditable() {
+        String flow = SOURCE.replace("Messages:\n        Player: 'hello'", "Messages: {Player: 'hello'}");
+        RewardsDocument.Scope scope = RewardsDocument.inventory(flow, "VoteSites.yml").get(0);
+        assertFalse(scope.fields().containsKey("Messages.Player"));
+        assertTrue(scope.advancedKeys().contains("Messages"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(flow, "VoteSites.yml",
+                "VoteSites.Alpha.Rewards", new RewardsDocument.Edit("SET_SCALAR", "Messages.Player", "new hello")));
+
+        String named = "Messages: {Player: 'hello'}\n";
+        RewardsDocument.Scope namedScope = RewardsDocument.inventory(named, "Rewards/StandardVote.yml").get(0);
+        assertFalse(namedScope.fields().containsKey("Messages.Player"));
+        assertTrue(namedScope.advancedKeys().contains("Messages"));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(named, "Rewards/StandardVote.yml", "$",
+                new RewardsDocument.Edit("SET_SCALAR", "Messages.Player", "new hello")));
+        assertEquals("new hello", RewardsDocument.inventory(RewardsDocument.patch(SOURCE, "VoteSites.yml",
+                "VoteSites.Alpha.Rewards", new RewardsDocument.Edit("SET_SCALAR", "Messages.Player", "new hello")),
+                "VoteSites.yml").get(0).fields().get("Messages.Player"));
+    }
+
+    @Test void mappedCommandsStayAdvancedAndCannotBeEditedThroughTypedPreview() {
+        String mapped = SOURCE.replace("Commands:\n      - 'say one'\n      - 'say two'",
+                "Commands:\n        Console: 'say one'\n        Player: 42");
+        RewardsDocument.Scope scope = RewardsDocument.inventory(mapped, "VoteSites.yml").get(0);
+        assertFalse(scope.fields().containsKey("Commands"));
+        assertTrue(scope.advancedKeys().contains("Commands"));
+        for (String field : List.of("Commands.Console", "Commands.Player")) {
+            assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(mapped, "VoteSites.yml",
+                    "VoteSites.Alpha.Rewards", new RewardsDocument.Edit("SET_SCALAR", field, "new command")));
+        }
+        String named = "Commands:\n  Console: 'say one'\n";
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(named, "Rewards/StandardVote.yml", "$",
+                new RewardsDocument.Edit("SET_SCALAR", "Commands.Console", "new command")));
+        assertEquals(List.of("say one", "say two"),
+                RewardsDocument.inventory(SOURCE, "VoteSites.yml").get(0).fields().get("Commands"));
+    }
+
     @Test void itemEditingFailsClosedForUnsupportedOrUnsafeShapes() {
         String path = "VoteSites.Alpha.Rewards";
         assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(SOURCE, "VoteSites.yml", path,
