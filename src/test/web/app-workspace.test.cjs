@@ -198,6 +198,24 @@ test('an empty reconciled workspace replaces stale routes with Home', () => {
   assert.equal(panels[1].hidden, true);
 });
 
+test('node refresh replaces a disappeared inspected-server route without dropping valid targets', () => {
+  assert.match(appSource, /normalizeWorkspaceRouteAfterNodeRefresh\(previousWorkspaceTargets, previousInspectedServerId\)/);
+  const context = harness();
+  context.workspace.setTargets(['lobby']);
+  context.workspace.inspect('gone');
+  context.window.location.hash = '#servers/gone/overview';
+  const previousTargets = [...context.workspace.selectedTargetIds].join('\u0000');
+  const previousInspectedServerId = context.workspace.inspectedServerId;
+  context.workspace.reconcile([backend('lobby')]);
+  context.workspaceHash = tab => tab === 'overview' ? '#workspace/overview' : '#home';
+  vm.runInContext(declaration('normalizeWorkspaceRouteAfterNodeRefresh'), context);
+  run(context, `normalizeWorkspaceRouteAfterNodeRefresh(${JSON.stringify(previousTargets)}, ${JSON.stringify(previousInspectedServerId)})`);
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['lobby']);
+  assert.equal(context.workspace.inspectedServerId, '');
+  assert.equal(context.window.location.hash, '#workspace/overview');
+  assert.deepEqual(context.calls.filter(call => call[0] === 'setActiveTab').at(-1), ['setActiveTab', 'overview', undefined]);
+});
+
 test('ordinaryTargetIds accepts only the readable selected source, including global proxy tools', () => {
   const context = harness();
   context.registryAvailable = true;

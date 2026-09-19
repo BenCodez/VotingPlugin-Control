@@ -1728,6 +1728,20 @@ function applyNavigationRoute() {
   if (route.section === 'rewards') scrollToAnchor(document.querySelector('#reward-builder-card'));
 }
 
+function normalizeWorkspaceRouteAfterNodeRefresh(previousWorkspaceTargets, previousInspectedServerId) {
+  if (previousWorkspaceTargets && !workspace.managementScope) {
+    setActiveTab(tabFromHash());
+    return;
+  }
+  const route = ControlWorkspace.parseRoute(window.location.hash);
+  if (previousInspectedServerId && previousInspectedServerId !== workspace.inspectedServerId
+      && route.inspectedServerId === previousInspectedServerId) {
+    const tab = workspace.managementScope ? 'overview' : 'home';
+    window.history.replaceState(null, '', workspaceHash(tab));
+    setActiveTab(tab);
+  }
+}
+
 function renderScopeOverview() {
   const aggregate = isWorkspaceOverview();
   const source = nodeIndex.get(selectedServerId);
@@ -4026,6 +4040,7 @@ async function loadNodesOnce() {
     nodeIndex = new Map(registry.items.map(node => [node.nodeId, node]));
     registryAvailable = true;
     const previousWorkspaceTargets = [...workspace.selectedTargetIds].join('\u0000');
+    const previousInspectedServerId = workspace.inspectedServerId;
     // The node registry is complete here; truncated refers only to proxy topology.
     workspace.reconcile(registry.items);
     const workspaceTargetsChanged = previousWorkspaceTargets !== [...workspace.selectedTargetIds].join('\u0000');
@@ -4110,7 +4125,7 @@ async function loadNodesOnce() {
     // auto-load runs so a delayed or failed READ cannot expose stale values.
     reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability, false);
     renderNodeViews();
-    if (workspaceTargetsChanged && !workspace.managementScope && previousWorkspaceTargets) setActiveTab(tabFromHash());
+    normalizeWorkspaceRouteAfterNodeRefresh(previousWorkspaceTargets, previousInspectedServerId);
     updatePluginSuggestions();
     updateConfigurationButtons();
     if (suppressNodeAutoLoad === 0) void autoLoadTab(tabFromHash());
