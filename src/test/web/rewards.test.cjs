@@ -43,6 +43,25 @@ test('mixed command lists stay separate and append is one exact dirty operation'
   assert.deepEqual(f.commands.get('a'), ['say a', 'say new']); assert.deepEqual(f.commands.get('b'), ['say b', 'say new']);
   assert.equal(editor.edit, null); assert.equal(editor.state.results.every(item => item.confirmed), true);
 });
+test('mixed scalar and replace-list plans exclude unchanged targets before preview', async () => {
+  const f = fixture(); const originalRequest = f.adapter.request;
+  f.adapter.request = async (path, body) => {
+    const response = await originalRequest(path, body);
+    if (path.endsWith('/state') && body.fileName === 'VoteSites.yml') {
+      response.scopes[0].fields.Money = body.nodeId === 'a' ? '5' : '8';
+    }
+    return response;
+  };
+  const editor = create(f.adapter); await editor.read(); editor.select('VoteSites.yml', 'VoteSites.Alpha.Rewards');
+  editor.setEdit('SET_SCALAR', 'Money', 5);
+  assert.deepEqual(editor.plan().map(item => item.status), ['UNCHANGED', 'READY']);
+  assert.equal(await editor.preview(), true);
+  assert.deepEqual(f.calls.filter(([path]) => path.endsWith('/rewards/preview')).map(([, body]) => body.nodeId), ['b']);
+  editor.setEdit('REPLACE_LIST', 'Commands', ['say a']);
+  assert.deepEqual(editor.plan().map(item => item.status), ['UNCHANGED', 'READY']);
+  assert.equal(await editor.preview(), true);
+  assert.deepEqual(f.calls.filter(([path]) => path.endsWith('/rewards/preview')).map(([, body]) => body.nodeId), ['b', 'b']);
+});
 test('edit and workspace changes dispose preview; revision and reconnect reject apply', async () => {
   const f = fixture(); const editor = create(f.adapter); await editor.read(); editor.select('VoteSites.yml', 'VoteSites.Alpha.Rewards');
   editor.setEdit('APPEND_LIST_ENTRY', 'Commands', 'say new'); await editor.preview(); editor.setEdit('APPEND_LIST_ENTRY', 'Commands', 'say other');

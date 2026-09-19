@@ -226,11 +226,19 @@
         const missingCommands = ['REMOVE_LIST_ENTRY', 'REPLACE_LIST'].includes(edit.operation) && !Array.isArray(commands);
         const ambiguousRemoval = edit.operation === 'REMOVE_LIST_ENTRY' && Array.isArray(commands)
           && commands.filter(value => value === edit.value).length !== 1;
+        // The server rejects a preview whose source-preserving patch does not
+        // change a target. Treat matching scalar/list values as an explicit
+        // exclusion before opening a per-target preview, rather than turning a
+        // mixed workspace into an all-or-nothing failed preview.
+        const unchangedScalar = edit.operation === 'SET_SCALAR' && typeof scope?.fields?.[edit.field] === 'string'
+          && String(scope.fields[edit.field]) === String(edit.value);
+        const unchangedList = edit.operation === 'REPLACE_LIST' && Array.isArray(commands) && same(commands, edit.value);
+        const unchanged = unchangedScalar || unchangedList;
         const status = namedUnsupportedAction ? 'UNSUPPORTED' : info.status !== 'AVAILABLE' ? info.status : !scope ? 'MISSING'
           : !scope.editable ? 'UNSUPPORTED' : edit.operation === 'CREATE_REWARD' ? scope.status === 'MISSING' ? 'READY' : 'CONFLICT'
             : edit.operation === 'REMOVE_REWARD' ? scope.status === 'PRESENT' ? 'READY' : 'UNCHANGED'
               : scope.status !== 'PRESENT' ? 'MISSING' : advancedField || itemFieldMissing || nestedFieldMissing ? 'UNSUPPORTED'
-                : missingCommands ? 'MISSING' : ambiguousRemoval ? 'CONFLICT' : 'READY';
+                : missingCommands ? 'MISSING' : ambiguousRemoval ? 'CONFLICT' : unchanged ? 'UNCHANGED' : 'READY';
         return {nodeId: info.nodeId, status, revision: info.revision, scope};
       });
     }
