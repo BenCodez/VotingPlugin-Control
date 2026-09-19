@@ -294,6 +294,10 @@
       if (current(approved.context, approved.serial)) await read(true);
       if (!current(approved.context, approved.serial)) { applying = false; return false; }
       outcomes.forEach(item => {
+        if (item.status === 'UNCHANGED') {
+          item.confirmed = plan().some(candidate => candidate.nodeId === item.nodeId && candidate.status === 'UNCHANGED');
+          return;
+        }
         const source = record(item.nodeId, approved.selected.fileName);
         const scope = source && source.scopes.find(value => value.path === approved.selected.rewardPath);
         const fieldValue = scope && scope.fields && scope.fields[approved.edit.field];
@@ -306,7 +310,8 @@
                     : approved.edit.operation === 'REPLACE_LIST' ? same(fieldValue, approvedItem.expectedValue)
                   : approved.edit.operation === 'SET_SCALAR' ? same(fieldValue, approved.edit.value) || String(fieldValue) === String(approved.edit.value) : false);
       });
-      applying = false; const complete = !approved.excluded && outcomes.length === approved.items.length && outcomes.every(item => item.confirmed);
+      applying = false; const complete = approved.excludedItems.every(item => item.reason === 'UNCHANGED')
+        && outcomes.length === targets().length && outcomes.every(item => item.confirmed);
       if (complete) edit = null;
       notify({busy: false, previewState: 'Not previewed', previews: [], results: outcomes, ackRequired: false,
         message: complete ? 'Reward changes confirmed from fresh reads' : 'Some targets failed or remain unconfirmed; inspect each result'});

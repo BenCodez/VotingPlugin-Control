@@ -167,8 +167,15 @@ class RewardsDocumentTest {
         assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(empty, "VoteSites.yml", path,
                 new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say restored")));
         String commented = empty.replace("Commands: []", "Commands: [] # keep");
-        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(commented, "VoteSites.yml", path,
-                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say restored")));
+        String restoredWithNote = RewardsDocument.patch(commented, "VoteSites.yml", path,
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say restored"));
+        assertTrue(restoredWithNote.contains("Commands:  # keep\n      - \"say restored\""));
+        assertEquals(List.of("say restored"), RewardsDocument.inventory(restoredWithNote, "VoteSites.yml")
+                .get(0).fields().get("Commands"));
+        String spaced = empty.replace("Commands: []", "Commands: [ ]");
+        assertEquals(List.of("say restored"), RewardsDocument.inventory(RewardsDocument.patch(spaced,
+                "VoteSites.yml", path, new RewardsDocument.Edit("REPLACE_LIST", "Commands",
+                        List.of("say restored"))), "VoteSites.yml").get(0).fields().get("Commands"));
         String removedLast = RewardsDocument.patch(SOURCE.replace("      - 'say two'\n", ""), "VoteSites.yml", path,
                 new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say one"));
         assertEquals(List.of("say restored"), RewardsDocument.inventory(RewardsDocument.patch(removedLast,

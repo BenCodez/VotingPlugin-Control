@@ -62,6 +62,22 @@ test('mixed scalar and replace-list plans exclude unchanged targets before previ
   assert.equal(await editor.preview(), true);
   assert.deepEqual(f.calls.filter(([path]) => path.endsWith('/rewards/preview')).map(([, body]) => body.nodeId), ['b', 'b']);
 });
+test('a confirmed mixed replacement clears the draft when excluded targets already match', async () => {
+  const f = fixture(); const originalOperation = f.adapter.operation;
+  f.adapter.operation = async (path, body) => {
+    const response = await originalOperation(path, body);
+    if (path.endsWith('/apply')) f.commands.set('b', ['say a']);
+    return response;
+  };
+  const editor = create(f.adapter); await editor.read(); editor.select('VoteSites.yml', 'VoteSites.Alpha.Rewards');
+  editor.setEdit('REPLACE_LIST', 'Commands', ['say a']);
+  assert.deepEqual(editor.plan().map(item => item.status), ['UNCHANGED', 'READY']);
+  assert.equal(await editor.preview(), true);
+  assert.equal(await editor.apply(true), true);
+  assert.equal(editor.edit, null);
+  assert.deepEqual(editor.state.results.map(item => [item.status, item.confirmed]),
+    [['UNCHANGED', true], ['APPLIED', true]]);
+});
 test('edit and workspace changes dispose preview; revision and reconnect reject apply', async () => {
   const f = fixture(); const editor = create(f.adapter); await editor.read(); editor.select('VoteSites.yml', 'VoteSites.Alpha.Rewards');
   editor.setEdit('APPEND_LIST_ENTRY', 'Commands', 'say new'); await editor.preview(); editor.setEdit('APPEND_LIST_ENTRY', 'Commands', 'say other');

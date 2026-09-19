@@ -187,7 +187,10 @@ public final class RewardsDocument {
         if (!"Commands".equals(edit.field()) || sequence.getFlowStyle() != DumperOptions.FlowStyle.FLOW) throw invalid();
         int start = offset(content, sequence.getStartMark().getIndex());
         int end = offset(content, sequence.getEndMark().getIndex());
-        if (!"[]".equals(content.substring(start, end)) || !content.substring(end, afterLine(content, end)).isBlank()) throw invalid();
+        int lineEnd = afterLine(content, end);
+        String suffix = content.substring(end, lineEnd);
+        if (!content.substring(start, end).matches("\\[[ \\t]*\\]")
+                || !suffix.isBlank() && !suffix.stripLeading().startsWith("#")) throw invalid();
         List<String> replacement = new ArrayList<>();
         if ("APPEND_LIST_ENTRY".equals(edit.operation())) {
             if (!(edit.value() instanceof String entry)) throw invalid();
@@ -203,9 +206,11 @@ public final class RewardsDocument {
         } else throw invalid();
         if (replacement.isEmpty()) return content;
         int itemIndent = field.getKeyNode().getStartMark().getColumn();
-        StringBuilder block = new StringBuilder();
-        for (String entry : replacement) block.append('\n').append(spaces(itemIndent)).append("- ").append(quote(entry));
-        return content.substring(0, start) + block + content.substring(end);
+        // Keep a note attached to the Commands key, before the new block list.
+        StringBuilder block = new StringBuilder(suffix);
+        if (!suffix.endsWith("\n")) block.append('\n');
+        for (String entry : replacement) block.append(spaces(itemIndent)).append("- ").append(quote(entry)).append('\n');
+        return content.substring(0, start) + block + content.substring(lineEnd);
     }
 
     private static String addMissingField(String content, MappingNode reward, NodeTuple rewardTuple, Edit edit) {

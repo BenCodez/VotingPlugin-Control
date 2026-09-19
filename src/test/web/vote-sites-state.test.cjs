@@ -83,6 +83,18 @@ test('partial apply retains dirty state until every requested edit has fresh con
   state.results.get('b').status = 'APPLIED'; state.results.get('b').confirmed = true;
   state.clearConfirmedDirty(); assert.equal(state.dirty.has('Enabled'), false);
 });
+test('removal workflow clears only after every requested deletion is confirmed absent', () => {
+  const state = new VoteSitesState(targets());
+  state.setRead('a', read('a', [site('x')])); state.setRead('b', read('b', [site('x')]));
+  state.selectSite('x').setWorkflow('REMOVE').markApplyRequested();
+  state.setApplyResult('a', {status: 'APPLIED', confirmed: true});
+  state.setApplyResult('b', {status: 'ERROR', confirmed: false});
+  state.setRead('a', read('a', [])); state.clearConfirmedDirty();
+  assert.equal(state.workflow, 'REMOVE');
+  state.setRead('b', read('b', [])); state.setApplyResult('b', {status: 'APPLIED', confirmed: true});
+  state.clearConfirmedDirty();
+  assert.equal(state.workflow, 'EDIT_EXISTING'); assert.equal(state.mode, 'EDIT_EXISTING');
+});
 test('changing the workspace or connector session discards a previous workspace draft', () => {
   const state = new VoteSitesState(targets()); state.setRead('a', read('a', [site('x')]));
   state.selectSite('x').edit('Priority', 20).setWorkflow('CREATE_MISSING').setAddFields(allFields());

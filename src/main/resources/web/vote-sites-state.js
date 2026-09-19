@@ -270,6 +270,16 @@
           const snapshot = site.fields[field]; return snapshot && snapshot.status === 'AVAILABLE' && equal(snapshot.value, plan.fields[field]);
         });
       }, this)) this.addFields = {};
+      const removals = requested.filter(function (plan) { return plan.operation === 'REMOVE'; });
+      if (this.workflow === 'REMOVE' && removals.length && requested.every(function (plan) {
+        if (plan.operation === 'UNCHANGED') return true;
+        if (plan.operation !== 'REMOVE') return false;
+        const target = this.targets.get(plan.nodeId);
+        return this.results.get(plan.nodeId)?.confirmed === true && target?.status === 'AVAILABLE'
+          && !targetSite(target, plan.siteKey);
+      }, this)) {
+        this.workflow = 'EDIT_EXISTING'; this.mode = 'EDIT_EXISTING'; this.requestedPlans = null;
+      }
       return this;
     }
   }
