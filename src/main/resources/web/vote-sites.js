@@ -112,7 +112,7 @@
       if (state.ackRequired && acknowledged !== true) { set({error: 'Acknowledge unchanged or excluded targets before applying'}); return false; }
       const approved = approval; applying = true; await read(true);
       if (!current(approved.context, approved.generation) || approved.signature !== model.signature()) { applying = false; invalidate(); return false; }
-      const plans = model.plans(); model.markApplyRequested(); set({busy: true, error: '', message: 'Applying approved changes…'});
+      const plans = model.plans(); model.results.clear(); model.markApplyRequested(); set({busy: true, error: '', message: 'Applying approved changes…'});
       for (const item of approved.items) {
         if (!current(approved.context, approved.generation)) break;
         try { const operation = await adapter.operation('/api/v1/configuration/apply', {previewOperationId: item.operationId, approvalToken: item.approvalToken}); const result = resultFor(operation, item.nodeId); if (current(approved.context, approved.generation)) model.setApplyResult(item.nodeId, {operation, result, status: result && result.success === true ? 'APPLIED' : 'ERROR', confirmed: false}); }

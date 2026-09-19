@@ -6026,6 +6026,8 @@ globalSearch.addEventListener('submit', event => {
   if (setting) {
     openWorkspace('general-settings');
   } else if (site) {
+    if (voteSitesHasDraft() && voteSitesEditor.model.selectedSiteKey !== site.siteKey
+      && !window.confirm('Discard the current Vote Site draft and inspect another site?')) return;
     openWorkspace('vote-sites');
     voteSitesEditor.selectSite(site.siteKey);
     renderVoteSites();

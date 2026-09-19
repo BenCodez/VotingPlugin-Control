@@ -53,6 +53,15 @@ test('apply requires acknowledgement, forces a fresh read, and confirms refreshe
   const f = fixture([{nodeId: 'a', sessionId: 'sa', online: true}, {nodeId: 'b', sessionId: 'sb', online: false}]); const editor = create(f.adapter); await editor.read(); editor.selectSite('x'); editor.edit('Enabled', true); await editor.preview(); assert.equal(await editor.apply(), false); f.setRevision('r2'); assert.equal(await editor.apply(true), false); assert.equal(f.calls.filter(([path]) => path.endsWith('/apply')).length, 0);
   const ok = fixture(); const applying = create(ok.adapter); await applying.read(); applying.selectSite('x').edit('Enabled', true); await applying.preview(); await applying.apply(); assert.equal(applying.model.results.get('a').confirmed, true); assert.equal(applying.model.dirty.size, 0);
 });
+test('a new apply reports only outcomes from its own requested targets', async () => {
+  const f = fixture(); const editor = create(f.adapter); await editor.read();
+  editor.model.results.set('previously-failed-target', {status: 'ERROR', confirmed: false});
+  editor.selectSite('x').edit('Enabled', true);
+  assert.equal(await editor.preview(), true);
+  assert.equal(await editor.apply(), true);
+  assert.deepEqual([...editor.model.results.keys()], ['a']);
+  assert.equal(editor.model.results.get('a').confirmed, true);
+});
 test('global read-cache invalidation during APPLY does not revoke its approved preview', async () => {
   const f = fixture(); let editor;
   const operation = f.adapter.operation;
