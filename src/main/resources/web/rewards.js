@@ -207,12 +207,21 @@
       return targets().map(target => {
         const info = targetScope(target); const scope = info.scope;
         const namedUnsupportedAction = namedFile(selected.fileName) && ['CREATE_REWARD', 'REMOVE_REWARD'].includes(edit.operation);
+        const advanced = scope?.advancedKeys || [];
+        const advancedField = advanced.includes(edit.field) || (edit.field?.startsWith('Messages.') && advanced.includes('Messages'));
         const itemFieldMissing = edit.operation === 'SET_SCALAR' && /^Items\.[A-Za-z0-9_-]{1,64}\.(Material|Amount)$/.test(edit.field || '')
           && !Object.prototype.hasOwnProperty.call(scope?.fields || {}, edit.field);
+        const nestedFieldMissing = edit.operation === 'SET_SCALAR' && edit.field?.includes('.')
+          && !Object.prototype.hasOwnProperty.call(scope?.fields || {}, edit.field);
+        const commands = scope?.fields?.Commands;
+        const missingCommands = ['REMOVE_LIST_ENTRY', 'REPLACE_LIST'].includes(edit.operation) && !Array.isArray(commands);
+        const ambiguousRemoval = edit.operation === 'REMOVE_LIST_ENTRY' && Array.isArray(commands)
+          && commands.filter(value => value === edit.value).length !== 1;
         const status = namedUnsupportedAction ? 'UNSUPPORTED' : info.status !== 'AVAILABLE' ? info.status : !scope ? 'MISSING'
           : !scope.editable ? 'UNSUPPORTED' : edit.operation === 'CREATE_REWARD' ? scope.status === 'MISSING' ? 'READY' : 'CONFLICT'
             : edit.operation === 'REMOVE_REWARD' ? scope.status === 'PRESENT' ? 'READY' : 'UNCHANGED'
-              : scope.status !== 'PRESENT' ? 'MISSING' : itemFieldMissing ? 'UNSUPPORTED' : 'READY';
+              : scope.status !== 'PRESENT' ? 'MISSING' : advancedField || itemFieldMissing || nestedFieldMissing ? 'UNSUPPORTED'
+                : missingCommands ? 'MISSING' : ambiguousRemoval ? 'CONFLICT' : 'READY';
         return {nodeId: info.nodeId, status, revision: info.revision, scope};
       });
     }

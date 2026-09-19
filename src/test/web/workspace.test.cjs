@@ -135,7 +135,21 @@ test('session persistence restores Global without pretending all backends are se
   const restored = new Workspace(storage).restore([backend('one'), backend('two')]);
   assert.equal(restored.managementScope, 'GLOBAL');
   assert.deepEqual([...restored.selectedTargetIds], []);
+  assert.deepEqual([...restored.previousTargetIds], ['one', 'two']);
   assert.equal(restored.currentRoute, '#global/network');
+  restored.returnToServers();
+  assert.equal(restored.managementScope, 'MULTI_SERVER');
+  assert.deepEqual([...restored.selectedTargetIds], ['one', 'two']);
+});
+
+test('Global restore filters disappeared and non-Bukkit previous targets', () => {
+  const storage = session();
+  new Workspace(storage).setTargets(['one', 'gone', 'proxy']).enterGlobal().setRoute('#global/network');
+  const restored = new Workspace(storage).restore([backend('one'), {nodeId: 'proxy', platform: 'VELOCITY', online: true}]);
+  assert.deepEqual([...restored.previousTargetIds], ['one']);
+  assert.deepEqual(JSON.parse(storage.getItem(ControlWorkspace.SESSION_KEY)).previousTargetIds, ['one']);
+  restored.returnToServers();
+  assert.deepEqual([...restored.selectedTargetIds], ['one']);
 });
 
 test('session restore removes stale or non-Bukkit IDs and rewrites the safe snapshot', () => {

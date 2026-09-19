@@ -161,6 +161,7 @@
       const snapshot = {
         managementScope: this.managementScope,
         selectedTargetIds: [...this.selectedTargetIds],
+        previousTargetIds: this.managementScope === 'GLOBAL' ? [...this.previousTargetIds] : [],
         inspectedServerId: this.inspectedServerId || '',
         route: this.currentRoute || '#home'
       };
@@ -182,13 +183,14 @@
       if (scope === 'GLOBAL') {
         this.managementScope = 'GLOBAL';
         this.selectedTargetIds = new Set();
+        this.previousTargetIds = idSet(snapshot.previousTargetIds);
       } else {
         this.selectedTargetIds = ids;
         this.managementScope = scopeFor(ids);
+        this.previousTargetIds = new Set();
       }
       this.inspectedServerId = typeof snapshot.inspectedServerId === 'string' ? snapshot.inspectedServerId : '';
       this.currentRoute = typeof snapshot.route === 'string' && snapshot.route.startsWith('#') ? snapshot.route : '#home';
-      this.previousTargetIds = new Set();
       this.reconcile(nodes);
       this.persist(this.currentRoute);
       return this;

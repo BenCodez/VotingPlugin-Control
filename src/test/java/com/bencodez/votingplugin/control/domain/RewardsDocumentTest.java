@@ -237,6 +237,21 @@ class RewardsDocumentTest {
         assertThrows(IllegalArgumentException.class, () -> RewardsDocument.inventory(source, "Rewards/../Config.yml"));
     }
 
+    @Test void namedRewardMissingFieldsAreInsertedBeforeExplicitDocumentEnd() {
+        String source = "# owner note\nCommands:\n- 'say first'\n# trailing note\n...\n";
+        String file = "Rewards/StandardVote.yml";
+        String added = RewardsDocument.patch(source, file, "$", new RewardsDocument.Edit("SET_SCALAR", "Money", 10));
+        assertTrue(added.indexOf("Money: 10") < added.indexOf("..."));
+        assertTrue(added.contains("# trailing note"));
+        assertEquals("10", RewardsDocument.inventory(added, file).get(0).fields().get("Money"));
+
+        String withoutCommands = "# owner note\nMoney: 2\n...\n";
+        String appended = RewardsDocument.patch(withoutCommands, file, "$",
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say added"));
+        assertTrue(appended.indexOf("Commands:") < appended.indexOf("..."));
+        assertEquals(List.of("say added"), RewardsDocument.inventory(appended, file).get(0).fields().get("Commands"));
+    }
+
     @Test void itemLeafEditsPreserveMetadataCommentsAndOtherItems() {
         String source = "Items:\n  diamond: # keep identity\n    Material: DIAMOND\n    Amount: 1\n"
                 + "    Name: '&bVote diamond'\n    Lore:\n    - first\n    Enchantments:\n      sharpness: 5\n"

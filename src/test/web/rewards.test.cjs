@@ -258,3 +258,31 @@ test('item leaf edit excludes a target without that exact leaf instead of invent
   assert.equal(editor.state.ackRequired, true);
   assert.deepEqual(f.calls.filter(([path]) => path.endsWith('/rewards/preview')).map(([, body]) => body.nodeId), ['a']);
 });
+
+test('advanced reward fields and unavailable list entries are excluded without losing eligible previews', async () => {
+  const f = fixture();
+  const originalRequest = f.adapter.request;
+  f.adapter.request = async (path, body) => {
+    const response = await originalRequest(path, body);
+    if (path.endsWith('/state') && body.fileName === 'VoteSites.yml') {
+      response.scopes[0].fields.Money = body.nodeId === 'a' ? '1' : undefined;
+      if (body.nodeId === 'b') {
+        delete response.scopes[0].fields.Money;
+        delete response.scopes[0].fields.Commands;
+        response.scopes[0].advancedKeys.push('Money', 'Commands', 'Messages');
+      }
+    }
+    return response;
+  };
+  const editor = create(f.adapter); await editor.read(); editor.select('VoteSites.yml', 'VoteSites.Alpha.Rewards');
+  editor.setEdit('SET_SCALAR', 'Money', 5);
+  assert.deepEqual(editor.plan().map(item => item.status), ['READY', 'UNSUPPORTED']);
+  assert.equal(await editor.preview(), true);
+  assert.deepEqual(f.calls.filter(([path]) => path.endsWith('/rewards/preview')).map(([, body]) => body.nodeId), ['a']);
+  editor.setEdit('APPEND_LIST_ENTRY', 'Commands', 'say new');
+  assert.deepEqual(editor.plan().map(item => item.status), ['READY', 'UNSUPPORTED']);
+  editor.setEdit('SET_SCALAR', 'Messages.Player', 'hello');
+  assert.deepEqual(editor.plan().map(item => item.status), ['UNSUPPORTED', 'UNSUPPORTED']);
+  editor.setEdit('REMOVE_LIST_ENTRY', 'Commands', 'say absent');
+  assert.deepEqual(editor.plan().map(item => item.status), ['CONFLICT', 'UNSUPPORTED']);
+});

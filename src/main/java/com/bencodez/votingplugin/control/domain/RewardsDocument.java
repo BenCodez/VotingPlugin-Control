@@ -209,7 +209,7 @@ public final class RewardsDocument {
             value = quote(text);
         }
         int indent = rewardTuple == null ? 0 : childIndent(reward, rewardTuple.getKeyNode().getStartMark().getColumn() + 2);
-        int at = rewardTuple == null ? content.length() : blockEnd(content,
+        int at = rewardTuple == null ? offset(content, reward.getEndMark().getIndex()) : blockEnd(content,
                 afterLine(content, offset(content, rewardTuple.getKeyNode().getStartMark().getIndex())),
                 rewardTuple.getKeyNode().getStartMark().getColumn());
         String line = spaces(indent) + field + ":" + ("SET_SCALAR".equals(edit.operation()) ? " " + value + "\n" : "\n" + spaces(indent) + "- " + value + "\n");
