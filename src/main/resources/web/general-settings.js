@@ -25,6 +25,9 @@
     const model = new configuration.MultiTargetState();
     const reads = new Map();
     let flight = null;
+    let queuedRead = null;
+    let queuedForce = false;
+    let queuedOnlyFailed = false;
     let approval = null;
     let generation = 0;
     let busyCount = 0;
@@ -54,6 +57,7 @@
         releasePreviews(approval && approval.items);
         knownContext = nextContext;
         generation++;
+        queuedRead = null; queuedForce = false; queuedOnlyFailed = false;
         reads.clear(); approval = null; model.invalidatePreview();
         busyCount = 0; applying = false;
         setState({busy: false, error: '', message: '', previewState: 'Not previewed', ackRequired: false, previewItems: []});
@@ -105,7 +109,21 @@
       const captured = context();
       const capturedGeneration = generation;
       const key = captured + '\u0000' + capturedGeneration;
-      if (flight && flight.key === key) return force ? flight.promise.then(function () { return read(true, onlyFailed); }) : flight.promise;
+      if (flight && flight.key === key) {
+        if (!force && !onlyFailed) return flight.promise;
+        queuedForce = queuedForce || force === true;
+        queuedOnlyFailed = queuedOnlyFailed || onlyFailed === true;
+        if (!queuedRead) {
+          queuedRead = flight.promise.catch(function () {}).then(function () {
+            if (!current(captured, capturedGeneration)) return model;
+            const nextForce = queuedForce;
+            const nextOnlyFailed = !nextForce && queuedOnlyFailed;
+            queuedRead = null; queuedForce = false; queuedOnlyFailed = false;
+            return read(nextForce, nextOnlyFailed);
+          });
+        }
+        return queuedRead;
+      }
       const all = selected();
       const wanted = all.filter(function (target) {
         if (!eligible(target)) { readError(target, target.online ? 'General Settings is unsupported' : 'Target is offline', target.online ? 'UNSUPPORTED' : 'OFFLINE'); return false; }
@@ -270,7 +288,7 @@
       reset: function (path) { model.reset(path); clearApproval('Stale'); return model; },
       resetAll: function () { model.resetAll(); clearApproval('Stale'); return model; },
       invalidateReads: function () { reads.clear(); if (!applying) clearApproval('Stale'); return model; },
-      clear: function () { releasePreviews(approval && approval.items); generation++; knownContext = context(); reads.clear(); approval = null; applying = false; model.setTargets([]); state = {busy: false, error: '', message: '', previewState: 'Not previewed', ackRequired: false, previewItems: []}; busyCount = 0; notify(); return model; }
+      clear: function () { releasePreviews(approval && approval.items); generation++; knownContext = context(); queuedRead = null; queuedForce = false; queuedOnlyFailed = false; reads.clear(); approval = null; applying = false; model.setTargets([]); state = {busy: false, error: '', message: '', previewState: 'Not previewed', ackRequired: false, previewItems: []}; busyCount = 0; notify(); return model; }
     };
     return editor;
   }

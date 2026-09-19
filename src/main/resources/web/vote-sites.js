@@ -17,7 +17,8 @@
   function create(adapter) {
     if (!adapter || ['targets', 'context', 'operation', 'request'].some(function (name) { return typeof adapter[name] !== 'function'; })) throw new Error('A vote-sites adapter is required');
     const model = new voteSites.VoteSitesState(); const reads = new Map();
-    let approval = null; let flight = null; let generation = 0; let knownContext = context(); let applying = false;
+    let approval = null; let flight = null; let queuedRead = null; let queuedForce = false;
+    let queuedOnlyFailed = false; let generation = 0; let knownContext = context(); let applying = false;
     let state = {busy: false, error: '', message: '', previewState: 'Not previewed', ackRequired: false, previewItems: []};
     function context() { return String(adapter.context()); }
     function active() { return typeof adapter.active !== 'function' || adapter.active(); }
@@ -33,7 +34,7 @@
       syncTargets();
       if (approval && !model.previewCurrent() && !applying) invalidate();
       const next = context();
-      if (next !== knownContext) { release(approval && approval.items); generation++; knownContext = next; reads.clear(); model.results.clear(); approval = null; model.invalidatePreview(); set({busy: false, error: '', message: '', previewState: 'Not previewed', ackRequired: false, previewItems: []}); }
+      if (next !== knownContext) { release(approval && approval.items); generation++; knownContext = next; queuedRead = null; queuedForce = false; queuedOnlyFailed = false; reads.clear(); model.results.clear(); approval = null; model.invalidatePreview(); set({busy: false, error: '', message: '', previewState: 'Not previewed', ackRequired: false, previewItems: []}); }
     }
     function readError(target, message, code) { reads.delete(id(target)); model.setRead(id(target), {status: target.supported === false ? 'UNSUPPORTED' : 'ERROR', sessionId: target.sessionId, revision: '', sites: [], code: code || 'READ_FAILED', message: message || ''}); }
     function eligible(target) { return target.online === true && target.supported !== false; }
@@ -53,7 +54,21 @@
     }
     function read(force, onlyFailed) {
       syncContext(); const captured = context(); const generationAtStart = generation; const key = captured + ':' + generationAtStart;
-      if (flight && flight.key === key) return force ? flight.promise.then(function () { return read(true, onlyFailed); }) : flight.promise;
+      if (flight && flight.key === key) {
+        if (!force && !onlyFailed) return flight.promise;
+        queuedForce = queuedForce || force === true;
+        queuedOnlyFailed = queuedOnlyFailed || onlyFailed === true;
+        if (!queuedRead) {
+          queuedRead = flight.promise.catch(function () {}).then(function () {
+            if (!current(captured, generationAtStart)) return model;
+            const nextForce = queuedForce;
+            const nextOnlyFailed = !nextForce && queuedOnlyFailed;
+            queuedRead = null; queuedForce = false; queuedOnlyFailed = false;
+            return read(nextForce, nextOnlyFailed);
+          });
+        }
+        return queuedRead;
+      }
       const wanted = targets(adapter).filter(function (target) {
         if (!eligible(target)) { readError(target, target.supported === false ? 'Vote sites are unsupported' : 'Target is offline', target.supported === false ? 'UNSUPPORTED' : 'OFFLINE'); return false; }
         return onlyFailed ? model.targets.get(id(target)).status !== 'AVAILABLE' : force || !cacheCurrent(target);
@@ -134,7 +149,7 @@
           Object.keys(fields || {}).forEach(function (field) { model.edit(field, fields[field]); });
         }
       }); }, setPartialPolicy: function (policy) { return draft(function () { setPartialPolicy(policy); }); },
-      edit: function (field, value) { return draft(function () { model.edit(field, value); }); }, reset: function (field) { return draft(function () { model.reset(field); }); }, resetAll: function () { return draft(function () { model.resetAll(); }); }, remove: function (key) { return draft(function () { model.selectSite(key); model.setWorkflow('REMOVE'); }); }, cancelDraft: function () { return draft(function () { model.resetAll(); model.setAddFields({}); model.setWorkflow('EDIT_EXISTING'); }); }, invalidateReads: function () { reads.clear(); if (!applying) invalidate(); return model; }, clear: function () { generation++; reads.clear(); release(approval && approval.items); approval = null; applying = false; model.setTargets([]); set({busy: false, error: '', message: '', previewState: 'Not previewed', ackRequired: false, previewItems: []}); return model; }};
+      edit: function (field, value) { return draft(function () { model.edit(field, value); }); }, reset: function (field) { return draft(function () { model.reset(field); }); }, resetAll: function () { return draft(function () { model.resetAll(); }); }, remove: function (key) { return draft(function () { model.selectSite(key); model.setWorkflow('REMOVE'); }); }, cancelDraft: function () { return draft(function () { model.resetAll(); model.setAddFields({}); model.setWorkflow('EDIT_EXISTING'); }); }, invalidateReads: function () { reads.clear(); if (!applying) invalidate(); return model; }, clear: function () { generation++; queuedRead = null; queuedForce = false; queuedOnlyFailed = false; reads.clear(); release(approval && approval.items); approval = null; applying = false; model.setTargets([]); set({busy: false, error: '', message: '', previewState: 'Not previewed', ackRequired: false, previewItems: []}); return model; }};
   }
   return {create};
 }));

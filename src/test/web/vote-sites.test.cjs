@@ -20,6 +20,20 @@ test('READ is single-flight, cacheable, and never creates a write operation', as
   const f = fixture(); const editor = create(f.adapter); const one = editor.read(); const two = editor.read(); assert.equal(one, two); await one; await editor.read();
   assert.equal(f.calls.filter(([path]) => path.endsWith('/read')).length, 1); assert.equal(f.calls.some(([path]) => /preview|apply/.test(path)), false);
 });
+test('concurrent forced Vote Sites reads share one queued refresh', async () => {
+  const f = fixture(); const gate = deferred(); let calls = 0;
+  const original = f.adapter.operation;
+  f.adapter.operation = async (path, body) => {
+    if (path.endsWith('/read')) { calls++; if (calls === 1) await gate.promise; }
+    return original(path, body);
+  };
+  const editor = create(f.adapter); const first = editor.read();
+  const forced = editor.read(true); const another = editor.read(true); const retry = editor.read(false, true);
+  assert.equal(forced, another); assert.equal(forced, retry);
+  gate.resolve(); await Promise.all([first, forced, another, retry]);
+  assert.equal(calls, 2);
+  assert.equal(f.calls.filter(([path]) => path.endsWith('/read')).length, 2);
+});
 test('late reads from a stale context do not populate state', async () => {
   const f = fixture(); const gate = deferred(); f.adapter.operation = async () => { await gate.promise; return {operationId: 'r', results: {a: {success: true, revision: 'r1'}}}; };
   const editor = create(f.adapter); const read = editor.read(); f.setContext('other'); await editor.scopeChanged(); gate.resolve(); await read; assert.equal(editor.model.targets.get('a').status, 'MISSING');

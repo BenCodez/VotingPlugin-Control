@@ -95,6 +95,21 @@ test('a forced read queued behind an existing read performs a fresh second read'
   assert.equal(calls, 2);
 });
 
+test('concurrent forced reads share one queued refresh', async () => {
+  const f = fixture(); const gate = deferred(); let calls = 0;
+  const original = f.adapter.operation;
+  f.adapter.operation = async (path, body) => {
+    if (path.endsWith('/read')) { calls++; if (calls === 1) await gate.promise; }
+    return original(path, body);
+  };
+  const editor = create(f.adapter); const first = editor.read();
+  const forced = editor.read(true); const another = editor.read(true); const retry = editor.read(false, true);
+  assert.equal(forced, another); assert.equal(forced, retry);
+  gate.resolve(); await Promise.all([first, forced, another, retry]);
+  assert.equal(calls, 2);
+  assert.equal(f.calls.filter(([path]) => path.endsWith('/read')).length, 2);
+});
+
 test('failed previews remain visible and cannot create approval', async () => {
   const f = fixture(); const editor = create(f.adapter); await editor.read(); editor.edit(FIELD, true);
   f.adapter.operation = async (path, body) => path.endsWith('/preview')

@@ -3619,6 +3619,18 @@ function discardAuthenticationState(reason) {
   nodePlugins.clear();
   configurationForm.reset();
   fileConfigurationForm.reset();
+  document.querySelector('#vote-site-form').reset();
+  document.querySelector('#vote-site-add-form').reset();
+  const voteSiteAddDialog = document.querySelector('#vote-site-add-dialog');
+  if (voteSiteAddDialog.open) voteSiteAddDialog.close();
+  document.querySelector('#vote-site-search').value = '';
+  document.querySelector('#vote-site-filter').value = 'all';
+  document.querySelector('#vote-site-ack').checked = false;
+  document.querySelector('#rewards-search').value = '';
+  document.querySelector('#rewards-operation').value = 'APPEND_LIST_ENTRY';
+  document.querySelector('#rewards-field').value = 'Commands';
+  document.querySelector('#rewards-value').value = '';
+  document.querySelector('#rewards-ack').checked = false;
   configurationFileSelection = configurationFile.value;
   configurationContentPresent = false;
   configurationDirty = false;

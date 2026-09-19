@@ -68,6 +68,31 @@ class RewardsDocumentTest {
                 "VoteSites.Alpha.Rewards", new RewardsDocument.Edit("REPLACE_LIST", "Commands", List.of("changed"))));
     }
 
+    @Test void emptyCommandsCanBeRepopulatedAfterExplicitRemovalOrReplacement() {
+        String path = "VoteSites.Alpha.Rewards";
+        String empty = SOURCE.replace("      Commands:\n      - 'say one'\n      - 'say two'\n", "      Commands: []\n");
+        assertEquals(List.of(), RewardsDocument.inventory(empty, "VoteSites.yml").get(0).fields().get("Commands"));
+        String appended = RewardsDocument.patch(empty, "VoteSites.yml", path,
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say restored"));
+        assertEquals(List.of("say restored"), RewardsDocument.inventory(appended, "VoteSites.yml").get(0).fields().get("Commands"));
+        assertTrue(appended.contains("CustomModelData: 123"));
+        String replaced = RewardsDocument.patch(empty, "VoteSites.yml", path,
+                new RewardsDocument.Edit("REPLACE_LIST", "Commands", List.of("say first", "say second")));
+        assertEquals(List.of("say first", "say second"), RewardsDocument.inventory(replaced, "VoteSites.yml").get(0).fields().get("Commands"));
+        assertEquals(empty, RewardsDocument.patch(empty, "VoteSites.yml", path,
+                new RewardsDocument.Edit("REPLACE_LIST", "Commands", List.of())));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(empty, "VoteSites.yml", path,
+                new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say restored")));
+        String commented = empty.replace("Commands: []", "Commands: [] # keep");
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(commented, "VoteSites.yml", path,
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say restored")));
+        String removedLast = RewardsDocument.patch(SOURCE.replace("      - 'say two'\n", ""), "VoteSites.yml", path,
+                new RewardsDocument.Edit("REMOVE_LIST_ENTRY", "Commands", "say one"));
+        assertEquals(List.of("say restored"), RewardsDocument.inventory(RewardsDocument.patch(removedLast,
+                "VoteSites.yml", path, new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say restored")),
+                "VoteSites.yml").get(0).fields().get("Commands"));
+    }
+
     @Test void explicitCreateOnlyWhenAbsentAndUnicodeSourceMarksRemainCorrect() {
         String source = "# 😀\nVoteSites:\n  Alpha:\n    Name: Alpha\n  Beta:\n    Name: Beta\n";
         String created = RewardsDocument.patch(source, "VoteSites.yml", "VoteSites.Alpha.Rewards",
@@ -84,6 +109,18 @@ class RewardsDocumentTest {
         assertTrue(changed.contains("Alpha:\n    Name: Alpha"));
         assertFalse(changed.contains("say one"));
         assertTrue(changed.contains("say beta"));
+    }
+
+    @Test void removingRewardPreservesTrailingNotesBeforeSiblingAndEof() {
+        String source = "VoteSites:\n  Alpha:\n    Rewards:\n      Commands:\n      - 'say one'\n"
+                + "      # internal note\n      Money: 1\n      # operator note\n\n    Hidden: true\n";
+        String removed = RewardsDocument.patch(source, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("REMOVE_REWARD", null, null));
+        assertEquals("VoteSites:\n  Alpha:\n      # operator note\n\n    Hidden: true\n", removed);
+        String eof = source.substring(0, source.indexOf("    Hidden:"));
+        String removedAtEof = RewardsDocument.patch(eof, "VoteSites.yml", "VoteSites.Alpha.Rewards",
+                new RewardsDocument.Edit("REMOVE_REWARD", null, null));
+        assertEquals("VoteSites:\n  Alpha:\n      # operator note\n\n", removedAtEof);
     }
 
     @Test void rejectsTraversalAmbiguousYamlAndDuplicateCommands() {
@@ -121,6 +158,11 @@ class RewardsDocumentTest {
         String withoutCommands = SOURCE.replace("      Commands:\n      - 'say one'\n      - 'say two'\n", "");
         assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(withoutCommands, "VoteSites.yml", path,
                 new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", 42)));
+        assertThrows(IllegalArgumentException.class, () -> RewardsDocument.patch(withoutCommands, "VoteSites.yml", path,
+                new RewardsDocument.Edit("SET_SCALAR", "Commands", "say wrong shape")));
+        String added = RewardsDocument.patch(withoutCommands, "VoteSites.yml", path,
+                new RewardsDocument.Edit("APPEND_LIST_ENTRY", "Commands", "say valid"));
+        assertEquals(List.of("say valid"), RewardsDocument.inventory(added, "VoteSites.yml").get(0).fields().get("Commands"));
     }
 
     @Test void namedRewardEditsPatchOnlyRootFieldsAndPreserveUnknownChildren() {

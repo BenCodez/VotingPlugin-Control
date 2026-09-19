@@ -23,7 +23,8 @@
     const records = new Map();
     const inventories = new Map();
     const inventoryFlights = new Map();
-    let context = String(adapter.context()); let generation = 0; let flight = null; let approval = null; let applying = false;
+    let context = String(adapter.context()); let generation = 0; let flight = null; let queuedRead = null;
+    let queuedForce = false; let queuedOnlyFailed = false; let approval = null; let applying = false;
     let selected = {fileName: 'VoteSites.yml', rewardPath: ''}; let edit = null;
     let state = {busy: false, error: '', message: '', previewState: 'Not previewed', previews: [], results: [], ackRequired: false};
     function notify(values) { state = Object.assign({}, state, values); if (adapter.changed) adapter.changed(); }
@@ -41,7 +42,7 @@
     }
     function sync() {
       const next = String(adapter.context());
-      if (next !== context) { const prior = approval; approval = null; if (prior) void release(prior.items); context = next; generation++; records.clear(); inventories.clear(); inventoryFlights.clear(); edit = null; selected = {fileName: 'VoteSites.yml', rewardPath: ''}; notify({busy: false, error: '', message: '', previewState: 'Not previewed', previews: [], results: [], ackRequired: false}); }
+      if (next !== context) { const prior = approval; approval = null; if (prior) void release(prior.items); context = next; generation++; records.clear(); inventories.clear(); inventoryFlights.clear(); flight = null; queuedRead = null; queuedForce = false; queuedOnlyFailed = false; edit = null; selected = {fileName: 'VoteSites.yml', rewardPath: ''}; notify({busy: false, error: '', message: '', previewState: 'Not previewed', previews: [], results: [], ackRequired: false}); }
       const live = new Set(targets().map(id));
       [...records.keys()].forEach(recordKey => { if (!live.has(recordKey.split(':')[0])) records.delete(recordKey); });
       [...inventories.keys()].forEach(nodeId => { if (!live.has(nodeId)) inventories.delete(nodeId); });
@@ -92,6 +93,7 @@
     }
     async function loadInventories(captured, serial, force) {
       await Promise.all(targets().map(target => inventory(target, force)));
+      if (!current(captured, serial)) return false;
       const namedFiles = files().filter(namedFile);
       for (const recordKey of [...records.keys()]) {
         if (recordKey.includes(':' + REWARD_DIR) && !namedFiles.some(fileName => recordKey.endsWith(':' + fileName))) records.delete(recordKey);
@@ -142,7 +144,21 @@
     }
     async function read(force, onlyFailed) {
       sync(); const captured = context; const serial = generation;
-      if (flight) return flight;
+      if (flight) {
+        if (!force && !onlyFailed) return flight;
+        queuedForce = queuedForce || force === true;
+        queuedOnlyFailed = queuedOnlyFailed || onlyFailed === true;
+        if (!queuedRead) {
+          const pending = flight;
+          queuedRead = pending.catch(() => {}).then(() => {
+            if (!current(captured, serial)) return records;
+            const nextForce = queuedForce; const nextOnlyFailed = !nextForce && queuedOnlyFailed;
+            queuedRead = null; queuedForce = false; queuedOnlyFailed = false;
+            return read(nextForce, nextOnlyFailed);
+          });
+        }
+        return queuedRead;
+      }
       const run = (async () => {
         if (!(await loadInventories(captured, serial, force === true))) return records;
         const allFiles = FILES.concat(namedFile(selected.fileName) ? [selected.fileName] : []);
@@ -182,7 +198,9 @@
         }
         if (current(captured, serial)) { if (approval && approval.signature !== signature() && !applying) invalidate('Source changed; preview again'); notify({busy: false, message: 'Reward inventory refreshed'}); }
         return records;
-      })(); flight = run; try { return await run; } finally { if (flight === run) flight = null; }
+      })();
+      const pending = run.finally(() => { if (flight === pending) flight = null; });
+      flight = pending; return pending;
     }
     function plan() {
       if (!edit || !selected.rewardPath) return [];
@@ -272,7 +290,7 @@
       scopeChanged() { sync(); return records; }, select(fileName, rewardPath) { sync(); if (applying) return; if (selected.fileName !== fileName || selected.rewardPath !== rewardPath) { selected = {fileName, rewardPath}; edit = null; invalidate(); } },
       setEdit(operation, field, value) { if (applying) return; edit = {operation, field, value}; invalidate(); }, reset() { if (applying) return; edit = null; invalidate(); },
       invalidateReads() { records.clear(); if (!applying) invalidate('Configuration changed; read and preview again'); },
-      clear() { const prior = approval; approval = null; if (prior) void release(prior.items); generation++; records.clear(); inventories.clear(); edit = null; selected = {fileName: 'VoteSites.yml', rewardPath: ''}; notify({busy: false, error: '', message: '', previewState: 'Not previewed', previews: [], results: [], ackRequired: false}); }};
+      clear() { const prior = approval; approval = null; if (prior) void release(prior.items); generation++; flight = null; queuedRead = null; queuedForce = false; queuedOnlyFailed = false; records.clear(); inventories.clear(); edit = null; selected = {fileName: 'VoteSites.yml', rewardPath: ''}; notify({busy: false, error: '', message: '', previewState: 'Not previewed', previews: [], results: [], ackRequired: false}); }};
   }
   return {create, FILES};
 }));

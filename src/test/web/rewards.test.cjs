@@ -110,6 +110,51 @@ test('draft controls cannot change while approved apply is in flight', async () 
   assert.equal(editor.edit, null);
 });
 
+test('APPLY waits for a coalesced forced read after an in-flight cached read', async () => {
+  const node = {nodeId: 'a', sessionId: 'sa', online: true, rewardFilesSupported: true};
+  const f = fixture([node]);
+  let inspections = 0; let entered; let release;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  f.adapter.inspect = async () => {
+    if (++inspections === 2) { entered(); await gate; }
+    return {files: []};
+  };
+  const editor = create(f.adapter); await editor.read(); editor.select('VoteSites.yml', 'VoteSites.Alpha.Rewards');
+  editor.setEdit('APPEND_LIST_ENTRY', 'Commands', 'say new'); assert.equal(await editor.preview(), true);
+  (await editor.inventory(node)).loadedAt = 0;
+  const cachedRead = editor.read(false); await waiting;
+  const applying = editor.apply(false);
+  const sameRefresh = editor.read(true);
+  assert.equal(f.calls.some(([path]) => path.endsWith('/apply')), false);
+  release();
+  assert.equal(await applying, true); await cachedRead; await sameRefresh;
+  const applyIndex = f.calls.findIndex(([path]) => path.endsWith('/apply'));
+  assert.equal(f.calls.slice(0, applyIndex).filter(([path]) => path.endsWith('/read')).length,
+    FILES.length * 2, 'one forced refresh must complete before APPLY');
+  assert.deepEqual(f.commands.get('a'), ['say a', 'say new']);
+});
+
+test('clearing a session lets a new reward read proceed without an old flight overwriting it', async () => {
+  const f = fixture([{nodeId: 'a', sessionId: 'sa', online: true}]);
+  const original = f.adapter.operation;
+  let entered; let release; let hold = true;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  f.adapter.operation = async (path, body) => {
+    if (hold && path.endsWith('/read') && body.configuration.fileName === 'VoteSites.yml') {
+      hold = false; entered(); await gate;
+    }
+    return original(path, body);
+  };
+  const editor = create(f.adapter); const oldRead = editor.read(); await waiting;
+  editor.clear(); await editor.read();
+  assert.equal(editor.record('a', 'VoteSites.yml').status, 'AVAILABLE');
+  release(); await oldRead;
+  assert.equal(editor.record('a', 'VoteSites.yml').status, 'AVAILABLE');
+  assert.equal(f.calls.filter(([path, body]) => path.endsWith('/state') && body.fileName === 'VoteSites.yml').length, 1);
+});
+
 test('named reward inventory is bounded, per-target, and read without writes', async () => {
   const nodes = [
     {nodeId: 'a', sessionId: 'sa', online: true, rewardFilesSupported: true},

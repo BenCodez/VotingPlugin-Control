@@ -88,7 +88,8 @@ public final class RewardsDocument {
         if ("REMOVE_REWARD".equals(edit.operation())) {
             if (edit.field() != null || edit.value() != null) throw invalid();
             int start = lineStart(content, offset(content, rewardTuple.getKeyNode().getStartMark().getIndex()));
-            int end = blockEnd(content, afterLine(content, start), rewardTuple.getKeyNode().getStartMark().getColumn());
+            int boundary = blockEnd(content, afterLine(content, start), rewardTuple.getKeyNode().getStartMark().getColumn());
+            int end = meaningfulBlockEnd(content, start, boundary);
             return content.substring(0, start) + content.substring(end);
         }
         return patchFields(content, reward, rewardTuple, edit);
@@ -96,6 +97,7 @@ public final class RewardsDocument {
 
     private static String patchFields(String content, MappingNode reward, NodeTuple rewardTuple, Edit edit) {
         if (edit.field() == null || (!EDITABLE_FIELDS.contains(edit.field()) && !itemField(edit.field()))) throw invalid();
+        if ("SET_SCALAR".equals(edit.operation()) && "Commands".equals(edit.field())) throw invalid();
         if (Set.of("APPEND_LIST_ENTRY", "REMOVE_LIST_ENTRY", "REPLACE_LIST").contains(edit.operation())
                 && !"Commands".equals(edit.field())) throw invalid();
         NodeTuple field = findTuple(reward, edit.field());
@@ -113,6 +115,9 @@ public final class RewardsDocument {
             int end = offset(content, current.getEndMark().getIndex());
             if (start < 0 || end < start || end > content.length() || content.substring(start, end).contains("\n")) throw invalid();
             return content.substring(0, start) + value + content.substring(end);
+        }
+        if (current instanceof SequenceNode empty && empty.getValue().isEmpty()) {
+            return patchEmptyCommands(content, field, empty, edit);
         }
         if (!(current instanceof SequenceNode sequence) || sequence.getFlowStyle() != DumperOptions.FlowStyle.BLOCK
                 || sequence.getValue().isEmpty() || sequence.getValue().size() > MAX_LIST) throw invalid();
@@ -158,6 +163,31 @@ public final class RewardsDocument {
             return content.substring(0, start) + content.substring(end);
         }
         throw invalid();
+    }
+
+    private static String patchEmptyCommands(String content, NodeTuple field, SequenceNode sequence, Edit edit) {
+        if (!"Commands".equals(edit.field()) || sequence.getFlowStyle() != DumperOptions.FlowStyle.FLOW) throw invalid();
+        int start = offset(content, sequence.getStartMark().getIndex());
+        int end = offset(content, sequence.getEndMark().getIndex());
+        if (!"[]".equals(content.substring(start, end)) || !content.substring(end, afterLine(content, end)).isBlank()) throw invalid();
+        List<String> replacement = new ArrayList<>();
+        if ("APPEND_LIST_ENTRY".equals(edit.operation())) {
+            if (!(edit.value() instanceof String entry)) throw invalid();
+            validateText(entry);
+            replacement.add(entry);
+        } else if ("REPLACE_LIST".equals(edit.operation())) {
+            if (!(edit.value() instanceof List<?> requested) || requested.size() > MAX_LIST) throw invalid();
+            for (Object value : requested) {
+                if (!(value instanceof String entry)) throw invalid();
+                validateText(entry);
+                replacement.add(entry);
+            }
+        } else throw invalid();
+        if (replacement.isEmpty()) return content;
+        int itemIndent = field.getKeyNode().getStartMark().getColumn();
+        StringBuilder block = new StringBuilder();
+        for (String entry : replacement) block.append('\n').append(spaces(itemIndent)).append("- ").append(quote(entry));
+        return content.substring(0, start) + block + content.substring(end);
     }
 
     private static String addMissingField(String content, MappingNode reward, NodeTuple rewardTuple, Edit edit) {
@@ -326,6 +356,20 @@ public final class RewardsDocument {
             at = end;
         }
         return source.length();
+    }
+    private static int meaningfulBlockEnd(String source, int start, int boundary) {
+        int cursor = start;
+        int last = start;
+        while (cursor < boundary) {
+            int end = afterLine(source, cursor);
+            if (end > boundary) end = boundary;
+            int first = cursor;
+            while (first < end && source.charAt(first) == ' ') first++;
+            if (first < end && source.charAt(first) != '#' && source.charAt(first) != '\n'
+                    && source.charAt(first) != '\r') last = end;
+            cursor = end;
+        }
+        return last;
     }
     private static String insert(String source, int at, String text) { return source.substring(0, at) + (at > 0 && source.charAt(at - 1) != '\n' ? "\n" : "") + text + source.substring(at); }
     private static String spaces(int size) { return " ".repeat(Math.max(0, size)); }
