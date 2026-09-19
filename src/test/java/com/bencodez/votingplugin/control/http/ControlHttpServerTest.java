@@ -205,6 +205,12 @@ class ControlHttpServerTest {
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
+        HttpResponse<String> workspaceScript = get("/workspace.js", null);
+        assertEquals(200, workspaceScript.statusCode());
+        assertTrue(workspaceScript.headers().firstValue("Content-Type").orElseThrow().startsWith("text/javascript"));
+        assertTrue(workspaceScript.body().contains("class Workspace"));
+        assertTrue(web.body().contains("src=\"/workspace.js\""));
+        assertTrue(web.body().contains("What do you want to manage?"));
 		assertTrue(script.body().contains("offset=${offset}&limit=${PAGE_SIZE}"));
         assertTrue(script.body().contains("async function loadAllNodes()"));
         assertTrue(script.body().contains("let nodeLoadInFlight = null;"));
@@ -308,8 +314,10 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("function quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("options: quickReadConfigurationOptions()"));
         assertTrue(script.body().contains("loadedQuickSetup.selector === JSON.stringify(quickReadConfigurationOptions())"));
-        assertTrue(script.body().contains("reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability)"),
-                "Changing selected backend capability must reload capability-dependent Vote Party state.");
+        assertTrue(script.body().contains("reloadVotePartyWhenTargetCapabilityChanges(previousQuickCapability, false)"),
+                "Refresh-driven source capability changes must reload capability-dependent Vote Party state.");
+        assertTrue(script.body().contains("return ordinaryTargetIds().filter(nodeId => nodeIndex.has(nodeId) && isBackend(nodeIndex.get(nodeId)))"),
+                "Vote Party forms must use the single workspace source until mixed-aware editing exists.");
         assertTrue(script.body().contains("quickSetupPreserveReadGeneration = inputGeneration;\n"
                         + "    text(quickOperationStatus,\n"
                         + "      'Selected backend capabilities changed. Preserving unsaved Vote Party edits"),
@@ -359,8 +367,8 @@ class ControlHttpServerTest {
                 "Invalidated dedicated settings must automatically reload while Quick Setup is visible.");
         assertTrue(script.body().contains("nodeCapabilities.get(node)?.includes(quickSetupCapability())"),
                 "Quick approvals must remain valid only for their selected capability version.");
-        assertTrue(script.body().contains("'config.quick-setup.v1', 'config.quick-setup.v2', 'config.proxy-method.v2'"),
-                "Secondary versioned backends must remain selectable for HTTP and Vote Party setup.");
+        assertTrue(script.body().contains("checkbox.disabled = !isBackend(node);"),
+                "Backend workspace selection must not depend on one configuration capability version.");
 		assertTrue(script.body().contains("'config.quick-setup.v2', 'config.proxy-method.v2', 'data.inspect.v1'"),
 				"HTTP capability transitions must invalidate cached guided configuration reads.");
 		assertTrue(script.body().contains("return {enabled: 'true'};"),
@@ -414,7 +422,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("is unavailable to ${proxy.displayName}"),
                 "Availability warnings must remain distinct for every reporting proxy.");
         assertTrue(script.body().contains(
-                "if (nodeId && nodeId === selectedServerId) {\n    serverPicker.value = selectedServerId;\n    return;\n  }"),
+                "if (nodeId && nodeId === selectedServerId) {\n    serverPicker.value = selectedServerId;\n    return true;\n  }"),
                 "Selecting the current server again must not reset unsaved YAML or routing drafts.");
         int primarySelector = script.body().indexOf("function selectPrimaryServer(nodeId)");
         int sameServerGuard = script.body().indexOf(
@@ -518,8 +526,17 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("presentPreviewReady(quickOperationStatus, applyQuickSetup, operation);"));
         assertTrue(script.body().contains("presentPreviewReady(elements.status, elements.apply, operation);"));
         assertTrue(script.body().contains("presentPreviewReady(rewardSimulationResult, applyReward, operation);"));
+        assertTrue(script.body().contains("path !== '/api/v1/configuration/rewards/preview'"));
         assertTrue(script.body().contains("Your unsaved proxy-routing draft is retained"));
-        assertTrue(script.body().contains("function invalidateConfigurationReads() {\n  fileReadCache.clear();\n"
+        assertTrue(script.body().contains("function invalidateConfigurationReads() {\n  settingsEditor?.invalidateReads();\n"
+                        + "  voteSitesEditor?.invalidateReads();\n"
+                        + "  if (authenticated && tabFromHash() === 'general-settings' && !settingsEditor?.state.busy) {\n"
+                        + "    window.setTimeout(() => void settingsEditor?.read(false), 0);\n  }\n"
+                        + "  if (authenticated && tabFromHash() === 'vote-sites' && !voteSitesEditor?.state.busy) {\n"
+                        + "    window.setTimeout(() => void voteSitesEditor?.read(false), 0);\n  }\n"
+                        + "  rewardsEditor?.invalidateReads();\n"
+                        + "  if (authenticated && tabFromHash() === 'rewards' && !rewardsEditor?.state.busy) {\n"
+                        + "    window.setTimeout(() => void rewardsEditor?.read(false), 0);\n  }\n  fileReadCache.clear();\n"
                         + "  lastFileReadOperation = null;\n  clearApprovals();\n  loadedQuickSetup = null;\n"
                         + "  if (!configurationDirty) {\n"
                         + "    configurationContent.value = '';\n    configurationContentPresent = false;\n"
@@ -931,17 +948,18 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0"));
         assertTrue(script.body().contains("voteSitesConfiguredKnown: configuredVoteSites != null"));
         int exactShortcut = script.body().indexOf("const exactShortcut = GLOBAL_PAGE_SHORTCUTS.get(normalized);");
-        int fuzzySetting = script.body().indexOf("const setting = SETTINGS_SCHEMA.find");
+        int fuzzySetting = script.body().indexOf("const setting = GENERAL_SETTING_FIELDS.find");
         assertTrue(exactShortcut >= 0 && exactShortcut < fuzzySetting);
-        assertTrue(script.body().contains("['rewards', {tab: 'quick-setup', scrollTarget: 'reward-builder-card'}]"));
-        assertTrue(script.body().contains("['vote sites', {tab: 'data', scrollTarget: 'site-health-card'}]"));
+        assertTrue(script.body().contains("['rewards', {tab: 'rewards'}]"));
+        assertTrue(script.body().contains("['vote sites', {tab: 'vote-sites'}]"));
         assertTrue(script.body().contains("['network doctor', {tab: 'network', scrollTarget: 'network-doctor-card'}]"));
         assertTrue(script.body().contains("['configuration compare', {tab: 'configurations', configView: 'compare'"));
         assertTrue(script.body().contains("openGlobalShortcut(GLOBAL_PAGE_SHORTCUTS.get('configuration compare'))"));
         assertTrue(script.body().contains("globalSearchInput.value = '';\n  globalSearchOptions.replaceChildren();"));
         assertTrue(web.body().contains("data-tab=\"configurations\" data-config-shortcut=\"compare\""));
         assertTrue(script.body().contains("if (button.dataset.configShortcut) setConfigView(button.dataset.configShortcut);"));
-        assertTrue(script.body().contains("if (setting) {\n    settingsFilter.value = query;"));
+        assertTrue(script.body().contains("if (setting) {\n    openWorkspace('general-settings');"));
+        assertTrue(script.body().contains("voteSitesEditor.selectSite(site.siteKey);"));
         int openWorkspace = script.body().indexOf("function openWorkspace(tab, scrollTarget = '', preset = '', navigationButton = null)");
         int presetBeforeTab = script.body().indexOf("quickPreset.value = preset;", openWorkspace);
         int activateAfterPreset = script.body().indexOf("setActiveTab(tab, true);", openWorkspace);
@@ -1072,6 +1090,130 @@ class ControlHttpServerTest {
 
         assertError(get("/api/v1/nodes?offset=1&limit=1&revision=" + revision, adminToken),
                 409, "REGISTRY_CHANGED");
+    }
+
+    @Test void generalSettingsUsesAuthenticatedTypedReadAndExactBoundPreview() throws Exception {
+        String backend = registration().replace("VELOCITY", "BUKKIT")
+                .replace("\"presence.snapshot\"]", "\"config.files.v1\"]");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", backend, nodeToken).statusCode());
+        String readBody = "{\"nodeIds\":[\"proxy-a\"],\"configuration\":{\"domain\":\"file\",\"fileName\":\"Config.yml\"}}";
+        JsonNode read = json.readTree(send("POST", "/api/v1/configuration/read", readBody, adminToken).body());
+        String readId = read.get("operationId").asText();
+        JsonNode task = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        String content = "# preserve me\nProcessRewards: false\nAutoCreateVoteSites: false\nDatabase:\n  Password: '<redacted>'\nUnknown: server-local\n";
+        Map<String, Object> result = Map.of("sessionId", SESSION, "success", true, "code", "OK", "message", "Read",
+                "revision", "a".repeat(64), "configuration", Map.of("domain", "file", "fileName", "Config.yml", "content", content),
+                "changes", java.util.List.of(), "reloaded", false, "rolledBack", false, "attemptId", task.get("attemptId").asText());
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/operations/" + readId + "/result",
+                json.writeValueAsString(result), nodeToken).statusCode());
+        String selector = json.writeValueAsString(Map.of("readOperationId", readId, "nodeId", "proxy-a"));
+        HttpResponse<String> typed = send("POST", "/api/v1/configuration/general-settings/state", selector, adminToken);
+        assertEquals(200, typed.statusCode());
+        assertFalse(typed.body().contains("Password"));
+        assertFalse(typed.body().contains("server-local"));
+        JsonNode fields = json.readTree(typed.body()).get("fields");
+        assertFalse(fields.get("ProcessRewards").get("value").asBoolean());
+        assertEquals("MISSING", fields.get("CountFakeVotes").get("status").asText());
+        String previewBody = json.writeValueAsString(Map.of("readOperationId", readId, "nodeId", "proxy-a",
+                "overrides", Map.of("ProcessRewards", true)));
+        HttpResponse<String> preview = send("POST", "/api/v1/configuration/general-settings/preview", previewBody, adminToken);
+        assertEquals(202, preview.statusCode());
+        assertFalse(preview.body().contains("server-local"));
+        JsonNode previewTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        assertEquals("a".repeat(64), previewTask.get("expectedRevision").asText());
+        assertEquals(content.replace("ProcessRewards: false", "ProcessRewards: true"),
+                previewTask.get("configuration").get("content").asText());
+        assertError(send("POST", "/api/v1/configuration/general-settings/preview",
+                previewBody.replace("true", "\"true\""), adminToken), 400, "VALIDATION_ERROR");
+        assertEquals(200, get("/configuration-state.js", null).statusCode());
+        assertEquals(200, get("/general-settings.js", null).statusCode());
+    }
+
+    @Test void generalSettingsEndpointsRequireAdminAndSessionCsrf() throws Exception {
+        String statePath = "/api/v1/configuration/general-settings/state";
+        String previewPath = "/api/v1/configuration/general-settings/preview";
+        assertEquals(401, send("POST", statePath, "{}", null).statusCode());
+        assertEquals(401, send("POST", previewPath, "{}", nodeToken).statusCode());
+        assertEquals(405, get(statePath, adminToken).statusCode());
+        assertEquals(405, get(previewPath, adminToken).statusCode());
+        assertEquals(400, send("POST", previewPath, "{\"unknown\":true}", adminToken).statusCode());
+        credentials.setWebPassword("fixture-password-long-enough".toCharArray());
+        HttpResponse<String> login = send("POST", "/api/v1/auth/login", "{\"password\":\"fixture-password-long-enough\"}", null);
+        String cookie = login.headers().firstValue("Set-Cookie").orElseThrow().split(";", 2)[0];
+        assertEquals(403, sendWithHeaders("POST", statePath, "{}", Map.of("Cookie", cookie)).statusCode());
+        assertEquals(403, sendWithHeaders("POST", previewPath, "{}", Map.of("Cookie", cookie)).statusCode());
+        assertEquals(403, sendWithHeaders("POST", "/api/v1/configuration/general-settings/discard-preview", "{}", Map.of("Cookie", cookie)).statusCode());
+    }
+
+    @Test void voteSitesTypedEndpointsRequireAdminCsrfAndExcludeUnknownSourceContent() throws Exception {
+        String statePath = "/api/v1/configuration/vote-sites/state";
+        String previewPath = "/api/v1/configuration/vote-sites/preview";
+        String discardPath = "/api/v1/configuration/vote-sites/discard-preview";
+        for (String route : java.util.List.of(statePath, previewPath, discardPath)) {
+            assertEquals(401, send("POST", route, "{}", null).statusCode());
+            assertEquals(401, send("POST", route, "{}", nodeToken).statusCode());
+            assertEquals(405, get(route, adminToken).statusCode());
+            assertEquals(400, send("POST", route, "{\"unknown\":true}", adminToken).statusCode());
+        }
+        assertEquals(200, get("/vote-sites-state.js", null).statusCode());
+        assertEquals(200, get("/vote-sites.js", null).statusCode());
+        String backend = registration().replace("VELOCITY", "BUKKIT")
+                .replace("\"presence.snapshot\"]", "\"config.files.v1\"]");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", backend, nodeToken).statusCode());
+        String readBody = "{\"nodeIds\":[\"proxy-a\"],\"configuration\":{\"domain\":\"file\",\"fileName\":\"VoteSites.yml\"}}";
+        String readId = json.readTree(send("POST", "/api/v1/configuration/read", readBody, adminToken).body())
+                .get("operationId").asText();
+        JsonNode task = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        String secret = "DO_NOT_EXPOSE_REWARDS_OR_UNKNOWN";
+        String source = "VoteSites:\n  Alpha:\n    Enabled: false\n    Name: Alpha\n    ServiceSite: alpha\n"
+                + "    VoteDelay: '24h'\n    Priority: 5\n    Unknown: " + secret
+                + "\n    Rewards:\n      Commands:\n        - '" + secret + "'\n";
+        Map<String, Object> result = Map.of("sessionId", SESSION, "success", true, "code", "OK", "message", "Read",
+                "revision", "a".repeat(64), "configuration", Map.of("domain", "file", "fileName", "VoteSites.yml", "content", source),
+                "changes", java.util.List.of(), "reloaded", false, "rolledBack", false, "attemptId", task.get("attemptId").asText());
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/operations/" + readId + "/result",
+                json.writeValueAsString(result), nodeToken).statusCode());
+        String selector = json.writeValueAsString(Map.of("readOperationId", readId, "nodeId", "proxy-a"));
+        HttpResponse<String> state = send("POST", statePath, selector, adminToken);
+        assertEquals(200, state.statusCode());
+        assertFalse(state.body().contains(secret));
+        assertTrue(state.body().contains("rewardsConfigured"));
+        String edit = json.writeValueAsString(Map.of("readOperationId", readId, "nodeId", "proxy-a",
+                "action", "EDIT", "siteKey", "Alpha", "fields", Map.of("Enabled", true)));
+        HttpResponse<String> preview = send("POST", previewPath, edit, adminToken);
+        assertEquals(202, preview.statusCode());
+        assertFalse(preview.body().contains(secret));
+        JsonNode previewTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        assertEquals("a".repeat(64), previewTask.get("expectedRevision").asText());
+        assertEquals(source.replace("Enabled: false", "Enabled: true"), previewTask.get("configuration").get("content").asText());
+        assertError(send("POST", previewPath, edit.replace("Alpha", "bad.key"), adminToken), 400, "VALIDATION_ERROR");
+        credentials.setWebPassword("fixture-password-long-enough".toCharArray());
+        HttpResponse<String> login = send("POST", "/api/v1/auth/login", "{\"password\":\"fixture-password-long-enough\"}", null);
+        String cookie = login.headers().firstValue("Set-Cookie").orElseThrow().split(";", 2)[0];
+        for (String route : java.util.List.of(statePath, previewPath, discardPath)) {
+            assertEquals(403, sendWithHeaders("POST", route, "{}", Map.of("Cookie", cookie)).statusCode());
+        }
+    }
+
+    @Test void rewardsTypedEndpointsRequireAdminAndCsrf() throws Exception {
+        for (String route : java.util.List.of("/api/v1/configuration/rewards/state",
+                "/api/v1/configuration/rewards/preview", "/api/v1/configuration/rewards/discard-preview")) {
+            assertEquals(401, send("POST", route, "{}", null).statusCode());
+            assertEquals(401, send("POST", route, "{}", nodeToken).statusCode());
+            assertEquals(405, get(route, adminToken).statusCode());
+            assertEquals(400, send("POST", route, "{\"unknown\":true}", adminToken).statusCode());
+        }
+        assertEquals(200, get("/rewards.js", null).statusCode());
+        credentials.setWebPassword("fixture-password-long-enough".toCharArray());
+        HttpResponse<String> login = send("POST", "/api/v1/auth/login",
+                "{\"password\":\"fixture-password-long-enough\"}", null);
+        String cookie = login.headers().firstValue("Set-Cookie").orElseThrow().split(";", 2)[0];
+        assertEquals(403, sendWithHeaders("POST", "/api/v1/configuration/rewards/preview", "{}",
+                Map.of("Cookie", cookie)).statusCode());
     }
 
     @Test void configurationPreviewApprovalAndRevisionCheckedApplyAreEndToEnd() throws Exception {

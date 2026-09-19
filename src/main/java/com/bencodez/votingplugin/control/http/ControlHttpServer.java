@@ -91,6 +91,12 @@ public final class ControlHttpServer implements AutoCloseable {
             "/", new WebResource("/web/index.html", "text/html; charset=utf-8"),
             "/index.html", new WebResource("/web/index.html", "text/html; charset=utf-8"),
             "/app.js", new WebResource("/web/app.js", "text/javascript; charset=utf-8"),
+            "/workspace.js", new WebResource("/web/workspace.js", "text/javascript; charset=utf-8"),
+            "/configuration-state.js", new WebResource("/web/configuration-state.js", "text/javascript; charset=utf-8"),
+            "/general-settings.js", new WebResource("/web/general-settings.js", "text/javascript; charset=utf-8"),
+            "/vote-sites-state.js", new WebResource("/web/vote-sites-state.js", "text/javascript; charset=utf-8"),
+            "/vote-sites.js", new WebResource("/web/vote-sites.js", "text/javascript; charset=utf-8"),
+            "/rewards.js", new WebResource("/web/rewards.js", "text/javascript; charset=utf-8"),
             "/app.css", new WebResource("/web/app.css", "text/css; charset=utf-8"));
     private static final int MAX_AUTH_FAILURES_PER_MINUTE = 100;
     private static final int MAX_PASSWORD_ATTEMPTS_PER_CLIENT = 8;
@@ -567,6 +573,80 @@ public final class ControlHttpServer implements AutoCloseable {
             send(exchange, 202, configurationOperations.createRead(request.nodeIds(), request.configuration()));
             return;
         }
+        if ((CONFIGURATION + "/general-settings/state").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            ConfigurationRequests.SettingsState request = read(exchange, ConfigurationRequests.SettingsState.class);
+            requireRequest(request);
+            send(exchange, 200, configurationOperations.generalSettingsState(request.readOperationId(), request.nodeId()));
+            return;
+        }
+        if ((CONFIGURATION + "/general-settings/discard-preview").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            ConfigurationRequests.SettingsDiscard request = read(exchange, ConfigurationRequests.SettingsDiscard.class);
+            requireRequest(request);
+            send(exchange, 200, configurationOperations.discardGeneralSettingsPreview(request.previewOperationId(), request.approvalToken()));
+            return;
+        }
+        if ((CONFIGURATION + "/general-settings/preview").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            ConfigurationRequests.SettingsPreview request = read(exchange, ConfigurationRequests.SettingsPreview.class);
+            requireRequest(request);
+            send(exchange, 202, configurationOperations.createGeneralSettingsPreview(request.readOperationId(), request.nodeId(), request.overrides()));
+            return;
+        }
+        if ((CONFIGURATION + "/vote-sites/state").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            ConfigurationRequests.VoteSitesState request = read(exchange, ConfigurationRequests.VoteSitesState.class);
+            requireRequest(request);
+            send(exchange, 200, configurationOperations.voteSitesState(request.readOperationId(), request.nodeId()));
+            return;
+        }
+        if ((CONFIGURATION + "/vote-sites/discard-preview").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            ConfigurationRequests.VoteSitesDiscard request = read(exchange, ConfigurationRequests.VoteSitesDiscard.class);
+            requireRequest(request);
+            send(exchange, 200, configurationOperations.discardVoteSitesPreview(request.previewOperationId(), request.approvalToken()));
+            return;
+        }
+        if ((CONFIGURATION + "/vote-sites/preview").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            ConfigurationRequests.VoteSitesPreview request = read(exchange, ConfigurationRequests.VoteSitesPreview.class);
+            requireRequest(request);
+            send(exchange, 202, configurationOperations.createVoteSitesPreview(request.readOperationId(), request.nodeId(),
+                    request.action(), request.siteKey(), request.fields()));
+            return;
+        }
+        if ((CONFIGURATION + "/rewards/state").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            ConfigurationRequests.RewardsState request = read(exchange, ConfigurationRequests.RewardsState.class);
+            requireRequest(request);
+            send(exchange, 200, configurationOperations.rewardsState(request.readOperationId(), request.nodeId(), request.fileName()));
+            return;
+        }
+        if ((CONFIGURATION + "/rewards/discard-preview").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            ConfigurationRequests.RewardsDiscard request = read(exchange, ConfigurationRequests.RewardsDiscard.class);
+            requireRequest(request);
+            send(exchange, 200, configurationOperations.discardRewardsPreview(request.previewOperationId(), request.approvalToken()));
+            return;
+        }
+        if ((CONFIGURATION + "/rewards/preview").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateAdmin(exchange, true);
+            ConfigurationRequests.RewardsPreview request = read(exchange, ConfigurationRequests.RewardsPreview.class);
+            requireRequest(request);
+            send(exchange, 202, configurationOperations.createRewardsPreview(request.readOperationId(), request.nodeId(),
+                    request.fileName(), request.rewardPath(), request.action(), request.field(), request.value()));
+            return;
+        }
         if ((CONFIGURATION + "/preview").equals(path)) {
             requireMethod(exchange, "POST");
             authenticateAdmin(exchange, true);
@@ -921,6 +1001,13 @@ public final class ControlHttpServer implements AutoCloseable {
         String text = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(bytes)).toString();
+        if (type == ConfigurationRequests.SettingsState.class || type == ConfigurationRequests.SettingsPreview.class
+                || type == ConfigurationRequests.SettingsDiscard.class || type == ConfigurationRequests.VoteSitesState.class
+                || type == ConfigurationRequests.VoteSitesPreview.class || type == ConfigurationRequests.VoteSitesDiscard.class
+                || type == ConfigurationRequests.RewardsState.class || type == ConfigurationRequests.RewardsPreview.class
+                || type == ConfigurationRequests.RewardsDiscard.class) {
+            return json.readerFor(type).with(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).readValue(text);
+        }
         return json.readValue(text, type);
     }
 

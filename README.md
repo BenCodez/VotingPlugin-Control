@@ -8,6 +8,8 @@ VotingPlugin does not depend on it for startup, joins, routing, rewards, or shut
 
 Maintainers and coding agents should read [AGENTS.md](AGENTS.md). The complete management, inspection, limits, and threat
 model reference is [docs/control-management.md](docs/control-management.md).
+The scope-first WebUI and legacy single-source editing boundary are documented in
+[docs/webui-workspaces.md](docs/webui-workspaces.md).
 
 ## Trust and deployment boundary
 
@@ -206,10 +208,19 @@ Control and VotingPlugin both enforce fixed quick-setup preset/option schemas; u
 than becoming arbitrary YAML writes. The WebUI settings catalog is a static versioned reference over these typed paths,
 not a generic setting API.
 
-Opening Settings or changing the selected server automatically reads that server's current configuration. A failed read
-clears the editor and exposes an inline retry; successful applies invalidate cached values and read the confirmed state
-again. Read actions load only the primary server shown in the configuration header. Preview and apply still cover every server
-explicitly included in configuration changes, so one slow secondary node does not delay opening the editor or guided form.
+Opening Settings automatically reads current configuration; errors expose inline Retry. The Phase 2 General Settings visual
+editor reads **each** selected workspace backend and previews only explicitly changed fields independently per target.
+The Phase 3 [Vote Sites visual editor](docs/webui-vote-sites.md) likewise reads each selected backend's main
+`VoteSites.yml`, distinguishes mixed/partial/error states, and uses source-preserving per-target add/edit/remove previews.
+Successful applies invalidate cached values and read the confirmed state again. Legacy guided forms and raw YAML retain
+their explicitly labeled source-server behavior; Vote Sites synchronization remains a separate source-copy operation.
+The [Rewards workspace](docs/webui-rewards.md) reads reward scopes from each selected backend, shows mixed
+command lists and advanced structure, and supports bounded source-preserving inline Vote Site reward operations.
+Connectors with the separate `config.reward-files.v1` capability support bounded inventory and editing of
+existing named `Rewards/*.yml` files. Older connectors remain usable but show named files as unsupported; complex
+nested rewards and unrecognized metadata retain the Full YAML fallback.
+The disposable running-connector and packaged-browser validation boundaries are recorded in
+[WebUI integration validation](docs/webui-integration.md).
 
 `plugin.deploy.v1` is additive and exact: older nodes remain connected but are excluded from JAR staging. The WebUI uploads
 at most 64 MiB, Control validates the ZIP structure and root `plugin.yml`, and every node re-verifies the SHA-256 before
@@ -318,3 +329,5 @@ support archive, cloud relay, or remote-support sessions. Current topology and a
 nodes automatically re-register after a Control restart and an interrupted change requires a new preview. Redacted
 operation history, audit metadata, and configuration snapshots persist without making an ambiguous write resumable.
 Manual installation remains supported; VotingPlugin may also opt in to verified download and child-process hosting.
+The scope-aware [General Settings editor](docs/webui-general-settings.md) reads each selected backend independently,
+previews only explicit boolean edits with per-target revision protection, and keeps Full YAML/Compare available for advanced settings.

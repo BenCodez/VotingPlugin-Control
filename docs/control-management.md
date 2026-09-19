@@ -41,6 +41,7 @@ Control accepts only the intersection with its own allow-list.
 | `config.proxy-routing.v1` | `SendVotesToAllServers` and `BlockedServers` on a proxy |
 | `config.proxy-files.v1` | Revisioned, redacted management of that proxy's single `bungeeconfig.yml` file |
 | `config.files.v1` | Bounded reads/previews/applies for managed Bukkit YAML files |
+| `config.reward-files.v1` | Bounded inventory and revisioned editing of existing direct `Rewards/<name>.yml` files on a Bukkit node |
 | `config.file-comments.v1` | Preserves Control-managed comment metadata where supported |
 | `config.quick-setup.v1` | Typed guided settings and reward/site presets |
 | `config.quick-setup.v2` | Vote Party guided settings including revision-safe Enabled round trips |
@@ -118,6 +119,27 @@ the proposal in a public operation view, and the durable operation journal recor
 Public/history-only quick-setup selectors carry an internal non-serialized redacted marker that proposal validation rejects,
 so they cannot become executable requests. The node's acknowledged result exposes only the derived target file, not
 proposal actions/messages.
+
+### Named reward files
+
+`config.reward-files.v1` is an additive Bukkit capability for an existing direct
+`Rewards/<name>.yml` file, where `<name>` is an ASCII letter or digit followed by at
+most 99 ASCII letters, digits, `_`, or `-`. It is independent from ordinary managed
+files and from inspections: an older connector remains connected and simply leaves
+named files unavailable. The connector advertises it only when its Rewards directory
+supports secure pinned-directory staging. Paths, `.yaml`, traversal, symlinks,
+case-only aliases, files over 512 KiB, and inventories over 100 eligible files are
+rejected; a missing Rewards directory has an empty inventory.
+
+The read-only `reward-file-inventory` inspection takes no filters and returns only
+the bounded names list. It requires both accepted `data.inspect.v1` and
+`config.reward-files.v1`. A named-file READ, PREVIEW, or APPLY uses the normal
+`domain:"file"` envelope with `fileName:"Rewards/<name>.yml"`, requires the exact
+accepted capability, and keeps the usual revision-bound retained READ and one-time
+approval. APPLY stages and atomically publishes through the pinned directory,
+reloads VotingPlugin, verifies the file is active, and rolls back locally if reload
+or verification fails. This capability never creates or deletes files and never
+grants access outside `Rewards/`.
 
 File content is limited to 512 KiB. Node results mask secret-like YAML paths. A replacement secret may pass through an
 authenticated proposal, but Control omits file proposal contents from operation views and never records them in its audit.
