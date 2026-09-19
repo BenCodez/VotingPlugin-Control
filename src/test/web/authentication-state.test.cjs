@@ -82,7 +82,8 @@ function harness() {
     updateConfigurationButtons() {}, updateExtendedButtons() {}, text(target, value) { target.textContent = value; }
   };
   vm.createContext(context);
-  vm.runInContext(declaration('discardAuthenticationState'), context, {filename: 'authentication-state.js'});
+  vm.runInContext([declaration('clearSessionRewardFileOptions'), declaration('discardAuthenticationState')].join('\n'),
+    context, {filename: 'authentication-state.js'});
   return {context, element};
 }
 
@@ -95,6 +96,11 @@ test('sign-out and session expiry share teardown that clears Vote Sites and Rewa
     element('#vote-site-search').value = 'draft site'; element('#vote-site-filter').value = 'partial'; element('#vote-site-ack').checked = true;
     element('#rewards-search').value = 'draft reward'; element('#rewards-operation').value = 'REPLACE_LIST';
     element('#rewards-field').value = 'Money'; element('#rewards-value').value = 'give player 100'; element('#rewards-ack').checked = true;
+    const staticOption = {value: 'Config.yml', dataset: {}, remove() { throw new Error('static file removed'); }};
+    const dynamicOption = {value: 'Rewards/Private.yml', dataset: {sessionRewardFile: 'true'},
+      remove() { context.configurationFile.options = context.configurationFile.options.filter(option => option !== this); }};
+    context.configurationFile.options = [staticOption, dynamicOption];
+    context.configurationFile.value = dynamicOption.value;
     vm.runInContext(`discardAuthenticationState(${JSON.stringify(reason)})`, context);
     assert.equal(element('#vote-site-form').resetCalled, true);
     assert.equal(element('#vote-site-add-form').resetCalled, true);
@@ -104,5 +110,7 @@ test('sign-out and session expiry share teardown that clears Vote Sites and Rewa
     assert.equal(element('#rewards-search').value, ''); assert.equal(element('#rewards-operation').value, 'APPEND_LIST_ENTRY');
     assert.equal(element('#rewards-field').value, 'Commands'); assert.equal(element('#rewards-value').value, '');
     assert.equal(element('#rewards-ack').checked, false);
+    assert.deepEqual(context.configurationFile.options, [staticOption]);
+    assert.equal(context.configurationFile.value, 'Config.yml');
   }
 });

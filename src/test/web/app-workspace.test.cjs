@@ -140,8 +140,8 @@ function harness() {
   vm.createContext(context);
   const names = ['text', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
     'friendlyCapability', 'managedCapabilities', 'proxyReportsFor', 'backendCard', 'nodePresence', 'nodeCard',
-    'ordinaryTargetIds', 'comparisonTargetIds', 'changeWorkspaceTargets', 'inspectWorkspaceServer',
-    'openScopeOverview', 'applyNavigationRoute', 'startConfigurationOperation'];
+    'ordinaryTargetIds', 'comparisonTargetIds', 'confirmDiscardWorkspaceDrafts', 'changeWorkspaceTargets',
+    'inspectWorkspaceServer', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation'];
   vm.runInContext(names.map(declaration).join('\n'), context, {filename: 'app-workspace-helpers.js'});
   return context;
 }
@@ -270,6 +270,30 @@ test('workspace target changes, inspection, and scope overview preserve workspac
     ['setActiveTab', 'overview', true], ['setActiveTab', 'overview', true]
   ]);
   assert.equal(context.calls.some(call => /preview|apply/i.test(call[0])), false);
+});
+
+test('Rewards drafts require confirmation before workspace target or Global scope changes', () => {
+  const context = harness();
+  context.authenticated = true;
+  context.nodeIndex.set('one', backend('one'));
+  context.nodeIndex.set('two', backend('two'));
+  context.workspace.setTargets(['one', 'two']);
+  context.selectedServerId = 'one';
+  context.rewardsEditor = {edit: {operation: 'APPEND_LIST_ENTRY', field: 'Commands', value: 'say staged'}};
+  const prompts = [];
+  context.window.confirm = message => { prompts.push(message); return false; };
+  assert.equal(run(context, 'changeWorkspaceTargets(() => workspace.toggleTarget("two"))'), false);
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['one', 'two']);
+  run(context, 'enterGlobalWorkspace()');
+  assert.equal(context.workspace.managementScope, 'MULTI_SERVER');
+  context.activeNavigationHash = '#workspace/overview';
+  context.window.location.hash = '#global/network';
+  run(context, 'applyNavigationRoute()');
+  assert.equal(context.workspace.managementScope, 'MULTI_SERVER');
+  assert.equal(context.window.location.hash, '#workspace/overview');
+  assert.equal(prompts.length, 3);
+  assert.ok(prompts.every(message => message.includes('Rewards edits')));
+  assert.equal(context.calls.some(call => call[0] === 'reset'), false);
 });
 
 test('applyAuthenticatedSession resets workspace and opens Home without preview or apply work', () => {

@@ -1636,9 +1636,7 @@ function renderWorkspaceChrome(tab) {
 }
 
 function changeWorkspaceTargets(change) {
-  if (!confirmDiscardUnsavedConfiguration('changing workspace targets')) return false;
-  if (settingsEditor?.model.dirty.size && !window.confirm('Discard explicit General Settings edits before changing workspace targets?')) return false;
-  if (voteSitesHasDraft() && !window.confirm('Discard explicit Vote Site edits before changing workspace targets?')) return false;
+  if (!confirmDiscardWorkspaceDrafts('changing workspace targets')) return false;
   resetServerContextValues('Workspace changed. Loading the selected source when needed.');
   change();
   clearApprovals();
@@ -1673,9 +1671,7 @@ function openScopeOverview() {
 }
 
 function enterGlobalWorkspace() {
-  if (!confirmDiscardUnsavedConfiguration('opening Global Settings')) return;
-  if (settingsEditor?.model.dirty.size && !window.confirm('Discard explicit General Settings edits before opening Global Settings?')) return;
-  if (voteSitesHasDraft() && !window.confirm('Discard explicit Vote Site edits before opening Global Settings?')) return;
+  if (!confirmDiscardWorkspaceDrafts('opening Global Settings')) return;
   resetServerContextValues('Opening global tools.');
   workspace.enterGlobal();
   clearApprovals();
@@ -1689,9 +1685,7 @@ function applyNavigationRoute() {
   const route = ControlWorkspace.parseRoute(window.location.hash);
   const cancelNavigation = () => window.history.replaceState(null, '', activeNavigationHash);
   if (route.scope === 'GLOBAL' && workspace.managementScope !== 'GLOBAL') {
-    if (!confirmDiscardUnsavedConfiguration('opening Global Settings')) return cancelNavigation();
-    if (settingsEditor?.model.dirty.size && !window.confirm('Discard explicit General Settings edits before opening Global Settings?')) return cancelNavigation();
-    if (voteSitesHasDraft() && !window.confirm('Discard explicit Vote Site edits before opening Global Settings?')) return cancelNavigation();
+    if (!confirmDiscardWorkspaceDrafts('opening Global Settings')) return cancelNavigation();
     resetServerContextValues('Opening global tools.');
     workspace.enterGlobal();
     clearApprovals();
@@ -1916,6 +1910,28 @@ function fileDraftStatus(status) {
 function confirmDiscardUnsavedConfiguration(context) {
   if (!configurationDirty && !routingDirty) return true;
   return window.confirm(`Discard unsaved ${configurationDirty && routingDirty ? 'YAML and routing' : configurationDirty ? 'YAML' : 'routing'} changes before ${context}?`);
+}
+
+function confirmDiscardWorkspaceDrafts(context) {
+  if (!confirmDiscardUnsavedConfiguration(context)) return false;
+  if (settingsEditor?.model.dirty.size && !window.confirm(`Discard explicit General Settings edits before ${context}?`)) return false;
+  if (voteSitesHasDraft() && !window.confirm(`Discard explicit Vote Site edits before ${context}?`)) return false;
+  if (rewardsEditor?.edit && !window.confirm(`Discard explicit Rewards edits before ${context}?`)) return false;
+  return true;
+}
+
+function clearSessionRewardFileOptions() {
+  const selected = configurationFile.value;
+  let removedSelected = false;
+  for (const option of [...(configurationFile.options || [])]) {
+    if (option.dataset?.sessionRewardFile !== 'true') continue;
+    removedSelected ||= option.value === selected;
+    option.remove();
+  }
+  if (removedSelected) {
+    configurationFile.value = 'Config.yml';
+    configurationFileSelection = 'Config.yml';
+  }
 }
 
 function syncFileSelection() {
@@ -3225,6 +3241,7 @@ function invalidateGuidedSetupReads() {
 }
 
 function resetServerContextValues(reason, preserveDirtyDrafts = false) {
+  if (!preserveDirtyDrafts || !configurationDirty) clearSessionRewardFileOptions();
   dedicatedSetupApprovals.clear();
   pendingDetectedVoteSite = null;
   lastFileReadOperation = null;
@@ -3639,6 +3656,7 @@ function discardAuthenticationState(reason) {
   nodePlugins.clear();
   configurationForm.reset();
   fileConfigurationForm.reset();
+  clearSessionRewardFileOptions();
   document.querySelector('#vote-site-form').reset();
   document.querySelector('#vote-site-add-form').reset();
   const voteSiteAddDialog = document.querySelector('#vote-site-add-dialog');
@@ -6587,7 +6605,11 @@ document.querySelector('#vote-site-preview').addEventListener('click', () => { d
 document.querySelector('#vote-site-apply').addEventListener('click', () => void voteSitesEditor.apply(document.querySelector('#vote-site-ack').checked));
 document.querySelector('#vote-site-ack').addEventListener('change', renderVoteSites);
 document.querySelector('#vote-site-open-yaml').addEventListener('click', () => {
-  configurationFile.value = 'VoteSites.yml'; setActiveTab('configurations', true); setConfigView('yaml');
+  if (configurationFile.value !== 'VoteSites.yml') {
+    configurationFile.value = 'VoteSites.yml';
+    configurationFile.dispatchEvent(new Event('input'));
+  }
+  setActiveTab('configurations', true); setConfigView('yaml');
 });
 document.querySelector('#vote-site-edit-rewards').addEventListener('click', () => {
   const key = voteSitesEditor.model.selectedSiteKey;
@@ -6824,7 +6846,7 @@ document.querySelector('#rewards-open-yaml').addEventListener('click', () => {
   const selected = rewardsEditor.selected;
   if (selected.fileName.startsWith('Rewards/') && ![...configurationFile.options].some(option => option.value === selected.fileName)) {
     const option = document.createElement('option'); option.value = selected.fileName;
-    option.textContent = selected.fileName; configurationFile.append(option);
+    option.textContent = selected.fileName; option.dataset.sessionRewardFile = 'true'; configurationFile.append(option);
   }
   setActiveTab('configurations', true); setConfigView('yaml');
   if (configurationFile.value !== selected.fileName) { configurationFile.value = selected.fileName; configurationFile.dispatchEvent(new Event('input')); }
