@@ -21,6 +21,16 @@
     return null;
   }
 
+  function parseStringField(path, raw) {
+    if (typeof raw !== 'string' || raw.includes('\0')) return null;
+    const length = Array.from(raw).length;
+    if (path === 'Name') return length <= 200 ? raw : null;
+    if (path === 'DisplayItem.Material') return /^[A-Za-z0-9_:-]{1,100}$/.test(raw) ? raw : null;
+    if (!['ServiceSite', 'VoteURL', 'VoteDelay'].includes(path)) return null;
+    const max = path === 'ServiceSite' ? 2048 : path === 'VoteURL' ? 500 : 64;
+    return length >= 1 && length <= max && !/[\u0000-\u001f\u007f-\u009f|]/.test(raw) ? raw : null;
+  }
+
   function text(value) { return typeof value === 'string' ? value : ''; }
   function clone(value) {
     if (value === undefined) return undefined;
@@ -264,5 +274,5 @@
     }
   }
 
-  return {VoteSitesState, ADD_FIELDS, parseIntegerField};
+  return {VoteSitesState, ADD_FIELDS, parseIntegerField, parseStringField};
 }));

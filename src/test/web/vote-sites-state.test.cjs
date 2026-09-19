@@ -1,6 +1,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {VoteSitesState, ADD_FIELDS, parseIntegerField} = require('../../main/resources/web/vote-sites-state.js');
+const {VoteSitesState, ADD_FIELDS, parseIntegerField, parseStringField} = require('../../main/resources/web/vote-sites-state.js');
+
+test('Vote Site text input matches server-side constraints before staging', () => {
+  for (const path of ['ServiceSite', 'VoteURL', 'VoteDelay']) {
+    assert.equal(parseStringField(path, ''), null);
+    assert.equal(parseStringField(path, 'bad|value'), null);
+    assert.equal(parseStringField(path, 'bad\nvalue'), null);
+    assert.equal(parseStringField(path, 'valid value'), 'valid value');
+  }
+  assert.equal(parseStringField('ServiceSite', 'x'.repeat(2049)), null);
+  assert.equal(parseStringField('VoteURL', 'x'.repeat(501)), null);
+  assert.equal(parseStringField('VoteDelay', 'x'.repeat(65)), null);
+  assert.equal(parseStringField('DisplayItem.Material', 'STONE BLOCK'), null);
+  assert.equal(parseStringField('DisplayItem.Material', 'minecraft:diamond'), 'minecraft:diamond');
+  assert.equal(parseStringField('Name', ''), '');
+  assert.equal(parseStringField('Name', 'x'.repeat(201)), null);
+  assert.equal(parseStringField('Name', 'bad\0name'), null);
+});
 
 test('Vote Site integer input matches server-side field ranges before staging', () => {
   assert.equal(parseIntegerField('Priority', '-2147483648'), -2147483648);

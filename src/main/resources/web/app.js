@@ -6562,6 +6562,11 @@ document.querySelector('#vote-site-add-form').addEventListener('submit', event =
   if (fields.Priority === null || fields['DisplayItem.Amount'] === null) {
     text(document.querySelector('#vote-site-add-conflicts'), 'Priority must be a signed 32-bit integer and DisplayItem.Amount must be 1–64.'); return;
   }
+  const invalidText = VOTE_SITE_FIELDS.find(field => field.type === 'string'
+    && ControlVoteSites.parseStringField(field.path, fields[field.path]) === null);
+  if (invalidText) {
+    text(document.querySelector('#vote-site-add-conflicts'), `${invalidText.label} is outside its supported text format.`); return;
+  }
   voteSitesEditor.beginAdd(key, fields, policy);
   document.querySelector('#vote-site-partial-choice').value = policy === 'cancel' ? 'existing' : policy;
   document.querySelector('#vote-site-ack').checked = false;
@@ -6587,6 +6592,12 @@ VOTE_SITE_FIELDS.forEach(field => {
       if (value === null) {
         voteSiteFieldInput(field, voteSitesEditor.model.aggregateField(field.path));
         text(document.querySelector('#vote-sites-status'), `${field.label} is outside its supported integer range; the last staged value was retained.`); return;
+      }
+    } else {
+      value = ControlVoteSites.parseStringField(field.path, value);
+      if (value === null) {
+        voteSiteFieldInput(field, voteSitesEditor.model.aggregateField(field.path));
+        text(document.querySelector('#vote-sites-status'), `${field.label} is outside its supported text format; the last staged value was retained.`); return;
       }
     }
     document.querySelector('#vote-site-ack').checked = false;
