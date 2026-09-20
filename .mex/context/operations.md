@@ -5,7 +5,7 @@ triggers: [apply, preview, read, rollback, connector]
 last_updated: 2026-09-20
 mex:
   id: mx_01M307CW4V7HCFFWZXWT6BXB1N
-  type: constraint
+  type: component
   status: promoted
   revision: 1
   title: Configuration operation constraints
