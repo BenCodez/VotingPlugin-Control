@@ -66,7 +66,7 @@ function harness() {
     nodeCapabilities: new Map([['server', []]]), nodePlugins: new Map([['server', []]]), configurationForm: new Element(),
     fileConfigurationForm: new Element(), configurationFileSelection: 'VoteSites.yml', configurationFile: new Element(),
     configurationContentPresent: true, configurationDirty: true, configurationDraftNodeId: 'server',
-    configurationDraftSessionId: 'session', configurationDraftFileName: 'VoteSites.yml', routingDirty: true,
+    configurationDraftSessionId: 'session', configurationDraftFileName: 'VoteSites.yml', configurationSourceRevision: 'revision', routingDirty: true,
     routingDraftNodeId: 'server', autoLoadInFlight: new Set(['vote-sites']), autoLoadPending: new Set(['rewards']),
     quickSetupForm: new Element(), rewardSimulationForm: new Element(), playerLookupForm: new Element(),
     voteLogForm: new Element(), voteTraceForm: new Element(), siteResolutionForm: new Element(), snapshotForm: new Element(),
@@ -77,7 +77,7 @@ function harness() {
     voteTraceResult: new Element(), siteResolutionResult: new Element(), rewardSimulationResult: new Element(), driftResults: new Element(),
     snapshotList: new Element(), snapshotStatus: new Element(), nodes: new Element(), serverPicker: new Element(), message: new Element(),
     document: {createElement: () => new Element(), querySelector: element},
-    emptyDashboardInspectionStatus: () => ({}), syncTopbarOffset() {}, closeSidebar() {}, updateQuickFields() {}, resetDedicatedSetupValues() {},
+    emptyDashboardInspectionStatus: () => ({}), syncTopbarOffset() {}, syncYamlEditorView() {}, closeSidebar() {}, updateQuickFields() {}, resetDedicatedSetupValues() {},
     renderOperationHistory() {}, renderMetrics() {}, renderTopology() {}, renderSelectedServer() {},
     updateConfigurationButtons() {}, updateExtendedButtons() {}, text(target, value) { target.textContent = value; }
   };

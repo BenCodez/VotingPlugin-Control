@@ -5,6 +5,10 @@ is an optional local-first management plane. It discovers enrolled nodes, coordi
 requests typed read-only inspections. It never receives or processes votes, and VotingPlugin remains fully operational
 when Control is stopped.
 
+The approved administration mockups are reconciled with current capabilities in
+[Approved mockups: capability map](mockup-capability-map.md). That map guides truthful labels and phased work; mockup-only
+telemetry is not treated as observed health.
+
 ## Mental model
 
 There are four independent lanes:
@@ -71,6 +75,7 @@ authenticated, CSRF-protected endpoint and node capability checks as an external
 | Plugin update | Uploads one bounded JAR, shows the deployment-capable subset, and stages it on those nodes | SHA-256 and JAR identity are verified; session/attempt leases authorize downloads; Control never automatically reloads or restarts nodes; private storage is capped at 32 artifacts / 512 MiB and evicts only artifacts not referenced by retained deployment history |
 | Fast file reads | Caches a successful file read for 30 seconds by node ID, node session, and file | Browser memory only; cleared on logout and successful relevant writes; session binding prevents reuse after reconnect |
 | Full-YAML drafts | Keeps unsaved editor contents during a registry refresh | A dirty draft is bound to its source node, session, and file; it cannot preview or apply after that session changes. The operator must explicitly confirm a current-file read/reload, which discards the retained draft and rebinds the editor. |
+| Full-YAML workbench | Shows the exact source node, file and retained revision, synchronized line numbers, document size, bounded in-document search, cursor position, and confirmed/unsaved state | Search and editor state remain browser-memory only; the workbench does not parse, normalize, save, or bypass the connector's redaction and preview validation |
 | Proxy configuration | Opens `bungeeconfig.yml` only for the selected online proxy that negotiated `config.proxy-files.v1` | Fixed one-file capability, never proxy file browsing; redacted READ, PREVIEW, and one-time approved APPLY still apply |
 | Configuration drift | Reads the same redacted managed file from two or more selected capable nodes, groups exact revisions, and compares each target with the first successful baseline | Read-only; renders at most 50 differing line pairs per target and truncates each redacted line to 200 characters |
 | Snapshots | Creates a named durable snapshot from the last completed file read and loads one document into the editor | Stores the full redacted read result; restore is proposed content and must be freshly previewed/approved |

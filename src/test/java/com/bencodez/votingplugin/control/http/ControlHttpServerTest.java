@@ -210,6 +210,7 @@ class ControlHttpServerTest {
         assertTrue(workspaceScript.headers().firstValue("Content-Type").orElseThrow().startsWith("text/javascript"));
         assertTrue(workspaceScript.body().contains("class Workspace"));
         assertTrue(web.body().contains("src=\"/workspace.js\""));
+        assertTrue(web.body().contains("src=\"/yaml-editor.js\""));
         assertTrue(web.body().contains("What do you want to manage?"));
 		assertTrue(script.body().contains("offset=${offset}&limit=${PAGE_SIZE}"));
         assertTrue(script.body().contains("async function loadAllNodes()"));
@@ -540,6 +541,8 @@ class ControlHttpServerTest {
                         + "  lastFileReadOperation = null;\n  clearApprovals();\n  loadedQuickSetup = null;\n"
                         + "  if (!configurationDirty) {\n"
                         + "    configurationContent.value = '';\n    configurationContentPresent = false;\n"
+                        + "    configurationSourceRevision = '';\n    configurationSourceNodeId = '';\n"
+                        + "    configurationSourceKind = '';\n    syncYamlEditorView();\n"
                         + "    text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');\n"
                         + "    if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);\n"
                         + "  }\n  lastOverview = null;\n  lastDiagnostics = null;\n"
@@ -1128,6 +1131,7 @@ class ControlHttpServerTest {
         assertError(send("POST", "/api/v1/configuration/general-settings/preview",
                 previewBody.replace("true", "\"true\""), adminToken), 400, "VALIDATION_ERROR");
         assertEquals(200, get("/configuration-state.js", null).statusCode());
+        assertEquals(200, get("/yaml-editor.js", null).statusCode());
         assertEquals(200, get("/general-settings.js", null).statusCode());
     }
 

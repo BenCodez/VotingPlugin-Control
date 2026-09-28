@@ -119,6 +119,7 @@ function harness() {
       context.window.location.hash = args[2]; calls.push(['replaceState', ...args]);
     }}},
     emptyDashboardInspectionStatus: () => ({empty: true}),
+    syncYamlEditorView: () => calls.push(['syncYamlEditorView']),
     syncTopbarOffset: () => calls.push(['syncTopbarOffset']),
     renderOperationHistory: () => calls.push(['renderOperationHistory']),
     populateProfilePicker: () => calls.push(['populateProfilePicker']),

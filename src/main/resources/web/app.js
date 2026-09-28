@@ -79,6 +79,14 @@ const configurationForm = document.querySelector('#configuration-form');
 const configurationFile = document.querySelector('#configuration-file');
 const configurationContent = document.querySelector('#configuration-content');
 const editorPosition = document.querySelector('#editor-position');
+const yamlEditorStatistics = document.querySelector('#yaml-editor-statistics');
+const yamlEditorSource = document.querySelector('#yaml-editor-source');
+const yamlEditorState = document.querySelector('#yaml-editor-state');
+const yamlEditorSearch = document.querySelector('#yaml-editor-search');
+const yamlSearchPrevious = document.querySelector('#yaml-search-previous');
+const yamlSearchNext = document.querySelector('#yaml-search-next');
+const yamlSearchCount = document.querySelector('#yaml-search-count');
+const yamlLineNumbers = document.querySelector('#yaml-line-numbers');
 const readFileConfiguration = document.querySelector('#read-file-configuration');
 const previewFileConfiguration = document.querySelector('#preview-file-configuration');
 const applyFileConfiguration = document.querySelector('#apply-file-configuration');
@@ -308,6 +316,9 @@ let configurationDirty = false;
 let configurationDraftNodeId = '';
 let configurationDraftSessionId = '';
 let configurationDraftFileName = '';
+let configurationSourceRevision = '';
+let configurationSourceNodeId = '';
+let configurationSourceKind = '';
 let routingDirty = false;
 let routingDraftNodeId = '';
 let configurationFileSelection = configurationFile.value;
@@ -371,6 +382,31 @@ window.addEventListener('resize', syncTopbarOffset);
 function text(element, value) {
   element.textContent = value;
   return element;
+}
+
+const yamlEditorView = window.ControlYamlEditor.create({
+  textarea: configurationContent,
+  gutter: yamlLineNumbers,
+  position: editorPosition,
+  statistics: yamlEditorStatistics,
+  source: yamlEditorSource,
+  state: yamlEditorState,
+  search: yamlEditorSearch,
+  previous: yamlSearchPrevious,
+  next: yamlSearchNext,
+  matchCount: yamlSearchCount
+});
+
+function syncYamlEditorView() {
+  yamlEditorView.sync({
+    loaded: configurationContentPresent,
+    dirty: configurationDirty,
+    draft: configurationSourceKind === 'SNAPSHOT',
+    busy: configurationContent.disabled,
+    nodeId: configurationContentPresent ? configurationSourceNodeId || selectedServerId : '',
+    fileName: configurationContentPresent ? configurationFile.value : '',
+    revision: configurationContentPresent ? configurationSourceRevision : ''
+  });
 }
 
 const SETTINGS_SCHEMA = Object.freeze([
@@ -443,11 +479,11 @@ function cachedFile(key) {
   return value;
 }
 
-function cacheFile(key, content, operationId) {
+function cacheFile(key, content, operationId, revision = '') {
   if (typeof content !== 'string') return;
   pruneFileReadCache();
   fileReadCache.delete(key);
-  fileReadCache.set(key, {content, operationId, loadedAt: Date.now()});
+  fileReadCache.set(key, {content, operationId, revision, loadedAt: Date.now()});
   pruneFileReadCache();
 }
 
@@ -1361,9 +1397,13 @@ function applyAuthenticatedSession(body) {
   configurationDraftNodeId = '';
   configurationDraftSessionId = '';
   configurationDraftFileName = '';
+  configurationSourceRevision = '';
+  configurationSourceNodeId = '';
+  configurationSourceKind = '';
   routingDirty = false;
   routingDraftNodeId = '';
   configurationFileSelection = configurationFile.value;
+  syncYamlEditorView();
   autoLoadInFlight.clear();
   autoLoadPending.clear();
   inputGeneration++;
@@ -1884,11 +1924,15 @@ function resetFileEditorForSelection(message) {
   configurationDraftNodeId = '';
   configurationDraftSessionId = '';
   configurationDraftFileName = '';
+  configurationSourceRevision = '';
+  configurationSourceNodeId = '';
+  configurationSourceKind = '';
   lastFileReadOperation = null;
   approvedFilePreview = null;
   updateEditorPosition();
   configurationContent.disabled = false;
   configurationContent.removeAttribute('aria-busy');
+  syncYamlEditorView();
   readFileConfiguration.hidden = true;
   text(fileOperationStatus, message);
 }
@@ -3679,6 +3723,9 @@ function discardAuthenticationState(reason) {
   configurationDraftNodeId = '';
   configurationDraftSessionId = '';
   configurationDraftFileName = '';
+  configurationSourceRevision = '';
+  configurationSourceNodeId = '';
+  configurationSourceKind = '';
   routingDirty = false;
   routingDraftNodeId = '';
   autoLoadInFlight.clear();
@@ -3716,6 +3763,7 @@ function discardAuthenticationState(reason) {
   text(driftResults, 'Authenticate and choose two or more readable nodes.');
   text(snapshotList, 'Authenticate to view manual snapshots.');
   text(snapshotStatus, '');
+  syncYamlEditorView();
   renderOperationHistory();
   nodes.replaceChildren();
   nodes.classList.add('empty');
@@ -3854,6 +3902,10 @@ function invalidateConfigurationReads() {
   if (!configurationDirty) {
     configurationContent.value = '';
     configurationContentPresent = false;
+    configurationSourceRevision = '';
+    configurationSourceNodeId = '';
+    configurationSourceKind = '';
+    syncYamlEditorView();
     text(fileOperationStatus, 'Configuration changed; read the current file before previewing changes.');
     if (tabFromHash() === 'configurations') window.setTimeout(() => void autoLoadTab('configurations'), 0);
   }
@@ -4433,8 +4485,12 @@ async function loadFileConfiguration(automatic = false) {
     configurationDraftNodeId = '';
     configurationDraftSessionId = '';
     configurationDraftFileName = '';
+    configurationSourceRevision = cached.revision || '';
+    configurationSourceNodeId = selectedServerId;
+    configurationSourceKind = 'READ';
     lastFileReadOperation = {operationId: cached.operationId};
     updateEditorPosition();
+    syncYamlEditorView();
     text(fileOperationStatus, `Cached read · ${selectedServerId} · ${selectedFile}\nLoaded instantly; cache expires after 30 seconds. Preview still checks the live revision.`);
     inputGeneration++;
     updateConfigurationButtons();
@@ -4444,8 +4500,12 @@ async function loadFileConfiguration(automatic = false) {
   }
   configurationContent.value = '';
   configurationContentPresent = false;
+  configurationSourceRevision = '';
+  configurationSourceNodeId = '';
+  configurationSourceKind = '';
   configurationContent.disabled = true;
   configurationContent.setAttribute('aria-busy', 'true');
+  syncYamlEditorView();
   readFileConfiguration.hidden = true;
   text(fileOperationStatus, `Loading ${selectedFile} from ${selectedReadNodeId}…`);
   try {
@@ -4464,9 +4524,13 @@ async function loadFileConfiguration(automatic = false) {
       configurationDraftNodeId = '';
       configurationDraftSessionId = '';
       configurationDraftFileName = '';
+      configurationSourceRevision = contentResult.revision || '';
+      configurationSourceNodeId = selectedReadNodeId;
+      configurationSourceKind = 'READ';
       lastFileReadOperation = {operationId: operation.operationId};
-      cacheFile(cacheKey, contentResult.configuration.content, operation.operationId);
+      cacheFile(cacheKey, contentResult.configuration.content, operation.operationId, contentResult.revision || '');
       updateEditorPosition();
+      syncYamlEditorView();
       text(fileOperationStatus, operationSummary(operation));
       inputGeneration++;
       updateConfigurationButtons();
@@ -4483,6 +4547,10 @@ async function loadFileConfiguration(automatic = false) {
         && selectedNode.sessionId === nodeIndex.get(selectedReadNodeId)?.sessionId) {
       configurationContent.value = '';
       configurationContentPresent = false;
+      configurationSourceRevision = '';
+      configurationSourceNodeId = '';
+      configurationSourceKind = '';
+      syncYamlEditorView();
       text(fileOperationStatus, `Could not load ${selectedFile}: ${error.message}`);
       readFileConfiguration.hidden = false;
     }
@@ -4492,6 +4560,7 @@ async function loadFileConfiguration(automatic = false) {
         && selectedNode.sessionId === nodeIndex.get(selectedReadNodeId)?.sessionId) {
       configurationContent.disabled = false;
       configurationContent.removeAttribute('aria-busy');
+      syncYamlEditorView();
       updateConfigurationButtons();
     }
   }
@@ -4559,8 +4628,12 @@ applyFileConfiguration.addEventListener('click', async () => {
       configurationDraftNodeId = '';
       configurationDraftSessionId = '';
       configurationDraftFileName = '';
+      configurationSourceRevision = '';
+      configurationSourceNodeId = '';
+      configurationSourceKind = '';
       configurationContent.value = '';
       configurationContentPresent = false;
+      syncYamlEditorView();
       updateExtendedButtons();
       await loadFileConfiguration(true);
     } else if (operation.state === 'SUCCEEDED') {
@@ -5323,7 +5396,7 @@ runDriftCheck.addEventListener('click', async () => {
     lastFileReadOperation = comparable.length > 0 ? {operationId: operation.operationId} : null;
     comparable.forEach(row => {
       const session = nodeIndex.get(row.nodeId)?.sessionId || '';
-      cacheFile(`${row.nodeId}|${session}|${selectedFile}`, row.content, operation.operationId);
+      cacheFile(`${row.nodeId}|${session}|${selectedFile}`, row.content, operation.operationId, row.revision || '');
     });
     const baseline = comparable[0];
     const differences = comparable.filter(row => row !== baseline).map(row => {
@@ -5391,8 +5464,12 @@ async function loadSnapshots() {
           configurationDraftNodeId = '';
           configurationDraftSessionId = '';
           configurationDraftFileName = '';
+          configurationSourceRevision = document.revision || '';
+          configurationSourceNodeId = document.nodeId;
+          configurationSourceKind = 'SNAPSHOT';
           lastFileReadOperation = null;
           updateEditorPosition();
+          syncYamlEditorView();
           approvedFilePreview = null;
           inputGeneration++;
           setActiveTab('configurations', true);
@@ -5755,6 +5832,7 @@ configurationContent.addEventListener('input', () => {
   configurationDirty = true;
   clearApprovals();
   updateEditorPosition();
+  syncYamlEditorView();
 });
 configurationContent.addEventListener('click', updateEditorPosition);
 configurationContent.addEventListener('keyup', updateEditorPosition);
