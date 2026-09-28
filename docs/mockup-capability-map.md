@@ -119,7 +119,8 @@ revision-aware `READ -> PREVIEW -> APPROVE -> APPLY -> CONFIRMED READ` workflow.
 
 1. Improve the Full YAML workbench and continue splitting focused frontend modules. Add visible source/revision context,
    line navigation/search, line numbers, and a reliable unsaved state without changing connector semantics.
-2. Align Network Health and Setup Doctor navigation/layout with the approved cards and tables while retaining the current
+2. **Implemented:** align Network Health and Setup Doctor navigation/layout with the approved cards and tables. The
+   Doctor renders PASS/WARNING/FAIL/UNKNOWN checks with evidence sources and safe navigation while retaining the current
    observed/unknown evidence model.
 3. Expand typed configuration in small groups sourced from current defaults and loaders. Prioritize reminders, Vote Party,
    vote logging, proxy/storage, GUI, and Shop. Full YAML remains available for every managed file.
