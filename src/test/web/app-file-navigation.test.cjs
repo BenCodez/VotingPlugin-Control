@@ -39,7 +39,7 @@ function harness(dirty = false) {
     Event: class Event { constructor(type) { this.type = type; } },
     window: {confirm: () => false},
     document: {querySelector: selector => selector === '#vote-site-open-yaml' ? voteSiteYaml : null},
-    updateEditorPosition() {}, clearApprovals() {}, updateExtendedButtons() {},
+    updateEditorPosition() {}, syncYamlEditorView() {}, clearApprovals() {}, updateExtendedButtons() {},
     text(element, value) { element.textContent = value; },
     autoLoadTab(tab) { reads.push(tab); },
     setActiveTab() {}, setConfigView() {}
@@ -74,4 +74,33 @@ test('Vote Sites Open YAML does not discard an unsaved named-reward YAML draft w
   assert.equal(context.configurationContent.value, 'Commands:\n- say secret');
   assert.equal(context.configurationDirty, true);
   assert.deepEqual(reads, []);
+});
+
+test('configuration invalidation clears confirmed YAML identity and synchronizes the workbench', () => {
+  let synchronized = 0;
+  const context = {
+    settingsEditor: null, voteSitesEditor: null, rewardsEditor: null, authenticated: false,
+    fileReadCache: new Map([['backend:Config.yml', {}]]), lastFileReadOperation: {},
+    loadedQuickSetup: {}, configurationDirty: false,
+    configurationContent: {value: 'Enabled: true'}, configurationContentPresent: true,
+    configurationSourceRevision: 'revision', configurationSourceNodeId: 'backend', configurationSourceKind: 'READ',
+    fileOperationStatus: {}, lastOverview: {}, lastDiagnostics: {}, dashboardConfigurationGeneration: 0,
+    clearApprovals() {}, tabFromHash() { return 'home'; }, syncYamlEditorView() { synchronized++; },
+    invalidateDashboardInspection() {}, updateExtendedButtons() {}, text(element, value) { element.textContent = value; },
+    window: {setTimeout() { throw new Error('unexpected reload'); }}
+  };
+  vm.createContext(context);
+  const start = source.indexOf('function invalidateConfigurationReads()');
+  const end = source.indexOf('\n}\n', start);
+  assert.ok(start >= 0 && end > start);
+  vm.runInContext(source.slice(start, end + 2), context);
+
+  vm.runInContext('invalidateConfigurationReads()', context);
+
+  assert.equal(context.configurationContent.value, '');
+  assert.equal(context.configurationContentPresent, false);
+  assert.equal(context.configurationSourceRevision, '');
+  assert.equal(context.configurationSourceNodeId, '');
+  assert.equal(context.configurationSourceKind, '');
+  assert.equal(synchronized, 1);
 });

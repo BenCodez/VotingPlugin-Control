@@ -352,12 +352,23 @@
                   <option>BungeeSettings.yml</option>
                   <option value="bungeeconfig.yml">bungeeconfig.yml (proxy)</option>
                 </select>
-                <span>YAML · 512 KiB maximum</span>
+                <span id="yaml-editor-source">No document loaded</span>
+              </div>
+              <div class="yaml-search-toolbar" role="search">
+                <label for="yaml-editor-search">Find in document</label>
+                <input id="yaml-editor-search" type="search" maxlength="160" placeholder="Setting or value…" autocomplete="off">
+                <button id="yaml-search-previous" class="secondary compact" type="button" disabled>Previous</button>
+                <button id="yaml-search-next" class="secondary compact" type="button" disabled>Next</button>
+                <output id="yaml-search-count">No search</output>
+                <span id="yaml-editor-state" class="pill neutral">No document</span>
               </div>
               <label class="sr-only" for="configuration-content">YAML content</label>
-              <textarea id="configuration-content" class="yaml-editor" rows="26" spellcheck="false" placeholder="# Read the selected file to begin editing"></textarea>
+              <div class="yaml-workbench">
+                <pre id="yaml-line-numbers" class="yaml-line-numbers" aria-hidden="true">1</pre>
+                <textarea id="configuration-content" class="yaml-editor" rows="26" spellcheck="false" placeholder="# Read the selected file to begin editing"></textarea>
+              </div>
               <div class="editor-footer">
-                <span><output id="editor-position">Line 1, Column 1</output> · Tab inserts two spaces · Ctrl/⌘+S previews only; use Approve and apply to save</span>
+                <span><output id="editor-position">Line 1, Column 1</output> · <output id="yaml-editor-statistics">1 line · 0 characters</output><br>Tab inserts two spaces · Ctrl/⌘+S previews only; use Approve and apply to save</span>
                 <div class="operation-actions">
                   <button id="read-file-configuration" class="secondary" type="button" disabled hidden>Retry read</button>
                   <button id="preview-file-configuration" type="button" disabled>Preview file</button>
@@ -729,6 +740,7 @@
   </main>
   <script src="/workspace.js" defer></script>
   <script src="/configuration-state.js" defer></script>
+  <script src="/yaml-editor.js" defer></script>
   <script src="/general-settings.js" defer></script>
   <script src="/vote-sites-state.js" defer></script>
   <script src="/vote-sites.js" defer></script>
