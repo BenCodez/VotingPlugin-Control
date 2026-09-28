@@ -3763,6 +3763,7 @@ function discardAuthenticationState(reason) {
   text(driftResults, 'Authenticate and choose two or more readable nodes.');
   text(snapshotList, 'Authenticate to view manual snapshots.');
   text(snapshotStatus, '');
+  yamlEditorSearch.value = '';
   syncYamlEditorView();
   renderOperationHistory();
   nodes.replaceChildren();
