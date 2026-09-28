@@ -130,7 +130,7 @@
         <div class="page-heading">
           <div>
             <p class="eyebrow" id="overview-eyebrow">Workspace overview</p>
-            <h2 id="overview-title">Server Overview</h2>
+            <h2 id="overview-title">Network Health</h2>
           </div>
           <button id="refresh-dashboard" class="secondary" type="button">Refresh dashboard</button>
         </div>
@@ -221,16 +221,16 @@
       <section class="tab-panel" id="network-panel" data-panel="network" hidden>
         <div class="page-heading">
           <div>
-            <p class="eyebrow">Global VotingPlugin settings</p>
-            <h2>Network</h2>
-            <p>Manage network-wide VotingPlugin behavior and verify the live proxy-to-backend transport without sending a vote.</p>
+            <p class="eyebrow">Evidence-backed checks</p>
+            <h2>Setup Doctor &amp; Network</h2>
+            <p>Review observed VotingPlugin readiness, then manage network behavior or verify proxy-to-backend transport without sending a vote.</p>
           </div>
         </div>
         <section class="card" id="network-doctor-card">
           <div class="section-title">
             <div>
               <p class="eyebrow">Read-only checks</p>
-              <h3>Network Doctor</h3>
+              <h3>Setup Doctor</h3>
               <p>Check Control connectivity, topology, configuration health, Votifier, vote sites, logging, and proxy mode without changing a server.</p>
             </div>
             <span class="pill neutral" id="network-doctor-capability">Choose an inspection-capable node</span>
@@ -741,6 +741,7 @@
   <script src="/workspace.js" defer></script>
   <script src="/configuration-state.js" defer></script>
   <script src="/yaml-editor.js" defer></script>
+  <script src="/network-doctor.js" defer></script>
   <script src="/general-settings.js" defer></script>
   <script src="/vote-sites-state.js" defer></script>
   <script src="/vote-sites.js" defer></script>

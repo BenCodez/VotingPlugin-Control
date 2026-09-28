@@ -211,6 +211,7 @@ class ControlHttpServerTest {
         assertTrue(workspaceScript.body().contains("class Workspace"));
         assertTrue(web.body().contains("src=\"/workspace.js\""));
         assertTrue(web.body().contains("src=\"/yaml-editor.js\""));
+        assertTrue(web.body().contains("src=\"/network-doctor.js\""));
         assertTrue(web.body().contains("What do you want to manage?"));
 		assertTrue(script.body().contains("offset=${offset}&limit=${PAGE_SIZE}"));
         assertTrue(script.body().contains("async function loadAllNodes()"));
@@ -829,8 +830,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const identity = name.value.toLowerCase();"));
         assertTrue(script.body().contains("if (identities.has(identity)) return null;"));
         assertTrue(script.body().contains("function invalidateDashboardInspection()"));
-        assertTrue(script.body().contains("lastOverview = diagnostics.result;\n    invalidateDashboardInspection();"));
-        assertTrue(script.body().contains("lastOverview = envelope.result;\n    invalidateDashboardInspection();"),
+        assertTrue(script.body().contains("lastOverview = normalizedDiagnostics.result;\n    invalidateDashboardInspection();"));
+        assertTrue(script.body().contains("lastOverview = normalizeDashboardOverview(envelope.result).result;\n    invalidateDashboardInspection();"),
                 "Setup diagnostics must invalidate any cached dashboard evidence.");
         assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
         assertTrue(script.body().contains("Object.hasOwn(value, 'voteLogAvailable') ? value.voteLogAvailable : value.voteLoggingAvailable"));
@@ -948,8 +949,8 @@ class ControlHttpServerTest {
                 "['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state)).slice(0, 5)"),
                 "All bounded failed operations must contribute to the dashboard issue total.");
         assertTrue(script.body().contains("runDriftCheck.addEventListener('click', async () => {\n  setConfigView('compare');"));
-        assertTrue(script.body().contains("voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0"));
-        assertTrue(script.body().contains("voteSitesConfiguredKnown: configuredVoteSites != null"));
+        assertTrue(script.body().contains("voteSitesConfigured: ControlNetworkDoctor.statusFor(report, 'Vote Sites') === 'UNKNOWN'"));
+        assertTrue(script.body().contains("voteSitesConfiguredKnown: ControlNetworkDoctor.statusFor(report, 'Vote Sites') !== 'UNKNOWN'"));
         int exactShortcut = script.body().indexOf("const exactShortcut = GLOBAL_PAGE_SHORTCUTS.get(normalized);");
         int fuzzySetting = script.body().indexOf("const setting = GENERAL_SETTING_FIELDS.find");
         assertTrue(exactShortcut >= 0 && exactShortcut < fuzzySetting);
@@ -1132,6 +1133,7 @@ class ControlHttpServerTest {
                 previewBody.replace("true", "\"true\""), adminToken), 400, "VALIDATION_ERROR");
         assertEquals(200, get("/configuration-state.js", null).statusCode());
         assertEquals(200, get("/yaml-editor.js", null).statusCode());
+        assertEquals(200, get("/network-doctor.js", null).statusCode());
         assertEquals(200, get("/general-settings.js", null).statusCode());
     }
 

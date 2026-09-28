@@ -1780,8 +1780,8 @@ function renderScopeOverview() {
   const aggregate = isWorkspaceOverview();
   const source = nodeIndex.get(selectedServerId);
   text(document.querySelector('#overview-title'), aggregate ? workspace.managementScope === 'GLOBAL'
-    ? 'Network Overview' : `${workspace.selectedTargetIds.size} Servers — Workspace Overview`
-    : `${source?.displayName || 'Selected server'} — Server Overview`);
+    ? 'Network Health' : `${workspace.selectedTargetIds.size} Servers — Health Overview`
+    : `${source?.displayName || 'Selected server'} — Server Health`);
   text(document.querySelector('#overview-eyebrow'), aggregate ? 'Management workspace' : 'Individual server inspection');
   document.querySelector('#individual-overview').hidden = aggregate;
   voteActivity.closest('section').hidden = aggregate;
@@ -5308,9 +5308,9 @@ async function refreshDashboard() {
 refreshSetupChecklist.addEventListener('click', async () => {
   try {
     const envelope = await runInspection('diagnostics', {}, setupChecklistStatus);
-    lastOverview = envelope.result;
+    lastOverview = normalizeDashboardOverview(envelope.result).result;
     invalidateDashboardInspection();
-    updateSetupChecklist(envelope.result);
+    updateSetupChecklist(lastOverview);
   } catch (error) { text(setupChecklistStatus, error.message); }
 });
 refreshDataOverview.addEventListener('click', () => refreshOverview(dataOverview));
@@ -5320,34 +5320,50 @@ runNetworkDoctor.addEventListener('click', async () => {
   lastDiagnostics = null;
   try {
     const diagnostics = await runInspection('diagnostics', {}, networkDoctorResults);
-    lastOverview = diagnostics.result;
+    const normalizedDiagnostics = normalizeDashboardOverview(diagnostics.result);
+    lastOverview = normalizedDiagnostics.result;
     invalidateDashboardInspection();
     const node = nodeIndex.get(selectedServerId);
-    const voteLog = diagnostics.result.voteLoggingEnabled !== true
-      ? {state: 'DISABLED', message: 'Vote logging is disabled; no retained logged-event history is expected.'}
-      : diagnostics.result.voteLogReadable === true
+    const report = ControlNetworkDoctor.buildReport({diagnostics: normalizedDiagnostics.result, node,
+      incomplete: normalizedDiagnostics.incomplete,
+      topologyComplete: !backendTopologyTruncated,
+      proxyReports: isBackend(node) ? proxyReportsFor(node.nodeId).length : 0});
+    const voteLogStatus = ControlNetworkDoctor.statusFor(report, 'VoteLog readability');
+    const voteLog = voteLogStatus === 'PASS'
       ? {state: 'READABLE', message: 'Retained logged-event history is readable. It is not a guaranteed record of every internal vote-delivery hop.'}
-      : {state: 'UNREADABLE', message: 'Vote logging is enabled, but retained logged-event history is not currently readable.'};
-    const configuredVoteSites = finiteCount(diagnostics.result.configuredVoteSites);
+      : voteLogStatus === 'FAIL'
+      ? {state: 'UNREADABLE', message: 'Vote logging is enabled and available, but retained logged-event history is not readable.'}
+      : voteLogStatus === 'WARNING'
+      ? {state: 'UNAVAILABLE', message: 'Vote logging is enabled, but its runtime adapter is unavailable. A backend restart may be required.'}
+      : {state: 'UNKNOWN', message: normalizedDiagnostics.result.voteLoggingEnabled === false
+        ? 'Vote logging is disabled; no retained logged-event history is expected.'
+        : 'VoteLog state could not be classified from the available evidence.'};
     const checks = {
-      controlConnected: Boolean(node?.online),
-      configurationHealthy: diagnostics.result.configurationHealthy,
-      votifierDetected: diagnostics.result.votifierDetected,
-      voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0,
-      voteSitesConfiguredKnown: configuredVoteSites != null,
-      processRewards: diagnostics.result.processRewards,
+      controlConnected: ControlNetworkDoctor.legacyBoolean(report, 'Control connector'),
+      configurationHealthy: ControlNetworkDoctor.legacyBoolean(report, 'Configuration state'),
+      votifierDetected: ControlNetworkDoctor.legacyBoolean(report, 'Votifier detected'),
+      voteSitesConfigured: ControlNetworkDoctor.statusFor(report, 'Vote Sites') === 'UNKNOWN'
+        ? null : normalizedDiagnostics.result.configuredVoteSites > 0,
+      voteSitesConfiguredKnown: ControlNetworkDoctor.statusFor(report, 'Vote Sites') !== 'UNKNOWN',
+      processRewards: ControlNetworkDoctor.legacyBoolean(report, 'Reward processing'),
       voteLogging: voteLog,
-      topologyReported: isBackend(node) ? proxyReportsFor(node.nodeId).length > 0 || !diagnostics.result.proxyMode : true
+      topologyReported: ControlNetworkDoctor.legacyBoolean(report, 'Proxy topology')
     };
     lastDiagnostics = {
       schemaVersion: 1, generatedAt: new Date().toISOString(), selectedNodeId: selectedServerId,
-      checks, voteLog, node: diagnostics.result,
+      checks, voteLog, doctor: {counts: report.counts, checks: report.checks}, node: diagnostics.result,
       control: {application: 'VotingPlugin Control', registeredNodes: allNodeItems.length,
         nodes: allNodeItems.slice(0, 100).map(item => ({nodeId: item.nodeId, displayName: item.displayName,
           role: roleLabel(item), online: item.online, pluginVersion: item.pluginVersion}))}
     };
-    renderJsonResult(networkDoctorResults, lastDiagnostics);
-    updateSetupChecklist(diagnostics.result);
+    ControlNetworkDoctor.render(networkDoctorResults, report, action => {
+      if (action.serverScoped) {
+        if (!node || !changeWorkspaceTargets(() => workspace.setTargets([node.nodeId]))) return;
+        workspace.inspect(node.nodeId);
+      }
+      openWorkspace(action.tab, action.scrollTarget || '');
+    });
+    updateSetupChecklist(normalizedDiagnostics.result);
     downloadNetworkDiagnostics.disabled = false;
   } catch (error) { text(networkDoctorResults, error.message); }
 });

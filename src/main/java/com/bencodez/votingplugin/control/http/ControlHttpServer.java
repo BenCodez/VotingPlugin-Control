@@ -92,6 +92,7 @@ public final class ControlHttpServer implements AutoCloseable {
             Map.entry("/index.html", new WebResource("/web/index.html", "text/html; charset=utf-8")),
             Map.entry("/app.js", new WebResource("/web/app.js", "text/javascript; charset=utf-8")),
             Map.entry("/workspace.js", new WebResource("/web/workspace.js", "text/javascript; charset=utf-8")),
+            Map.entry("/network-doctor.js", new WebResource("/web/network-doctor.js", "text/javascript; charset=utf-8")),
             Map.entry("/configuration-state.js", new WebResource("/web/configuration-state.js", "text/javascript; charset=utf-8")),
             Map.entry("/yaml-editor.js", new WebResource("/web/yaml-editor.js", "text/javascript; charset=utf-8")),
             Map.entry("/general-settings.js", new WebResource("/web/general-settings.js", "text/javascript; charset=utf-8")),
