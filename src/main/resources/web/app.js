@@ -76,6 +76,7 @@ const previewConfiguration = document.querySelector('#preview-configuration');
 const applyConfiguration = document.querySelector('#apply-configuration');
 const operationStatus = document.querySelector('#operation-status');
 const configurationForm = document.querySelector('#configuration-form');
+const configurationTarget = document.querySelector('#configuration-target');
 const configurationFile = document.querySelector('#configuration-file');
 const configurationContent = document.querySelector('#configuration-content');
 const editorPosition = document.querySelector('#editor-position');
@@ -444,18 +445,16 @@ function selectedFileCapability(fileName = configurationFile.value) {
 function fileTargetsForSelection(fileName = configurationFile.value) {
   const capability = selectedFileCapability(fileName);
   const selected = nodeIndex.get(selectedServerId);
-  if (capability === 'config.proxy-files.v1') {
-    return workspace.managementScope === 'GLOBAL' && selected?.online && isProxy(selected) && selected.acceptedCapabilities.includes(capability)
-      ? [selected.nodeId] : [];
-  }
-  return targets(capability).filter(nodeId => isBackend(nodeIndex.get(nodeId)));
+  if (!selected?.online || !selected.acceptedCapabilities.includes(capability)) return [];
+  if (capability === 'config.proxy-files.v1') return isProxy(selected) ? [selected.nodeId] : [];
+  return isBackend(selected) ? [selected.nodeId] : [];
 }
 
 function fileTargetDescription(fileName = configurationFile.value) {
   const targetsForFile = fileTargetsForSelection(fileName);
   if (fileName === 'bungeeconfig.yml') return targetsForFile.length
     ? `the selected proxy (${targetsForFile[0]})` : 'the selected proxy';
-  return `every selected Bukkit node`;
+  return targetsForFile.length ? `the selected Bukkit node (${targetsForFile[0]})` : 'the selected Bukkit node';
 }
 
 function boundedLines(value, maximum = 20) {
@@ -1671,7 +1670,7 @@ function renderWorkspaceChrome(tab) {
     : tab === 'general-settings' ? 'General Settings reads each workspace target independently. Only explicit edits are proposed, with per-target revision protection.'
     : tab === 'vote-sites' ? 'Vote Sites reads each workspace target independently. Site keys are identity; property editing never invokes synchronization or rewrites rewards.'
     : tab === 'rewards' ? 'Rewards reads each workspace target independently. Only explicit bounded operations can be previewed and applied.'
-    : `Legacy tools: rewards, guided presets and YAML use only ${source?.displayName || 'a selected source server'} (${selectedServerId || 'not selected'}). They do not copy its configuration to the workspace.${source && !workspace.selectedTargetIds.has(source.nodeId) ? ' This inspected server is outside the workspace; its configuration tools are disabled.' : ''}`);
+    : `Legacy tools use only ${source?.displayName || 'a selected source server'} (${selectedServerId || 'not selected'}). They do not copy its configuration to the workspace. Full YAML has an explicit single-node target; other legacy tools remain disabled when that source is outside the workspace.${source && !workspace.selectedTargetIds.has(source.nodeId) ? ' The current source is outside the workspace.' : ''}`);
   document.querySelector('#scope-overview').hidden = global;
 }
 
@@ -2096,7 +2095,7 @@ function chooseDefaultServer(items) {
 
 function renderServerPicker() {
   const previousValue = selectedServerId;
-  const ordered = allNodeItems.filter(node => workspace.managementScope === 'GLOBAL'
+  const ordered = allNodeItems.filter(node => workspace.managementScope === 'GLOBAL' || node.nodeId === selectedServerId
     || isBackend(node) && (workspace.selectedTargetIds.has(node.nodeId) || node.nodeId === workspace.inspectedServerId)).sort((left, right) => {
     const roleOrder = Number(isProxy(left)) - Number(isProxy(right));
     return roleOrder || left.displayName.localeCompare(right.displayName);
@@ -2119,6 +2118,28 @@ function renderServerPicker() {
   populateGlobalSearch();
 }
 
+function configurationTargetNodes() {
+  return allNodeItems.filter(node => node.online && (isProxy(node)
+    ? node.acceptedCapabilities.includes('config.proxy-files.v1')
+    : isBackend(node) && node.acceptedCapabilities.includes('config.files.v1')))
+    .sort((left, right) => Number(isProxy(left)) - Number(isProxy(right))
+      || left.displayName.localeCompare(right.displayName));
+}
+
+function renderConfigurationTargetPicker() {
+  const eligible = configurationTargetNodes();
+  const placeholder = text(document.createElement('option'), eligible.length
+    ? 'Choose a connected backend or proxy' : 'No connected YAML-capable nodes');
+  placeholder.value = '';
+  configurationTarget.replaceChildren(placeholder, ...eligible.map(node => {
+    const option = text(document.createElement('option'), `${node.displayName} · ${roleLabel(node)}`);
+    option.value = node.nodeId;
+    return option;
+  }));
+  configurationTarget.value = eligible.some(node => node.nodeId === selectedServerId) ? selectedServerId : '';
+  configurationTarget.disabled = !authenticated || eligible.length === 0;
+}
+
 function renderSelectedServer() {
   const selected = nodeIndex.get(selectedServerId);
   selectedServerCapabilities.replaceChildren();
@@ -2127,7 +2148,7 @@ function renderSelectedServer() {
     text(selectedServerState, 'No selection');
     selectedServerState.className = 'pill neutral';
     text(selectedServerSummary, 'Use the server picker above to keep configuration and setup actions focused on one node.');
-    text(configurationContext, 'Choose a backend from the server picker to work with its VotingPlugin configuration.');
+    text(configurationContext, 'Choose a backend or proxy to work with its VotingPlugin configuration.');
     text(commentPreservationState, 'Comment support unknown');
     commentPreservationState.className = 'pill warning';
     syncFileSelection();
@@ -3180,6 +3201,7 @@ function updateExtendedButtons() {
 
 function renderNodeViews() {
   renderServerPicker();
+  renderConfigurationTargetPicker();
   renderHomeChooser();
   nodes.replaceChildren();
   nodes.classList.toggle('empty', visibleNodeItems.length === 0);
@@ -3209,7 +3231,7 @@ function renderDeploymentEligibility() {
   const incompatible = connected.filter(node => !node.acceptedCapabilities.includes('plugin.deploy.v1'));
   const batches = Math.ceil(eligible.length / MAX_OPERATION_TARGETS);
   const bootstrap = incompatible.length
-    ? ` · ${incompatible.length} connected ${incompatible.length === 1 ? 'node needs' : 'nodes need'} a one-time VotingPlugin update with verified staging support`
+    ? ` · ${incompatible.length} connected ${incompatible.length === 1 ? 'node is' : 'nodes are'} missing verified staging prerequisites`
     : '';
   text(deploymentEligibility, `${eligible.length}/${connected.length} connected nodes eligible`
     + bootstrap + (batches > 1 ? ` · ${batches} bounded deployment batches` : ''));
@@ -3951,9 +3973,12 @@ async function startConfigurationOperation(path, body, statusElement = operation
       && path !== '/api/v1/configuration/vote-sites/preview'
       && path !== '/api/v1/configuration/rewards/preview'
       && !['proxy-method', 'sync-vote-sites', 'communication-test'].includes(body.configuration?.preset)) {
-    const allowed = ordinaryTargetIds();
+    const allowed = body.configuration?.domain === 'file'
+      ? fileTargetsForSelection(body.configuration.fileName) : ordinaryTargetIds();
     if (!Array.isArray(body.nodeIds) || body.nodeIds.length !== 1 || !allowed.includes(body.nodeIds[0])) {
-      throw new Error('Choose a workspace source server. This form previews only that server, not the whole workspace.');
+      throw new Error(body.configuration?.domain === 'file'
+        ? 'Choose the connected Full YAML target again. This editor previews exactly one capability-gated node.'
+        : 'Choose a workspace source server. This form previews only that server, not the whole workspace.');
     }
   }
   const applyOperation = path.endsWith('/apply');
@@ -5865,6 +5890,9 @@ quickPreset.addEventListener('input', () => {
   void autoLoadTab('quick-setup');
 });
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
+configurationTarget.addEventListener('change', () => {
+  if (!selectPrimaryServer(configurationTarget.value)) configurationTarget.value = selectedServerId;
+});
 homeSearch.addEventListener('input', renderHomeChooser);
 document.querySelector('#home-refresh').addEventListener('click', () => loadNodes());
 document.querySelector('#home-select-all').addEventListener('click', () => changeWorkspaceTargets(() => workspace.selectEligible(allNodeItems, MAX_CONFIGURATION_TARGETS)));
@@ -5897,7 +5925,7 @@ deployPlugin.addEventListener('click', async () => {
   const confirmation = `Upload ${file.name} (${file.size.toLocaleString()} bytes) and stage it on `
     + `${eligible.length} deployment-capable node(s)? Servers will require a restart. Automatic restart is disabled.`
     + (batches.length > 1 ? ` Control will use ${batches.length} bounded operations.` : '')
-    + (ineligible.length ? ` Older/incompatible nodes excluded: ${ineligible.join(', ')}.` : '');
+    + (ineligible.length ? ` Nodes without verified staging capability excluded: ${ineligible.join(', ')}. Install a current VotingPlugin JAR once and use HTTPS unless VotingPlugin directly hosts Control on loopback; Windows proxy staging is unavailable. Check node logs for the staging-unavailable warning.` : '');
   if (!window.confirm(confirmation)) return;
   const deploymentRun = ++deploymentRunGeneration;
   deploymentInFlight = true;

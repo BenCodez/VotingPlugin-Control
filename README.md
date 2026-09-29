@@ -311,6 +311,11 @@ The disposable running-connector and packaged-browser validation boundaries are 
 at most 64 MiB, Control validates the ZIP structure and root `plugin.yml`, and every node re-verifies the SHA-256 before
 staging. Staging never reloads or restarts a server; success is reported as `RESTART_REQUIRED`. Interrupted Control attempts
 become failed durable history and require an explicit retry, preventing a pre-restart lease from authorizing a download.
+Capability absence is not proof that the connector is old: deployment is also withheld unless the endpoint is HTTPS or
+VotingPlugin directly hosts Control at a loopback HTTP endpoint, and proxy staging is unavailable on Windows. Bootstrap by
+installing a current VotingPlugin JAR manually once, then use HTTPS for a separate Control service. The browser cannot
+securely add missing staging code to an old node by itself. If a current node still omits the capability, check its log for
+the connector's staging-unavailable warning; a node-side staging path or loaded-JAR discovery failure may need correction.
 
 `data.inspect.v1` is a separate read-only lane for overview, vote-site health (including persisted unconfigured service
 observations), exact-player data, bounded VoteLog summary/search/correlation trace, non-creating service-site resolution,

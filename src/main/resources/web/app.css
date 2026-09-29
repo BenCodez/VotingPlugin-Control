@@ -179,7 +179,7 @@ p { line-height: 1.55; }
 .setting-icon { display: grid; width: 39px; height: 39px; margin-bottom: 16px; place-items: center; border: 1px solid #37628d; border-radius: 10px; background: var(--blue-soft); color: #a9d4ff; font-size: 1.1rem; }
 .editor-card { padding: 0; overflow: hidden; }
 .editor-card > .section-title { padding: 21px 22px 17px; border-bottom: 1px solid var(--border); }
-.editor-toolbar { display: grid; grid-template-columns: auto minmax(180px, 280px) 1fr; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border); background: #091421; }
+.editor-toolbar { display: grid; grid-template-columns: auto minmax(180px, 280px) auto minmax(180px, 280px) 1fr; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border); background: #091421; }
 .editor-toolbar label { margin: 0; }
 .editor-toolbar select { margin: 0; }
 .editor-toolbar > span { justify-self: end; color: var(--muted); font-size: .78rem; }

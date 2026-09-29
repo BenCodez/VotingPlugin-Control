@@ -128,12 +128,12 @@ class ControlHttpServerTest {
 		}
 
 		JsonNode states = json.readTree(output);
-		assertEquals("1/3 connected nodes eligible · 2 connected nodes need a one-time VotingPlugin update with verified staging support",
+		assertEquals("1/3 connected nodes eligible · 2 connected nodes are missing verified staging prerequisites",
 				states.path("mixed").path("text").asText());
 		assertEquals("pill online", states.path("mixed").path("className").asText());
 		assertFalse(states.path("mixed").path("disabled").asBoolean());
 
-		assertEquals("0/3 connected nodes eligible · 3 connected nodes need a one-time VotingPlugin update with verified staging support",
+		assertEquals("0/3 connected nodes eligible · 3 connected nodes are missing verified staging prerequisites",
 				states.path("bootstrap").path("text").asText());
 		assertEquals("pill warning", states.path("bootstrap").path("className").asText());
 		assertTrue(states.path("bootstrap").path("disabled").asBoolean());

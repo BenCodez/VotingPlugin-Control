@@ -214,7 +214,7 @@
           </div>
           <label for="deployment-jar">VotingPlugin JAR<input id="deployment-jar" type="file" accept=".jar,application/java-archive"></label>
           <div class="operation-actions"><button id="deploy-plugin" type="button" disabled>Upload and stage on eligible servers</button></div>
-          <pre id="deployment-status" aria-live="polite">Nodes running an older connector remain connected but require one manual update before web deployment is available.</pre>
+          <pre id="deployment-status" aria-live="polite">If staging is unavailable, install a current VotingPlugin JAR once. Use HTTPS unless VotingPlugin directly hosts Control on loopback; Windows proxy staging is unavailable. Check the node log for the staging-unavailable warning.</pre>
         </section>
       </section>
 
@@ -316,7 +316,7 @@
           <div>
             <p class="eyebrow">Selected VotingPlugin server</p>
             <h2>Configurations</h2>
-            <p id="configuration-context">Choose a backend from the server picker to work with its VotingPlugin configuration.</p>
+            <p id="configuration-context">Choose a backend or proxy to work with its VotingPlugin configuration.</p>
           </div>
         </div>
         <nav class="subtabs" aria-label="Configuration views">
@@ -327,7 +327,8 @@
         <div class="config-view" data-config-panel="easy">
           <div class="settings-grid">
             <article class="card"><span class="setting-icon">⚙</span><h3>Common settings</h3><p>Use guided fields for frequently changed VotingPlugin options.</p><button type="button" class="secondary" data-open-tab="quick-setup">Open Setup</button></article>
-            <article class="card"><span class="setting-icon">◇</span><h3>Vote sites</h3><p>Edit the selected server's complete VoteSites.yml today.</p><button type="button" class="secondary" data-open-config-view="yaml" data-file="VoteSites.yml">Open VoteSites.yml</button></article>
+            <article class="card"><span class="setting-icon">◇</span><h3>Vote sites</h3><p>Add a reviewed site with the VotingPlugin preset, including services detected from <code>ServerData.yml</code>.</p><button type="button" class="secondary" data-open-tab="vote-sites">Manage Vote Sites</button><button type="button" class="secondary" data-open-tab="quick-setup" data-scroll-target="quick-setup-card" data-quick-preset="vote-site">Add Vote Site</button></article>
+            <article class="card"><span class="setting-icon">★</span><h3>Reward files</h3><p>Read existing named <code>Rewards/*.yml</code> files, then open any one in the complete YAML editor.</p><button type="button" class="secondary" data-open-tab="rewards">Browse Reward Files</button></article>
             <article class="card"><span class="setting-icon">↗</span><h3>Proxy connection</h3><p>Inspect proxy relationships before changing backend routing.</p><button type="button" class="secondary" data-open-tab="network">Open Network</button></article>
           </div>
         </div>
@@ -336,12 +337,14 @@
             <div class="section-title">
               <div>
                 <h3>Full VotingPlugin configuration</h3>
-                <p>Edit a managed Bukkit YAML file, or the selected proxy's <code>bungeeconfig.yml</code>. Secret values use <code>__VOTINGPLUGIN_CONTROL_REDACTED__</code>; leave the marker unchanged to preserve the stored value.</p>
+                <p>Edit a managed backend YAML file, an existing named <code>Rewards/*.yml</code> file, or a proxy's complete <code>bungeeconfig.yml</code>. Secret values use <code>__VOTINGPLUGIN_CONTROL_REDACTED__</code>; leave the marker unchanged to preserve the stored value.</p>
               </div>
               <span id="comment-preservation-state" class="pill warning">Comment support unknown</span>
             </div>
             <form id="file-configuration-form">
               <div class="editor-toolbar">
+                <label for="configuration-target">Target node</label>
+                <select id="configuration-target"><option value="">Choose a connected backend or proxy</option></select>
                 <label for="configuration-file">Configuration file</label>
                 <select id="configuration-file">
                   <option>Config.yml</option>

@@ -124,6 +124,7 @@ function harness() {
     renderOperationHistory: () => calls.push(['renderOperationHistory']),
     populateProfilePicker: () => calls.push(['populateProfilePicker']),
     confirmDiscardUnsavedConfiguration: () => true,
+    fileTargetsForSelection: () => ['file-source'],
     resetServerContextValues: reason => calls.push(['reset', reason]),
     clearApprovals: () => calls.push(['clearApprovals']),
     renderNodeViews: () => calls.push(['renderNodeViews']),
@@ -371,6 +372,19 @@ test('source-only preview rejects a multi-target request before posting an opera
   /Choose a workspace source server/);
   assert.equal(context.configurationOperationsInFlight, 0);
   assert.equal(context.calls.some(call => /preview|apply/i.test(call[0])), false);
+});
+
+test('Full YAML preview accepts only its explicit capability-gated target', async () => {
+  const context = harness();
+  context.authorized = async (path, request) => ({operationId: 'preview', state: 'SUCCEEDED',
+    request: JSON.parse(request.body)});
+  context.waitForOperation = async operation => operation;
+  const accepted = await run(context,
+    `startConfigurationOperation('/api/v1/configuration/preview', {nodeIds: ['file-source'], configuration: {domain: 'file', fileName: 'bungeeconfig.yml', content: 'Enabled: true'}})`);
+  assert.deepEqual(accepted.request.nodeIds, ['file-source']);
+  await assert.rejects(() => run(context,
+    `startConfigurationOperation('/api/v1/configuration/preview', {nodeIds: ['other'], configuration: {domain: 'file', fileName: 'bungeeconfig.yml', content: 'Enabled: true'}})`),
+  /Choose the connected Full YAML target again/);
 });
 
 test('opening workspace overview replaces an inspected view with aggregate content, without changing targets', () => {
