@@ -11,6 +11,91 @@ model reference is [docs/control-management.md](docs/control-management.md).
 The scope-first WebUI and legacy single-source editing boundary are documented in
 [docs/webui-workspaces.md](docs/webui-workspaces.md).
 
+
+## Features
+
+VotingPlugin Control is designed to manage and troubleshoot a VotingPlugin network from one place.
+
+### Network management
+
+- View connected **BungeeCord, Velocity, and Bukkit** nodes.
+- See node online/offline state, capabilities, backend presence, and network topology.
+- Enroll, rotate, and revoke per-node credentials from the WebUI.
+- Manage multiple proxies and backend servers from the same Control instance.
+- Work locally without requiring a cloud account or Internet connection.
+
+### Configuration
+
+- Edit VotingPlugin's supported YAML files from the WebUI.
+- Use **Full YAML** editing for advanced settings while automatically hiding known passwords, tokens, and other secrets.
+- Edit **General Settings** with a simple visual editor.
+- Add, edit, and remove **Vote Sites** with a visual editor.
+- Edit inline Vote Site rewards and supported named **Rewards/*.yml** files.
+- Compare configuration and revisions across selected servers.
+- Preview exact changes before anything is written.
+- Apply approved changes to one or more servers with per-server results.
+- Automatically create local backups before writes and restore them when a reload fails.
+- Save redacted configuration snapshots and load them back into the editor for a normal preview/apply restore.
+- Keep separate source-server workflows available for legacy guided forms and raw YAML editing.
+
+### Guided setup
+
+- Run guided setup for standalone and proxy/backend networks.
+- Configure common settings through searchable presets.
+- Set up or synchronize Vote Sites while preserving existing rewards and sensitive values.
+- Configure automatic Vote Site creation.
+- Configure VoteLogging and retention.
+- Configure Vote Party settings.
+- Build simple rewards with commands, messages, money, and chance settings.
+- Simulate supported rewards before applying them.
+- Get command suggestions for supported installed plugins such as Minecraft, Essentials, CMI, and LuckPerms.
+- Change the proxy communication method across the reported network with preview, rollback, and per-node results.
+
+### Updates and deployment
+
+- Upload a VotingPlugin JAR to Control.
+- Verify uploaded JARs before they can be deployed.
+- Stage an approved VotingPlugin JAR to supported nodes for the **next restart**.
+- Verify the JAR again on each node before staging it.
+- View deployment history and retry failed eligible nodes.
+- Deployment never silently reloads or restarts a Minecraft server.
+
+### Monitoring and diagnostics
+
+- Use the **Overview** dashboard for network health, topology, Vote Site activity, recent operations, and items needing attention.
+- View bounded server and VotingPlugin overview data.
+- Look up an exact player's supported VotingPlugin data.
+- Check Vote Site health and detected unconfigured services.
+- View a 30-day VoteLog summary.
+- Search logged vote events and trace a vote by vote ID.
+- Test service-site resolution without creating or changing Vote Sites.
+- Use **Network Doctor** for redacted node and topology diagnostics.
+- Download the bounded Network Doctor JSON result.
+- Inspect diagnostics without arbitrary SQL, command execution, or database browsing.
+
+### History and recovery
+
+- View durable configuration and deployment activity history.
+- See per-node progress and partial failures instead of a misleading network-wide success.
+- Retry eligible failed operations.
+- Keep redacted operation history across Control restarts.
+- Keep named redacted configuration snapshots.
+- Maintain an append-only, hash-chained configuration audit log.
+
+### WebUI and security
+
+- Use a browser-based WebUI backed by the same versioned API used for automation.
+- Create the first WebUI password with a one-time setup code.
+- Use password-authenticated browser sessions with CSRF protection and bounded session lifetime.
+- Use a separate admin API credential for automation.
+- Keep node credentials bound to exact node IDs.
+- Redact known secret values from reads, snapshots, operation history, and diagnostics.
+- Preserve existing secrets when the redaction placeholder is left unchanged.
+- Use capability negotiation so older connectors can stay connected while unsupported features are disabled.
+- Run behind HTTPS or a trusted private tunnel when Control is exposed beyond localhost.
+
+For implementation details, limits, supported files, API endpoints, and security behavior, see the linked documentation below.
+
 ## Trust and deployment boundary
 
 One Control process can observe an entire network. Browsers communicate with its WebUI/API; each proxy and Bukkit
