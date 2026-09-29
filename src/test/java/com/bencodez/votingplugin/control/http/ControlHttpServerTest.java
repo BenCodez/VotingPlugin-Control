@@ -96,6 +96,7 @@ class ControlHttpServerTest {
 				const deploymentJar = {files: [{}]};
 				const deploymentEligibility = {textContent: '', className: ''};
 				const deployPlugin = {disabled: false};
+				const deployJenkins = {disabled: false};
 				function text(element, value) { element.textContent = value; return element; }
 				let allNodeItems = [];
 				""" + actualFunctions + """
@@ -202,6 +203,8 @@ class ControlHttpServerTest {
         assertTrue(web.body().contains("id=\"quick-party-enabled\""));
         assertTrue(web.body().contains("id=\"deployment-jar\""));
         assertTrue(web.body().contains("Upload and stage on eligible servers"));
+        assertTrue(web.body().contains("id=\"deploy-jenkins\""));
+        assertTrue(web.body().contains("Use latest Jenkins build"));
         assertTrue(web.headers().firstValue("Content-Security-Policy").orElseThrow().contains("default-src 'self'"));
         HttpResponse<String> script = get("/app.js", null);
         assertEquals(200, script.statusCode());
@@ -249,7 +252,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("authenticationGeneration"));
         assertTrue(script.body().contains("if (loginInFlight) return"));
         assertTrue(script.body().contains("logoutInFlight && path !== '/api/v1/auth/logout'"));
-        assertTrue(script.body().contains("!authenticated || logoutInFlight || !file"));
+        assertTrue(script.body().contains("!authenticated || logoutInFlight || !eligible.length || deploymentInFlight"));
         assertTrue(script.body().contains("const deploymentRun = ++deploymentRunGeneration;"));
         assertTrue(script.body().contains("if (deploymentRun === deploymentRunGeneration) {\n"
                         + "      deploymentInFlight = false;"),
@@ -1533,6 +1536,35 @@ class ControlHttpServerTest {
                 java.util.Set.of("127.0.0.1")));
         assertEquals("127.0.0.1", ControlHttpServer.forwardedPasswordClient("127.0.0.1", "not-an-address",
                 java.util.Set.of("127.0.0.1")));
+    }
+
+    @Test void directHttpArtifactUploadsAreLimitedToLiteralLocalNetworkAddresses() throws Exception {
+        assertTrue(ControlHttpServer.isLocalNetworkAddress("127.0.0.1"));
+        assertTrue(ControlHttpServer.isLocalNetworkAddress("10.20.30.40"));
+        assertTrue(ControlHttpServer.isLocalNetworkAddress("172.31.4.5"));
+        assertTrue(ControlHttpServer.isLocalNetworkAddress("192.168.0.50"));
+        assertTrue(ControlHttpServer.isLocalNetworkAddress("fd00::50"));
+        assertTrue(ControlHttpServer.isLocalNetworkAddress(java.net.InetAddress.getByName("fe80::1")));
+        assertFalse(ControlHttpServer.isLocalNetworkAddress("8.8.8.8"));
+        assertFalse(ControlHttpServer.isLocalNetworkAddress("192.0.2.10"));
+        assertFalse(ControlHttpServer.isLocalNetworkAddress("localhost"));
+        assertFalse(ControlHttpServer.isLocalNetworkAddress("control.example.test"));
+        assertTrue(ControlHttpServer.artifactUploadTransportAllowed("192.168.0.20", null, null,
+                java.util.Set.of(), false));
+        assertFalse(ControlHttpServer.artifactUploadTransportAllowed("203.0.113.20", null, null,
+                java.util.Set.of(), false));
+        assertTrue(ControlHttpServer.artifactUploadTransportAllowed("127.0.0.1", "203.0.113.20", "https",
+                java.util.Set.of("127.0.0.1"), true));
+        assertFalse(ControlHttpServer.artifactUploadTransportAllowed("127.0.0.1", "203.0.113.20", "https",
+                java.util.Set.of("127.0.0.1"), false), "forwarded HTTPS requires explicit secure-proxy mode");
+        assertFalse(ControlHttpServer.artifactUploadTransportAllowed("127.0.0.1", "192.168.0.20", "http",
+                java.util.Set.of("127.0.0.1"), false), "plain HTTP through a proxy cannot prove client identity");
+        assertFalse(ControlHttpServer.artifactUploadTransportAllowed("127.0.0.1", "203.0.113.20", "http",
+                java.util.Set.of("127.0.0.1"), true));
+        assertFalse(ControlHttpServer.artifactUploadTransportAllowed("127.0.0.1", null, "http",
+                java.util.Set.of("127.0.0.1"), true));
+        assertFalse(ControlHttpServer.artifactUploadTransportAllowed("203.0.113.20", null, "https",
+                java.util.Set.of("127.0.0.1"), true), "untrusted peers cannot spoof forwarded HTTPS");
     }
 
     @Test void queuedPasswordVerificationDoesNotBlockHealthOrAdminRequests() throws Exception {

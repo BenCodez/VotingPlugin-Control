@@ -67,6 +67,7 @@ const nextPage = document.querySelector('#next-page');
 const pageNumber = document.querySelector('#page-number');
 const deploymentJar = document.querySelector('#deployment-jar');
 const deployPlugin = document.querySelector('#deploy-plugin');
+const deployJenkins = document.querySelector('#deploy-jenkins');
 const deploymentEligibility = document.querySelector('#deployment-eligibility');
 const deploymentStatus = document.querySelector('#deployment-status');
 const sendAll = document.querySelector('#send-all');
@@ -3216,6 +3217,8 @@ function renderDeploymentEligibility() {
   deploymentEligibility.className = `pill ${eligible.length ? 'online' : connected.length ? 'warning' : 'neutral'}`;
   deployPlugin.disabled = !authenticated || logoutInFlight || deploymentInFlight || !deploymentJar.files?.length
     || eligible.length === 0 || batches > MAX_DEPLOYMENT_BATCHES;
+  deployJenkins.disabled = !authenticated || logoutInFlight || deploymentInFlight
+    || eligible.length === 0 || batches > MAX_DEPLOYMENT_BATCHES;
 }
 
 function selectNodePage(offset) {
@@ -5876,10 +5879,10 @@ document.querySelector('#home-restore').addEventListener('click', () => {
 document.querySelector('#choose-global').addEventListener('click', enterGlobalWorkspace);
 document.querySelector('#scope-overview').addEventListener('click', openScopeOverview);
 deploymentJar.addEventListener('change', renderDeploymentEligibility);
-deployPlugin.addEventListener('click', async () => {
-  const file = deploymentJar.files?.[0];
+
+async function stageVerifiedArtifact(artifact, confirmation) {
   const eligible = deploymentTargets();
-  if (!authenticated || logoutInFlight || !file || !eligible.length || deploymentInFlight) return;
+  if (!authenticated || logoutInFlight || !eligible.length || deploymentInFlight) return;
   const batches = [];
   for (let offset = 0; offset < eligible.length; offset += MAX_OPERATION_TARGETS) {
     batches.push(eligible.slice(offset, offset + MAX_OPERATION_TARGETS));
@@ -5888,17 +5891,13 @@ deployPlugin.addEventListener('click', async () => {
     text(deploymentStatus, `This deployment exceeds the ${MAX_DEPLOYMENT_BATCHES}-batch safety limit.`);
     return;
   }
-  if (!file.name.toLowerCase().endsWith('.jar') || file.size < 1 || file.size > 64 * 1024 * 1024) {
-    text(deploymentStatus, 'Choose a non-empty VotingPlugin JAR no larger than 64 MiB.');
-    return;
-  }
   const ineligible = allNodeItems.filter(node => node.online
     && !node.acceptedCapabilities.includes('plugin.deploy.v1')).map(node => node.displayName);
-  const confirmation = `Upload ${file.name} (${file.size.toLocaleString()} bytes) and stage it on `
-    + `${eligible.length} deployment-capable node(s)? Servers will require a restart. Automatic restart is disabled.`
+  const prompt = `${confirmation} Stage it on ${eligible.length} deployment-capable node(s)?`
+    + ' Servers will require a restart. Automatic restart is disabled.'
     + (batches.length > 1 ? ` Control will use ${batches.length} bounded operations.` : '')
     + (ineligible.length ? ` Older/incompatible nodes excluded: ${ineligible.join(', ')}.` : '');
-  if (!window.confirm(confirmation)) return;
+  if (!window.confirm(prompt)) return;
   const deploymentRun = ++deploymentRunGeneration;
   deploymentInFlight = true;
   renderDeploymentEligibility();
@@ -5907,27 +5906,17 @@ deployPlugin.addEventListener('click', async () => {
   const completedOperations = [];
   const unavailableBatchNodes = [];
   try {
-    text(deploymentStatus, 'Calculating SHA-256 locally…');
-    const sha256 = await deploymentFileSha256(file);
+    const verified = await artifact(generation);
     if (generation !== authenticationGeneration) {
-      throw new Error('Authentication changed before the deployment upload started.');
+      throw new Error('Authentication changed before the verified artifact was staged.');
     }
-    text(deploymentStatus, sha256 ? `Uploading artifact ${sha256.slice(0, 12)} for server verification…`
-      : 'Uploading artifact for bounded server-side SHA-256 verification…');
-    const uploadHeaders = {'Content-Type': 'application/java-archive', 'X-Filename': file.name};
-    if (sha256) uploadHeaders['X-Artifact-SHA256'] = sha256;
-    const artifact = await authorized('/api/v1/artifacts/votingplugin', {
-      method: 'POST', headers: uploadHeaders, body: file
-    });
-    if (sha256 && artifact.sha256 !== sha256 || artifact.size !== file.size) {
-      throw new Error('Control returned artifact metadata that does not match the selected JAR.');
+    if (!verified?.artifactId || verified.artifactId !== verified.sha256
+        || !Number.isSafeInteger(verified.size) || verified.size < 1 || verified.size > 64 * 1024 * 1024) {
+      throw new Error('Control returned invalid verified artifact metadata.');
     }
-    const verifiedSha256 = artifact.sha256;
+    text(deploymentStatus, `Verified ${verified.fileName || 'VotingPlugin JAR'} · SHA-256 ${verified.sha256}. Staging…`);
     const operations = [];
     for (const batch of batches) {
-      if (generation !== authenticationGeneration) {
-        throw new Error('Authentication changed before every deployment batch was submitted.');
-      }
       let remaining = batch.map(node => node.nodeId);
       for (let attempt = 0; remaining.length > 0 && attempt < MAX_OPERATION_TARGETS; attempt++) {
         if (generation !== authenticationGeneration) {
@@ -5936,7 +5925,7 @@ deployPlugin.addEventListener('click', async () => {
         try {
           const operation = await authorized('/api/v1/deployments', {
             method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
-              artifactId: artifact.artifactId, sha256: verifiedSha256, size: file.size,
+              artifactId: verified.artifactId, sha256: verified.sha256, size: verified.size,
               nodeIds: remaining
             })
           });
@@ -5985,6 +5974,49 @@ deployPlugin.addEventListener('click', async () => {
       deploymentInFlight = false;
       renderDeploymentEligibility();
     }
+  }
+}
+
+deployPlugin.addEventListener('click', async () => {
+  const file = deploymentJar.files?.[0];
+  if (!file || !file.name.toLowerCase().endsWith('.jar') || file.size < 1 || file.size > 64 * 1024 * 1024) {
+    text(deploymentStatus, 'Choose a non-empty VotingPlugin JAR no larger than 64 MiB.');
+    return;
+  }
+  await stageVerifiedArtifact(async generation => {
+    text(deploymentStatus, 'Calculating SHA-256 locally…');
+    const sha256 = await deploymentFileSha256(file);
+    if (generation !== authenticationGeneration) throw new Error('Authentication changed before upload.');
+    text(deploymentStatus, sha256 ? `Uploading artifact ${sha256.slice(0, 12)} for server verification…`
+      : 'Uploading artifact for bounded server-side SHA-256 verification…');
+    const headers = {'Content-Type': 'application/java-archive', 'X-Filename': file.name};
+    if (sha256) headers['X-Artifact-SHA256'] = sha256;
+    const uploaded = await authorized('/api/v1/artifacts/votingplugin', {method: 'POST', headers, body: file});
+    if (sha256 && uploaded.sha256 !== sha256 || uploaded.size !== file.size) {
+      throw new Error('Control returned artifact metadata that does not match the selected JAR.');
+    }
+    return uploaded;
+  }, `Upload ${file.name} (${file.size.toLocaleString()} bytes).`);
+});
+
+deployJenkins.addEventListener('click', async () => {
+  if (!authenticated || logoutInFlight || deploymentInFlight) return;
+  try {
+    text(deploymentStatus, 'Checking the latest successful bencodez.com Jenkins build…');
+    const build = await authorized('/api/v1/artifacts/votingplugin/jenkins');
+    await stageVerifiedArtifact(async generation => {
+      text(deploymentStatus, `Downloading VotingPlugin Jenkins build ${build.buildNumber} for SHA-256 verification…`);
+      const downloaded = await authorized('/api/v1/artifacts/votingplugin/jenkins', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({buildNumber: build.buildNumber})
+      });
+      if (generation !== authenticationGeneration || downloaded.buildNumber !== build.buildNumber) {
+        throw new Error('The selected Jenkins build changed before staging.');
+      }
+      return downloaded;
+    }, `Download successful Jenkins build ${build.buildNumber} (${build.fileName}) from bencodez.com.`);
+  } catch (error) {
+    if (authenticated) text(deploymentStatus, error.message);
   }
 });
 tabButtons.forEach(button => button.addEventListener('click', () => {

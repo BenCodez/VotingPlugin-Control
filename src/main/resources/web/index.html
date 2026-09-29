@@ -209,11 +209,11 @@
         </nav>
         <section class="card" id="plugin-deployment-card">
           <div class="section-title">
-            <div><p class="eyebrow">Verified update staging</p><h3>Update VotingPlugin</h3><p>Upload one VotingPlugin JAR, verify its SHA-256, then stage it on every connected deployment-capable node. Servers are never restarted automatically.</p></div>
+            <div><p class="eyebrow">Verified update staging</p><h3>Update VotingPlugin</h3><p>Upload a local VotingPlugin JAR or download the latest successful development build from bencodez.com Jenkins. Control verifies SHA-256 and every node verifies it again before staging. Servers are never restarted automatically.</p></div>
             <span class="pill neutral" id="deployment-eligibility">No eligible nodes</span>
           </div>
           <label for="deployment-jar">VotingPlugin JAR<input id="deployment-jar" type="file" accept=".jar,application/java-archive"></label>
-          <div class="operation-actions"><button id="deploy-plugin" type="button" disabled>Upload and stage on eligible servers</button></div>
+          <div class="operation-actions"><button id="deploy-plugin" type="button" disabled>Upload and stage on eligible servers</button><button id="deploy-jenkins" class="secondary" type="button" disabled>Use latest Jenkins build</button></div>
           <pre id="deployment-status" aria-live="polite">Nodes running an older connector remain connected but require one manual update before web deployment is available.</pre>
         </section>
       </section>
