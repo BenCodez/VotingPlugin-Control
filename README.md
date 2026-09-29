@@ -312,9 +312,9 @@ at most 64 MiB, Control validates the ZIP structure and root `plugin.yml`, and e
 staging. Staging never reloads or restarts a server; success is reported as `RESTART_REQUIRED`. Interrupted Control attempts
 become failed durable history and require an explicit retry, preventing a pre-restart lease from authorizing a download.
 Capability absence is not proof that the connector is old: proxy staging is unavailable on Windows, and a connector can
-withhold the capability when it cannot prepare a safe local staging target. HTTP remains supported on trusted private
-networks, while HTTPS is strongly recommended because connector credentials and plugin artifacts otherwise cross the
-network unencrypted. Bootstrap by installing a current VotingPlugin JAR manually once. The browser cannot add missing
+withhold the capability when it cannot prepare a safe local staging target. HTTP staging requires a literal local/private
+Control endpoint, while HTTPS is strongly recommended because connector credentials and plugin artifacts otherwise cross
+the network unencrypted. Bootstrap by installing a current VotingPlugin JAR manually once. The browser cannot add missing
 staging code to an old node by itself. If a current node still omits the capability, check its log for the connector's
 staging-unavailable warning; a node-side staging path or loaded-JAR discovery failure may need correction.
 
