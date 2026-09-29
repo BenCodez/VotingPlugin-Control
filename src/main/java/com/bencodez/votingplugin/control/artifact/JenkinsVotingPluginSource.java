@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.FilterInputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -21,8 +22,7 @@ public final class JenkinsVotingPluginSource implements AutoCloseable {
     static final URI DEFAULT_JOB = URI.create("https://bencodez.com/job/VotingPlugin/");
     private static final int MAX_METADATA_BYTES = 256 * 1024;
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
-    private static final Pattern ARTIFACT_NAME = Pattern.compile("VotingPlugin-[0-9]+\\.jar");
-    private static final Pattern ARTIFACT_PATH = Pattern.compile("VotingPlugin/target/VotingPlugin-[0-9]+\\.jar");
+    private static final Pattern ARTIFACT_NAME = Pattern.compile("VotingPlugin-[0-9][A-Za-z0-9._-]*\\.jar");
 
     private final URI job;
     private final HttpClient client;
@@ -99,8 +99,7 @@ public final class JenkinsVotingPluginSource implements AutoCloseable {
             for (JsonNode candidate : artifactList) {
                 String candidateName = candidate.path("fileName").asText("");
                 String candidatePath = candidate.path("relativePath").asText("");
-                if (candidateName.equals("VotingPlugin-" + number + ".jar")
-                        && candidatePath.equals("VotingPlugin/target/" + candidateName)) {
+                if (isExpectedArtifact(candidateName, candidatePath)) {
                     if (artifact != null) throw unavailable();
                     artifact = candidate;
                 }
@@ -108,13 +107,16 @@ public final class JenkinsVotingPluginSource implements AutoCloseable {
             if (artifact == null) throw unavailable();
             String fileName = artifact.path("fileName").asText("");
             String relativePath = artifact.path("relativePath").asText("");
-            if (!ARTIFACT_NAME.matcher(fileName).matches() || !ARTIFACT_PATH.matcher(relativePath).matches()
-                    || !fileName.equals("VotingPlugin-" + number + ".jar")
-                    || !relativePath.equals("VotingPlugin/target/" + fileName)) throw unavailable();
+            if (!isExpectedArtifact(fileName, relativePath)) throw unavailable();
             return new Build(number, timestamp, fileName, relativePath);
         } catch (RuntimeException failure) {
             throw unavailable();
         }
+    }
+
+    private static boolean isExpectedArtifact(String fileName, String relativePath) {
+        return ARTIFACT_NAME.matcher(fileName).matches()
+                && relativePath.equals("VotingPlugin/target/" + fileName);
     }
 
     private HttpRequest.Builder request(URI uri) {
@@ -170,7 +172,42 @@ public final class JenkinsVotingPluginSource implements AutoCloseable {
 
     public record Build(int buildNumber, long timestamp, String fileName, String relativePath) { }
 
-    public record Download(Build build, InputStream body) implements AutoCloseable {
+    public static final class Download implements AutoCloseable {
+        private final Build build;
+        private final SourceInputStream body;
+
+        private Download(Build build, InputStream body) {
+            this.build = build;
+            this.body = new SourceInputStream(body);
+        }
+
+        public Build build() { return build; }
+        public InputStream body() { return body; }
+        public boolean sourceReadFailed() { return body.failure != null; }
         @Override public void close() throws IOException { body.close(); }
+    }
+
+    private static final class SourceInputStream extends FilterInputStream {
+        private IOException failure;
+
+        private SourceInputStream(InputStream input) { super(input); }
+
+        @Override public int read() throws IOException {
+            try {
+                return super.read();
+            } catch (IOException sourceFailure) {
+                failure = sourceFailure;
+                throw sourceFailure;
+            }
+        }
+
+        @Override public int read(byte[] bytes, int offset, int length) throws IOException {
+            try {
+                return super.read(bytes, offset, length);
+            } catch (IOException sourceFailure) {
+                failure = sourceFailure;
+                throw sourceFailure;
+            }
+        }
     }
 }

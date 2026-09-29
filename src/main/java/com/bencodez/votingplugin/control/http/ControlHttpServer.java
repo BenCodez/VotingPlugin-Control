@@ -560,9 +560,14 @@ public final class ControlHttpServer implements AutoCloseable {
                 requireRequest(request);
                 try (JenkinsVotingPluginSource.Download download = jenkinsSource.open(request.buildNumber())) {
                     ArtifactStore.Artifact artifact;
-                    synchronized (deploymentArtifactLifecycle) {
-                        artifact = withDownloadDeadline(download, () -> artifactStore.upload(download.body(),
-                                download.build().fileName(), null, deploymentOperations.referencedArtifactIds()));
+                    try {
+                        synchronized (deploymentArtifactLifecycle) {
+                            artifact = withDownloadDeadline(download, () -> artifactStore.upload(download.body(),
+                                    download.build().fileName(), null, deploymentOperations.referencedArtifactIds()));
+                        }
+                    } catch (ArtifactException failure) {
+                        if (download.sourceReadFailed()) throw new JenkinsSourceException(failure);
+                        throw failure;
                     }
                     send(exchange, 201, Map.of("artifactId", artifact.artifactId(),
                             "sha256", artifact.artifactId(), "size", artifact.size(),
@@ -1198,23 +1203,35 @@ public final class ControlHttpServer implements AutoCloseable {
         InetSocketAddress remote = exchange.getRemoteAddress();
         if (remote == null) throw localUploadRequired();
         String peer = remote.getAddress() == null ? remote.getHostString() : remote.getAddress().getHostAddress();
-        if (remote.getAddress() != null && !trustedProxyAddresses.contains(peer)
-                && isLocalNetworkAddress(remote.getAddress())) return;
         if (!artifactUploadTransportAllowed(peer, singleHeader(exchange, "X-Forwarded-For"),
-                singleHeader(exchange, "X-Forwarded-Proto"), trustedProxyAddresses, secureCookies)) {
+                singleHeader(exchange, "X-Forwarded-Proto"), trustedProxyAddresses, secureCookies,
+                hasForwardedHeaders(exchange))) {
             throw localUploadRequired();
         }
     }
 
     static boolean artifactUploadTransportAllowed(String peer, String forwardedFor, String forwardedProto,
                                                   Set<String> trustedProxies, boolean trustForwardedHttps) {
+        return artifactUploadTransportAllowed(peer, forwardedFor, forwardedProto, trustedProxies,
+                trustForwardedHttps, forwardedFor != null || forwardedProto != null);
+    }
+
+    private static boolean artifactUploadTransportAllowed(String peer, String forwardedFor, String forwardedProto,
+                                                          Set<String> trustedProxies, boolean trustForwardedHttps,
+                                                          boolean forwardedHeadersPresent) {
         boolean trustedProxy = trustedProxies.contains(peer);
         if (trustedProxy) {
             return trustForwardedHttps && "https".equalsIgnoreCase(forwardedProto);
         }
-        String client = forwardedPasswordClient(peer, forwardedFor, trustedProxies);
-        String canonical = canonicalIpLiteral(client);
+        if (forwardedHeadersPresent) return false;
+        String canonical = canonicalIpLiteral(peer);
         return canonical != null && isLocalNetworkAddress(canonical);
+    }
+
+    private static boolean hasForwardedHeaders(HttpExchange exchange) {
+        return exchange.getRequestHeaders().containsKey("Forwarded")
+                || exchange.getRequestHeaders().containsKey("X-Forwarded-For")
+                || exchange.getRequestHeaders().containsKey("X-Forwarded-Proto");
     }
 
     static boolean isLocalNetworkAddress(String literal) {

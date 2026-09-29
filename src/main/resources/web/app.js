@@ -5880,9 +5880,9 @@ document.querySelector('#choose-global').addEventListener('click', enterGlobalWo
 document.querySelector('#scope-overview').addEventListener('click', openScopeOverview);
 deploymentJar.addEventListener('change', renderDeploymentEligibility);
 
-async function stageVerifiedArtifact(artifact, confirmation) {
+async function stageVerifiedArtifact(artifact, confirmation, reservedDeploymentRun = null) {
   const eligible = deploymentTargets();
-  if (!authenticated || logoutInFlight || !eligible.length || deploymentInFlight) return;
+  if (!authenticated || logoutInFlight || !eligible.length || (deploymentInFlight && reservedDeploymentRun == null)) return;
   const batches = [];
   for (let offset = 0; offset < eligible.length; offset += MAX_OPERATION_TARGETS) {
     batches.push(eligible.slice(offset, offset + MAX_OPERATION_TARGETS));
@@ -5898,9 +5898,11 @@ async function stageVerifiedArtifact(artifact, confirmation) {
     + (batches.length > 1 ? ` Control will use ${batches.length} bounded operations.` : '')
     + (ineligible.length ? ` Older/incompatible nodes excluded: ${ineligible.join(', ')}.` : '');
   if (!window.confirm(prompt)) return;
-  const deploymentRun = ++deploymentRunGeneration;
-  deploymentInFlight = true;
-  renderDeploymentEligibility();
+  const deploymentRun = reservedDeploymentRun ?? ++deploymentRunGeneration;
+  if (reservedDeploymentRun == null) {
+    deploymentInFlight = true;
+    renderDeploymentEligibility();
+  }
   const generation = authenticationGeneration;
   const submittedOperations = [];
   const completedOperations = [];
@@ -5970,7 +5972,7 @@ async function stageVerifiedArtifact(artifact, confirmation) {
         : `${error.message}${unavailableSummary}`);
     }
   } finally {
-    if (deploymentRun === deploymentRunGeneration) {
+    if (reservedDeploymentRun == null && deploymentRun === deploymentRunGeneration) {
       deploymentInFlight = false;
       renderDeploymentEligibility();
     }
@@ -6001,6 +6003,9 @@ deployPlugin.addEventListener('click', async () => {
 
 deployJenkins.addEventListener('click', async () => {
   if (!authenticated || logoutInFlight || deploymentInFlight) return;
+  const deploymentRun = ++deploymentRunGeneration;
+  deploymentInFlight = true;
+  renderDeploymentEligibility();
   try {
     text(deploymentStatus, 'Checking the latest successful bencodez.com Jenkins build…');
     const build = await authorized('/api/v1/artifacts/votingplugin/jenkins');
@@ -6014,9 +6019,14 @@ deployJenkins.addEventListener('click', async () => {
         throw new Error('The selected Jenkins build changed before staging.');
       }
       return downloaded;
-    }, `Download successful Jenkins build ${build.buildNumber} (${build.fileName}) from bencodez.com.`);
+    }, `Download successful Jenkins build ${build.buildNumber} (${build.fileName}) from bencodez.com.`, deploymentRun);
   } catch (error) {
     if (authenticated) text(deploymentStatus, error.message);
+  } finally {
+    if (deploymentRun === deploymentRunGeneration) {
+      deploymentInFlight = false;
+      renderDeploymentEligibility();
+    }
   }
 });
 tabButtons.forEach(button => button.addEventListener('click', () => {

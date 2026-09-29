@@ -144,6 +144,51 @@ class ControlHttpServerTest {
 		assertTrue(states.path("empty").path("disabled").asBoolean());
 	}
 
+	@Test void jenkinsDeploymentSelectionReservesItsBusyStateDuringMetadataLookup() throws Exception {
+		org.junit.jupiter.api.Assumptions.assumeTrue(nodeAvailable(),
+				"Node.js is required to execute the WebUI behavior regression");
+		String app;
+		try (InputStream input = ControlHttpServerTest.class.getResourceAsStream("/web/app.js")) {
+			assertNotNull(input);
+			app = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+		}
+		int start = app.indexOf("deployJenkins.addEventListener('click', async () => {");
+		int end = app.indexOf("\ntabButtons.forEach", start);
+		assertTrue(start >= 0 && end > start, "Jenkins deployment handler must remain discoverable");
+		String handler = app.substring(start, end);
+
+		String harness = """
+				let handler;
+				const deployJenkins = {addEventListener: (_, listener) => { handler = listener; }};
+				let authenticated = true;
+				let logoutInFlight = false;
+				let deploymentInFlight = false;
+				let deploymentRunGeneration = 0;
+				const deploymentStatus = {};
+				function text() {}
+				function renderDeploymentEligibility() {}
+				async function stageVerifiedArtifact() {}
+				let rejectMetadata;
+				function authorized() { return new Promise((_, reject) => { rejectMetadata = reject; }); }
+				""" + handler + """
+				const pending = handler();
+				if (!deploymentInFlight || deploymentRunGeneration !== 1) throw new Error('Jenkins lookup was not reserved');
+				rejectMetadata(new Error('source unavailable'));
+				await pending;
+				if (deploymentInFlight) throw new Error('Jenkins lookup did not release its reservation');
+				""";
+
+		Process process = new ProcessBuilder("node", "--input-type=module", "-e", harness).redirectErrorStream(true).start();
+		String output;
+		try {
+			if (!process.waitFor(5, TimeUnit.SECONDS)) fail("WebUI behavior test timed out");
+			output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+			assertEquals(0, process.exitValue(), output);
+		} finally {
+			terminateProcess(process);
+		}
+	}
+
 	private static boolean nodeAvailable() {
 		Process process = null;
 		try {
@@ -252,7 +297,8 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("authenticationGeneration"));
         assertTrue(script.body().contains("if (loginInFlight) return"));
         assertTrue(script.body().contains("logoutInFlight && path !== '/api/v1/auth/logout'"));
-        assertTrue(script.body().contains("!authenticated || logoutInFlight || !eligible.length || deploymentInFlight"));
+        assertTrue(script.body().contains("!authenticated || logoutInFlight || !eligible.length"
+                + " || (deploymentInFlight && reservedDeploymentRun == null)"));
         assertTrue(script.body().contains("const deploymentRun = ++deploymentRunGeneration;"));
         assertTrue(script.body().contains("if (deploymentRun === deploymentRunGeneration) {\n"
                         + "      deploymentInFlight = false;"),
@@ -1368,6 +1414,17 @@ class ControlHttpServerTest {
                 .at("/items/0/deploymentId").asText());
     }
 
+    @Test void untrustedForwardedHeadersRejectPrivatePeerArtifactUploads() throws Exception {
+        byte[] jar = votingPluginJar();
+        String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(jar));
+        Map<String, String> headers = Map.of("Authorization", "Bearer " + adminToken,
+                "Content-Type", "application/java-archive", "X-Filename", "VotingPlugin.jar",
+                "X-Artifact-SHA256", sha256, "X-Forwarded-For", "203.0.113.20");
+
+        assertError(sendBytes("POST", "/api/v1/artifacts/votingplugin", jar, headers), 403,
+                "LOCAL_NETWORK_REQUIRED");
+    }
+
     @Test void missingInvalidWrongNodeRevokedAndRotatedCredentialsFailWithoutDisclosure() throws Exception {
         assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), null));
         assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), "wrong"));
@@ -1565,6 +1622,10 @@ class ControlHttpServerTest {
                 java.util.Set.of("127.0.0.1"), true));
         assertFalse(ControlHttpServer.artifactUploadTransportAllowed("203.0.113.20", null, "https",
                 java.util.Set.of("127.0.0.1"), true), "untrusted peers cannot spoof forwarded HTTPS");
+        assertFalse(ControlHttpServer.artifactUploadTransportAllowed("192.168.0.20", "203.0.113.20", null,
+                java.util.Set.of(), false), "private peers with forwarded client identity are untrusted proxies");
+        assertFalse(ControlHttpServer.artifactUploadTransportAllowed("192.168.0.20", null, "https",
+                java.util.Set.of(), false), "private peers with forwarded protocol are untrusted proxies");
     }
 
     @Test void queuedPasswordVerificationDoesNotBlockHealthOrAdminRequests() throws Exception {

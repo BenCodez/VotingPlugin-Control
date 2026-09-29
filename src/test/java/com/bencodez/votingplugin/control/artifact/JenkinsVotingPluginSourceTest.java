@@ -34,16 +34,16 @@ class JenkinsVotingPluginSourceTest {
     @Test void readsFixedSuccessfulBuildAndDownloadsExactArtifact() throws Exception {
         byte[] jar = votingPluginJar();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        respond("/job/VotingPlugin/lastSuccessfulBuild/api/json", metadata(2393));
-        respond("/job/VotingPlugin/2393/api/json", metadata(2393));
-        respond("/job/VotingPlugin/2393/artifact/VotingPlugin/target/VotingPlugin-2393.jar", jar,
+        respond("/job/VotingPlugin/lastSuccessfulBuild/api/json", metadata(2393, "VotingPlugin-7.1.2-SNAPSHOT.jar"));
+        respond("/job/VotingPlugin/2393/api/json", metadata(2393, "VotingPlugin-7.1.2-SNAPSHOT.jar"));
+        respond("/job/VotingPlugin/2393/artifact/VotingPlugin/target/VotingPlugin-7.1.2-SNAPSHOT.jar", jar,
                 "application/java-archive");
         server.start();
 
         JenkinsVotingPluginSource source = source();
         assertEquals(2393, source.latestSuccessful().buildNumber());
         try (JenkinsVotingPluginSource.Download download = source.open(2393)) {
-            assertEquals("VotingPlugin-2393.jar", download.build().fileName());
+            assertEquals("VotingPlugin-7.1.2-SNAPSHOT.jar", download.build().fileName());
             ArtifactStore.Artifact artifact = new ArtifactStore(directory).upload(download.body(),
                     download.build().fileName(), null);
             assertEquals(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(jar)),
@@ -67,6 +67,15 @@ class JenkinsVotingPluginSourceTest {
         assertThrows(java.io.IOException.class, source::latestSuccessful);
         assertThrows(java.io.IOException.class, () -> source.open(2393));
         assertThrows(java.io.IOException.class, () -> source.open(2394));
+    }
+
+    @Test void rejectsUnsafeOrNonTargetArtifactPaths() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        respond("/job/VotingPlugin/lastSuccessfulBuild/api/json",
+                metadata(2393, "VotingPlugin-7.1.2.jar", "VotingPlugin/target/../VotingPlugin-7.1.2.jar"));
+        server.start();
+
+        assertThrows(java.io.IOException.class, () -> source().latestSuccessful());
     }
 
     @Test void boundsStalledMetadataBodyReads() throws Exception {
@@ -97,6 +106,22 @@ class JenkinsVotingPluginSourceTest {
         }
     }
 
+    @Test void recordsInterruptedArtifactSourceReads() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        respond("/job/VotingPlugin/2393/api/json", metadata(2393));
+        server.createContext("/job/VotingPlugin/2393/artifact/VotingPlugin/target/VotingPlugin-2393.jar", exchange -> {
+            exchange.sendResponseHeaders(200, 2);
+            exchange.getResponseBody().write(new byte[] {1});
+            exchange.close();
+        });
+        server.start();
+
+        try (JenkinsVotingPluginSource.Download download = source().open(2393)) {
+            assertThrows(java.io.IOException.class, () -> download.body().readAllBytes());
+            assertTrue(download.sourceReadFailed());
+        }
+    }
+
     private JenkinsVotingPluginSource source() {
         return source(Duration.ofSeconds(30));
     }
@@ -122,11 +147,19 @@ class JenkinsVotingPluginSourceTest {
     }
 
     private static String metadata(int build) {
+        return metadata(build, "VotingPlugin-" + build + ".jar");
+    }
+
+    private static String metadata(int build, String fileName) {
+        return metadata(build, fileName, "VotingPlugin/target/" + fileName);
+    }
+
+    private static String metadata(int build, String fileName, String relativePath) {
         return """
                 {"number":%d,"result":"SUCCESS","building":false,"timestamp":1790648737343,
-                 "artifacts":[{"fileName":"VotingPlugin-%d.jar",
-                 "relativePath":"VotingPlugin/target/VotingPlugin-%d.jar"}]}
-                """.formatted(build, build, build);
+                 "artifacts":[{"fileName":"%s",
+                 "relativePath":"%s"}]}
+                """.formatted(build, fileName, relativePath);
     }
 
     private static byte[] votingPluginJar() throws Exception {
