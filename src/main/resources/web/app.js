@@ -5925,7 +5925,7 @@ deployPlugin.addEventListener('click', async () => {
   const confirmation = `Upload ${file.name} (${file.size.toLocaleString()} bytes) and stage it on `
     + `${eligible.length} deployment-capable node(s)? Servers will require a restart. Automatic restart is disabled.`
     + (batches.length > 1 ? ` Control will use ${batches.length} bounded operations.` : '')
-    + (ineligible.length ? ` Nodes without verified staging capability excluded: ${ineligible.join(', ')}. Install a current VotingPlugin JAR once and use HTTPS unless VotingPlugin directly hosts Control on loopback; Windows proxy staging is unavailable. Check node logs for the staging-unavailable warning.` : '');
+    + (ineligible.length ? ` Nodes without verified staging capability excluded: ${ineligible.join(', ')}. Install a current VotingPlugin JAR once; Windows proxy staging is unavailable. HTTP is supported on trusted private networks, but HTTPS is strongly recommended. Check node logs for the staging-unavailable warning.` : '');
   if (!window.confirm(confirmation)) return;
   const deploymentRun = ++deploymentRunGeneration;
   deploymentInFlight = true;

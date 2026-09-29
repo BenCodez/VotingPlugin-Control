@@ -214,7 +214,7 @@
           </div>
           <label for="deployment-jar">VotingPlugin JAR<input id="deployment-jar" type="file" accept=".jar,application/java-archive"></label>
           <div class="operation-actions"><button id="deploy-plugin" type="button" disabled>Upload and stage on eligible servers</button></div>
-          <pre id="deployment-status" aria-live="polite">If staging is unavailable, install a current VotingPlugin JAR once. Use HTTPS unless VotingPlugin directly hosts Control on loopback; Windows proxy staging is unavailable. Check the node log for the staging-unavailable warning.</pre>
+          <pre id="deployment-status" aria-live="polite">If staging is unavailable, install a current VotingPlugin JAR once; Windows proxy staging is unavailable. HTTP is supported on trusted private networks, but HTTPS is strongly recommended because credentials and plugin artifacts otherwise cross the network unencrypted. Check the node log for the staging-unavailable warning.</pre>
         </section>
       </section>
 
