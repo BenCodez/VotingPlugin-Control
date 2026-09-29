@@ -2675,6 +2675,29 @@ function dashboardIssues() {
         'A retained vote event used a service identifier with no configured match.', 'Open Vote Sites', 'data', 'site-health-card'));
     });
   }
+  if (settingsEditor && settingsEditor.model.targets.size) {
+    const settingsModel = settingsEditor.model;
+    const autoCreate = settingsModel.aggregate('AutoCreateVoteSites');
+    if ([...settingsModel.targets.values()].some(target => target.role === 'BACKEND'
+      && target.status === 'AVAILABLE' && target.fields.AutoCreateVoteSites?.value === true)) {
+      issues.push(issue('warning', 'Auto-create Vote Sites is enabled',
+        'Disable it after vote sites are configured so unexpected service names do not create new entries.',
+        'Open General Settings', 'general-settings'));
+    }
+    for (const [path, label] of [['OnlineMode', 'Online Mode'], ['BedrockPlayerPrefix', 'Bedrock Player Prefix']]) {
+      const aggregate = settingsModel.aggregate(path);
+      if (aggregate.supportedState === 'MIXED') issues.push(issue('warning', `${label} differs across the managed network`,
+        'Review the per-node values and use the revision-bound preview to synchronize applicable nodes.',
+        'Open General Settings', 'general-settings'));
+    }
+    const badBackends = [...settingsModel.targets.values()].filter(target => target.role === 'BACKEND'
+      && target.managedByProxy
+      && target.status === 'AVAILABLE' && target.fields.AllowUnjoined?.status === 'AVAILABLE'
+      && target.fields.AllowUnjoined.value !== true);
+    if (badBackends.length) issues.push(issue('warning', 'Backend AllowUnjoined prerequisite is disabled',
+      `${badBackends.map(target => nodeIndex.get(target.id)?.displayName || target.id).join(', ')} must be enabled so the proxy remains authoritative. The proxy preference is not changed by this repair.`,
+      'Open General Settings', 'general-settings'));
+  }
   operationHistoryItems.filter(operation => ['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state))
     .forEach(operation => issues.push(issue('warning', `${operationLabel(operation)} needs review`,
       operationPhase(operation), 'View operation', 'activity')));
@@ -6443,24 +6466,75 @@ async function refreshVoteSiteObservations() {
   voteSiteHealthFlight = flight; return flight.promise;
 }
 const GENERAL_SETTING_FIELDS = [
-  {path: 'ProcessRewards', label: 'Process rewards', category: 'Voting & rewards', defaultValue: true, description: 'Allow VotingPlugin to process vote rewards.'},
-  {path: 'ExtraAllSitesCheck', label: 'Extra all-sites check', category: 'Voting & rewards', defaultValue: false, description: 'Enable the additional duplicate all-sites reward check.'},
-  {path: 'CountFakeVotes', label: 'Count fake votes', category: 'Voting & rewards', defaultValue: true, description: 'Include fake votes in vote totals.'},
-  {path: 'AutoCreateVoteSites', label: 'Auto-create vote sites', category: 'Vote sites', defaultValue: true, description: 'Automatically create a site when an unknown service sends a vote.'},
-  {path: 'DisableNoServiceSiteMessage', label: 'Hide unknown service-site warnings', category: 'Vote sites', defaultValue: false, description: 'Suppress the missing service-site warning.'},
-  {path: 'ExtraVoteShopCheck', label: 'Extra vote shop check', category: 'Vote shop', defaultValue: true, description: 'Apply the additional vote shop purchase check.'},
-  {path: 'UseVoteGUIMainCommand', label: 'Open vote GUI from main command', category: 'Interface', defaultValue: false, description: 'Use the vote GUI for the main vote command.'},
-  {path: 'CloseInventoryOnVote', label: 'Close inventory when voting', category: 'Interface', defaultValue: true, description: 'Close the open vote inventory after a vote.'},
-  {path: 'DisableUpdateChecking', label: 'Disable update checking', category: 'Maintenance', defaultValue: false, restart: true, description: 'Disable update checks. A backend restart is required to reconcile the update-check scheduler lifecycle.'}
+  {path: 'Debug', label: 'Debug', category: 'Diagnostics', type: 'enum', options: ['NONE', 'INFO', 'EXTRA'], defaultValue: 'NONE', description: 'Off, Info, or Extra diagnostic logging. A proxy supports only Off or Info, so Extra maps to Info there.'},
+  {path: 'OnlineMode', label: 'Online Mode', category: 'Network & Identity', type: 'boolean', defaultValue: true, sync: true, description: 'Use the same UUID and identity mode across the applicable proxy and backends.'},
+  {path: 'BedrockPlayerPrefix', label: 'Bedrock Player Prefix', category: 'Network & Identity', type: 'string', defaultValue: '.', sync: true, description: 'Prefix used for Geyser/Bedrock player names across the applicable proxy and backends.'},
+  {path: 'AllowUnjoined', label: "Allow Players Who Haven't Joined", category: 'Network & Identity', type: 'boolean', defaultValue: false, description: 'On a managed proxy network, the proxy value is effective and every applicable backend is kept true so the proxy can decide.'},
+  {path: 'AutoCreateVoteSites', label: 'Auto-create vote sites', category: 'Basic', type: 'boolean', defaultValue: true, recommendation: 'Recommended to disable after vote sites are configured so unexpected service names do not create entries.', description: 'Automatically create a site when an unknown service sends a vote.'},
+  {path: 'CountFakeVotes', label: 'Count Fake Votes', category: 'Basic', type: 'boolean', defaultValue: true, description: 'Let fake, administrator, and test votes count toward applicable totals and points.'},
+  {path: 'UseVoteGUIMainCommand', label: 'Open Vote GUI with /vote', category: 'Basic', type: 'boolean', defaultValue: false, description: 'Open the Vote GUI from the main vote command.'},
+  {path: 'CloseInventoryOnVote', label: 'Close Vote GUI After Voting', category: 'Basic', type: 'boolean', defaultValue: true, description: 'Close the open vote inventory after a vote.'},
+  {path: 'GiveDefaultPermission', label: 'Give VotingPlugin.Player by Default', category: 'Plugin Behaviour', type: 'boolean', defaultValue: true, restart: true, description: 'Grant the default player permission during startup. Restart required.'},
+  {path: 'LoadCommandAliases', label: 'Enable Command Aliases', category: 'Plugin Behaviour', type: 'boolean', defaultValue: true, restart: true, description: 'Load command aliases such as /avgui. Restart required.'},
+  {path: 'CaseInsensitiveYMLFiles', label: 'Case-insensitive YAML Files', category: 'Plugin Behaviour', type: 'boolean', defaultValue: true, restart: true, description: 'Treat YAML keys with different letter case as equivalent. Restart required.'},
+  {path: 'PerSiteCoolDownEvents', label: 'Per-site Cooldown Events', category: 'Plugin Behaviour', type: 'boolean', defaultValue: false, restart: true, description: 'Enable per-site cooldown completion events and rewards. Restart required.'},
+  {path: 'CheckForUpdates', label: 'Check for Updates', category: 'Plugin Behaviour', type: 'boolean', defaultValue: true, restart: true, description: 'Run update checks. A backend restart reconciles the update-check scheduler.'}
 ];
 
 function generalSettingsContext() {
   return JSON.stringify([authenticated, authenticationGeneration, workspace.managementScope,
-    [...workspace.selectedTargetIds].map(id => [id, nodeIndex.get(id)?.sessionId || '',
-      nodeIndex.get(id)?.online === true, nodeIndex.get(id)?.acceptedCapabilities?.includes('config.files.v1') === true])]);
+    generalSettingsTargets().map(target => [target.id, target.sessionId, target.fileName, target.online,
+      target.supported, target.managedByProxy, target.reportingProxyIds, target.networkIncomplete])]);
 }
 
-function settingValueLabel(value) { return value === true ? 'On' : value === false ? 'Off' : 'Unavailable'; }
+function generalSettingsTargets() {
+  if (workspace.managementScope === 'GLOBAL' || !authenticated) return [];
+  const ids = new Set([...workspace.selectedTargetIds]);
+  const selectedBackends = [...ids].filter(id => isBackend(nodeIndex.get(id)));
+  const backendReporters = new Map();
+  allNodeItems.filter(isProxy).forEach(proxy => {
+    const reports = Array.isArray(proxy.backends) ? proxy.backends : [];
+    reports.forEach(report => {
+      if (!backendReporters.has(report.backendId)) backendReporters.set(report.backendId, new Set());
+      backendReporters.get(report.backendId).add(proxy.nodeId);
+    });
+    if (reports.some(report => selectedBackends.includes(report.backendId))) ids.add(proxy.nodeId);
+  });
+  return [...ids].map(id => {
+    const node = nodeIndex.get(id);
+    const proxy = isProxy(node);
+    return {id, sessionId: node?.sessionId || '', online: node?.online === true,
+      fileName: proxy ? 'bungeeconfig.yml' : 'Config.yml', platform: node?.platform || '',
+      role: proxy ? 'PROXY' : 'BACKEND',
+      // Retain the known proxy ownership while that proxy is offline. The
+      // topology is incomplete, but its backend prerequisite must not become
+      // editable as if this were a standalone server.
+      managedByProxy: !proxy && backendReporters.has(id),
+      reportingProxyIds: proxy ? [] : [...(backendReporters.get(id) || [])].sort(),
+      // A truncated proxy may have omitted this backend relationship entirely,
+      // so network synchronization must fail closed across the workspace.
+      networkIncomplete: backendTopologyTruncatedNodeIds.size > 0 || !proxy
+        && [...(backendReporters.get(id) || [])].some(proxyId => {
+          const reporter = nodeIndex.get(proxyId);
+          return reporter?.online !== true
+            || reporter?.acceptedCapabilities?.includes('config.proxy-files.v1') !== true;
+        }),
+      supported: proxy ? node?.acceptedCapabilities?.includes('config.proxy-files.v1') === true
+        : isBackend(node) && node?.acceptedCapabilities?.includes('config.files.v1') === true};
+  });
+}
+
+function settingValueLabel(value) {
+  if (value === true) return 'On';
+  if (value === false) return 'Off';
+  if (value === undefined || value === null || value === '') return 'Unavailable';
+  return String(value);
+}
+
+function generalSettingDisplayValue(field, value) {
+  if (field.type === 'boolean') return settingValueLabel(value);
+  return settingValueLabel(value);
+}
 
 function renderGeneralSettings() {
   if (!settingsEditor) return;
@@ -6479,17 +6553,26 @@ function renderGeneralSettings() {
         const row = document.createElement('div'); row.className = 'general-setting-row';
         const label = text(document.createElement('label'), field.label);
         label.htmlFor = `general-setting-${field.path}`;
-        label.append(text(document.createElement('small'), `${field.description} Config.yml → ${field.path}. Documented default: ${settingValueLabel(field.defaultValue)} (not substituted for missing values).`));
-        const select = document.createElement('select'); select.id = label.htmlFor;
-        ['', 'true', 'false'].forEach(value => {
-          const option = document.createElement('option'); option.value = value;
-          option.textContent = value ? value === 'true' ? 'On' : 'Off' : 'Read required';
-          option.disabled = !value; select.append(option);
-        });
+        label.append(text(document.createElement('small'), `${field.description} ${field.fileName === 'bungeeconfig.yml' ? 'bungeeconfig.yml' : 'Config.yml'} → ${field.path}. Documented default: ${generalSettingDisplayValue(field, field.defaultValue)} (not substituted for missing values).`));
+        let select;
+        if (field.type === 'string') {
+          select = document.createElement('input'); select.type = 'text'; select.maxLength = 32;
+          select.placeholder = 'Read required';
+        } else {
+          select = document.createElement('select');
+          const values = field.type === 'enum' ? field.options : [true, false];
+          const empty = document.createElement('option'); empty.value = ''; empty.textContent = 'Read required'; empty.disabled = true; select.append(empty);
+          values.forEach(value => {
+            const option = document.createElement('option'); option.value = String(value);
+            option.textContent = field.type === 'boolean' ? settingValueLabel(value) : String(value);
+            select.append(option);
+          });
+        }
+        select.id = label.htmlFor;
         select.addEventListener('change', () => {
-          if (select.value === 'true' || select.value === 'false') {
+          if (field.type === 'string' || select.value !== '') {
             document.querySelector('#general-settings-ack').checked = false;
-            settingsEditor.edit(field.path, select.value === 'true');
+            settingsEditor.edit(field.path, field.type === 'boolean' ? select.value === 'true' : select.value);
           }
         });
         const reset = text(document.createElement('button'), 'Reset'); reset.type = 'button'; reset.className = 'secondary compact';
@@ -6507,15 +6590,28 @@ function renderGeneralSettings() {
     const aggregate = model.aggregate(field.path);
     const dirty = model.dirty.has(field.path);
     const select = document.querySelector(`#general-setting-${field.path}`);
-    select.options[0].textContent = aggregate.state === 'SAME' ? 'Current value'
-      : aggregate.state === 'MIXED' ? '— Mixed values —' : `${aggregate.state} · ${aggregate.supportedState === 'SAME' ? `supported targets ${settingValueLabel(aggregate.value)}` : aggregate.supportedState.toLowerCase()}`;
+    if (field.type === 'string') select.placeholder = aggregate.state === 'SAME' ? `Current: ${settingValueLabel(aggregate.value)}` : aggregate.state === 'MIXED' ? 'Mixed values' : 'Read required';
+    else select.options[0].textContent = aggregate.state === 'SAME' ? `Current: ${generalSettingDisplayValue(field, aggregate.value)}`
+      : aggregate.state === 'MIXED' ? '— Mixed values —' : `${aggregate.state} · ${aggregate.supportedState === 'SAME' ? `supported targets ${generalSettingDisplayValue(field, aggregate.value)}` : aggregate.supportedState.toLowerCase()}`;
     select.value = dirty ? String(model.dirty.get(field.path)) : aggregate.state === 'SAME' ? String(aggregate.value) : '';
     select.disabled = state.busy || !aggregate.targets.some(target => target.status === 'AVAILABLE');
     select.setAttribute('aria-describedby', `general-setting-values-${field.path}`);
     const reset = document.querySelector(`#general-setting-reset-${field.path}`); reset.disabled = state.busy || !dirty;
     const values = document.querySelector(`#general-setting-values-${field.path}`);
-    values.replaceChildren(...aggregate.targets.map(target => text(document.createElement('p'),
-      `${nodeIndex.get(target.id)?.displayName || target.id}: ${target.status === 'AVAILABLE' ? settingValueLabel(target.value) : target.status}${dirty ? ` · requested ${settingValueLabel(model.dirty.get(field.path))}` : ''}`)));
+    values.replaceChildren(...aggregate.targets.map(target => {
+      const requested = dirty ? model.requestedValue(model.targets.get(target.id), field.path, model.dirty.get(field.path)) : undefined;
+      const shown = field.path === 'AllowUnjoined' && target.role === 'BACKEND' ? target.rawValue : target.value;
+      return text(document.createElement('p'),
+        `${nodeIndex.get(target.id)?.displayName || target.id}: ${target.status === 'AVAILABLE' ? generalSettingDisplayValue(field, shown) : target.status}${dirty ? ` · requested ${generalSettingDisplayValue(field, requested)}` : ''}`);
+    }));
+    if (field.path === 'AllowUnjoined' && !dirty && aggregate.value !== undefined
+      && aggregate.targets.some(target => target.role === 'BACKEND' && target.rawValue === false
+        && model.targets.get(target.id)?.managedByProxy)) {
+      const repair = text(document.createElement('button'), 'Repair backend prerequisites');
+      repair.type = 'button'; repair.className = 'secondary compact'; repair.disabled = state.busy;
+      repair.addEventListener('click', () => settingsEditor.edit(field.path, aggregate.value));
+      values.append(repair);
+    }
   });
   text(document.querySelector('#general-settings-status'), state.error || state.message || (state.busy ? 'Loading / processing…' : 'Only explicit changes will be proposed.'));
   document.querySelector('#general-settings-panel').setAttribute('aria-busy', String(Boolean(state.busy)));
@@ -6533,17 +6629,21 @@ function renderGeneralSettings() {
   const summary = document.querySelector('#general-settings-summary');
   summary.replaceChildren(text(document.createElement('p'), `Target servers: ${model.targets.size}`),
     text(document.createElement('p'), `Explicit dirty settings: ${model.dirty.size}`),
-    text(document.createElement('p'), `Affected files: ${model.dirty.size ? 'Config.yml' : 'none'}`),
+    text(document.createElement('p'), `Affected files: ${model.dirty.size ? [...new Set([...model.targets.values()].map(target => target.fileName || 'Config.yml'))].join(', ') : 'none'}`),
     text(document.createElement('p'), `Preview: ${preview ? 'Ready' : state.previewState || 'Not previewed'}`));
   model.dirty.forEach((value, path) => {
     const field = GENERAL_SETTING_FIELDS.find(item => item.path === path);
     const aggregate = model.aggregate(path);
-    summary.append(text(document.createElement('p'), `${field?.label || path}: ${aggregate.state === 'SAME' ? settingValueLabel(aggregate.value) : aggregate.state} → ${settingValueLabel(value)}`));
+    summary.append(text(document.createElement('p'), `${field?.label || path}: ${aggregate.state === 'SAME' ? generalSettingDisplayValue(field || {type: 'boolean'}, aggregate.value) : aggregate.state} → ${field ? generalSettingDisplayValue(field, value) : settingValueLabel(value)}`));
+    if (field?.recommendation && path === 'AutoCreateVoteSites' && value === true) summary.append(text(document.createElement('p'), `Recommendation: ${field.recommendation}`));
   });
   plans.forEach(plan => {
     const keys = Object.keys(plan.overrides);
-    const impact = keys.some(path => GENERAL_SETTING_FIELDS.find(field => field.path === path)?.restart)
-      ? 'Config reload + full backend restart required (restart is not performed by this editor)' : keys.length ? 'VotingPlugin configuration reload required' : 'No runtime action required';
+    const proxyRestart = keys.length && model.targets.get(plan.id)?.role === 'PROXY';
+    const impact = proxyRestart ? 'Saved proxy configuration; full proxy restart required (not performed by Control)'
+      : keys.some(path => GENERAL_SETTING_FIELDS.find(field => field.path === path)?.restart)
+      ? 'Config reload + full backend restart required (restart is not performed by this editor)' : keys.some(path => GENERAL_SETTING_FIELDS.find(field => field.path === path)?.sync)
+        ? 'Configuration reload required across the applicable backend/proxy network targets' : keys.length ? 'VotingPlugin configuration reload required' : 'No runtime action required';
     summary.append(text(document.createElement('p'), `${plan.id}: ${impact}${plan.skipped.length ? ` · excluded: ${plan.skipped.map(item => `${item.field} (${item.status})`).join(', ')}` : ''}`));
   });
   const exclusions = plans.some(plan => plan.skipped.length);
@@ -6563,11 +6663,11 @@ function renderGeneralSettings() {
     section.append(text(document.createElement('h4'), item.id));
     const operation = item.operation;
     const result = operation?.results?.[item.id];
-    section.append(text(document.createElement('p'), result ? `${result.success ? 'Config.yml · preview ready' : `${result.code} · ${result.message}`}${operation?.operationId ? ` · operation ${operation.operationId}` : ''}` : `${item.status || 'Unchanged / excluded'}${item.message ? ` · ${item.message}` : ''}`));
+    section.append(text(document.createElement('p'), result ? `${result.success ? `${model.targets.get(item.id)?.fileName || 'Config.yml'} · preview ready` : `${result.code} · ${result.message}`}${operation?.operationId ? ` · operation ${operation.operationId}` : ''}` : `${item.status || 'Unchanged / excluded'}${item.message ? ` · ${item.message}` : ''}`));
     (item.skipped || []).forEach(skipped => section.append(text(document.createElement('p'), `${skipped.field}: excluded (${skipped.status})`)));
     const plan = plans.find(plan => plan.id === item.id);
     if (plan) Object.entries(plan.overrides).forEach(([path, value]) => section.append(text(document.createElement('p'),
-      `Config.yml → ${path}: ${settingValueLabel(model.targets.get(item.id)?.fields[path]?.value)} → ${settingValueLabel(value)}`)));
+      `${model.targets.get(item.id)?.fileName || 'Config.yml'} → ${path}: ${generalSettingDisplayValue(GENERAL_SETTING_FIELDS.find(field => field.path === path) || {type: 'boolean'}, model.targets.get(item.id)?.fields[path]?.value)} → ${generalSettingDisplayValue(GENERAL_SETTING_FIELDS.find(field => field.path === path) || {type: 'boolean'}, value)}`)));
     (result?.changes || []).forEach(change => section.append(text(document.createElement('p'), change)));
     previewResults.append(section);
   });
@@ -6582,7 +6682,7 @@ function renderGeneralSettings() {
       results.append(section); return;
     }
     section.append(text(document.createElement('h4'), id), text(document.createElement('p'),
-      `${result.success ? '✓ written' : `✗ ${result.code || data.status || 'not applied'}: ${result.message || data.message || ''}`} · ${result.reloaded ? '✓ reloaded' : 'reload not confirmed'}${result.rolledBack ? ' · ✓ automatic local rollback' : ''}${data.operation?.operationId ? ` · operation ${data.operation.operationId}` : ''}`),
+      `${result.success ? '✓ written' : `✗ ${result.code || data.status || 'not applied'}: ${result.message || data.message || ''}`} · ${current?.role === 'PROXY' && result.success ? 'proxy restart required; active runtime not changed' : result.reloaded ? '✓ reloaded' : 'reload not confirmed'}${result.rolledBack ? ' · ✓ automatic local rollback' : ''}${data.operation?.operationId ? ` · operation ${data.operation.operationId}` : ''}`),
       text(document.createElement('p'), data.confirmed === true ? '✓ Confirmed requested persisted configuration after apply (not proof of a backend restart)'
         : current?.status === 'AVAILABLE' ? 'Current configuration re-read; requested values are not confirmed as successfully applied.' : '✗ Confirmed read unavailable; do not assume requested values are active.'));
     results.append(section);
@@ -6590,11 +6690,7 @@ function renderGeneralSettings() {
 }
 
 settingsEditor = ControlGeneralSettings.create({
-  targets: () => workspace.managementScope === 'GLOBAL' || !authenticated ? [] : [...workspace.selectedTargetIds].map(id => {
-    const node = nodeIndex.get(id);
-    return {id, sessionId: node?.sessionId || '', online: node?.online === true,
-      supported: isBackend(node) && node?.acceptedCapabilities?.includes('config.files.v1') === true};
-  }),
+  targets: generalSettingsTargets,
   context: generalSettingsContext,
   active: () => authenticated && tabFromHash() === 'general-settings',
   operation: (path, body) => startConfigurationOperation(path, body, document.querySelector('#general-settings-status')),

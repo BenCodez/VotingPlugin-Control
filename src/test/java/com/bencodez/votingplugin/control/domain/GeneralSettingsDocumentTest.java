@@ -6,125 +6,85 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashMap;
 import java.util.Map;
-
 import org.junit.jupiter.api.Test;
 
 class GeneralSettingsDocumentTest {
-    @Test void fieldsExposeOnlyKnownSettingsWithMissingAndTypeStatus() {
-        String content = "\"ProcessRewards\": FALSE # deliberately uppercase\n"
-                + "AutoCreateVoteSites: true\n"
-                + "ExtraAllSitesCheck: 'false'\n"
-                + "CountFakeVotes: null\n"
+    @Test void backendFieldsExposeCuratedTypedValuesAndStatuses() {
+        String content = "DebugLevel: extra\nOnlineMode: TRUE\nAutoCreateVoteSites: true\n"
+                + "CountFakeVotes: 'true'\nBedrockPlayerPrefix: '.'\nDisableUpdateChecking: true\n"
                 + "SecretToken: __VOTINGPLUGIN_CONTROL_REDACTED__\n";
-
         Map<String, GeneralSettingsDocument.Field> fields = GeneralSettingsDocument.fields(content);
-
-        assertEquals(9, fields.size());
-        assertEquals(new GeneralSettingsDocument.Field(GeneralSettingsDocument.Status.AVAILABLE, false),
-                fields.get("ProcessRewards"));
-        assertEquals(new GeneralSettingsDocument.Field(GeneralSettingsDocument.Status.AVAILABLE, true),
-                fields.get("AutoCreateVoteSites"));
-        assertEquals(new GeneralSettingsDocument.Field(GeneralSettingsDocument.Status.UNSUPPORTED, null),
-                fields.get("ExtraAllSitesCheck"));
-        assertEquals(new GeneralSettingsDocument.Field(GeneralSettingsDocument.Status.UNSUPPORTED, null),
-                fields.get("CountFakeVotes"));
-        assertEquals(new GeneralSettingsDocument.Field(GeneralSettingsDocument.Status.MISSING, null),
-                fields.get("DisableNoServiceSiteMessage"));
-        assertEquals(new GeneralSettingsDocument.Field(GeneralSettingsDocument.Status.MISSING, null),
-                fields.get("DisableUpdateChecking"));
-        assertEquals(new GeneralSettingsDocument.Field(GeneralSettingsDocument.Status.MISSING, null),
-                fields.get("UseVoteGUIMainCommand"));
-        assertEquals(new GeneralSettingsDocument.Field(GeneralSettingsDocument.Status.MISSING, null),
-                fields.get("CloseInventoryOnVote"));
-        assertEquals(new GeneralSettingsDocument.Field(GeneralSettingsDocument.Status.MISSING, null),
-                fields.get("ExtraVoteShopCheck"));
+        assertEquals(13, fields.size());
+        assertEquals("EXTRA", fields.get("Debug").value());
+        assertEquals(true, fields.get("OnlineMode").value());
+        assertEquals(GeneralSettingsDocument.Status.UNSUPPORTED, fields.get("CountFakeVotes").status());
+        assertEquals(".", fields.get("BedrockPlayerPrefix").value());
+        assertEquals(false, fields.get("CheckForUpdates").value());
+        assertEquals(GeneralSettingsDocument.Status.MISSING, fields.get("GiveDefaultPermission").status());
     }
 
-    @Test void patchChangesOnlySelectedScalarSpansAndPreservesIndependentDocuments() {
-        String first = "# settings\n\"ProcessRewards\": true # quoted key intentionally\n"
-                + "Unknown: keep\nPassword: __VOTINGPLUGIN_CONTROL_REDACTED__\n";
-        String second = "Unknown: keep\nProcessRewards : FALSE # another layout\n";
-
-        assertEquals("# settings\n\"ProcessRewards\": false # quoted key intentionally\n"
-                        + "Unknown: keep\nPassword: __VOTINGPLUGIN_CONTROL_REDACTED__\n",
-                GeneralSettingsDocument.patch(first, Map.of("ProcessRewards", false)));
-        assertEquals("Unknown: keep\nProcessRewards : true # another layout\n",
-                GeneralSettingsDocument.patch(second, Map.of("ProcessRewards", true)));
+    @Test void proxyProfileMapsNamesAndDebugWithoutInventingExtra() {
+        String content = "Debug: true\nOnlineMode: false\nAllowUnJoined: true\nBedrockPlayerPrefix: '.'\n";
+        Map<String, GeneralSettingsDocument.Field> fields = GeneralSettingsDocument.fields(content,
+                GeneralSettingsDocument.Profile.PROXY);
+        assertEquals(4, fields.size());
+        assertEquals("INFO", fields.get("Debug").value());
+        assertEquals(true, fields.get("AllowUnjoined").value());
+        assertEquals("Debug: false\nOnlineMode: true\nAllowUnJoined: true\nBedrockPlayerPrefix: '_'\n",
+                GeneralSettingsDocument.patch(content, GeneralSettingsDocument.Profile.PROXY,
+                        Map.of("Debug", "NONE", "OnlineMode", true, "BedrockPlayerPrefix", "_")));
+        assertEquals(content, GeneralSettingsDocument.patch(content, GeneralSettingsDocument.Profile.PROXY,
+                Map.of("Debug", "EXTRA")));
     }
 
-    @Test void patchesVerifiedUiAndShopBooleansWithoutTouchingOtherConfiguration() {
-        String source = "# GUI behavior\nUseVoteGUIMainCommand: false # /vote\n"
-                + "CloseInventoryOnVote: true\nExtraVoteShopCheck: true\n"
-                + "VoteShop: {Unknown: preserved}\nSecret: __VOTINGPLUGIN_CONTROL_REDACTED__\n";
-
-        assertEquals("# GUI behavior\nUseVoteGUIMainCommand: true # /vote\n"
-                        + "CloseInventoryOnVote: false\nExtraVoteShopCheck: true\n"
-                        + "VoteShop: {Unknown: preserved}\nSecret: __VOTINGPLUGIN_CONTROL_REDACTED__\n",
-                GeneralSettingsDocument.patch(source, Map.of("UseVoteGUIMainCommand", true,
-                        "CloseInventoryOnVote", false)));
-        assertEquals(new GeneralSettingsDocument.Field(GeneralSettingsDocument.Status.AVAILABLE, true),
-                GeneralSettingsDocument.fields(source).get("ExtraVoteShopCheck"));
+    @Test void patchChangesOnlySelectedScalarSpansAndPreservesSource() {
+        String source = "# settings\nCountFakeVotes: TRUE # keep\nDisableUpdateChecking: false\n"
+                + "BedrockPlayerPrefix: '.'\nUnknown: keep\nPassword: __VOTINGPLUGIN_CONTROL_REDACTED__\n";
+        assertEquals("# settings\nCountFakeVotes: false # keep\nDisableUpdateChecking: true\n"
+                        + "BedrockPlayerPrefix: 'x''y'\nUnknown: keep\nPassword: __VOTINGPLUGIN_CONTROL_REDACTED__\n",
+                GeneralSettingsDocument.patch(source, Map.of("CountFakeVotes", false,
+                        "CheckForUpdates", false, "BedrockPlayerPrefix", "x'y")));
     }
 
     @Test void patchIsStrictAndNeverInventsOrCoercesSettings() {
-        String missing = "Other: true\n";
-        String unsupported = "ProcessRewards: 'true'\n";
-        HashMap<String, Boolean> nullValue = new HashMap<>();
-        nullValue.put("ProcessRewards", null);
-
+        HashMap<String, Object> nullValue = new HashMap<>();
+        nullValue.put("CountFakeVotes", null);
         assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.patch(missing, Map.of("ProcessRewards", true)));
+                () -> GeneralSettingsDocument.patch("Other: true\n", Map.of("CountFakeVotes", true)));
         assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.patch(unsupported, Map.of("ProcessRewards", true)));
+                () -> GeneralSettingsDocument.patch("CountFakeVotes: 'true'\n", Map.of("CountFakeVotes", true)));
         assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.patch("ProcessRewards: true\n", Map.of("unknown", true)));
+                () -> GeneralSettingsDocument.patch("CountFakeVotes: true\n", Map.of("unknown", true)));
         assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.patch("ProcessRewards: true\n", nullValue));
+                () -> GeneralSettingsDocument.patch("CountFakeVotes: true\n", nullValue));
         assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.patch("ProcessRewards: true\n", Map.of()));
+                () -> GeneralSettingsDocument.patch("DebugLevel: INFO\n", Map.of("Debug", "DEV")));
+        assertThrows(IllegalArgumentException.class,
+                () -> GeneralSettingsDocument.patch("BedrockPlayerPrefix: '.'\n",
+                        Map.of("BedrockPlayerPrefix", "x".repeat(33))));
     }
 
-    @Test void noChangeReturnsTextVerbatimIncludingNonCanonicalBooleanSpelling() {
-        String content = "ProcessRewards: TRUE # retain source style\n";
-        assertEquals(content, GeneralSettingsDocument.patch(content, Map.of("ProcessRewards", true)));
+    @Test void noChangeReturnsTextVerbatimAndUnicodeOffsetsRemainCorrect() {
+        String content = "Message: '😀'\nCountFakeVotes: TRUE # exact location follows emoji\n";
+        assertEquals(content, GeneralSettingsDocument.patch(content, Map.of("CountFakeVotes", true)));
+        assertEquals("Message: '😀'\nCountFakeVotes: false # exact location follows emoji\n",
+                GeneralSettingsDocument.patch(content, Map.of("CountFakeVotes", false)));
     }
 
-    @Test void supportsFlowRootWithoutReformattingIt() {
-        String content = "{ProcessRewards: true, unknown: __VOTINGPLUGIN_CONTROL_REDACTED__}\n";
-        assertEquals("{ProcessRewards: false, unknown: __VOTINGPLUGIN_CONTROL_REDACTED__}\n",
-                GeneralSettingsDocument.patch(content, Map.of("ProcessRewards", false)));
-    }
-
-    @Test void usesCodePointMarksWhenTextBeforeASettingContainsNonBmpCharacters() {
-        String content = "Message: '😀'\nProcessRewards: true # exact location follows emoji\n";
-        assertEquals("Message: '😀'\nProcessRewards: false # exact location follows emoji\n",
-                GeneralSettingsDocument.patch(content, Map.of("ProcessRewards", false)));
-    }
-
-    @Test void rejectsAliasOrAnchorInvolvementForAnEditedSetting() {
-        String anchored = "ProcessRewards: &shared true\nOther: *shared\n";
-        String aliased = "Other: &shared true\nProcessRewards: *shared\n";
-
+    @Test void rejectsAliasDuplicateMultipleInvalidAndOversizedDocuments() {
+        String anchored = "CountFakeVotes: &shared true\nOther: *shared\n";
         assertEquals(GeneralSettingsDocument.Status.UNSUPPORTED,
-                GeneralSettingsDocument.fields(anchored).get("ProcessRewards").status());
-        assertEquals(GeneralSettingsDocument.Status.UNSUPPORTED,
-                GeneralSettingsDocument.fields(aliased).get("ProcessRewards").status());
+                GeneralSettingsDocument.fields(anchored).get("CountFakeVotes").status());
         assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.patch(anchored, Map.of("ProcessRewards", false)));
+                () -> GeneralSettingsDocument.patch(anchored, Map.of("CountFakeVotes", false)));
         assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.patch(aliased, Map.of("ProcessRewards", false)));
-    }
-
-    @Test void rejectsDuplicateRootsMultipleDocumentsInvalidAndOversizedInputWithoutLeakingIt() {
+                () -> GeneralSettingsDocument.fields("CountFakeVotes: true\nCountFakeVotes: false\n"));
+        assertThrows(IllegalArgumentException.class, () -> GeneralSettingsDocument.fields("- CountFakeVotes\n"));
         assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.fields("ProcessRewards: true\nProcessRewards: false\n"));
-        assertThrows(IllegalArgumentException.class, () -> GeneralSettingsDocument.fields("- ProcessRewards\n"));
-        assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.fields("ProcessRewards: true\n---\nProcessRewards: false\n"));
-        assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.fields("ProcessRewards: [\n"));
+                () -> GeneralSettingsDocument.fields("CountFakeVotes: true\n---\nCountFakeVotes: false\n"));
+        assertThrows(IllegalArgumentException.class, () -> GeneralSettingsDocument.fields("CountFakeVotes: [\n"));
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> GeneralSettingsDocument.fields("ProcessRewards: " + "x".repeat(512 * 1024)));
+                () -> GeneralSettingsDocument.fields("CountFakeVotes: " + "x".repeat(512 * 1024)));
         assertTrue(!failure.getMessage().contains("x"));
     }
 }

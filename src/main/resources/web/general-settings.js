@@ -7,7 +7,8 @@
 
   if (!configuration || !configuration.MultiTargetState) throw new Error('ControlConfiguration.MultiTargetState is required');
   const CACHE_MILLIS = 30000;
-  const MAX_CHANGED_TARGETS = 8;
+  const MAX_READ_TARGETS = 100;
+  const MAX_FILE_OPERATIONS = 16;
 
   function now() { return Date.now(); }
   function resultFor(operation, id) {
@@ -41,7 +42,22 @@
     function setState(values) { state = Object.assign({}, state, values); notify(); }
     function current(captured, capturedGeneration) { return context() === captured && generation === capturedGeneration; }
     function selected() { return targetList(adapter); }
-    function syncTargets() { model.setTargets(selected().map(function (target) { return {id: target.id, sessionId: target.sessionId}; })); }
+    function syncTargets() { model.setTargets(selected().map(function (target) {
+      return {id: target.id, sessionId: target.sessionId, fileName: target.fileName || 'Config.yml',
+        platform: target.platform, role: target.role, managedByProxy: target.managedByProxy,
+        reportingProxyIds: target.reportingProxyIds,
+        networkIncomplete: target.networkIncomplete};
+    })); }
+    function readBatchCount() {
+      const byFile = new Map();
+      selected().filter(function (target) { return target.online && target.supported; }).forEach(function (target) {
+        const fileName = target.fileName || 'Config.yml';
+        byFile.set(fileName, (byFile.get(fileName) || 0) + 1);
+      });
+      let count = 0;
+      byFile.forEach(function (targets) { count += Math.ceil(targets / MAX_READ_TARGETS); });
+      return count;
+    }
     function releasePreviews(items) {
       return Promise.all((items || []).map(function (item) {
         if (!item.operationId || !item.approvalToken) return Promise.resolve();
@@ -78,7 +94,8 @@
     }
     function cacheCurrent(target) {
       const cached = reads.get(target.id);
-      return cached && cached.sessionId === target.sessionId && now() - cached.loadedAt < CACHE_MILLIS;
+      return cached && cached.sessionId === target.sessionId && cached.fileName === (target.fileName || 'Config.yml')
+        && now() - cached.loadedAt < CACHE_MILLIS;
     }
 
     async function loadStates(operation, targets, captured, capturedGeneration) {
@@ -97,6 +114,7 @@
             readError(target, 'Read identity changed; read the target again', 'TARGET_CHANGED'); return;
           }
           reads.set(target.id, {readOperationId: operation.operationId, sessionId: target.sessionId,
+            fileName: target.fileName || 'Config.yml',
             revision: typed.revision || '', loadedAt: now()});
           model.setRead(target.id, {status: 'AVAILABLE', sessionId: typed.sessionId || target.sessionId,
             revision: typed.revision, fields: typed.fields || {}});
@@ -135,13 +153,37 @@
       const currentFlight = {key: key, promise: null};
       currentFlight.promise = (async function () {
         try {
-          const operation = await adapter.operation('/api/v1/configuration/read', {
-            nodeIds: wanted.map(function (target) { return target.id; }), configuration: {domain: 'file', fileName: 'Config.yml'}
-          });
           if (!current(captured, capturedGeneration)) return model;
-          await loadStates(operation, wanted, captured, capturedGeneration);
+          const groups = new Map();
+          wanted.forEach(function (target) {
+            const fileName = target.fileName || 'Config.yml';
+            if (!groups.has(fileName)) groups.set(fileName, []);
+            groups.get(fileName).push(target);
+          });
+          const batches = [];
+          groups.forEach(function (targets, fileName) {
+            for (let offset = 0; offset < targets.length; offset += MAX_READ_TARGETS) {
+              batches.push({fileName: fileName, targets: targets.slice(offset, offset + MAX_READ_TARGETS)});
+            }
+          });
+          let groupFailed = false;
+          await Promise.all(batches.map(async function (batch) {
+            try {
+              const operation = await adapter.operation('/api/v1/configuration/read', {
+                nodeIds: batch.targets.map(function (target) { return target.id; }),
+                configuration: {domain: 'file', fileName: batch.fileName}
+              });
+              await loadStates(operation, batch.targets, captured, capturedGeneration);
+            } catch (error) {
+              groupFailed = true;
+              if (current(captured, capturedGeneration)) batch.targets.forEach(function (target) {
+                readError(target, errorText(error), error && error.code);
+              });
+            }
+          }));
           if (current(captured, capturedGeneration) && approval && !model.previewCurrent() && !applying) clearApproval('Stale');
-          if (current(captured, capturedGeneration)) setState({message: 'General Settings loaded'});
+          if (current(captured, capturedGeneration)) setState({message: groupFailed
+            ? 'General Settings loaded with unavailable target groups' : 'General Settings loaded'});
         } catch (error) {
           if (current(captured, capturedGeneration)) {
             wanted.forEach(function (target) { readError(target, errorText(error), error && error.code); });
@@ -170,9 +212,11 @@
       const signature = model.beginPreview();
       const plans = model.plans();
       const changed = plans.filter(function (plan) { return Object.keys(plan.overrides).length > 0; });
-      if (changed.length > MAX_CHANGED_TARGETS) {
+      const maxChangedTargets = Math.max(0, MAX_FILE_OPERATIONS - readBatchCount());
+      if (changed.length > maxChangedTargets) {
         setBusy(-1);
-        setState({error: 'At most ' + MAX_CHANGED_TARGETS + ' changed targets can be previewed at once', previewState: 'Stale', previewItems: []});
+        setState({error: 'At most ' + maxChangedTargets
+          + ' changed targets can be previewed at once for this workspace size', previewState: 'Stale', previewItems: []});
         return false;
       }
       setState({error: '', message: 'Previewing General Settings…', previewState: 'Not previewed', ackRequired: false, previewItems: []});

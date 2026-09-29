@@ -27,6 +27,34 @@ test('reads eligible targets once, retains typed snapshots, and makes no automat
   assert.equal(editor.model.targets.get('b').status, 'ERROR');
 });
 
+test('groups reads by target file and preserves typed string and enum overrides', async () => {
+  const f = fixture([{id: 'backend', sessionId: 's1', online: true, supported: true, fileName: 'Config.yml'},
+    {id: 'proxy', sessionId: 's2', online: true, supported: true, fileName: 'bungeeconfig.yml'}]);
+  f.adapter.request = async (_path, body) => ({readOperationId: body.readOperationId, nodeId: body.nodeId,
+    sessionId: f.adapter.targets().find(target => target.id === body.nodeId).sessionId, revision: 'r1',
+    fields: {Debug: {status: 'AVAILABLE', value: 'NONE'}, BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'}}});
+  const editor = create(f.adapter); await editor.read();
+  const reads = f.calls.filter(call => call[0].endsWith('/read'));
+  assert.equal(reads.length, 2);
+  assert.deepEqual(new Set(reads.map(call => call[1].configuration.fileName)), new Set(['Config.yml', 'bungeeconfig.yml']));
+  editor.edit('Debug', 'INFO'); editor.edit('BedrockPlayerPrefix', '^');
+  assert.deepEqual(editor.model.plans().flatMap(plan => Object.keys(plan.overrides)).sort(), ['BedrockPlayerPrefix', 'Debug', 'BedrockPlayerPrefix', 'Debug'].sort());
+});
+
+test('chunks more than one hundred targets for the same managed file', async () => {
+  const targets = Array.from({length: 101}, (_, index) => ({id: `proxy-${index}`, sessionId: `s-${index}`,
+    online: true, supported: true, fileName: 'bungeeconfig.yml'}));
+  const f = fixture(targets);
+  const editor = create(f.adapter); await editor.read();
+  const reads = f.calls.filter(call => call[0].endsWith('/read'));
+  assert.equal(reads.length, 2);
+  assert.deepEqual(reads.map(call => call[1].nodeIds.length).sort((left, right) => left - right), [1, 100]);
+  assert.equal([...editor.model.targets.values()].every(target => target.status === 'AVAILABLE'), true);
+  editor.edit(FIELD, true);
+  assert.equal(await editor.preview(), false);
+  assert.match(editor.state.error, /At most 14 changed targets/);
+});
+
 test('single-flight reads ignore a late result from an old context', async () => {
   const f = fixture(); const gate = deferred();
   f.adapter.operation = async () => { await gate.promise; return {operationId: 'r', results: {a: {success: true, nodeId: 'a', sessionId: 's1', revision: 'r1'}}}; };
@@ -249,4 +277,20 @@ test('explicit edits discard abandoned exact approvals without queuing a write',
   assert.ok(disposal);
   assert.deepEqual(disposal[1], {previewOperationId: 'preview-a', approvalToken: 'token-a'});
   assert.equal(f.calls.some(([path]) => path.endsWith('/apply')), false);
+});
+
+test('a failed proxy file read does not discard a successful backend group', async () => {
+  const f = fixture([{id: 'backend', sessionId: 's1', online: true, supported: true, fileName: 'Config.yml'},
+    {id: 'proxy', sessionId: 's2', online: true, supported: true, fileName: 'bungeeconfig.yml'}]);
+  const original = f.adapter.operation;
+  f.adapter.operation = async (path, body) => {
+    if (path.endsWith('/read') && body.configuration.fileName === 'bungeeconfig.yml') throw new Error('proxy unavailable');
+    return original(path, body);
+  };
+  f.adapter.request = async (_path, body) => ({readOperationId: body.readOperationId, nodeId: body.nodeId,
+    sessionId: f.adapter.targets().find(target => target.id === body.nodeId).sessionId, revision: 'r1',
+    fields: {[FIELD]: {status: 'AVAILABLE', value: false}}});
+  const editor = create(f.adapter); await editor.read();
+  assert.equal(editor.model.targets.get('backend').status, 'AVAILABLE');
+  assert.equal(editor.model.targets.get('proxy').status, 'ERROR');
 });

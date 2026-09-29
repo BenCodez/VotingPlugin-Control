@@ -32,7 +32,7 @@ class GeneralSettingsOperationsTest {
 
     @Test void readUsesThatBackendDocumentAndRevision() throws Exception {
         try (Fixture fixture = fixture("backend-a")) {
-            String document = "# keep\nProcessRewards: true\nToken: " + REDACTED + "\n";
+            String document = "# keep\nCountFakeVotes: true\nToken: " + REDACTED + "\n";
             ConfigurationOperations.OperationView read = read(fixture, "backend-a", document, revision('a'));
 
             ConfigurationOperations.SettingsState state = fixture.operations.generalSettingsState(read.operationId(),
@@ -40,8 +40,8 @@ class GeneralSettingsOperationsTest {
             assertEquals(read.operationId(), state.readOperationId());
             assertEquals(fixture.session("backend-a"), state.sessionId());
             assertEquals(revision('a'), state.revision());
-            assertEquals(GeneralSettingsDocument.Status.AVAILABLE, state.fields().get("ProcessRewards").status());
-            assertEquals(Boolean.TRUE, state.fields().get("ProcessRewards").value());
+            assertEquals(GeneralSettingsDocument.Status.AVAILABLE, state.fields().get("CountFakeVotes").status());
+            assertEquals(Boolean.TRUE, state.fields().get("CountFakeVotes").value());
             assertEquals(GeneralSettingsDocument.Status.MISSING,
                     state.fields().get("AutoCreateVoteSites").status());
             assertNull(state.fields().get("AutoCreateVoteSites").value());
@@ -172,7 +172,7 @@ class GeneralSettingsOperationsTest {
 
     @Test void previewsArePerTargetAndOnlyChangeRequestedScalarText() throws Exception {
         try (Fixture fixture = fixture("backend-a", "backend-b")) {
-            String first = "# first comment\nProcessRewards: true # retain\nUnknown: first\nToken: " + REDACTED + "\n";
+            String first = "# first comment\nCountFakeVotes: true # retain\nUnknown: first\nToken: " + REDACTED + "\n";
             String second = "# second comment\nAutoCreateVoteSites: false # retain\nUnknown: second\nPassword: " + REDACTED + "\n";
             ConfigurationOperations.OperationView read = fixture.operations.createRead(List.of("backend-a", "backend-b"),
                     ManagedConfiguration.file("Config.yml", null));
@@ -180,13 +180,13 @@ class GeneralSettingsOperationsTest {
             read = completeRead(fixture, read, "backend-b", second, revision('b'));
 
             ConfigurationOperations.OperationView firstPreview = fixture.operations.createGeneralSettingsPreview(
-                    read.operationId(), "backend-a", Map.of("ProcessRewards", false));
+                    read.operationId(), "backend-a", Map.of("CountFakeVotes", false));
             ConfigurationOperations.OperationView secondPreview = fixture.operations.createGeneralSettingsPreview(
                     read.operationId(), "backend-b", Map.of("AutoCreateVoteSites", true));
             ConfigurationTask firstTask = fixture.operations.claim("backend-a", fixture.session("backend-a"));
             ConfigurationTask secondTask = fixture.operations.claim("backend-b", fixture.session("backend-b"));
 
-            assertEquals("# first comment\nProcessRewards: false # retain\nUnknown: first\nToken: " + REDACTED + "\n",
+            assertEquals("# first comment\nCountFakeVotes: false # retain\nUnknown: first\nToken: " + REDACTED + "\n",
                     firstTask.configuration().content());
             assertEquals("# second comment\nAutoCreateVoteSites: true # retain\nUnknown: second\nPassword: "
                     + REDACTED + "\n", secondTask.configuration().content());
@@ -200,31 +200,31 @@ class GeneralSettingsOperationsTest {
     @Test void rejectsUnknownNonBooleanMissingAndWrongTypeEdits() throws Exception {
         try (Fixture fixture = fixture("backend-a")) {
             ConfigurationOperations.OperationView read = read(fixture, "backend-a",
-                    "ProcessRewards: true\nExtraAllSitesCheck: 'false'\n", revision('a'));
+                    "CountFakeVotes: true\nAutoCreateVoteSites: 'false'\n", revision('a'));
             assertValidation(() -> fixture.operations.createGeneralSettingsPreview(read.operationId(), "backend-a",
                     Map.<String, Object>of("UnknownSetting", true)));
             assertValidation(() -> fixture.operations.createGeneralSettingsPreview(read.operationId(), "backend-a",
-                    Map.<String, Object>of("ProcessRewards", "false")));
+                    Map.<String, Object>of("CountFakeVotes", "false")));
             assertValidation(() -> fixture.operations.createGeneralSettingsPreview(read.operationId(), "backend-a",
-                    Map.<String, Object>of("DisableUpdateChecking", false)));
+                    Map.<String, Object>of("CheckForUpdates", false)));
             assertValidation(() -> fixture.operations.createGeneralSettingsPreview(read.operationId(), "backend-a",
-                    Map.<String, Object>of("ExtraAllSitesCheck", false)));
+                    Map.<String, Object>of("AutoCreateVoteSites", false)));
         }
     }
 
     @Test void rejectsUnsupportedCapabilityProxyTargetAndReconnectedReadTarget() throws Exception {
         try (Fixture fixture = fixture("backend-a")) {
-            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "ProcessRewards: true\n", revision('a'));
+            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "CountFakeVotes: true\n", revision('a'));
             fixture.registry.heartbeat("backend-a", new Heartbeat(fixture.session("backend-a"), 1, Set.of(), Set.of()));
             assertEquals("NODE_UNAVAILABLE", assertThrows(ValidationException.class,
                     () -> fixture.operations.generalSettingsState(read.operationId(), "backend-a")).code());
         }
         try (Fixture fixture = fixture("proxy-a")) {
-            assertEquals("INVALID_TARGET", assertThrows(ValidationException.class,
+            assertEquals("NODE_UNAVAILABLE", assertThrows(ValidationException.class,
                     () -> fixture.operations.createRead(List.of("proxy-a"), ManagedConfiguration.file("Config.yml", null))).code());
         }
         try (Fixture fixture = fixture("backend-a")) {
-            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "ProcessRewards: true\n", revision('a'));
+            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "CountFakeVotes: true\n", revision('a'));
             UUID replacement = UUID.randomUUID();
             fixture.registry.register(new NodeRegistration("backend-a", replacement, "backend-a", "BUKKIT", "test", 1,
                     Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
@@ -233,11 +233,31 @@ class GeneralSettingsOperationsTest {
         }
     }
 
+    @Test void proxyGeneralSettingsUseBungeeConfigAndTypedMappings() throws Exception {
+        try (Fixture fixture = fixture("proxy-a")) {
+            String document = "Debug: false\nOnlineMode: true\nAllowUnJoined: false\nBedrockPlayerPrefix: '.'\n";
+            ConfigurationOperations.OperationView read = fixture.operations.createRead(List.of("proxy-a"),
+                    ManagedConfiguration.file("bungeeconfig.yml", null));
+            read = completeFileRead(fixture, read, "proxy-a", document, revision('a'), "bungeeconfig.yml");
+            ConfigurationOperations.SettingsState state = fixture.operations.generalSettingsState(read.operationId(),
+                    "proxy-a");
+            assertEquals(GeneralSettingsDocument.Profile.PROXY, state.profile());
+            assertEquals("NONE", state.fields().get("Debug").value());
+            ConfigurationOperations.OperationView preview = fixture.operations.createGeneralSettingsPreview(
+                    read.operationId(), "proxy-a", Map.of("Debug", "INFO", "AllowUnjoined", true));
+            ConfigurationTask task = fixture.operations.claim("proxy-a", fixture.session("proxy-a"));
+            assertEquals("bungeeconfig.yml", task.configuration().fileName());
+            assertEquals("Debug: true\nOnlineMode: true\nAllowUnJoined: true\nBedrockPlayerPrefix: '.'\n",
+                    task.configuration().content());
+            complete(fixture, preview.operationId(), "proxy-a", task, revision('a'));
+        }
+    }
+
     @Test void stalePreviewRevisionCannotBeApprovedForApply() throws Exception {
         try (Fixture fixture = fixture("backend-a")) {
-            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "ProcessRewards: true\n", revision('a'));
+            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "CountFakeVotes: true\n", revision('a'));
             ConfigurationOperations.OperationView preview = fixture.operations.createGeneralSettingsPreview(
-                    read.operationId(), "backend-a", Map.of("ProcessRewards", false));
+                    read.operationId(), "backend-a", Map.of("CountFakeVotes", false));
             ConfigurationTask task = fixture.operations.claim("backend-a", fixture.session("backend-a"));
             assertEquals(revision('a'), task.expectedRevision());
             preview = complete(fixture, preview.operationId(), "backend-a", task, revision('b'));
@@ -253,11 +273,11 @@ class GeneralSettingsOperationsTest {
     @Test void boundPreviewCreatesExactSingleUseRevisionBoundApply() throws Exception {
         try (Fixture fixture = fixture("backend-a")) {
             ConfigurationOperations.OperationView read = read(fixture, "backend-a",
-                    "# retain\nProcessRewards: true\nUnknown: value\n", revision('a'));
+                    "# retain\nCountFakeVotes: true\nUnknown: value\n", revision('a'));
             ConfigurationOperations.OperationView preview = fixture.operations.createGeneralSettingsPreview(
-                    read.operationId(), "backend-a", Map.of("ProcessRewards", false));
+                    read.operationId(), "backend-a", Map.of("CountFakeVotes", false));
             ConfigurationTask previewTask = fixture.operations.claim("backend-a", fixture.session("backend-a"));
-            String proposal = "# retain\nProcessRewards: false\nUnknown: value\n";
+            String proposal = "# retain\nCountFakeVotes: false\nUnknown: value\n";
             assertEquals(proposal, previewTask.configuration().content());
             preview = complete(fixture, preview.operationId(), "backend-a", previewTask, revision('a'));
             assertNotNull(preview.approvalToken());
@@ -279,9 +299,9 @@ class GeneralSettingsOperationsTest {
 
     @Test void pendingBoundPreviewIsNotEvictedByFileRetention() throws Exception {
         try (Fixture fixture = fixture("backend-a")) {
-            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "ProcessRewards: true\n", revision('a'));
+            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "CountFakeVotes: true\n", revision('a'));
             ConfigurationOperations.OperationView bound = fixture.operations.createGeneralSettingsPreview(
-                    read.operationId(), "backend-a", Map.of("ProcessRewards", false));
+                    read.operationId(), "backend-a", Map.of("CountFakeVotes", false));
             ConfigurationTask boundTask = fixture.operations.claim("backend-a", fixture.session("backend-a"));
             bound = complete(fixture, bound.operationId(), "backend-a", boundTask, revision('a'));
             UUID protectedId = bound.operationId();
@@ -301,9 +321,9 @@ class GeneralSettingsOperationsTest {
 
     @Test void abandonedVisualApprovalIsRevokedWithoutSchedulingAWriteAndCanBeEvicted() throws Exception {
         try (Fixture fixture = fixture("backend-a")) {
-            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "ProcessRewards: true\n", revision('a'));
+            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "CountFakeVotes: true\n", revision('a'));
             ConfigurationOperations.OperationView preview = fixture.operations.createGeneralSettingsPreview(
-                    read.operationId(), "backend-a", Map.of("ProcessRewards", false));
+                    read.operationId(), "backend-a", Map.of("CountFakeVotes", false));
             ConfigurationTask task = fixture.operations.claim("backend-a", fixture.session("backend-a"));
             preview = complete(fixture, preview.operationId(), "backend-a", task, revision('a'));
             UUID id = preview.operationId(); String token = preview.approvalToken();
@@ -314,7 +334,7 @@ class GeneralSettingsOperationsTest {
             assertNull(fixture.operations.claim("backend-a", fixture.session("backend-a")));
             assertEquals("APPROVAL_REQUIRED", assertThrows(ValidationException.class,
                     () -> fixture.operations.createApply(id, token)).code());
-            for (int index = 0; index < 17; index++) read(fixture, "backend-a", "ProcessRewards: true\n", revision('a'));
+            for (int index = 0; index < 17; index++) read(fixture, "backend-a", "CountFakeVotes: true\n", revision('a'));
             assertEquals("OPERATION_NOT_FOUND", assertThrows(ValidationException.class,
                     () -> fixture.operations.get(id)).code());
         }
@@ -322,9 +342,9 @@ class GeneralSettingsOperationsTest {
 
     @Test void staleVisualPreviewCannotBeRetriedWithAnOldDocumentAtANewRevision() throws Exception {
         try (Fixture fixture = fixture("backend-a")) {
-            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "ProcessRewards: true\n", revision('a'));
+            ConfigurationOperations.OperationView read = read(fixture, "backend-a", "CountFakeVotes: true\n", revision('a'));
             ConfigurationOperations.OperationView preview = fixture.operations.createGeneralSettingsPreview(
-                    read.operationId(), "backend-a", Map.of("ProcessRewards", false));
+                    read.operationId(), "backend-a", Map.of("CountFakeVotes", false));
             ConfigurationTask task = fixture.operations.claim("backend-a", fixture.session("backend-a"));
             complete(fixture, preview.operationId(), "backend-a", task, revision('b'));
             UUID id = preview.operationId();
@@ -340,9 +360,9 @@ class GeneralSettingsOperationsTest {
         Fixture fixture = fixture(journalDirectory, auditDirectory, "backend-a");
         try {
             ConfigurationOperations.OperationView read = read(fixture, "backend-a",
-                    "ProcessRewards: true\nUnknownSecret: " + secret + "\n", revision('a'));
+                    "CountFakeVotes: true\nUnknownSecret: " + secret + "\n", revision('a'));
             ConfigurationOperations.OperationView preview = fixture.operations.createGeneralSettingsPreview(
-                    read.operationId(), "backend-a", Map.of("ProcessRewards", false));
+                    read.operationId(), "backend-a", Map.of("CountFakeVotes", false));
             ConfigurationTask task = fixture.operations.claim("backend-a", fixture.session("backend-a"));
             complete(fixture, preview.operationId(), "backend-a", task, revision('b'));
         } finally {
@@ -396,7 +416,8 @@ class GeneralSettingsOperationsTest {
         for (String nodeId : nodeIds) {
             String platform = nodeId.startsWith("proxy") ? "VELOCITY" : "BUKKIT";
             registry.register(new NodeRegistration(nodeId, UUID.randomUUID(), nodeId, platform, "test", 1,
-                    Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+                    Set.of(platform.equals("BUKKIT") ? ConfigurationOperations.FILE_CAPABILITY
+                            : ConfigurationOperations.PROXY_FILE_CAPABILITY), Set.of()));
         }
         Path auditRoot = auditDirectory == null ? directory.resolve(UUID.randomUUID().toString()) : auditDirectory;
         ConfigurationAuditLog audit = new ConfigurationAuditLog(auditRoot, CLOCK);

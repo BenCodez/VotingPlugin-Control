@@ -293,8 +293,11 @@ Control and VotingPlugin both enforce fixed quick-setup preset/option schemas; u
 than becoming arbitrary YAML writes. The WebUI settings catalog is a static versioned reference over these typed paths,
 not a generic setting API.
 
-Opening Settings automatically reads current configuration; errors expose inline Retry. The Phase 2 General Settings visual
-editor reads **each** selected workspace backend and previews only explicitly changed fields independently per target.
+Opening Settings automatically reads current configuration; errors expose inline Retry. The General Settings visual
+editor reads **each** selected workspace backend plus reporting managed proxies, using `Config.yml` and
+`bungeeconfig.yml` respectively. It previews only explicitly changed allowlisted boolean, enum, and bounded-string
+fields independently per target. Network-aware controls keep per-node values visible, and proxy-managed
+`AllowUnjoined` repairs backend prerequisites without changing the proxy's effective preference.
 The Phase 3 [Vote Sites visual editor](docs/webui-vote-sites.md) likewise reads each selected backend's main
 `VoteSites.yml`, distinguishes mixed/partial/error states, and uses source-preserving per-target add/edit/remove previews.
 Successful applies invalidate cached values and read the confirmed state again. Legacy guided forms and raw YAML retain

@@ -1104,7 +1104,7 @@ class ControlHttpServerTest {
         String readId = read.get("operationId").asText();
         JsonNode task = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
                 "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
-        String content = "# preserve me\nProcessRewards: false\nAutoCreateVoteSites: false\nDatabase:\n  Password: '<redacted>'\nUnknown: server-local\n";
+        String content = "# preserve me\nCountFakeVotes: false\nAutoCreateVoteSites: false\nDatabase:\n  Password: '<redacted>'\nUnknown: server-local\n";
         Map<String, Object> result = Map.of("sessionId", SESSION, "success", true, "code", "OK", "message", "Read",
                 "revision", "a".repeat(64), "configuration", Map.of("domain", "file", "fileName", "Config.yml", "content", content),
                 "changes", java.util.List.of(), "reloaded", false, "rolledBack", false, "attemptId", task.get("attemptId").asText());
@@ -1116,17 +1116,17 @@ class ControlHttpServerTest {
         assertFalse(typed.body().contains("Password"));
         assertFalse(typed.body().contains("server-local"));
         JsonNode fields = json.readTree(typed.body()).get("fields");
-        assertFalse(fields.get("ProcessRewards").get("value").asBoolean());
-        assertEquals("MISSING", fields.get("CountFakeVotes").get("status").asText());
+        assertFalse(fields.get("CountFakeVotes").get("value").asBoolean());
+        assertEquals("MISSING", fields.get("GiveDefaultPermission").get("status").asText());
         String previewBody = json.writeValueAsString(Map.of("readOperationId", readId, "nodeId", "proxy-a",
-                "overrides", Map.of("ProcessRewards", true)));
+                "overrides", Map.of("CountFakeVotes", true)));
         HttpResponse<String> preview = send("POST", "/api/v1/configuration/general-settings/preview", previewBody, adminToken);
         assertEquals(202, preview.statusCode());
         assertFalse(preview.body().contains("server-local"));
         JsonNode previewTask = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
                 "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
         assertEquals("a".repeat(64), previewTask.get("expectedRevision").asText());
-        assertEquals(content.replace("ProcessRewards: false", "ProcessRewards: true"),
+        assertEquals(content.replace("CountFakeVotes: false", "CountFakeVotes: true"),
                 previewTask.get("configuration").get("content").asText());
         assertError(send("POST", "/api/v1/configuration/general-settings/preview",
                 previewBody.replace("true", "\"true\""), adminToken), 400, "VALIDATION_ERROR");
