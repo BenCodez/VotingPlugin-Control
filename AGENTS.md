@@ -162,6 +162,7 @@ new Control behavior in production.
   capability where relevant.
 - For WebUI changes, escape untrusted text through DOM text nodes, clear sensitive/cached state and form inputs on logout,
   reset dependent control state, keep CSRF on every write, and run `node --check`.
+- Keep the root README feature overview current: every PR that adds, removes, renames, or materially changes a user-facing feature, workflow, supported integration, deployment capability, diagnostic, configuration editor, or security behavior must review `README.md`'s `## Features` section and update the relevant bullets in the same PR. Do not list planned-only behavior as an available feature. If the PR does not require a feature-list change, explicitly verify that the existing list remains accurate.
 - Run the full Maven suite and inspect `git diff --check` before pushing.
 - Keep the PR scoped; never mix generated artifacts, credentials, runtime `data/`, or unrelated formatting changes.
 
