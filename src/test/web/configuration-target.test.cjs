@@ -64,7 +64,7 @@ test('Full YAML target picker lists only connected capable backends and proxies'
   vm.runInContext([declaration('configurationTargetNodes'), declaration('renderConfigurationTargetPicker')].join('\n'), context);
   vm.runInContext('renderConfigurationTargetPicker()', context);
 
-  assert.deepEqual(configurationTarget.children.map(option => option.value), ['', 'backend', 'proxy']);
+  assert.deepEqual(configurationTarget.children.map(option => option.value), ['', 'backend', 'rewards', 'proxy']);
   assert.equal(configurationTarget.value, 'proxy');
   assert.equal(configurationTarget.disabled, false);
 });
@@ -86,6 +86,33 @@ test('Full YAML explicit target remains operable outside the backend workspace',
   context.selectedServerId = 'backend';
   assert.deepEqual([...vm.runInContext("fileTargetsForSelection('Config.yml')", context)], ['backend']);
   assert.deepEqual([...vm.runInContext("fileTargetsForSelection('Rewards/StandardVote.yml')", context)], ['backend']);
+});
+
+test('switching only the Full YAML target keeps the selected named reward file option', () => {
+  const staticOption = {value: 'Config.yml', dataset: {}, remove() { throw new Error('must retain static option'); }};
+  const selectedReward = {value: 'Rewards/Private.yml', dataset: {sessionRewardFile: 'true'},
+    remove() { configurationFile.options = configurationFile.options.filter(option => option !== this); }};
+  const otherReward = {value: 'Rewards/Other.yml', dataset: {sessionRewardFile: 'true'},
+    remove() { configurationFile.options = configurationFile.options.filter(option => option !== this); }};
+  const configurationFile = {value: selectedReward.value, options: [staticOption, selectedReward, otherReward]};
+  const context = {configurationFile, configurationFileSelection: selectedReward.value};
+  vm.createContext(context);
+  vm.runInContext(declaration('clearSessionRewardFileOptions'), context);
+
+  vm.runInContext('clearSessionRewardFileOptions(true)', context);
+
+  assert.deepEqual(configurationFile.options, [staticOption, selectedReward]);
+  assert.equal(configurationFile.value, 'Rewards/Private.yml');
+  assert.equal(context.configurationFileSelection, 'Rewards/Private.yml');
+  assert.match(source, /let preserveSelectedRewardFileOnTargetChange = false;/);
+  assert.match(source, /resetServerContextValues\('Server changed\. Load current values before continuing\.', false,\s*preserveSelectedRewardFileOnTargetChange\)/);
+  assert.match(source, /preserveSelectedRewardFileOnTargetChange = true;\s*try \{\s*if \(!selectPrimaryServer\(configurationTarget\.value\)\)/);
+  assert.match(source, /finally \{\s*preserveSelectedRewardFileOnTargetChange = false;/);
+});
+
+test('Full YAML toolbar wraps the source row before sidebar widths clip its controls', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../../main/resources/web/app.css'), 'utf8');
+  assert.match(css, /@media \(max-width: 1100px\) and \(min-width: 641px\) \{\s*\.editor-toolbar \{ grid-template-columns: auto minmax\(180px, 1fr\) auto minmax\(180px, 1fr\); \}\s*\.editor-toolbar > span \{ grid-column: 1 \/ -1; justify-self: start; \}/);
 });
 
 test('configuration workspace exposes truthful proxy, reward-file, and detected-site entry points', () => {

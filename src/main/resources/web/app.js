@@ -1963,11 +1963,12 @@ function confirmDiscardWorkspaceDrafts(context) {
   return true;
 }
 
-function clearSessionRewardFileOptions() {
+function clearSessionRewardFileOptions(preserveSelected = false) {
   const selected = configurationFile.value;
   let removedSelected = false;
   for (const option of [...(configurationFile.options || [])]) {
     if (option.dataset?.sessionRewardFile !== 'true') continue;
+    if (preserveSelected && option.value === selected) continue;
     removedSelected ||= option.value === selected;
     option.remove();
   }
@@ -2121,7 +2122,8 @@ function renderServerPicker() {
 function configurationTargetNodes() {
   return allNodeItems.filter(node => node.online && (isProxy(node)
     ? node.acceptedCapabilities.includes('config.proxy-files.v1')
-    : isBackend(node) && node.acceptedCapabilities.includes('config.files.v1')))
+    : isBackend(node) && (node.acceptedCapabilities.includes('config.files.v1')
+      || node.acceptedCapabilities.includes('config.reward-files.v1'))))
     .sort((left, right) => Number(isProxy(left)) - Number(isProxy(right))
       || left.displayName.localeCompare(right.displayName));
 }
@@ -3310,8 +3312,8 @@ function invalidateGuidedSetupReads() {
   });
 }
 
-function resetServerContextValues(reason, preserveDirtyDrafts = false) {
-  if (!preserveDirtyDrafts || !configurationDirty) clearSessionRewardFileOptions();
+function resetServerContextValues(reason, preserveDirtyDrafts = false, preserveSelectedRewardFile = false) {
+  if (!preserveDirtyDrafts || !configurationDirty) clearSessionRewardFileOptions(preserveSelectedRewardFile);
   dedicatedSetupApprovals.clear();
   pendingDetectedVoteSite = null;
   lastFileReadOperation = null;
@@ -3360,6 +3362,8 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   renderMetrics();
 }
 
+let preserveSelectedRewardFileOnTargetChange = false;
+
 function selectPrimaryServer(nodeId) {
   if (nodeId && !nodeIndex.has(nodeId)) return false;
   if (nodeId && nodeId === selectedServerId) {
@@ -3374,7 +3378,8 @@ function selectPrimaryServer(nodeId) {
   workspace.inspect(nodeId);
   serverPicker.value = nodeId;
   selectedNodes = new Set(nodeId ? [nodeId] : []);
-  resetServerContextValues('Server changed. Load current values before continuing.');
+  resetServerContextValues('Server changed. Load current values before continuing.', false,
+    preserveSelectedRewardFileOnTargetChange);
   updatePluginSuggestions();
   renderNodeViews();
   void autoLoadTab(tabFromHash());
@@ -5891,7 +5896,12 @@ quickPreset.addEventListener('input', () => {
 });
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
 configurationTarget.addEventListener('change', () => {
-  if (!selectPrimaryServer(configurationTarget.value)) configurationTarget.value = selectedServerId;
+  preserveSelectedRewardFileOnTargetChange = true;
+  try {
+    if (!selectPrimaryServer(configurationTarget.value)) configurationTarget.value = selectedServerId;
+  } finally {
+    preserveSelectedRewardFileOnTargetChange = false;
+  }
 });
 homeSearch.addEventListener('input', renderHomeChooser);
 document.querySelector('#home-refresh').addEventListener('click', () => loadNodes());
