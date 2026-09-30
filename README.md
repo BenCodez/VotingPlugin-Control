@@ -27,7 +27,7 @@ VotingPlugin Control is designed to manage and troubleshoot a VotingPlugin netwo
 ### Configuration
 
 - Edit VotingPlugin's supported YAML files from the WebUI.
-- Use **Full YAML** editing for advanced settings while automatically hiding known passwords, tokens, and other secrets.
+- Use **Full YAML** editing for advanced settings while automatically hiding known passwords, tokens, and other secrets. Its node selector is independent of the workspace source and preserves guided setup drafts.
 - Edit **General Settings** with a simple visual editor.
 - Add, edit, and remove **Vote Sites** with a visual editor.
 - Edit inline Vote Site rewards and supported named **Rewards/*.yml** files.

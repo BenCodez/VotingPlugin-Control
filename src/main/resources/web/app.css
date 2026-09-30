@@ -179,13 +179,14 @@ p { line-height: 1.55; }
 .setting-icon { display: grid; width: 39px; height: 39px; margin-bottom: 16px; place-items: center; border: 1px solid #37628d; border-radius: 10px; background: var(--blue-soft); color: #a9d4ff; font-size: 1.1rem; }
 .editor-card { padding: 0; overflow: hidden; }
 .editor-card > .section-title { padding: 21px 22px 17px; border-bottom: 1px solid var(--border); }
-.editor-toolbar { display: grid; grid-template-columns: auto minmax(180px, 280px) auto minmax(180px, 280px) 1fr; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border); background: #091421; }
+.editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border); background: #091421; }
+.editor-field { display: flex; flex: 1 1 320px; flex-wrap: wrap; align-items: center; gap: 12px; min-width: 0; }
 .editor-toolbar label { margin: 0; }
-.editor-toolbar select { margin: 0; }
-.editor-toolbar > span { justify-self: end; color: var(--muted); font-size: .78rem; }
-.yaml-search-toolbar { display: grid; grid-template-columns: auto minmax(180px, 340px) auto auto 1fr auto; align-items: center; gap: 9px; padding: 10px 18px; border-bottom: 1px solid var(--border); background: #0b1726; }
+.editor-toolbar select { flex: 1 1 180px; min-width: 0; max-width: 100%; margin: 0; }
+.editor-toolbar > span { flex: 1 1 100%; overflow-wrap: anywhere; color: var(--muted); font-size: .78rem; }
+.yaml-search-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 10px 18px; border-bottom: 1px solid var(--border); background: #0b1726; }
 .yaml-search-toolbar label { margin: 0; }
-.yaml-search-toolbar input { margin: 0; }
+.yaml-search-toolbar input { flex: 1 1 180px; min-width: 0; max-width: 100%; margin: 0; }
 .yaml-search-toolbar output { color: var(--muted); font-size: .78rem; }
 .yaml-workbench { display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 520px; overflow: hidden; background: #050c16; }
 .yaml-line-numbers { min-width: 54px; height: 520px; margin: 0; padding: 20px 12px; overflow: hidden; border-right: 1px solid var(--border); background: #08111d; color: #62748a; text-align: right; user-select: none; font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: .88rem; line-height: 1.55; }
@@ -288,11 +289,6 @@ li span { color: var(--muted); font-size: .9rem; }
   .topology-row { grid-template-columns: 1fr; }
 }
 
-@media (max-width: 1100px) and (min-width: 641px) {
-  .editor-toolbar { grid-template-columns: auto minmax(180px, 1fr) auto minmax(180px, 1fr); }
-  .editor-toolbar > span { grid-column: 1 / -1; justify-self: start; }
-}
-
 @media (max-width: 640px) {
   .topbar { padding: 12px 14px; }
   .brand { margin-right: auto; }
@@ -312,10 +308,9 @@ li span { color: var(--muted); font-size: .9rem; }
   .metrics, .settings-grid, .feature-grid, .checklist { grid-template-columns: 1fr; }
   .metrics article { min-height: 92px; }
   .subtabs button { padding-inline: 8px; }
-  .editor-toolbar { grid-template-columns: 1fr; }
-  .editor-toolbar > span { justify-self: start; }
-  .yaml-search-toolbar { grid-template-columns: 1fr 1fr; }
-  .yaml-search-toolbar label, .yaml-search-toolbar input, .yaml-search-toolbar output { grid-column: 1 / -1; }
+  .editor-field { flex-basis: 100%; flex-direction: column; align-items: stretch; }
+  .editor-toolbar select { flex-basis: auto; width: 100%; }
+  .yaml-search-toolbar label, .yaml-search-toolbar input, .yaml-search-toolbar output { flex-basis: 100%; }
   .yaml-workbench { min-height: 420px; }
   .yaml-line-numbers { height: 420px; min-width: 46px; padding: 16px 9px; }
   .yaml-editor { height: 420px; min-height: 420px; padding: 16px; }

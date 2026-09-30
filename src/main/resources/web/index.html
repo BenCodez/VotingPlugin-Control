@@ -343,18 +343,22 @@
             </div>
             <form id="file-configuration-form">
               <div class="editor-toolbar">
-                <label for="configuration-target">Target node</label>
-                <select id="configuration-target"><option value="">Choose a connected backend or proxy</option></select>
-                <label for="configuration-file">Configuration file</label>
-                <select id="configuration-file">
-                  <option>Config.yml</option>
-                  <option>VoteSites.yml</option>
-                  <option>SpecialRewards.yml</option>
-                  <option>GUI.yml</option>
-                  <option>Shop.yml</option>
-                  <option>BungeeSettings.yml</option>
-                  <option value="bungeeconfig.yml">bungeeconfig.yml (proxy)</option>
-                </select>
+                <div class="editor-field">
+                  <label for="configuration-target">Target node</label>
+                  <select id="configuration-target"><option value="">Choose a connected backend or proxy</option></select>
+                </div>
+                <div class="editor-field">
+                  <label for="configuration-file">Configuration file</label>
+                  <select id="configuration-file">
+                    <option>Config.yml</option>
+                    <option>VoteSites.yml</option>
+                    <option>SpecialRewards.yml</option>
+                    <option>GUI.yml</option>
+                    <option>Shop.yml</option>
+                    <option>BungeeSettings.yml</option>
+                    <option value="bungeeconfig.yml">bungeeconfig.yml (proxy)</option>
+                  </select>
+                </div>
                 <span id="yaml-editor-source">No document loaded</span>
               </div>
               <div class="yaml-search-toolbar" role="search">

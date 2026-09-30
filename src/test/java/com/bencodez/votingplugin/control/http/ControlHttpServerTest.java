@@ -479,7 +479,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains(
                 "resetServerContextValues('A selected server reconnected. Load current values before continuing.', true);"));
         assertTrue(script.body().contains(
-                "configurationContent.addEventListener('input', () => {\n  if (!configurationDirty) {\n    configurationDraftNodeId = selectedServerId;"));
+                "configurationContent.addEventListener('input', () => {\n  if (!configurationDirty) {\n    configurationDraftNodeId = selectedConfigurationNodeId();"));
         assertTrue(script.body().contains("quickPresetNeedsRead() && !quickSetupValuesLoaded()"));
         assertFalse(script.body().contains("quickPresetReadable() && !loadedQuickSetup"),
                 "Quick-setup autoload must re-read when the loaded vote-site selector changes.");
