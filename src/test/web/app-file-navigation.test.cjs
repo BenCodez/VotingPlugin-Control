@@ -42,6 +42,7 @@ function harness(dirty = false) {
     updateEditorPosition() {}, syncYamlEditorView() {}, clearApprovals() {}, updateExtendedButtons() {},
     text(element, value) { element.textContent = value; },
     autoLoadTab(tab) { reads.push(tab); },
+    selectWorkspaceYamlTarget: () => true,
     setActiveTab() {}, setConfigView() {}
   };
   vm.createContext(context);

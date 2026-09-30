@@ -431,6 +431,17 @@ configured site's `ServiceSite`; its separate truncation flag reports overflow. 
 VoteLogging is disabled and when automatic site creation is turned off. It is an inbox for review, not an automatic create
 or approval action.
 
+VotingPlugin stores that observation list at `VotingPlugin.GottenServiceSites` in `ServerData.yml`. Control reads it only
+through the bounded inspection capability. The Vote Sites page and health results can copy one observed service into the
+existing `vote-site` preset; the administrator must finish its fields and complete READ/PREVIEW/APPROVE/APPLY before the
+site is created.
+
+The Full YAML workbench has its own explicit single connected-node selector, independent of the multi-backend workspace
+target set. Bukkit targets expose the fixed managed files and
+existing named `Rewards/*.yml` files through their respective capabilities; proxy targets expose only the complete
+`bungeeconfig.yml`. Named reward files are discovered by the Rewards inventory and opened in the same source-preserving,
+redacted editor. The selector never grants arbitrary path access.
+
 The dedicated `vote-logging` quick setup owns only `VoteLogging.Enabled`, `VoteLogging.PurgeDays` (`-1` disables automatic
 purging, otherwise `1`–`3650`; `0` and other negatives are invalid), and `VoteLogging.UseMainMySQL`. It rejects unknown
 options and never accepts or returns database connection fields or credentials. Its READ form takes no options and
