@@ -71,6 +71,20 @@ class GeneralSettingsDocumentTest {
                 GeneralSettingsDocument.patch(content, Map.of("CountFakeVotes", false)));
     }
 
+    @Test void blockScalarsAreNotTypedEditableBecauseTheirSpanIncludesTheLineSeparator() {
+        String literal = "BedrockPlayerPrefix: |-\n  .\nOnlineMode: true\n";
+        String folded = "BedrockPlayerPrefix: >-\n  .\nOnlineMode: true\n";
+        assertEquals(GeneralSettingsDocument.Status.UNSUPPORTED,
+                GeneralSettingsDocument.fields(literal).get("BedrockPlayerPrefix").status());
+        assertEquals(GeneralSettingsDocument.Status.UNSUPPORTED,
+                GeneralSettingsDocument.fields(folded).get("BedrockPlayerPrefix").status());
+        assertThrows(IllegalArgumentException.class,
+                () -> GeneralSettingsDocument.patch(literal, Map.of("BedrockPlayerPrefix", "_")));
+        assertThrows(IllegalArgumentException.class,
+                () -> GeneralSettingsDocument.patch(folded, Map.of("BedrockPlayerPrefix", "_")));
+        assertEquals(true, GeneralSettingsDocument.fields(literal).get("OnlineMode").value());
+    }
+
     @Test void rejectsAliasDuplicateMultipleInvalidAndOversizedDocuments() {
         String anchored = "CountFakeVotes: &shared true\nOther: *shared\n";
         assertEquals(GeneralSettingsDocument.Status.UNSUPPORTED,

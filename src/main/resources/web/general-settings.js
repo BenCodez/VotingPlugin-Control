@@ -46,7 +46,7 @@
       return {id: target.id, sessionId: target.sessionId, fileName: target.fileName || 'Config.yml',
         platform: target.platform, role: target.role, managedByProxy: target.managedByProxy,
         reportingProxyIds: target.reportingProxyIds,
-        networkIncomplete: target.networkIncomplete};
+        networkIncomplete: target.networkIncomplete, networkOnly: target.networkOnly};
     })); }
     function readBatchCount() {
       const byFile = new Map();

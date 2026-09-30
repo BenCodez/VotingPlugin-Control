@@ -6484,25 +6484,42 @@ const GENERAL_SETTING_FIELDS = [
 function generalSettingsContext() {
   return JSON.stringify([authenticated, authenticationGeneration, workspace.managementScope,
     generalSettingsTargets().map(target => [target.id, target.sessionId, target.fileName, target.online,
-      target.supported, target.managedByProxy, target.reportingProxyIds, target.networkIncomplete])]);
+      target.supported, target.managedByProxy, target.reportingProxyIds, target.networkIncomplete, target.networkOnly])]);
 }
 
 function generalSettingsTargets() {
   if (workspace.managementScope === 'GLOBAL' || !authenticated) return [];
   const ids = new Set([...workspace.selectedTargetIds]);
-  const selectedBackends = [...ids].filter(id => isBackend(nodeIndex.get(id)));
+  const directlyManagedIds = new Set(ids);
   const backendReporters = new Map();
-  allNodeItems.filter(isProxy).forEach(proxy => {
+  const proxies = allNodeItems.filter(isProxy);
+  proxies.forEach(proxy => {
     const reports = Array.isArray(proxy.backends) ? proxy.backends : [];
     reports.forEach(report => {
       if (!backendReporters.has(report.backendId)) backendReporters.set(report.backendId, new Set());
       backendReporters.get(report.backendId).add(proxy.nodeId);
     });
-    if (reports.some(report => selectedBackends.includes(report.backendId))) ids.add(proxy.nodeId);
+    if (reports.some(report => directlyManagedIds.has(report.backendId))) directlyManagedIds.add(proxy.nodeId);
   });
+  // Network-aware fields must include the complete known proxy/backend group.
+  // Keep expanding because a backend may legitimately be reported by more than
+  // one managed proxy. Missing/offline siblings stay in the result so preview
+  // can expose and acknowledge exclusions instead of silently omitting them.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    proxies.forEach(proxy => {
+      const reports = Array.isArray(proxy.backends) ? proxy.backends : [];
+      if (!ids.has(proxy.nodeId) && !reports.some(report => ids.has(report.backendId))) return;
+      if (!ids.has(proxy.nodeId)) { ids.add(proxy.nodeId); changed = true; }
+      reports.forEach(report => {
+        if (!ids.has(report.backendId)) { ids.add(report.backendId); changed = true; }
+      });
+    });
+  }
   return [...ids].map(id => {
     const node = nodeIndex.get(id);
-    const proxy = isProxy(node);
+    const proxy = node ? isProxy(node) : false;
     return {id, sessionId: node?.sessionId || '', online: node?.online === true,
       fileName: proxy ? 'bungeeconfig.yml' : 'Config.yml', platform: node?.platform || '',
       role: proxy ? 'PROXY' : 'BACKEND',
@@ -6519,6 +6536,7 @@ function generalSettingsTargets() {
           return reporter?.online !== true
             || reporter?.acceptedCapabilities?.includes('config.proxy-files.v1') !== true;
         }),
+      networkOnly: !directlyManagedIds.has(id),
       supported: proxy ? node?.acceptedCapabilities?.includes('config.proxy-files.v1') === true
         : isBackend(node) && node?.acceptedCapabilities?.includes('config.files.v1') === true};
   });
@@ -6527,7 +6545,8 @@ function generalSettingsTargets() {
 function settingValueLabel(value) {
   if (value === true) return 'On';
   if (value === false) return 'Off';
-  if (value === undefined || value === null || value === '') return 'Unavailable';
+  if (value === undefined || value === null) return 'Unavailable';
+  if (value === '') return 'Empty';
   return String(value);
 }
 

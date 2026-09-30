@@ -91,6 +91,7 @@ function harness() {
     selectedServerId: '',
     nodeIndex: new Map(),
     nodeCapabilities: new Map(),
+    backendTopologyTruncatedNodeIds: new Set(),
     selectedNodes: new Set(['stale']),
     voteSitesTargetIds: new Set(['stale']),
     fileReadCache: new Map([['stale', {}]]),
@@ -142,7 +143,8 @@ function harness() {
   const names = ['text', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
     'friendlyCapability', 'managedCapabilities', 'proxyReportsFor', 'backendCard', 'nodePresence', 'nodeCard',
     'ordinaryTargetIds', 'comparisonTargetIds', 'confirmDiscardWorkspaceDrafts', 'changeWorkspaceTargets',
-    'inspectWorkspaceServer', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation'];
+    'inspectWorkspaceServer', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation',
+    'generalSettingsTargets', 'settingValueLabel'];
   vm.runInContext(names.map(declaration).join('\n'), context, {filename: 'app-workspace-helpers.js'});
   return context;
 }
@@ -250,6 +252,45 @@ test('comparisonTargetIds keeps only selected readable online Bukkit backends', 
   context.nodeCapabilities.set('proxy', ['config.files.v1']);
   context.nodeCapabilities.set('unsupported', ['config.quick-setup.v1']);
   assert.deepEqual([...run(context, 'comparisonTargetIds()')], ['readable']);
+});
+
+test('General Settings expands a selected managed node to every known proxy sibling', () => {
+  const context = harness();
+  context.authenticated = true;
+  const backendA = {...backend('backend-a'), sessionId: 'a', acceptedCapabilities: ['config.files.v1']};
+  const backendB = {...backend('backend-b'), sessionId: 'b', acceptedCapabilities: ['config.files.v1']};
+  const backendOffline = {...backend('backend-offline', false), sessionId: 'c', acceptedCapabilities: ['config.files.v1']};
+  const networkProxy = {...proxy('proxy'), sessionId: 'p', acceptedCapabilities: ['config.proxy-files.v1'],
+    backends: [{backendId: 'backend-a'}, {backendId: 'backend-b'}, {backendId: 'backend-offline'},
+      {backendId: 'not-enrolled'}]};
+  for (const node of [backendA, backendB, backendOffline, networkProxy]) {
+    context.nodeIndex.set(node.nodeId, node);
+    context.allNodeItems.push(node);
+  }
+  context.workspace.setTargets(['backend-a']);
+  const targets = run(context, 'generalSettingsTargets()');
+  assert.deepEqual([...targets.map(target => target.id)],
+    ['backend-a', 'proxy', 'backend-b', 'backend-offline', 'not-enrolled']);
+  assert.equal(targets.find(target => target.id === 'backend-b').managedByProxy, true);
+  assert.equal(targets.find(target => target.id === 'backend-b').networkOnly, true);
+  assert.equal(targets.find(target => target.id === 'proxy').networkOnly, false);
+  assert.equal(targets.find(target => target.id === 'backend-offline').online, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(targets.find(target => target.id === 'not-enrolled'))), {
+    id: 'not-enrolled', sessionId: '', online: false, fileName: 'Config.yml', platform: '', role: 'BACKEND',
+    managedByProxy: true, reportingProxyIds: ['proxy'], networkIncomplete: false, networkOnly: true,
+    supported: false
+  });
+  assert.equal(targets.find(target => target.id === 'proxy').fileName, 'bungeeconfig.yml');
+
+  context.workspace.setTargets(['proxy']);
+  assert.deepEqual([...run(context, 'generalSettingsTargets()').map(target => target.id)],
+    ['proxy', 'backend-a', 'backend-b', 'backend-offline', 'not-enrolled']);
+});
+
+test('General Settings renders an empty Bedrock prefix as a real value', () => {
+  const context = harness();
+  assert.equal(run(context, 'settingValueLabel("")'), 'Empty');
+  assert.equal(run(context, 'settingValueLabel(null)'), 'Unavailable');
 });
 
 test('workspace target changes, inspection, and scope overview preserve workspace without operations', () => {

@@ -192,3 +192,21 @@ test('network synchronization skips a backend whose proxy topology is truncated'
       {field: 'AllowUnjoined', status: 'TOPOLOGY_INCOMPLETE'}]);
   });
 });
+
+test('automatically discovered sibling backends receive only network-aware edits', () => {
+  const state = new MultiTargetState([
+    {id: 'selected', sessionId: 'a', role: 'BACKEND'},
+    {id: 'sibling', sessionId: 'b', role: 'BACKEND', networkOnly: true}
+  ]);
+  const fields = {
+    OnlineMode: {status: 'AVAILABLE', value: false},
+    CountFakeVotes: {status: 'AVAILABLE', value: false}
+  };
+  state.setRead('selected', {status: 'AVAILABLE', sessionId: 'a', revision: '1', fields});
+  state.setRead('sibling', {status: 'AVAILABLE', sessionId: 'b', revision: '2', fields});
+  state.edit('OnlineMode', true).edit('CountFakeVotes', true);
+  const plans = new Map(state.plans().map(plan => [plan.id, plan]));
+  assert.deepEqual(plans.get('selected').overrides, {OnlineMode: true, CountFakeVotes: true});
+  assert.deepEqual(plans.get('sibling').overrides, {OnlineMode: true});
+  assert.equal(state.aggregate('CountFakeVotes').targets.length, 1);
+});

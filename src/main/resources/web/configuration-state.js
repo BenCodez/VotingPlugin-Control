@@ -7,6 +7,7 @@
 
   const READ_STATUSES = new Set(['AVAILABLE', 'ERROR', 'UNSUPPORTED']);
   const FIELD_STATUSES = new Set(['AVAILABLE', 'MISSING', 'UNSUPPORTED']);
+  const NETWORK_FIELDS = new Set(['OnlineMode', 'BedrockPlayerPrefix', 'AllowUnjoined']);
 
   function string(value) { return typeof value === 'string' ? value : ''; }
 
@@ -59,6 +60,7 @@
       reportingProxyIds: Array.isArray(target.reportingProxyIds)
         ? target.reportingProxyIds.filter(function (id) { return typeof id === 'string' && id; }).slice().sort() : [],
       networkIncomplete: target.networkIncomplete === true,
+      networkOnly: target.networkOnly === true,
       status: 'MISSING',
       revision: '',
       fields: {},
@@ -93,6 +95,7 @@
             current.reportingProxyIds = Array.isArray(target.reportingProxyIds)
               ? target.reportingProxyIds.filter(function (id) { return typeof id === 'string' && id; }).slice().sort() : [];
             current.networkIncomplete = target.networkIncomplete === true;
+            current.networkOnly = target.networkOnly === true;
             next.set(target.id, current);
           } else {
             next.set(target.id, targetRecord(target));
@@ -157,6 +160,7 @@
     aggregate(field) {
       const entries = [];
       this.targets.forEach(function (target) {
+        if (target.networkOnly && !NETWORK_FIELDS.has(field)) return;
         let status = target.status === 'ERROR' ? 'ERROR'
           : target.status === 'UNSUPPORTED' ? 'UNSUPPORTED' : 'MISSING';
         let value;
@@ -198,6 +202,7 @@
         const overrides = {};
         const skipped = [];
         this.dirty.forEach(function (requested, field) {
+          if (target.networkOnly && !NETWORK_FIELDS.has(field)) return;
           const snapshot = target.status === 'AVAILABLE' ? target.fields[field] : null;
           if (target.networkIncomplete
               && (field === 'OnlineMode' || field === 'BedrockPlayerPrefix' || field === 'AllowUnjoined')) {
@@ -257,7 +262,10 @@
     clearConfirmedDirty() {
       if (!this.targets.size) return this;
       this.dirty.forEach(function (requested, field) {
-        const confirmed = Array.from(this.targets.values()).every(function (target) {
+        const relevantTargets = Array.from(this.targets.values()).filter(function (target) {
+          return !target.networkOnly || NETWORK_FIELDS.has(field);
+        });
+        const confirmed = relevantTargets.length > 0 && relevantTargets.every(function (target) {
           const snapshot = target.status === 'AVAILABLE' && target.fields[field];
           return snapshot && snapshot.status === 'AVAILABLE'
             && snapshot.value === this.requestedValue(target, field, requested);

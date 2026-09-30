@@ -10,6 +10,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
@@ -165,6 +166,8 @@ public final class GeneralSettingsDocument {
 
     private static Location location(String content, Node value, Spec spec) {
         if (!(value instanceof ScalarNode scalar) || scalar.getAnchor() != null) return unsupported();
+        if (scalar.getScalarStyle() == DumperOptions.ScalarStyle.LITERAL
+                || scalar.getScalarStyle() == DumperOptions.ScalarStyle.FOLDED) return unsupported();
         Object decoded = spec.decode(scalar);
         if (decoded == null) return unsupported();
         int startCodePoint = scalar.getStartMark().getIndex();
