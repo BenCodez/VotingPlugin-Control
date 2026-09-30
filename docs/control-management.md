@@ -72,7 +72,7 @@ authenticated, CSRF-protected endpoint and node capability checks as an external
 | Network Doctor | Runs `diagnostics` (which includes the overview fields), combines node health with Control's current topology, and displays checks for connector, configuration, Votifier, vote sites, rewards, logging, and proxy topology | Read-only; “healthy” is bounded reported state, not a synthetic vote |
 | Diagnostics download | Downloads the last Network Doctor result as local JSON | Redacted status bundle only; no raw configuration/logs/player records/infrastructure secrets |
 | Activity | Loads the newest 50 live/recovered configuration operation views, labels phases, lineage, reload/rollback, resumes eligible guided preview approvals, and offers retry only when `retryable` | Recovered configuration history cannot be retried; approval is single-use and apply is CSRF-protected; proxy-method apply needs a new preview |
-| Plugin update | Uploads one bounded JAR, shows the deployment-capable subset, and stages it on those nodes | SHA-256 and JAR identity are verified; session/attempt leases authorize downloads; Control never automatically reloads or restarts nodes; private storage is capped at 32 artifacts / 512 MiB and evicts only artifacts not referenced by retained deployment history |
+| Plugin update | Uploads one bounded local JAR or downloads one exact successful build from the fixed bencodez.com Jenkins job, shows the deployment-capable subset, and stages it on those nodes | SHA-256 and JAR identity are verified; session/attempt leases authorize downloads; Control never automatically reloads or restarts nodes; private storage is capped at 32 artifacts / 512 MiB and evicts only artifacts not referenced by retained deployment history |
 | Fast file reads | Caches a successful file read for 30 seconds by node ID, node session, and file | Browser memory only; cleared on logout and successful relevant writes; session binding prevents reuse after reconnect |
 | Full-YAML drafts | Keeps unsaved editor contents during a registry refresh | A dirty draft is bound to its source node, session, and file; it cannot preview or apply after that session changes. The operator must explicitly confirm a current-file read/reload, which discards the retained draft and rebinds the editor. |
 | Full-YAML workbench | Shows the exact source node, file and retained revision, synchronized line numbers, document size, bounded in-document search, cursor position, and confirmed/unsaved state | Search and editor state remain browser-memory only; the workbench does not parse, normalize, save, or bypass the connector's redaction and preview validation |
@@ -495,7 +495,8 @@ node resources require the bearer credential bound to the path node ID.
 | `POST` | `/api/v1/operations/{operationId}/retry` | admin/browser + CSRF | Reissue safe failed work as a new operation |
 | `POST` | `/api/v1/nodes/{nodeId}/operations` | matching node | Claim one configuration task or `204` |
 | `POST` | `/api/v1/nodes/{nodeId}/operations/{operationId}/result` | matching node | Complete one claimed configuration task |
-| `POST` | `/api/v1/artifacts/votingplugin` | admin/browser + CSRF | Stream, hash, inspect, and atomically retain one VotingPlugin JAR (64 MiB maximum) |
+| `POST` | `/api/v1/artifacts/votingplugin` | admin/browser + CSRF | Stream, hash, inspect, and atomically retain one VotingPlugin JAR (64 MiB maximum); plain-HTTP uploads require a literal local/private client address |
+| `GET`, `POST` | `/api/v1/artifacts/votingplugin/jenkins` | admin/browser; CSRF for POST | Inspect or download an exact successful build from the fixed bencodez.com Jenkins job; no client URL is accepted |
 | `GET`, `POST` | `/api/v1/deployments` | admin/browser; CSRF for POST | List durable staging operations or target an exact verified artifact |
 | `GET` | `/api/v1/deployments/{deploymentId}` | admin/browser | Read per-node staging state |
 | `POST` | `/api/v1/deployments/{deploymentId}/retry` | admin/browser + CSRF | Create a new operation for currently eligible failed targets only |
@@ -521,10 +522,20 @@ Control assumes an authenticated administrator may make intended changes, but it
 their clocks, returned strings, or durable files. Authentication does not encrypt traffic; use HTTPS or a trusted private
 tunnel/network outside loopback.
 
+Direct JAR uploads over plain HTTP require a local/private socket peer. Uploads through a reverse proxy require HTTPS,
+the peer in `CONTROL_TRUSTED_PROXY_ADDRESSES`, `CONTROL_SECURE_COOKIE=true`, and a proxy-overwritten
+`X-Forwarded-Proto`. Plain HTTP through a proxy is rejected because forwarded client identity cannot safely prove the
+upload originated from a private address.
+
+Artifact ingestion and deployment creation share one admission slot to protect retained artifact references during
+eviction. Concurrent uploads, Jenkins ingestion, or deployment creation return `409 ARTIFACT_LIFECYCLE_BUSY` immediately;
+retry after the active request completes. Jenkins reserves the slot before opening its remote download, and admitted
+artifact body transfers retain the 120-second deadline.
+
 | Boundary | Limit/behavior |
 | --- | --- |
 | Generic JSON request | 4 MiB; bounded Jackson depth/string/number constraints; duplicate and trailing JSON rejected |
-| VotingPlugin artifact upload | Separate bounded streaming route; 64 MiB maximum |
+| VotingPlugin artifact ingestion | Local/private plain-HTTP upload or fixed HTTPS bencodez.com Jenkins source; separate bounded streaming route; 64 MiB maximum; SHA-256 established before publication |
 | HTTP execution | 8 active request workers plus queue of 32; bounded request/response time |
 | Browser sessions | 100; 30-minute idle and 8-hour absolute expiry; HttpOnly, SameSite=Strict cookie |
 | Node operation targets | 1–100 distinct online capable nodes |

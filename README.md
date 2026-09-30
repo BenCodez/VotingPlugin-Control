@@ -53,7 +53,7 @@ VotingPlugin Control is designed to manage and troubleshoot a VotingPlugin netwo
 
 ### Updates and deployment
 
-- Upload a VotingPlugin JAR to Control.
+- Upload a VotingPlugin JAR from a local/private client, or select the latest successful development build from the fixed bencodez.com Jenkins source.
 - Verify uploaded JARs before they can be deployed.
 - Stage an approved VotingPlugin JAR to supported nodes for the **next restart**.
 - Verify the JAR again on each node before staging it.
@@ -141,6 +141,13 @@ report `development` rather than maintaining a second version literal.
 | `CONTROL_TRUSTED_PROXY_ADDRESSES` | empty | Comma-separated IP literals for reverse proxies allowed to supply `X-Forwarded-For` login admission identity |
 | `CONTROL_LAUNCH_ID` | empty | Optional UUID echoed by health checks so a supervising VotingPlugin can verify ownership of the listener |
 | `CONTROL_PARENT_PID` | empty | Optional supervising VotingPlugin process ID; hosted Control exits when that parent process ends |
+
+JAR uploads through a reverse proxy require HTTPS: set `CONTROL_SECURE_COOKIE=true`, list only that proxy in
+`CONTROL_TRUSTED_PROXY_ADDRESSES`, and configure it to overwrite (never append or pass through) `X-Forwarded-Proto`.
+Plain HTTP uploads through a proxy are rejected because the original client address cannot be proven. Direct plain-HTTP
+uploads remain available to loopback, link-local, and private-network clients.
+Artifact ingestion and deployment creation are serialized. Concurrent requests return `409 ARTIFACT_LIFECYCLE_BUSY`;
+retry after the active request completes.
 
 The server also uses a bounded HTTP executor (8 active requests and a 32-request queue), a 4 MiB limit for generic JSON
 requests, and a separate bounded streaming artifact-upload route with a 64 MiB maximum. JSON depth/string/number sizes
@@ -247,7 +254,8 @@ All errors have the stable form:
 | `POST` | `/api/v1/nodes/{nodeId}/inspections/{inspectionId}/result` | matching node | Complete that inspection attempt |
 | `GET`, `POST` | `/api/v1/snapshots` | admin or WebUI session; CSRF for POST | List summaries or save a named snapshot from a completed file read |
 | `GET` | `/api/v1/snapshots/{snapshotId}` | admin or WebUI session | Load one durable snapshot's full redacted file content |
-| `POST` | `/api/v1/artifacts/votingplugin` | admin or WebUI session + CSRF | Stream and verify one bounded VotingPlugin JAR into private content-addressed storage |
+| `POST` | `/api/v1/artifacts/votingplugin` | admin or WebUI session + CSRF | Stream and verify one bounded VotingPlugin JAR into private content-addressed storage; plain-HTTP uploads require a local/private client address |
+| `GET`, `POST` | `/api/v1/artifacts/votingplugin/jenkins` | admin or WebUI session; CSRF for POST | Inspect or download an exact successful build from the server-defined bencodez.com Jenkins job; arbitrary URLs are never accepted |
 | `GET`, `POST` | `/api/v1/deployments` | admin or WebUI session; CSRF for POST | List deployment history or stage a verified artifact on explicit `plugin.deploy.v1` nodes |
 | `GET` | `/api/v1/deployments/{deploymentId}` | admin or WebUI session | Read durable per-node staging state |
 | `POST` | `/api/v1/deployments/{deploymentId}/retry` | admin or WebUI session + CSRF | Retry only failed, currently eligible nodes as a new operation |

@@ -3,6 +3,7 @@ package com.bencodez.votingplugin.control.http;
 import com.bencodez.votingplugin.control.auth.CredentialStore;
 import com.bencodez.votingplugin.control.auth.WebSessionStore;
 import com.bencodez.votingplugin.control.artifact.ArtifactStore;
+import com.bencodez.votingplugin.control.artifact.JenkinsVotingPluginSource;
 import com.bencodez.votingplugin.control.artifact.ArtifactStore.ArtifactException;
 import com.bencodez.votingplugin.control.domain.NodeRegistry;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
@@ -67,6 +68,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** Bounded HTTP adapter. Node writes are enrolled; node listings require the local admin credential. */
 public final class ControlHttpServer implements AutoCloseable {
@@ -80,6 +82,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final String INSPECTIONS = "/api/v1/inspections";
     private static final String SNAPSHOTS = "/api/v1/snapshots";
     private static final String ARTIFACTS = "/api/v1/artifacts/votingplugin";
+    private static final String JENKINS_ARTIFACT = ARTIFACTS + "/jenkins";
     private static final String DEPLOYMENTS = "/api/v1/deployments";
     private static final String AUTH_LOGIN = "/api/v1/auth/login";
     private static final String AUTH_SESSION = "/api/v1/auth/session";
@@ -116,8 +119,9 @@ public final class ControlHttpServer implements AutoCloseable {
     private final InspectionOperations inspectionOperations;
     private final ConfigurationSnapshots configurationSnapshots;
     private final ArtifactStore artifactStore;
+    private final JenkinsVotingPluginSource jenkinsSource = new JenkinsVotingPluginSource();
     private final DeploymentOperations deploymentOperations;
-    private final Object deploymentArtifactLifecycle = new Object();
+    private final ReentrantLock deploymentArtifactLifecycle = new ReentrantLock();
     private final ThreadPoolExecutor executor;
     private final ThreadPoolExecutor passwordExecutor;
     private final ScheduledExecutorService artifactTransferTimeouts;
@@ -299,6 +303,7 @@ public final class ControlHttpServer implements AutoCloseable {
         executor.shutdownNow();
         passwordExecutor.shutdownNow();
         artifactTransferTimeouts.shutdownNow();
+        jenkinsSource.close();
         try {
             executor.awaitTermination(2, TimeUnit.SECONDS);
             passwordExecutor.awaitTermination(2, TimeUnit.SECONDS);
@@ -332,8 +337,10 @@ public final class ControlHttpServer implements AutoCloseable {
                         "PREVIEW_INCOMPLETE", "APPROVAL_REQUIRED", "NODE_UNAVAILABLE", "OPERATION_LIMIT",
                         "REGISTRY_LIMIT", "REGISTRY_CHANGED", "TASK_NOT_CLAIMED", "TASK_LEASE_EXPIRED",
                         "SETUP_COMPLETE", "OPERATION_INCOMPLETE", "PREVIEW_REQUIRED",
-                        "RETRY_REQUIRES_INPUT", "TARGET_CHANGED", "OPERATION_CONFLICT" -> 409;
+                        "RETRY_REQUIRES_INPUT", "TARGET_CHANGED", "OPERATION_CONFLICT",
+                        "ARTIFACT_LIFECYCLE_BUSY" -> 409;
                 case "UNSUPPORTED_MEDIA_TYPE" -> 415;
+                case "LOCAL_NETWORK_REQUIRED" -> 403;
                 default -> 400;
             };
             error(exchange, status, e.code(), e.getMessage(), e.details());
@@ -348,6 +355,9 @@ public final class ControlHttpServer implements AutoCloseable {
             error(exchange, 503, "SNAPSHOT_STORE_UNAVAILABLE", "Configuration snapshot storage is unavailable", List.of());
         } catch (ArtifactException e) {
             error(exchange, 400, "ARTIFACT_REJECTED", "VotingPlugin artifact was rejected", List.of());
+        } catch (JenkinsSourceException e) {
+            error(exchange, 502, "BUILD_SOURCE_UNAVAILABLE",
+                    "The VotingPlugin development build source is unavailable", List.of());
         } catch (IllegalArgumentException e) {
             error(exchange, 400, "VALIDATION_ERROR", "Request validation failed", List.of());
         } catch (ResponseCompleteException ignored) {
@@ -521,19 +531,60 @@ public final class ControlHttpServer implements AutoCloseable {
         if (ARTIFACTS.equals(path)) {
             requireMethod(exchange, "POST");
             authenticateAdmin(exchange, true);
+            requireSafeArtifactUploadTransport(exchange);
             requireArtifactMediaType(exchange);
             requireBodyWithin(exchange, ArtifactStore.MAX_UPLOAD_BYTES);
             String filename = requiredHeader(exchange, "X-Filename");
             String claimedSha256 = optionalSingleHeader(exchange, "X-Artifact-SHA256");
-            ArtifactStore.Artifact artifact;
-            synchronized (deploymentArtifactLifecycle) {
-                artifact = withArtifactTransferDeadline(exchange,
+            ArtifactStore.Artifact artifact = withDeploymentArtifactLifecycle(() ->
+                    withArtifactTransferDeadline(exchange,
                         () -> artifactStore.upload(exchange.getRequestBody(), filename, claimedSha256,
-                                deploymentOperations.referencedArtifactIds()));
-            }
+                                deploymentOperations.referencedArtifactIds())));
             send(exchange, 201, Map.of("artifactId", artifact.artifactId(), "sha256", artifact.artifactId(),
                     "size", artifact.size(), "fileName", artifact.displayFilename()));
             return;
+        }
+        if (JENKINS_ARTIFACT.equals(path)) {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                authenticateAdmin(exchange, false);
+                try {
+                    send(exchange, 200, jenkinsSource.latestSuccessful());
+                } catch (IOException failure) {
+                    throw new JenkinsSourceException(failure);
+                }
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod())) {
+                authenticateAdmin(exchange, true);
+                JenkinsArtifactRequest request = read(exchange, JenkinsArtifactRequest.class);
+                requireRequest(request);
+                Map<String, Object> artifactResponse = withDeploymentArtifactLifecycle(() -> {
+                    try (JenkinsVotingPluginSource.Download download = jenkinsSource.open(request.buildNumber())) {
+                        ArtifactStore.Artifact artifact;
+                        try {
+                            artifact = withDownloadDeadline(download, () -> artifactStore.upload(download.body(),
+                                    download.build().fileName(), null, deploymentOperations.referencedArtifactIds()));
+                        } catch (ArtifactException failure) {
+                            if (download.sourceReadFailed()) throw new JenkinsSourceException(failure);
+                            throw failure;
+                        }
+                        return Map.of("artifactId", artifact.artifactId(),
+                                "sha256", artifact.artifactId(), "size", artifact.size(),
+                                "fileName", artifact.displayFilename(), "buildNumber", download.build().buildNumber(),
+                                "timestamp", download.build().timestamp());
+                    } catch (ArtifactException failure) {
+                        throw failure;
+                    } catch (IOException failure) {
+                        throw new JenkinsSourceException(failure);
+                    }
+                });
+                send(exchange, 201, artifactResponse);
+                return;
+            }
+            exchange.getResponseHeaders().set("Allow", "GET, POST");
+            error(exchange, 405, "METHOD_NOT_ALLOWED", "Method is not allowed",
+                    List.of("allowed=GET", "allowed=POST"));
+            throw new ResponseCompleteException();
         }
         if (DEPLOYMENTS.equals(path)) {
             if ("GET".equals(exchange.getRequestMethod())) {
@@ -549,15 +600,14 @@ public final class ControlHttpServer implements AutoCloseable {
                 authenticateAdmin(exchange, true);
                 DeploymentRequest request = read(exchange, DeploymentRequest.class);
                 requireRequest(request);
-                DeploymentResult deployment;
-                synchronized (deploymentArtifactLifecycle) {
+                DeploymentResult deployment = withDeploymentArtifactLifecycle(() -> {
                     ArtifactStore.Artifact artifact = artifactStore.describe(request.artifactId());
                     if (!artifact.artifactId().equals(request.sha256()) || artifact.size() != request.size()) {
                         throw new ValidationException("ARTIFACT_MISMATCH",
                                 "Deployment metadata does not match the verified artifact", List.of());
                     }
-                    deployment = deploymentOperations.create(request);
-                }
+                    return deploymentOperations.create(request);
+                });
                 send(exchange, 202, deployment);
                 return;
             }
@@ -1062,9 +1112,36 @@ public final class ControlHttpServer implements AutoCloseable {
         }
     }
 
+    private <T> T withDeploymentArtifactLifecycle(IoSupplier<T> operation) throws IOException {
+        if (!deploymentArtifactLifecycle.tryLock()) {
+            throw new ValidationException("ARTIFACT_LIFECYCLE_BUSY",
+                    "Artifact ingestion or deployment creation is in progress; retry after it completes", List.of());
+        }
+        try {
+            return operation.get();
+        } finally {
+            deploymentArtifactLifecycle.unlock();
+        }
+    }
+
     private <T> T withArtifactTransferDeadline(HttpExchange exchange, IoSupplier<T> transfer) throws IOException {
         ScheduledFuture<?> timeout = artifactTransferTimeouts.schedule(exchange::close,
                 ARTIFACT_TRANSFER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        try {
+            return transfer.get();
+        } finally {
+            timeout.cancel(false);
+        }
+    }
+
+    private <T> T withDownloadDeadline(AutoCloseable download, IoSupplier<T> transfer) throws IOException {
+        ScheduledFuture<?> timeout = artifactTransferTimeouts.schedule(() -> {
+            try {
+                download.close();
+            } catch (Exception ignored) {
+                // Closing is the timeout signal; the transfer reports the resulting I/O failure.
+            }
+        }, ARTIFACT_TRANSFER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         try {
             return transfer.get();
         } finally {
@@ -1131,6 +1208,71 @@ public final class ControlHttpServer implements AutoCloseable {
         if (remote == null) return "unknown";
         String peer = remote.getAddress() == null ? remote.getHostString() : remote.getAddress().getHostAddress();
         return forwardedPasswordClient(peer, singleHeader(exchange, "X-Forwarded-For"), trustedProxyAddresses);
+    }
+
+    private void requireSafeArtifactUploadTransport(HttpExchange exchange) {
+        if (exchange instanceof HttpsExchange) return;
+        InetSocketAddress remote = exchange.getRemoteAddress();
+        if (remote == null) throw localUploadRequired();
+        if (!artifactUploadTransportAllowed(remote, singleHeader(exchange, "X-Forwarded-Proto"),
+                trustedProxyAddresses, secureCookies,
+                hasForwardedHeaders(exchange))) {
+            throw localUploadRequired();
+        }
+    }
+
+    static boolean artifactUploadTransportAllowed(String peer, String forwardedFor, String forwardedProto,
+                                                  Set<String> trustedProxies, boolean trustForwardedHttps) {
+        return artifactUploadTransportAllowed(peer, null, forwardedProto, trustedProxies,
+                trustForwardedHttps, forwardedFor != null || forwardedProto != null);
+    }
+
+    private static boolean artifactUploadTransportAllowed(InetSocketAddress remote, String forwardedProto,
+                                                          Set<String> trustedProxies,
+                                                          boolean trustForwardedHttps, boolean forwardedHeadersPresent) {
+        InetAddress resolved = remote.getAddress();
+        String peer = resolved == null ? remote.getHostString() : resolved.getHostAddress();
+        return artifactUploadTransportAllowed(peer, resolved, forwardedProto, trustedProxies, trustForwardedHttps,
+                forwardedHeadersPresent);
+    }
+
+    private static boolean artifactUploadTransportAllowed(String peer, InetAddress resolved, String forwardedProto,
+                                                          Set<String> trustedProxies, boolean trustForwardedHttps,
+                                                          boolean forwardedHeadersPresent) {
+        boolean trustedProxy = trustedProxies.contains(peer);
+        if (trustedProxy) {
+            return trustForwardedHttps && "https".equalsIgnoreCase(forwardedProto);
+        }
+        if (forwardedHeadersPresent) return false;
+        return resolved != null ? isLocalNetworkAddress(resolved) : isLocalNetworkAddress(peer);
+    }
+
+    private static boolean hasForwardedHeaders(HttpExchange exchange) {
+        return exchange.getRequestHeaders().containsKey("Forwarded")
+                || exchange.getRequestHeaders().containsKey("X-Forwarded-For")
+                || exchange.getRequestHeaders().containsKey("X-Forwarded-Proto");
+    }
+
+    static boolean isLocalNetworkAddress(String literal) {
+        String canonical = canonicalIpLiteral(literal);
+        if (canonical == null) return false;
+        try {
+            return isLocalNetworkAddress(InetAddress.getByName(canonical));
+        } catch (IOException failure) {
+            return false;
+        }
+    }
+
+    static boolean isLocalNetworkAddress(InetAddress address) {
+        byte[] bytes = address.getAddress();
+        boolean uniqueLocalV6 = bytes.length == 16 && (bytes[0] & 0xfe) == 0xfc;
+        return address.isLoopbackAddress() || address.isLinkLocalAddress()
+                || address.isSiteLocalAddress() || uniqueLocalV6;
+    }
+
+    private static ValidationException localUploadRequired() {
+        return new ValidationException("LOCAL_NETWORK_REQUIRED",
+                "Direct JAR uploads over HTTP require a local or private-network client address", List.of());
     }
 
     static String forwardedPasswordClient(String peer, String forwardedFor, Set<String> trustedProxies) {
@@ -1334,11 +1476,20 @@ public final class ControlHttpServer implements AutoCloseable {
         private SnapshotStoreException(IOException cause) { super(cause); }
     }
 
+    private static final class JenkinsSourceException extends RuntimeException {
+        private JenkinsSourceException(IOException cause) { super(cause); }
+    }
+
     private record WebResource(String classpath, String contentType) { }
     private record PasswordRequest(String password) { }
     private record SetupRequest(String setupCode, String password) { }
     private record EnrollmentRequest(String nodeId) { }
     private record SnapshotRequest(String name, UUID operationId) { }
+    private record JenkinsArtifactRequest(int buildNumber) {
+        private JenkinsArtifactRequest {
+            if (buildNumber < 1) throw new IllegalArgumentException("buildNumber must be positive");
+        }
+    }
     private record DeploymentClaim(UUID sessionId) { }
     record BackendPage(List<NodeStatus> items, int backendItemsReturned, boolean backendItemsTruncated,
                        List<String> backendItemsTruncatedNodeIds) { }
