@@ -27,7 +27,7 @@ VotingPlugin Control is designed to manage and troubleshoot a VotingPlugin netwo
 ### Configuration
 
 - Edit VotingPlugin's supported YAML files from the WebUI.
-- Use **Full YAML** editing for advanced settings while automatically hiding known passwords, tokens, and other secrets.
+- Use **Full YAML** editing for advanced settings while automatically hiding known passwords, tokens, and other secrets. Its node selector is independent of the workspace source and preserves guided setup drafts.
 - Edit **General Settings** with a simple visual editor.
 - Add, edit, and remove **Vote Sites** with a visual editor.
 - Edit inline Vote Site rewards and supported named **Rewards/*.yml** files.
@@ -319,6 +319,12 @@ The disposable running-connector and packaged-browser validation boundaries are 
 at most 64 MiB, Control validates the ZIP structure and root `plugin.yml`, and every node re-verifies the SHA-256 before
 staging. Staging never reloads or restarts a server; success is reported as `RESTART_REQUIRED`. Interrupted Control attempts
 become failed durable history and require an explicit retry, preventing a pre-restart lease from authorizing a download.
+Capability absence is not proof that the connector is old: proxy staging is unavailable on Windows, and a connector can
+withhold the capability when it cannot prepare a safe local staging target. HTTP staging requires a literal local/private
+Control endpoint, while HTTPS is strongly recommended because connector credentials and plugin artifacts otherwise cross
+the network unencrypted. Bootstrap by installing a current VotingPlugin JAR manually once. The browser cannot add missing
+staging code to an old node by itself. If a current node still omits the capability, check its log for the connector's
+staging-unavailable warning; a node-side staging path or loaded-JAR discovery failure may need correction.
 
 `data.inspect.v1` is a separate read-only lane for overview, vote-site health (including persisted unconfigured service
 observations), exact-player data, bounded VoteLog summary/search/correlation trace, non-creating service-site resolution,

@@ -77,6 +77,7 @@ const previewConfiguration = document.querySelector('#preview-configuration');
 const applyConfiguration = document.querySelector('#apply-configuration');
 const operationStatus = document.querySelector('#operation-status');
 const configurationForm = document.querySelector('#configuration-form');
+const configurationTarget = document.querySelector('#configuration-target');
 const configurationFile = document.querySelector('#configuration-file');
 const configurationContent = document.querySelector('#configuration-content');
 const editorPosition = document.querySelector('#editor-position');
@@ -264,6 +265,8 @@ let csrfToken = '';
 let pageOffset = 0;
 let selectedNodes = new Set();
 let selectedServerId = '';
+// null follows the workspace source until Full YAML chooses its own target.
+let configurationTargetNodeId = null;
 let visibleNodeItems = [];
 let allNodeItems = [];
 let nodePageMetadata = new Map();
@@ -404,7 +407,7 @@ function syncYamlEditorView() {
     dirty: configurationDirty,
     draft: configurationSourceKind === 'SNAPSHOT',
     busy: configurationContent.disabled,
-    nodeId: configurationContentPresent ? configurationSourceNodeId || selectedServerId : '',
+    nodeId: configurationContentPresent ? configurationSourceNodeId || selectedConfigurationNodeId() : '',
     fileName: configurationContentPresent ? configurationFile.value : '',
     revision: configurationContentPresent ? configurationSourceRevision : ''
   });
@@ -444,19 +447,17 @@ function selectedFileCapability(fileName = configurationFile.value) {
 
 function fileTargetsForSelection(fileName = configurationFile.value) {
   const capability = selectedFileCapability(fileName);
-  const selected = nodeIndex.get(selectedServerId);
-  if (capability === 'config.proxy-files.v1') {
-    return workspace.managementScope === 'GLOBAL' && selected?.online && isProxy(selected) && selected.acceptedCapabilities.includes(capability)
-      ? [selected.nodeId] : [];
-  }
-  return targets(capability).filter(nodeId => isBackend(nodeIndex.get(nodeId)));
+  const selected = nodeIndex.get(selectedConfigurationNodeId());
+  if (!selected?.online || !selected.acceptedCapabilities.includes(capability)) return [];
+  if (capability === 'config.proxy-files.v1') return isProxy(selected) ? [selected.nodeId] : [];
+  return isBackend(selected) ? [selected.nodeId] : [];
 }
 
 function fileTargetDescription(fileName = configurationFile.value) {
   const targetsForFile = fileTargetsForSelection(fileName);
   if (fileName === 'bungeeconfig.yml') return targetsForFile.length
     ? `the selected proxy (${targetsForFile[0]})` : 'the selected proxy';
-  return `every selected Bukkit node`;
+  return targetsForFile.length ? `the selected Bukkit node (${targetsForFile[0]})` : 'the selected Bukkit node';
 }
 
 function boundedLines(value, maximum = 20) {
@@ -1348,6 +1349,7 @@ async function loadSetupState() {
 }
 
 function applyAuthenticatedSession(body) {
+  configurationTargetNodeId = null;
   settingsEditor?.clear();
   voteSitesEditor?.clear();
   rewardsEditor?.clear();
@@ -1672,7 +1674,7 @@ function renderWorkspaceChrome(tab) {
     : tab === 'general-settings' ? 'General Settings reads each workspace target independently. Only explicit edits are proposed, with per-target revision protection.'
     : tab === 'vote-sites' ? 'Vote Sites reads each workspace target independently. Site keys are identity; property editing never invokes synchronization or rewrites rewards.'
     : tab === 'rewards' ? 'Rewards reads each workspace target independently. Only explicit bounded operations can be previewed and applied.'
-    : `Legacy tools: rewards, guided presets and YAML use only ${source?.displayName || 'a selected source server'} (${selectedServerId || 'not selected'}). They do not copy its configuration to the workspace.${source && !workspace.selectedTargetIds.has(source.nodeId) ? ' This inspected server is outside the workspace; its configuration tools are disabled.' : ''}`);
+    : `Legacy tools use only ${source?.displayName || 'a selected source server'} (${selectedServerId || 'not selected'}). They do not copy its configuration to the workspace. Full YAML has an explicit single-node target; other legacy tools remain disabled when that source is outside the workspace.${source && !workspace.selectedTargetIds.has(source.nodeId) ? ' The current source is outside the workspace.' : ''}`);
   document.querySelector('#scope-overview').hidden = global;
 }
 
@@ -1939,8 +1941,8 @@ function resetFileEditorForSelection(message) {
 }
 
 function fileDraftMatchesCurrentContext() {
-  return !configurationDirty || configurationDraftNodeId === selectedServerId
-    && configurationDraftSessionId === nodeIndex.get(selectedServerId)?.sessionId
+  return !configurationDirty || configurationDraftNodeId === selectedConfigurationNodeId()
+    && configurationDraftSessionId === nodeIndex.get(selectedConfigurationNodeId())?.sessionId
     && configurationDraftFileName === configurationFile.value;
 }
 
@@ -1953,8 +1955,12 @@ function fileDraftStatus(status) {
 }
 
 function confirmDiscardUnsavedConfiguration(context) {
-  if (!configurationDirty && !routingDirty) return true;
-  return window.confirm(`Discard unsaved ${configurationDirty && routingDirty ? 'YAML and routing' : configurationDirty ? 'YAML' : 'routing'} changes before ${context}?`);
+  const drafts = [];
+  if (configurationDirty) drafts.push('YAML');
+  if (routingDirty) drafts.push('routing');
+  if (quickSetupDirty) drafts.push('guided setup');
+  if (dedicatedSetupDirty.size) drafts.push('dedicated setup');
+  return !drafts.length || window.confirm(`Discard unsaved ${drafts.join(', ')} changes before ${context}?`);
 }
 
 function confirmDiscardWorkspaceDrafts(context) {
@@ -1965,11 +1971,12 @@ function confirmDiscardWorkspaceDrafts(context) {
   return true;
 }
 
-function clearSessionRewardFileOptions() {
+function clearSessionRewardFileOptions(preserveSelected = false) {
   const selected = configurationFile.value;
   let removedSelected = false;
   for (const option of [...(configurationFile.options || [])]) {
     if (option.dataset?.sessionRewardFile !== 'true') continue;
+    if (preserveSelected && option.value === selected) continue;
     removedSelected ||= option.value === selected;
     option.remove();
   }
@@ -1980,7 +1987,7 @@ function clearSessionRewardFileOptions() {
 }
 
 function syncFileSelection() {
-  const selected = nodeIndex.get(selectedServerId);
+  const selected = nodeIndex.get(selectedConfigurationNodeId());
   const proxyFile = [...configurationFile.options].find(option => option.value === 'bungeeconfig.yml');
   if (proxyFile) proxyFile.disabled = !(selected?.online && isProxy(selected)
     && selected.acceptedCapabilities.includes('config.proxy-files.v1'));
@@ -2097,7 +2104,7 @@ function chooseDefaultServer(items) {
 
 function renderServerPicker() {
   const previousValue = selectedServerId;
-  const ordered = allNodeItems.filter(node => workspace.managementScope === 'GLOBAL'
+  const ordered = allNodeItems.filter(node => workspace.managementScope === 'GLOBAL' || node.nodeId === selectedServerId
     || isBackend(node) && (workspace.selectedTargetIds.has(node.nodeId) || node.nodeId === workspace.inspectedServerId)).sort((left, right) => {
     const roleOrder = Number(isProxy(left)) - Number(isProxy(right));
     return roleOrder || left.displayName.localeCompare(right.displayName);
@@ -2120,6 +2127,51 @@ function renderServerPicker() {
   populateGlobalSearch();
 }
 
+function selectedConfigurationNodeId() {
+  return configurationTargetNodeId === null ? selectedServerId : configurationTargetNodeId;
+}
+
+function renderConfigurationSelection() {
+  syncFileSelection();
+  const selected = nodeIndex.get(selectedConfigurationNodeId());
+  if (!selected) {
+    text(configurationContext, 'Choose a backend or proxy to work with its VotingPlugin configuration.');
+    text(commentPreservationState, 'Comment support unknown');
+    commentPreservationState.className = 'pill warning';
+    return;
+  }
+  text(configurationContext,
+    `${selected.displayName} (${selected.nodeId}) · ${roleLabel(selected)} · ${selected.online ? 'Control connected' : 'Control disconnected'}`);
+  const fileTargets = fileTargetsForSelection();
+  const preservesComments = fileTargets.length > 0 && fileTargets.every(nodeId =>
+    nodeCapabilities.get(nodeId)?.includes('config.file-comments.v1'));
+  text(commentPreservationState, preservesComments ? 'Comments preserved for every target' : 'Comments not guaranteed for every target');
+  commentPreservationState.className = `pill ${preservesComments ? 'online' : 'warning'}`;
+}
+
+function configurationTargetNodes() {
+  return allNodeItems.filter(node => node.online && (isProxy(node)
+    ? node.acceptedCapabilities.includes('config.proxy-files.v1')
+    : isBackend(node) && (node.acceptedCapabilities.includes('config.files.v1')
+      || node.acceptedCapabilities.includes('config.reward-files.v1'))))
+    .sort((left, right) => Number(isProxy(left)) - Number(isProxy(right))
+      || left.displayName.localeCompare(right.displayName));
+}
+
+function renderConfigurationTargetPicker() {
+  const eligible = configurationTargetNodes();
+  const placeholder = text(document.createElement('option'), eligible.length
+    ? 'Choose a connected backend or proxy' : 'No connected YAML-capable nodes');
+  placeholder.value = '';
+  configurationTarget.replaceChildren(placeholder, ...eligible.map(node => {
+    const option = text(document.createElement('option'), `${node.displayName} · ${roleLabel(node)}`);
+    option.value = node.nodeId;
+    return option;
+  }));
+  configurationTarget.value = eligible.some(node => node.nodeId === selectedConfigurationNodeId()) ? selectedConfigurationNodeId() : '';
+  configurationTarget.disabled = !authenticated || eligible.length === 0;
+}
+
 function renderSelectedServer() {
   const selected = nodeIndex.get(selectedServerId);
   selectedServerCapabilities.replaceChildren();
@@ -2128,13 +2180,8 @@ function renderSelectedServer() {
     text(selectedServerState, 'No selection');
     selectedServerState.className = 'pill neutral';
     text(selectedServerSummary, 'Use the server picker above to keep configuration and setup actions focused on one node.');
-    text(configurationContext, 'Choose a backend from the server picker to work with its VotingPlugin configuration.');
-    text(commentPreservationState, 'Comment support unknown');
-    commentPreservationState.className = 'pill warning';
-    syncFileSelection();
     return;
   }
-  syncFileSelection();
   text(selectedServerName, selected.displayName);
   text(selectedServerState, selected.online ? 'Control connected' : 'Control disconnected');
   selectedServerState.className = `pill ${selected.online ? 'online' : 'offline'}`;
@@ -2143,13 +2190,6 @@ function renderSelectedServer() {
     ? ` Reported by ${relationships.map(proxy => proxy.displayName).join(', ')}.` : '';
   text(selectedServerSummary,
     `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion || 'version unknown'}.${relationshipText} Last seen: ${selected.lastSeen ? new Date(selected.lastSeen).toLocaleString() : 'unknown'}. ${nodePresence(selected)}.`);
-  text(configurationContext,
-    `${selected.displayName} (${selected.nodeId}) · ${roleLabel(selected)} · ${selected.online ? 'Control connected' : 'Control disconnected'}`);
-  const fileTargets = fileTargetsForSelection();
-  const preservesComments = fileTargets.length > 0 && fileTargets.every(nodeId =>
-    nodeCapabilities.get(nodeId)?.includes('config.file-comments.v1'));
-  text(commentPreservationState, preservesComments ? 'Comments preserved for every target' : 'Comments not guaranteed for every target');
-  commentPreservationState.className = `pill ${preservesComments ? 'online' : 'warning'}`;
   const capabilities = managedCapabilities(selected);
   if (capabilities.length === 0) capabilities.push('Discovery only');
   capabilities.forEach(value => {
@@ -3181,6 +3221,7 @@ function updateExtendedButtons() {
 
 function renderNodeViews() {
   renderServerPicker();
+  renderConfigurationTargetPicker();
   renderHomeChooser();
   nodes.replaceChildren();
   nodes.classList.toggle('empty', visibleNodeItems.length === 0);
@@ -3192,6 +3233,7 @@ function renderNodeViews() {
   renderMetrics();
   renderTopology();
   renderSelectedServer();
+  renderConfigurationSelection();
   renderVoteSitesSync();
   renderTransportTest();
   renderProxyMethod();
@@ -3210,7 +3252,7 @@ function renderDeploymentEligibility() {
   const incompatible = connected.filter(node => !node.acceptedCapabilities.includes('plugin.deploy.v1'));
   const batches = Math.ceil(eligible.length / MAX_OPERATION_TARGETS);
   const bootstrap = incompatible.length
-    ? ` · ${incompatible.length} connected ${incompatible.length === 1 ? 'node needs' : 'nodes need'} a one-time VotingPlugin update with verified staging support`
+    ? ` · ${incompatible.length} connected ${incompatible.length === 1 ? 'node is' : 'nodes are'} missing verified staging prerequisites`
     : '';
   text(deploymentEligibility, `${eligible.length}/${connected.length} connected nodes eligible`
     + bootstrap + (batches > 1 ? ` · ${batches} bounded deployment batches` : ''));
@@ -3291,8 +3333,8 @@ function invalidateGuidedSetupReads() {
   });
 }
 
-function resetServerContextValues(reason, preserveDirtyDrafts = false) {
-  if (!preserveDirtyDrafts || !configurationDirty) clearSessionRewardFileOptions();
+function resetServerContextValues(reason, preserveDirtyDrafts = false, preserveSelectedRewardFile = false) {
+  if (!preserveDirtyDrafts || !configurationDirty) clearSessionRewardFileOptions(preserveSelectedRewardFile);
   dedicatedSetupApprovals.clear();
   pendingDetectedVoteSite = null;
   lastFileReadOperation = null;
@@ -3341,6 +3383,38 @@ function resetServerContextValues(reason, preserveDirtyDrafts = false) {
   renderMetrics();
 }
 
+function selectConfigurationTarget(nodeId, automaticRead = true) {
+  if (nodeId && !configurationTargetNodes().some(node => node.nodeId === nodeId)) return false;
+  if (nodeId === selectedConfigurationNodeId()) return true;
+  if (configurationDirty && !window.confirm('Discard unsaved YAML changes before switching the Full YAML target?')) {
+    configurationTarget.value = selectedConfigurationNodeId();
+    return false;
+  }
+  configurationTargetNodeId = nodeId;
+  // Session-discovered reward files belong to backend configuration. Keep the
+  // selected option while moving between backends, but remove it before a
+  // proxy target can display a file it cannot read or apply.
+  const target = nodeId ? nodeIndex.get(nodeId) : null;
+  clearSessionRewardFileOptions(Boolean(target && isBackend(target)));
+  resetFileEditorForSelection('YAML target changed. Read the selected file before previewing changes.');
+  inputGeneration++;
+  renderConfigurationTargetPicker();
+  renderConfigurationSelection();
+  updateConfigurationButtons();
+  updateExtendedButtons();
+  if (automaticRead) void autoLoadTab('configurations');
+  return true;
+}
+
+function selectWorkspaceYamlTarget(fileName) {
+  const capability = selectedFileCapability(fileName);
+  const candidates = [workspace.inspectedServerId, selectedServerId, ...workspace.selectedTargetIds];
+  const nodeId = candidates.find(id => workspace.selectedTargetIds.has(id)
+    && nodeIndex.get(id)?.online && isBackend(nodeIndex.get(id))
+    && nodeIndex.get(id).acceptedCapabilities.includes(capability));
+  return Boolean(nodeId && selectConfigurationTarget(nodeId, false));
+}
+
 function selectPrimaryServer(nodeId) {
   if (nodeId && !nodeIndex.has(nodeId)) return false;
   if (nodeId && nodeId === selectedServerId) {
@@ -3352,6 +3426,7 @@ function selectPrimaryServer(nodeId) {
     return false;
   }
   selectedServerId = nodeId;
+  configurationTargetNodeId = null;
   workspace.inspect(nodeId);
   serverPicker.value = nodeId;
   selectedNodes = new Set(nodeId ? [nodeId] : []);
@@ -3368,7 +3443,7 @@ function updateConfigurationButtons(busy = configurationOperationsInFlight > 0 |
     targets('config.proxy-routing.v1').length > 0 && !busy;
   const routingDraftReady = routingReadReady && (!routingDirty || routingDraftNodeId === selectedServerId);
   const fileCapability = selectedFileCapability();
-  const fileReady = authenticated && primaryCapabilities.includes(fileCapability) &&
+  const fileReady = authenticated && (nodeCapabilities.get(selectedConfigurationNodeId()) || []).includes(fileCapability) &&
     fileTargetsForSelection().length > 0 && !busy;
   const fileDraftReady = fileReady && fileDraftMatchesCurrentContext();
   const syncSelected = quickPreset.value === 'sync-vote-sites';
@@ -3696,6 +3771,7 @@ function discardAuthenticationState(reason) {
   voteLoggingRestartPending.clear();
   pendingDetectedVoteSite = null;
   selectedServerId = '';
+  configurationTargetNodeId = null;
   visibleNodeItems = [];
   allNodeItems = [];
   enrollmentIds.clear();
@@ -3954,9 +4030,12 @@ async function startConfigurationOperation(path, body, statusElement = operation
       && path !== '/api/v1/configuration/vote-sites/preview'
       && path !== '/api/v1/configuration/rewards/preview'
       && !['proxy-method', 'sync-vote-sites', 'communication-test'].includes(body.configuration?.preset)) {
-    const allowed = ordinaryTargetIds();
+    const allowed = body.configuration?.domain === 'file'
+      ? fileTargetsForSelection(body.configuration.fileName) : ordinaryTargetIds();
     if (!Array.isArray(body.nodeIds) || body.nodeIds.length !== 1 || !allowed.includes(body.nodeIds[0])) {
-      throw new Error('Choose a workspace source server. This form previews only that server, not the whole workspace.');
+      throw new Error(body.configuration?.domain === 'file'
+        ? 'Choose the connected Full YAML target again. This editor previews exactly one capability-gated node.'
+        : 'Choose a workspace source server. This form previews only that server, not the whole workspace.');
     }
   }
   const applyOperation = path.endsWith('/apply');
@@ -4128,6 +4207,19 @@ async function loadNodesOnce() {
       && previousNodeIndex.get(node)?.sessionId !== nodeIndex.get(node)?.sessionId);
     if (selectedSessionChanged) {
       resetServerContextValues('A selected server reconnected. Load current values before continuing.', true);
+    }
+    const yamlNodeId = selectedConfigurationNodeId();
+    const previousYamlNode = previousNodeIndex.get(yamlNodeId);
+    const yamlNode = nodeIndex.get(yamlNodeId);
+    if (previousYamlNode && (previousYamlNode.sessionId !== yamlNode?.sessionId
+        || previousYamlNode.online !== yamlNode?.online
+        || ['config.files.v1', 'config.proxy-files.v1', 'config.reward-files.v1'].some(capability =>
+          previousYamlNode.acceptedCapabilities.includes(capability) !== Boolean(yamlNode?.acceptedCapabilities.includes(capability))))) {
+      approvedFilePreview = null;
+      lastFileReadOperation = null;
+      fileReadCache.clear();
+      if (!configurationDirty) resetFileEditorForSelection('YAML target changed connection or capabilities. Read current values.');
+      else text(fileOperationStatus, fileDraftStatus('YAML target changed connection or capabilities.'));
     }
     const previousCapabilities = nodeCapabilities;
     nodeCapabilities = new Map(registry.items.map(node => [node.nodeId, node.online ? node.acceptedCapabilities : []]));
@@ -4473,14 +4565,14 @@ async function loadFileConfiguration(automatic = false) {
   const readAuthenticationGeneration = authenticationGeneration;
   const readInputGeneration = inputGeneration;
   const selectedFile = configurationFile.value;
-  const selectedNode = nodeIndex.get(selectedServerId);
+  const selectedNode = nodeIndex.get(selectedConfigurationNodeId());
   const selectedReadNodeId = selectedNode?.online && selectedNode.acceptedCapabilities.includes(selectedFileCapability(selectedFile))
-    && (selectedFile === 'bungeeconfig.yml' ? isProxy(selectedNode) : isBackend(selectedNode)) ? selectedServerId : '';
+    && (selectedFile === 'bungeeconfig.yml' ? isProxy(selectedNode) : isBackend(selectedNode)) ? selectedConfigurationNodeId() : '';
   if (!selectedReadNodeId) {
     text(fileOperationStatus, 'Choose a connected node that supports this configuration file.');
     return;
   }
-  const cacheKey = `${selectedServerId}|${selectedNode?.sessionId || ''}|${selectedFile}`;
+  const cacheKey = `${selectedConfigurationNodeId()}|${selectedNode?.sessionId || ''}|${selectedFile}`;
   const cached = cachedFile(cacheKey);
   if (cached) {
     configurationContent.value = cached.content;
@@ -4490,12 +4582,12 @@ async function loadFileConfiguration(automatic = false) {
     configurationDraftSessionId = '';
     configurationDraftFileName = '';
     configurationSourceRevision = cached.revision || '';
-    configurationSourceNodeId = selectedServerId;
+    configurationSourceNodeId = selectedConfigurationNodeId();
     configurationSourceKind = 'READ';
     lastFileReadOperation = {operationId: cached.operationId};
     updateEditorPosition();
     syncYamlEditorView();
-    text(fileOperationStatus, `Cached read · ${selectedServerId} · ${selectedFile}\nLoaded instantly; cache expires after 30 seconds. Preview still checks the live revision.`);
+    text(fileOperationStatus, `Cached read · ${selectedConfigurationNodeId()} · ${selectedFile}\nLoaded instantly; cache expires after 30 seconds. Preview still checks the live revision.`);
     inputGeneration++;
     updateConfigurationButtons();
     updateExtendedButtons();
@@ -4520,7 +4612,7 @@ async function loadFileConfiguration(automatic = false) {
     const contentResult = operation.results?.[selectedReadNodeId];
     if (contentResult && authenticated && readAuthenticationGeneration === authenticationGeneration
         && readInputGeneration === inputGeneration && selectedFile === configurationFile.value
-        && selectedReadNodeId === selectedServerId && selectedNode.sessionId === nodeIndex.get(selectedReadNodeId)?.sessionId
+        && selectedReadNodeId === selectedConfigurationNodeId() && selectedNode.sessionId === nodeIndex.get(selectedReadNodeId)?.sessionId
         && contentResult.success && typeof contentResult.configuration?.content === 'string') {
       configurationContent.value = contentResult.configuration.content;
       configurationContentPresent = true;
@@ -4541,13 +4633,13 @@ async function loadFileConfiguration(automatic = false) {
       updateExtendedButtons();
       readFileConfiguration.hidden = true;
     } else if (readAuthenticationGeneration === authenticationGeneration && readInputGeneration === inputGeneration
-        && selectedFile === configurationFile.value && selectedReadNodeId === selectedServerId) {
+        && selectedFile === configurationFile.value && selectedReadNodeId === selectedConfigurationNodeId()) {
       throw new Error(contentResult?.message || `The ${selectedFile} read did not return editable content.`);
     }
   } catch (error) {
     if (authenticated && readAuthenticationGeneration === authenticationGeneration
         && readInputGeneration === inputGeneration && selectedFile === configurationFile.value
-        && selectedReadNodeId === selectedServerId
+        && selectedReadNodeId === selectedConfigurationNodeId()
         && selectedNode.sessionId === nodeIndex.get(selectedReadNodeId)?.sessionId) {
       configurationContent.value = '';
       configurationContentPresent = false;
@@ -4560,7 +4652,7 @@ async function loadFileConfiguration(automatic = false) {
     }
   } finally {
     if (authenticated && readAuthenticationGeneration === authenticationGeneration
-        && selectedFile === configurationFile.value && selectedReadNodeId === selectedServerId
+        && selectedFile === configurationFile.value && selectedReadNodeId === selectedConfigurationNodeId()
         && selectedNode.sessionId === nodeIndex.get(selectedReadNodeId)?.sessionId) {
       configurationContent.disabled = false;
       configurationContent.removeAttribute('aria-busy');
@@ -5445,18 +5537,18 @@ async function loadSnapshots() {
       restore.addEventListener('click', async () => {
       if (configurationDirty && !window.confirm('Discard unsaved YAML changes and load this snapshot?')) return;
       restore.disabled = true;
-      const restoreServerId = selectedServerId;
+      const restoreServerId = selectedConfigurationNodeId();
       const restoreGeneration = inputGeneration;
       try {
         const full = await authorized(`/api/v1/snapshots/${snapshot.snapshotId}`);
-        if (restoreServerId !== selectedServerId || restoreGeneration !== inputGeneration) {
+        if (restoreServerId !== selectedConfigurationNodeId() || restoreGeneration !== inputGeneration) {
           throw new Error('The selected server changed while loading the snapshot. Load it again.');
           }
-          const document = full.documents.find(value => value.nodeId === selectedServerId) || full.documents[0];
+          const document = full.documents.find(value => value.nodeId === selectedConfigurationNodeId()) || full.documents[0];
           if (!document) throw new Error('This snapshot has no restorable document.');
-          const restoreNode = nodeIndex.get(selectedServerId);
+          const restoreNode = nodeIndex.get(selectedConfigurationNodeId());
           const proxyFile = document.fileName === 'bungeeconfig.yml';
-          if (!restoreNode?.online || !nodeCapabilities.get(selectedServerId)?.includes(selectedFileCapability(document.fileName))
+          if (!restoreNode?.online || !nodeCapabilities.get(selectedConfigurationNodeId())?.includes(selectedFileCapability(document.fileName))
               || (proxyFile ? !isProxy(restoreNode) : !isBackend(restoreNode))) {
             throw new Error('Choose a connected node that supports this snapshot file before restoring.');
           }
@@ -5828,8 +5920,8 @@ function exposeDirtyVoteSiteReload() {
 }
 configurationContent.addEventListener('input', () => {
   if (!configurationDirty) {
-    configurationDraftNodeId = selectedServerId;
-    configurationDraftSessionId = nodeIndex.get(selectedServerId)?.sessionId || '';
+    configurationDraftNodeId = selectedConfigurationNodeId();
+    configurationDraftSessionId = nodeIndex.get(selectedConfigurationNodeId())?.sessionId || '';
     configurationDraftFileName = configurationFile.value;
   }
   configurationContentPresent = true;
@@ -5868,6 +5960,7 @@ quickPreset.addEventListener('input', () => {
   void autoLoadTab('quick-setup');
 });
 serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.value));
+configurationTarget.addEventListener('change', () => selectConfigurationTarget(configurationTarget.value));
 homeSearch.addEventListener('input', renderHomeChooser);
 document.querySelector('#home-refresh').addEventListener('click', () => loadNodes());
 document.querySelector('#home-select-all').addEventListener('click', () => changeWorkspaceTargets(() => workspace.selectEligible(allNodeItems, MAX_CONFIGURATION_TARGETS)));
@@ -5896,7 +5989,7 @@ async function stageVerifiedArtifact(artifact, confirmation, reservedDeploymentR
   const prompt = `${confirmation} Stage it on ${eligible.length} deployment-capable node(s)?`
     + ' Servers will require a restart. Automatic restart is disabled.'
     + (batches.length > 1 ? ` Control will use ${batches.length} bounded operations.` : '')
-    + (ineligible.length ? ` Older/incompatible nodes excluded: ${ineligible.join(', ')}.` : '');
+    + (ineligible.length ? ` Nodes without verified staging capability excluded: ${ineligible.join(', ')}. Install a current VotingPlugin JAR once; Windows proxy staging is unavailable. HTTP staging requires a literal local/private Control endpoint; HTTPS is strongly recommended. Check node logs for the staging-unavailable warning.` : '');
   if (!window.confirm(prompt)) return;
   const deploymentRun = reservedDeploymentRun ?? ++deploymentRunGeneration;
   if (reservedDeploymentRun == null) {
@@ -6743,10 +6836,11 @@ document.querySelector('#vote-site-preview').addEventListener('click', () => { d
 document.querySelector('#vote-site-apply').addEventListener('click', () => void voteSitesEditor.apply(document.querySelector('#vote-site-ack').checked));
 document.querySelector('#vote-site-ack').addEventListener('change', renderVoteSites);
 document.querySelector('#vote-site-open-yaml').addEventListener('click', () => {
+  if (!selectWorkspaceYamlTarget('VoteSites.yml')) return;
   if (configurationFile.value !== 'VoteSites.yml') {
     configurationFile.value = 'VoteSites.yml';
     configurationFile.dispatchEvent(new Event('input'));
-  }
+  } else void autoLoadTab('configurations');
   setActiveTab('configurations', true); setConfigView('yaml');
 });
 document.querySelector('#vote-site-edit-rewards').addEventListener('click', () => {
@@ -7006,12 +7100,14 @@ document.querySelector('#rewards-apply').addEventListener('click', () => void re
 document.querySelector('#rewards-ack').addEventListener('change', renderRewards);
 document.querySelector('#rewards-open-yaml').addEventListener('click', () => {
   const selected = rewardsEditor.selected;
+  if (!selectWorkspaceYamlTarget(selected.fileName)) return;
   if (selected.fileName.startsWith('Rewards/') && ![...configurationFile.options].some(option => option.value === selected.fileName)) {
     const option = document.createElement('option'); option.value = selected.fileName;
     option.textContent = selected.fileName; option.dataset.sessionRewardFile = 'true'; configurationFile.append(option);
   }
   setActiveTab('configurations', true); setConfigView('yaml');
   if (configurationFile.value !== selected.fileName) { configurationFile.value = selected.fileName; configurationFile.dispatchEvent(new Event('input')); }
+  else void autoLoadTab('configurations');
 });
 document.querySelector('#vote-sites-health-refresh').addEventListener('click', () => void refreshVoteSiteObservations());
 
