@@ -1425,6 +1425,120 @@ class ControlHttpServerTest {
                 "LOCAL_NETWORK_REQUIRED");
     }
 
+    @Test void activeIngestionRejectsConcurrentArtifactAndDeploymentRequestsWithoutBlockingWorkers() throws Exception {
+        String capableRegistration = registration().replace("\"presence.snapshot\"]",
+                "\"presence.snapshot\",\"plugin.deploy.v1\"]");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", capableRegistration, nodeToken).statusCode());
+        byte[] jar = votingPluginJar();
+        String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(jar));
+        Map<String, String> uploadHeaders = Map.of("Authorization", "Bearer " + adminToken,
+                "Content-Type", "application/java-archive", "X-Filename", "VotingPlugin.jar");
+        assertEquals(201, sendBytes("POST", "/api/v1/artifacts/votingplugin", jar, uploadHeaders).statusCode());
+        String deployment = "{\"artifactId\":\"" + sha256 + "\",\"sha256\":\"" + sha256
+                + "\",\"size\":" + jar.length + ",\"nodeIds\":[\"proxy-a\"]}";
+        java.util.concurrent.CountDownLatch reading = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        InputStream heldBody = new java.io.FilterInputStream(new ByteArrayInputStream(jar)) {
+            @Override public int read(byte[] bytes, int offset, int length) throws IOException {
+                reading.countDown();
+                try {
+                    if (!release.await(10, TimeUnit.SECONDS)) throw new IOException("Test upload was not released");
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(failure);
+                }
+                return super.read(bytes, offset, length);
+            }
+        };
+        BoundaryExchange owner = new BoundaryExchange("/api/v1/artifacts/votingplugin",
+                new InetSocketAddress("127.0.0.1", 50000), heldBody, uploadHeaders);
+        java.util.concurrent.CompletableFuture<Void> upload = java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                handleAtBoundary(owner);
+            } catch (Exception failure) {
+                throw new java.util.concurrent.CompletionException(failure);
+            }
+        });
+        try {
+            assertTrue(reading.await(3, TimeUnit.SECONDS), "Owner must start reading under lifecycle ownership");
+            InputStream unreadBody = new InputStream() {
+                @Override public int read() { throw new AssertionError("Busy upload must not acquire its body"); }
+            };
+            BoundaryExchange busyUpload = new BoundaryExchange("/api/v1/artifacts/votingplugin",
+                    new InetSocketAddress("127.0.0.1", 50001), unreadBody, uploadHeaders);
+            handleAtBoundary(busyUpload);
+            assertEquals(409, busyUpload.status);
+            assertFalse(busyUpload.bodyAcquired);
+            assertEquals("ARTIFACT_LIFECYCLE_BUSY", json.readTree(busyUpload.response.toByteArray())
+                    .at("/error/code").asText());
+
+            java.util.List<java.util.concurrent.CompletableFuture<HttpResponse<String>>> competing =
+                    new java.util.ArrayList<>();
+            for (int index = 0; index < 24; index++) {
+                int kind = index % 3;
+                HttpRequest.Builder request = HttpRequest.newBuilder(base.resolve(kind == 0
+                        ? "/api/v1/artifacts/votingplugin" : kind == 1
+                        ? "/api/v1/artifacts/votingplugin/jenkins" : "/api/v1/deployments"))
+                        .timeout(Duration.ofSeconds(3));
+                if (kind == 0) {
+                    uploadHeaders.forEach(request::header);
+                    request.POST(HttpRequest.BodyPublishers.ofByteArray(jar));
+                } else {
+                    request.header("Authorization", "Bearer " + adminToken).header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(kind == 1 ? "{\"buildNumber\":1}" : deployment));
+                }
+                competing.add(client.sendAsync(request.build(), HttpResponse.BodyHandlers.ofString()));
+            }
+            assertEquals(200, get("/api/v1/health", null).statusCode());
+            assertEquals(200, get("/api/v1/nodes", adminToken).statusCode());
+            for (var response : competing) {
+                assertError(response.get(3, TimeUnit.SECONDS), 409, "ARTIFACT_LIFECYCLE_BUSY");
+            }
+        } finally {
+            release.countDown();
+            upload.get(3, TimeUnit.SECONDS);
+        }
+        assertEquals(201, owner.status, owner.response.toString(StandardCharsets.UTF_8));
+        assertEquals(202, send("POST", "/api/v1/deployments", deployment, adminToken).statusCode());
+        assertEquals(201, sendBytes("POST", "/api/v1/artifacts/votingplugin", jar, uploadHeaders).statusCode());
+    }
+
+    @Test void rejectedArtifactReleasesLifecycleAdmission() throws Exception {
+        Map<String, String> headers = Map.of("Authorization", "Bearer " + adminToken,
+                "Content-Type", "application/java-archive", "X-Filename", "VotingPlugin.jar");
+        assertError(sendBytes("POST", "/api/v1/artifacts/votingplugin", new byte[] {1, 2, 3}, headers),
+                400, "ARTIFACT_REJECTED");
+        assertEquals(201, sendBytes("POST", "/api/v1/artifacts/votingplugin", votingPluginJar(), headers).statusCode());
+    }
+
+    @Test void scopedIpv6SocketPeerIsClassifiedAtTheUploadBoundary() throws Exception {
+        java.net.Inet6Address peer = java.net.Inet6Address.getByAddress(null,
+                HexFormat.of().parseHex("fe800000000000000000000000000001"), 2);
+        assertTrue(peer.getHostAddress().endsWith("%2"));
+        // External literals remain scope-free and cannot trigger a hostname lookup.
+        assertFalse(ControlHttpServer.isLocalNetworkAddress(peer.getHostAddress()));
+        Map<String, String> headers = Map.of("Authorization", "Bearer " + adminToken,
+                "Content-Type", "application/java-archive", "X-Filename", "VotingPlugin.jar");
+        BoundaryExchange direct = new BoundaryExchange("/api/v1/artifacts/votingplugin",
+                new InetSocketAddress(peer, 50000), new ByteArrayInputStream(votingPluginJar()), headers);
+        handleAtBoundary(direct);
+        assertEquals(201, direct.status, direct.response.toString(StandardCharsets.UTF_8));
+
+        BoundaryExchange forwarded = new BoundaryExchange("/api/v1/artifacts/votingplugin",
+                new InetSocketAddress(peer, 50000), new ByteArrayInputStream(votingPluginJar()), headers);
+        forwarded.requestHeaders.set("Forwarded", "for=192.168.0.20;proto=https");
+        handleAtBoundary(forwarded);
+        assertEquals(403, forwarded.status);
+        assertFalse(forwarded.bodyAcquired);
+
+        BoundaryExchange unresolved = new BoundaryExchange("/api/v1/artifacts/votingplugin",
+                InetSocketAddress.createUnresolved("localhost", 50000),
+                new ByteArrayInputStream(votingPluginJar()), headers);
+        handleAtBoundary(unresolved);
+        assertEquals(403, unresolved.status);
+        assertFalse(unresolved.bodyAcquired);
+    }
+
     @Test void missingInvalidWrongNodeRevokedAndRotatedCredentialsFailWithoutDisclosure() throws Exception {
         assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), null));
         assertAuthFailure(send("POST", "/api/v1/nodes/register", registration(), "wrong"));
@@ -1820,6 +1934,55 @@ class ControlHttpServerTest {
     private void assertError(HttpResponse<String> response, int status, String code) throws Exception {
         assertEquals(status, response.statusCode(), response.body());
         assertEquals(code, json.readTree(response.body()).at("/error/code").asText(), response.body());
+    }
+
+    private void handleAtBoundary(HttpExchange exchange) throws Exception {
+        var handle = ControlHttpServer.class.getDeclaredMethod("handle", HttpExchange.class);
+        handle.setAccessible(true);
+        try {
+            handle.invoke(server, exchange);
+        } catch (java.lang.reflect.InvocationTargetException failure) {
+            if (failure.getCause() instanceof Exception cause) throw cause;
+            if (failure.getCause() instanceof Error cause) throw cause;
+            throw failure;
+        }
+    }
+
+    private static final class BoundaryExchange extends HttpExchange {
+        private final Headers requestHeaders = new Headers();
+        private final Headers responseHeaders = new Headers();
+        private final ByteArrayOutputStream response = new ByteArrayOutputStream();
+        private final String path;
+        private final InetSocketAddress remote;
+        private final InputStream body;
+        private int status = -1;
+        private boolean bodyAcquired;
+
+        private BoundaryExchange(String path, InetSocketAddress remote, InputStream body,
+                                 Map<String, String> headers) {
+            this.path = path;
+            this.remote = remote;
+            this.body = body;
+            headers.forEach(requestHeaders::set);
+        }
+
+        @Override public Headers getRequestHeaders() { return requestHeaders; }
+        @Override public Headers getResponseHeaders() { return responseHeaders; }
+        @Override public URI getRequestURI() { return URI.create(path); }
+        @Override public String getRequestMethod() { return "POST"; }
+        @Override public HttpContext getHttpContext() { return null; }
+        @Override public void close() {}
+        @Override public InputStream getRequestBody() { bodyAcquired = true; return body; }
+        @Override public OutputStream getResponseBody() { return response; }
+        @Override public void sendResponseHeaders(int code, long length) { status = code; }
+        @Override public InetSocketAddress getRemoteAddress() { return remote; }
+        @Override public int getResponseCode() { return status; }
+        @Override public InetSocketAddress getLocalAddress() { return new InetSocketAddress(0); }
+        @Override public String getProtocol() { return "HTTP/1.1"; }
+        @Override public Object getAttribute(String name) { return null; }
+        @Override public void setAttribute(String name, Object value) {}
+        @Override public void setStreams(InputStream input, OutputStream output) {}
+        @Override public HttpPrincipal getPrincipal() { return null; }
     }
 
 	private static final class FailingHeadersExchange extends HttpExchange {

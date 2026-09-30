@@ -146,6 +146,8 @@ JAR uploads through a reverse proxy require HTTPS: set `CONTROL_SECURE_COOKIE=tr
 `CONTROL_TRUSTED_PROXY_ADDRESSES`, and configure it to overwrite (never append or pass through) `X-Forwarded-Proto`.
 Plain HTTP uploads through a proxy are rejected because the original client address cannot be proven. Direct plain-HTTP
 uploads remain available to loopback, link-local, and private-network clients.
+Artifact ingestion and deployment creation are serialized. Concurrent requests return `409 ARTIFACT_LIFECYCLE_BUSY`;
+retry after the active request completes.
 
 The server also uses a bounded HTTP executor (8 active requests and a 32-request queue), a 4 MiB limit for generic JSON
 requests, and a separate bounded streaming artifact-upload route with a 64 MiB maximum. JSON depth/string/number sizes

@@ -68,6 +68,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** Bounded HTTP adapter. Node writes are enrolled; node listings require the local admin credential. */
 public final class ControlHttpServer implements AutoCloseable {
@@ -120,7 +121,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private final ArtifactStore artifactStore;
     private final JenkinsVotingPluginSource jenkinsSource = new JenkinsVotingPluginSource();
     private final DeploymentOperations deploymentOperations;
-    private final Object deploymentArtifactLifecycle = new Object();
+    private final ReentrantLock deploymentArtifactLifecycle = new ReentrantLock();
     private final ThreadPoolExecutor executor;
     private final ThreadPoolExecutor passwordExecutor;
     private final ScheduledExecutorService artifactTransferTimeouts;
@@ -336,7 +337,8 @@ public final class ControlHttpServer implements AutoCloseable {
                         "PREVIEW_INCOMPLETE", "APPROVAL_REQUIRED", "NODE_UNAVAILABLE", "OPERATION_LIMIT",
                         "REGISTRY_LIMIT", "REGISTRY_CHANGED", "TASK_NOT_CLAIMED", "TASK_LEASE_EXPIRED",
                         "SETUP_COMPLETE", "OPERATION_INCOMPLETE", "PREVIEW_REQUIRED",
-                        "RETRY_REQUIRES_INPUT", "TARGET_CHANGED", "OPERATION_CONFLICT" -> 409;
+                        "RETRY_REQUIRES_INPUT", "TARGET_CHANGED", "OPERATION_CONFLICT",
+                        "ARTIFACT_LIFECYCLE_BUSY" -> 409;
                 case "UNSUPPORTED_MEDIA_TYPE" -> 415;
                 case "LOCAL_NETWORK_REQUIRED" -> 403;
                 default -> 400;
@@ -534,12 +536,10 @@ public final class ControlHttpServer implements AutoCloseable {
             requireBodyWithin(exchange, ArtifactStore.MAX_UPLOAD_BYTES);
             String filename = requiredHeader(exchange, "X-Filename");
             String claimedSha256 = optionalSingleHeader(exchange, "X-Artifact-SHA256");
-            ArtifactStore.Artifact artifact;
-            synchronized (deploymentArtifactLifecycle) {
-                artifact = withArtifactTransferDeadline(exchange,
+            ArtifactStore.Artifact artifact = withDeploymentArtifactLifecycle(() ->
+                    withArtifactTransferDeadline(exchange,
                         () -> artifactStore.upload(exchange.getRequestBody(), filename, claimedSha256,
-                                deploymentOperations.referencedArtifactIds()));
-            }
+                                deploymentOperations.referencedArtifactIds())));
             send(exchange, 201, Map.of("artifactId", artifact.artifactId(), "sha256", artifact.artifactId(),
                     "size", artifact.size(), "fileName", artifact.displayFilename()));
             return;
@@ -558,26 +558,27 @@ public final class ControlHttpServer implements AutoCloseable {
                 authenticateAdmin(exchange, true);
                 JenkinsArtifactRequest request = read(exchange, JenkinsArtifactRequest.class);
                 requireRequest(request);
-                try (JenkinsVotingPluginSource.Download download = jenkinsSource.open(request.buildNumber())) {
-                    ArtifactStore.Artifact artifact;
-                    try {
-                        synchronized (deploymentArtifactLifecycle) {
+                Map<String, Object> artifactResponse = withDeploymentArtifactLifecycle(() -> {
+                    try (JenkinsVotingPluginSource.Download download = jenkinsSource.open(request.buildNumber())) {
+                        ArtifactStore.Artifact artifact;
+                        try {
                             artifact = withDownloadDeadline(download, () -> artifactStore.upload(download.body(),
                                     download.build().fileName(), null, deploymentOperations.referencedArtifactIds()));
+                        } catch (ArtifactException failure) {
+                            if (download.sourceReadFailed()) throw new JenkinsSourceException(failure);
+                            throw failure;
                         }
+                        return Map.of("artifactId", artifact.artifactId(),
+                                "sha256", artifact.artifactId(), "size", artifact.size(),
+                                "fileName", artifact.displayFilename(), "buildNumber", download.build().buildNumber(),
+                                "timestamp", download.build().timestamp());
                     } catch (ArtifactException failure) {
-                        if (download.sourceReadFailed()) throw new JenkinsSourceException(failure);
                         throw failure;
+                    } catch (IOException failure) {
+                        throw new JenkinsSourceException(failure);
                     }
-                    send(exchange, 201, Map.of("artifactId", artifact.artifactId(),
-                            "sha256", artifact.artifactId(), "size", artifact.size(),
-                            "fileName", artifact.displayFilename(), "buildNumber", download.build().buildNumber(),
-                            "timestamp", download.build().timestamp()));
-                } catch (ArtifactException failure) {
-                    throw failure;
-                } catch (IOException failure) {
-                    throw new JenkinsSourceException(failure);
-                }
+                });
+                send(exchange, 201, artifactResponse);
                 return;
             }
             exchange.getResponseHeaders().set("Allow", "GET, POST");
@@ -599,15 +600,14 @@ public final class ControlHttpServer implements AutoCloseable {
                 authenticateAdmin(exchange, true);
                 DeploymentRequest request = read(exchange, DeploymentRequest.class);
                 requireRequest(request);
-                DeploymentResult deployment;
-                synchronized (deploymentArtifactLifecycle) {
+                DeploymentResult deployment = withDeploymentArtifactLifecycle(() -> {
                     ArtifactStore.Artifact artifact = artifactStore.describe(request.artifactId());
                     if (!artifact.artifactId().equals(request.sha256()) || artifact.size() != request.size()) {
                         throw new ValidationException("ARTIFACT_MISMATCH",
                                 "Deployment metadata does not match the verified artifact", List.of());
                     }
-                    deployment = deploymentOperations.create(request);
-                }
+                    return deploymentOperations.create(request);
+                });
                 send(exchange, 202, deployment);
                 return;
             }
@@ -1112,6 +1112,18 @@ public final class ControlHttpServer implements AutoCloseable {
         }
     }
 
+    private <T> T withDeploymentArtifactLifecycle(IoSupplier<T> operation) throws IOException {
+        if (!deploymentArtifactLifecycle.tryLock()) {
+            throw new ValidationException("ARTIFACT_LIFECYCLE_BUSY",
+                    "Artifact ingestion or deployment creation is in progress; retry after it completes", List.of());
+        }
+        try {
+            return operation.get();
+        } finally {
+            deploymentArtifactLifecycle.unlock();
+        }
+    }
+
     private <T> T withArtifactTransferDeadline(HttpExchange exchange, IoSupplier<T> transfer) throws IOException {
         ScheduledFuture<?> timeout = artifactTransferTimeouts.schedule(exchange::close,
                 ARTIFACT_TRANSFER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
@@ -1202,9 +1214,8 @@ public final class ControlHttpServer implements AutoCloseable {
         if (exchange instanceof HttpsExchange) return;
         InetSocketAddress remote = exchange.getRemoteAddress();
         if (remote == null) throw localUploadRequired();
-        String peer = remote.getAddress() == null ? remote.getHostString() : remote.getAddress().getHostAddress();
-        if (!artifactUploadTransportAllowed(peer, singleHeader(exchange, "X-Forwarded-For"),
-                singleHeader(exchange, "X-Forwarded-Proto"), trustedProxyAddresses, secureCookies,
+        if (!artifactUploadTransportAllowed(remote, singleHeader(exchange, "X-Forwarded-Proto"),
+                trustedProxyAddresses, secureCookies,
                 hasForwardedHeaders(exchange))) {
             throw localUploadRequired();
         }
@@ -1212,11 +1223,20 @@ public final class ControlHttpServer implements AutoCloseable {
 
     static boolean artifactUploadTransportAllowed(String peer, String forwardedFor, String forwardedProto,
                                                   Set<String> trustedProxies, boolean trustForwardedHttps) {
-        return artifactUploadTransportAllowed(peer, forwardedFor, forwardedProto, trustedProxies,
+        return artifactUploadTransportAllowed(peer, null, forwardedProto, trustedProxies,
                 trustForwardedHttps, forwardedFor != null || forwardedProto != null);
     }
 
-    private static boolean artifactUploadTransportAllowed(String peer, String forwardedFor, String forwardedProto,
+    private static boolean artifactUploadTransportAllowed(InetSocketAddress remote, String forwardedProto,
+                                                          Set<String> trustedProxies,
+                                                          boolean trustForwardedHttps, boolean forwardedHeadersPresent) {
+        InetAddress resolved = remote.getAddress();
+        String peer = resolved == null ? remote.getHostString() : resolved.getHostAddress();
+        return artifactUploadTransportAllowed(peer, resolved, forwardedProto, trustedProxies, trustForwardedHttps,
+                forwardedHeadersPresent);
+    }
+
+    private static boolean artifactUploadTransportAllowed(String peer, InetAddress resolved, String forwardedProto,
                                                           Set<String> trustedProxies, boolean trustForwardedHttps,
                                                           boolean forwardedHeadersPresent) {
         boolean trustedProxy = trustedProxies.contains(peer);
@@ -1224,8 +1244,7 @@ public final class ControlHttpServer implements AutoCloseable {
             return trustForwardedHttps && "https".equalsIgnoreCase(forwardedProto);
         }
         if (forwardedHeadersPresent) return false;
-        String canonical = canonicalIpLiteral(peer);
-        return canonical != null && isLocalNetworkAddress(canonical);
+        return resolved != null ? isLocalNetworkAddress(resolved) : isLocalNetworkAddress(peer);
     }
 
     private static boolean hasForwardedHeaders(HttpExchange exchange) {

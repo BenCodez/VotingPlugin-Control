@@ -516,6 +516,11 @@ the peer in `CONTROL_TRUSTED_PROXY_ADDRESSES`, `CONTROL_SECURE_COOKIE=true`, and
 `X-Forwarded-Proto`. Plain HTTP through a proxy is rejected because forwarded client identity cannot safely prove the
 upload originated from a private address.
 
+Artifact ingestion and deployment creation share one admission slot to protect retained artifact references during
+eviction. Concurrent uploads, Jenkins ingestion, or deployment creation return `409 ARTIFACT_LIFECYCLE_BUSY` immediately;
+retry after the active request completes. Jenkins reserves the slot before opening its remote download, and admitted
+artifact body transfers retain the 120-second deadline.
+
 | Boundary | Limit/behavior |
 | --- | --- |
 | Generic JSON request | 4 MiB; bounded Jackson depth/string/number constraints; duplicate and trailing JSON rejected |
