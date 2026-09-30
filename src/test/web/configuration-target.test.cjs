@@ -139,8 +139,13 @@ function targetHarness({dirty = false, confirm = true} = {}) {
     workspace: {inspectedServerId: 'backend', selectedTargetIds: new Set(['backend'])},
     selectedNodes: new Set(['backend']), resetCount: 0, reads: [], confirmations: [],
     configurationTargetNodes: () => [{nodeId: 'backend'}, {nodeId: 'proxy'}],
+    nodeIndex: new Map([
+      ['backend', {nodeId: 'backend', platform: 'BUKKIT'}],
+      ['proxy', {nodeId: 'proxy', platform: 'VELOCITY'}]
+    ]),
+    isBackend: node => node?.platform === 'BUKKIT',
     window: {confirm(message) { context.confirmations.push(message); return confirm; }},
-    clearSessionRewardFileOptions(preserve) { assert.equal(preserve, true); },
+    clearSessionRewardFileOptions(preserve) { context.preservedRewardOptions = preserve; },
     resetFileEditorForSelection() { context.resetCount++; context.configurationDirty = false; },
     renderConfigurationTargetPicker() { context.configurationTarget.value = context.configurationTargetNodeId; },
     renderConfigurationSelection() {}, updateConfigurationButtons() {}, updateExtendedButtons() {},
@@ -168,8 +173,20 @@ test('changing Full YAML target preserves the source, workspace, routing and all
   assert.equal(context.routingDirty, true);
   assert.equal(context.routingDraftNodeId, 'backend');
   assert.equal(context.resetCount, 1);
+  assert.equal(context.preservedRewardOptions, false);
   assert.deepEqual(context.confirmations, []);
   assert.deepEqual(context.reads, ['configurations']);
+});
+
+test('switching Full YAML between backends preserves discovered reward files', () => {
+  const context = targetHarness();
+  context.configurationTargetNodeId = 'backend';
+  assert.equal(vm.runInContext("selectConfigurationTarget('proxy')", context), true);
+  assert.equal(context.preservedRewardOptions, false);
+  context.configurationTargetNodeId = null;
+  context.selectedServerId = 'proxy';
+  assert.equal(vm.runInContext("selectConfigurationTarget('backend')", context), true);
+  assert.equal(context.preservedRewardOptions, true);
 });
 
 test('declining a Full YAML target change retains the editor and restores the target picker', () => {

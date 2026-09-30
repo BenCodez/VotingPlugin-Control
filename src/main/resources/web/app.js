@@ -3388,7 +3388,11 @@ function selectConfigurationTarget(nodeId, automaticRead = true) {
     return false;
   }
   configurationTargetNodeId = nodeId;
-  clearSessionRewardFileOptions(true);
+  // Session-discovered reward files belong to backend configuration. Keep the
+  // selected option while moving between backends, but remove it before a
+  // proxy target can display a file it cannot read or apply.
+  const target = nodeId ? nodeIndex.get(nodeId) : null;
+  clearSessionRewardFileOptions(Boolean(target && isBackend(target)));
   resetFileEditorForSelection('YAML target changed. Read the selected file before previewing changes.');
   inputGeneration++;
   renderConfigurationTargetPicker();
