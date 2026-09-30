@@ -27,6 +27,34 @@ test('reads eligible targets once, retains typed snapshots, and makes no automat
   assert.equal(editor.model.targets.get('b').status, 'ERROR');
 });
 
+test('groups reads by target file and preserves typed string and enum overrides', async () => {
+  const f = fixture([{id: 'backend', sessionId: 's1', online: true, supported: true, fileName: 'Config.yml'},
+    {id: 'proxy', sessionId: 's2', online: true, supported: true, fileName: 'bungeeconfig.yml'}]);
+  f.adapter.request = async (_path, body) => ({readOperationId: body.readOperationId, nodeId: body.nodeId,
+    sessionId: f.adapter.targets().find(target => target.id === body.nodeId).sessionId, revision: 'r1',
+    fields: {Debug: {status: 'AVAILABLE', value: 'NONE'}, BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'}}});
+  const editor = create(f.adapter); await editor.read();
+  const reads = f.calls.filter(call => call[0].endsWith('/read'));
+  assert.equal(reads.length, 2);
+  assert.deepEqual(new Set(reads.map(call => call[1].configuration.fileName)), new Set(['Config.yml', 'bungeeconfig.yml']));
+  editor.edit('Debug', 'INFO'); editor.edit('BedrockPlayerPrefix', '^');
+  assert.deepEqual(editor.model.plans().flatMap(plan => Object.keys(plan.overrides)).sort(), ['BedrockPlayerPrefix', 'Debug', 'BedrockPlayerPrefix', 'Debug'].sort());
+});
+
+test('chunks more than one hundred targets for the same managed file', async () => {
+  const targets = Array.from({length: 101}, (_, index) => ({id: `proxy-${index}`, sessionId: `s-${index}`,
+    online: true, supported: true, fileName: 'bungeeconfig.yml'}));
+  const f = fixture(targets);
+  const editor = create(f.adapter); await editor.read();
+  const reads = f.calls.filter(call => call[0].endsWith('/read'));
+  assert.equal(reads.length, 2);
+  assert.deepEqual(reads.map(call => call[1].nodeIds.length).sort((left, right) => left - right), [1, 100]);
+  assert.equal([...editor.model.targets.values()].every(target => target.status === 'AVAILABLE'), true);
+  editor.edit(FIELD, true);
+  assert.equal(await editor.preview(), false);
+  assert.match(editor.state.error, /At most 14 changed targets/);
+});
+
 test('single-flight reads ignore a late result from an old context', async () => {
   const f = fixture(); const gate = deferred();
   f.adapter.operation = async () => { await gate.promise; return {operationId: 'r', results: {a: {success: true, nodeId: 'a', sessionId: 's1', revision: 'r1'}}}; };
@@ -249,4 +277,57 @@ test('explicit edits discard abandoned exact approvals without queuing a write',
   assert.ok(disposal);
   assert.deepEqual(disposal[1], {previewOperationId: 'preview-a', approvalToken: 'token-a'});
   assert.equal(f.calls.some(([path]) => path.endsWith('/apply')), false);
+});
+
+test('a failed proxy file read does not discard a successful backend group', async () => {
+  const f = fixture([{id: 'backend', sessionId: 's1', online: true, supported: true, fileName: 'Config.yml'},
+    {id: 'proxy', sessionId: 's2', online: true, supported: true, fileName: 'bungeeconfig.yml'}]);
+  const original = f.adapter.operation;
+  f.adapter.operation = async (path, body) => {
+    if (path.endsWith('/read') && body.configuration.fileName === 'bungeeconfig.yml') throw new Error('proxy unavailable');
+    return original(path, body);
+  };
+  f.adapter.request = async (_path, body) => ({readOperationId: body.readOperationId, nodeId: body.nodeId,
+    sessionId: f.adapter.targets().find(target => target.id === body.nodeId).sessionId, revision: 'r1',
+    fields: {[FIELD]: {status: 'AVAILABLE', value: false}}});
+  const editor = create(f.adapter); await editor.read();
+  assert.equal(editor.model.targets.get('backend').status, 'AVAILABLE');
+  assert.equal(editor.model.targets.get('proxy').status, 'ERROR');
+});
+
+const {healthChecks} = require('../../main/resources/web/general-settings.js');
+function healthModel(values) {
+  return {targets: new Map(values.map(target => [target.id, {status: 'AVAILABLE', role: 'BACKEND', fields: {
+    AutoCreateVoteSites: {status: 'AVAILABLE', value: false},
+    OnlineMode: {status: 'AVAILABLE', value: true},
+    BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'},
+    AllowUnjoined: {status: 'AVAILABLE', value: true}
+  }, ...target}]))};
+}
+test('fresh health checks warn for real network configuration problems without edits', () => {
+  const model = healthModel([{id: 'proxy', role: 'PROXY'}, {id: 'a', managedByProxy: true, reportingProxyIds: ['proxy'],
+    fields: {AutoCreateVoteSites: {status: 'AVAILABLE', value: true}, OnlineMode: {status: 'AVAILABLE', value: false},
+      BedrockPlayerPrefix: {status: 'AVAILABLE', value: '^'}, AllowUnjoined: {status: 'AVAILABLE', value: false}}}]);
+  assert.deepEqual(healthChecks(model).map(check => check.status), ['WARNING', 'WARNING', 'WARNING', 'WARNING']);
+  assert.deepEqual(healthChecks(model).find(check => check.path === 'AllowUnjoined').nodeIds, ['a']);
+});
+test('healthy proxy prerequisites do not mistake the proxy preference for a mismatch', () => {
+  const model = healthModel([{id: 'proxy', role: 'PROXY', fields: {OnlineMode: {status: 'AVAILABLE', value: true},
+    BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'}, AllowUnjoined: {status: 'AVAILABLE', value: false}}},
+    {id: 'a', managedByProxy: true, reportingProxyIds: ['proxy']}]);
+  assert.ok(healthChecks(model).every(check => check.status === 'PASS'));
+  assert.ok(healthChecks(model).every(check => check.title.endsWith('is verified')));
+});
+test('offline, unsupported and missing fields remain unknown rather than healthy', () => {
+  for (const target of [{status: 'ERROR'}, {status: 'UNSUPPORTED'}, {fields: {}}, {networkIncomplete: true}]) {
+    const checks = healthChecks(healthModel([{id: 'a', ...target}]));
+    assert.ok(checks.every(check => check.status === 'UNKNOWN'));
+    assert.ok(checks.every(check => check.title.endsWith('is not verified')));
+  }
+});
+test('global health does not compare unrelated standalone networks', () => {
+  const model = healthModel([{id: 'a'}, {id: 'b', fields: {OnlineMode: {status: 'AVAILABLE', value: false},
+    BedrockPlayerPrefix: {status: 'AVAILABLE', value: '^'}, AutoCreateVoteSites: {status: 'AVAILABLE', value: false}}}]);
+  assert.ok(healthChecks(model).every(check => check.status === 'PASS'));
+  assert.ok(healthChecks(model).every(check => check.title.endsWith('is verified')));
 });

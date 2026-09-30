@@ -43,7 +43,7 @@ function harness() {
     return elements.get(selector);
   };
   const context = {
-    settingsEditor: {clear() {}}, voteSitesEditor: {clear() {}}, rewardsEditor: {clear() {}},
+    settingsHealthReader: null, settingsEditor: {clear() {}}, voteSitesEditor: {clear() {}}, rewardsEditor: {clear() {}},
     workspace: {logout() {}}, registryAvailable: true, authenticationGeneration: 3, authenticated: true, csrfToken: 'csrf',
     approvedPreview: {}, approvedFilePreview: {}, approvedQuickPreview: {}, loadedQuickSetup: {}, quickSetupDirty: true,
     inputGeneration: 2, logout: new Element(), sidebarToggle: new Element(), globalSearch: new Element(),

@@ -149,12 +149,13 @@ public final class ConfigurationOperations implements AutoCloseable {
         return view(apply);
     }
 
-    /** Typed view of a retained, successful read of this particular backend's Config.yml. */
+    /** Typed view of a retained successful backend Config.yml or proxy bungeeconfig.yml read. */
     public synchronized SettingsState generalSettingsState(UUID readId, String nodeId) {
-        ConfigurationTaskResult snapshot = settingsSnapshot(readId, nodeId);
+        SettingsSnapshot source = settingsSnapshot(readId, nodeId);
+        ConfigurationTaskResult snapshot = source.result();
         try {
             return new SettingsState(readId, nodeId, snapshot.sessionId(), snapshot.revision(),
-                    GeneralSettingsDocument.fields(snapshot.configuration().content()));
+                    source.profile(), GeneralSettingsDocument.fields(snapshot.configuration().content(), source.profile()));
         } catch (IllegalArgumentException malformed) {
             throw new ValidationException("INVALID_CONFIGURATION", "General Settings requires an unambiguous YAML mapping", List.of(nodeId));
         }
@@ -162,21 +163,20 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     public synchronized OperationView createGeneralSettingsPreview(UUID readId, String nodeId,
             Map<String, Object> overrides) {
-        ConfigurationTaskResult snapshot = settingsSnapshot(readId, nodeId);
-        if (overrides == null || overrides.isEmpty() || overrides.size() > 9
-                || overrides.values().stream().anyMatch(value -> !(value instanceof Boolean))) {
-            throw invalid("General Settings requires one to nine boolean edits");
+        SettingsSnapshot source = settingsSnapshot(readId, nodeId);
+        ConfigurationTaskResult snapshot = source.result();
+        if (overrides == null || overrides.isEmpty()
+                || overrides.size() > GeneralSettingsDocument.maxOverrides(source.profile())) {
+            throw invalid("General Settings requires one or more bounded typed edits");
         }
-        Map<String, Boolean> edits = new LinkedHashMap<>();
-        overrides.forEach((key, value) -> edits.put(key, (Boolean) value));
         String proposal;
         try {
-            proposal = GeneralSettingsDocument.patch(snapshot.configuration().content(), edits);
+            proposal = GeneralSettingsDocument.patch(snapshot.configuration().content(), source.profile(), overrides);
         } catch (IllegalArgumentException unsupported) {
-            throw invalid("Only present, supported General Settings booleans can be edited");
+            throw invalid("Only present, supported General Settings values can be edited");
         }
-        ManagedConfiguration configuration = ManagedConfiguration.file("Config.yml", proposal);
-        ValidatedTargets targets = validateTargets(List.of(nodeId), FILE_CAPABILITY);
+        ManagedConfiguration configuration = ManagedConfiguration.file(GeneralSettingsDocument.fileName(source.profile()), proposal);
+        ValidatedTargets targets = validateTargets(List.of(nodeId), configuration.capability());
         validateConfigurationTargets(targets, configuration);
         byte[] token = new byte[32];
         random.nextBytes(token);
@@ -184,8 +184,27 @@ public final class ConfigurationOperations implements AutoCloseable {
                 Base64.getUrlEncoder().withoutPadding().encodeToString(token), Map.of(nodeId, snapshot.revision()));
     }
 
-    private ConfigurationTaskResult settingsSnapshot(UUID readId, String nodeId) {
-        return fileSnapshot(readId, nodeId, "Config.yml");
+    private SettingsSnapshot settingsSnapshot(UUID readId, String nodeId) {
+        prune();
+        StoredOperation read = operations.get(readId);
+        if (read == null || !"READ".equals(read.type)
+                || !ManagedConfiguration.FILE.equals(read.configuration.domain())) {
+            throw new ValidationException("READ_REQUIRED", "A retained successful General Settings read is required",
+                    List.of(nodeId));
+        }
+        GeneralSettingsDocument.Profile profile;
+        try {
+            profile = GeneralSettingsDocument.profileForFile(read.configuration.fileName());
+        } catch (IllegalArgumentException invalidFile) {
+            throw new ValidationException("READ_REQUIRED", "A retained successful General Settings read is required",
+                    List.of(nodeId));
+        }
+        NodeStatus node = registry.find(nodeId);
+        boolean proxy = node != null && !"BUKKIT".equalsIgnoreCase(node.platform());
+        if (node == null || proxy != (profile == GeneralSettingsDocument.Profile.PROXY)) {
+            throw new ValidationException("TARGET_ROLE_CHANGED", "The target role changed; read it again", List.of(nodeId));
+        }
+        return new SettingsSnapshot(fileSnapshot(readId, nodeId, GeneralSettingsDocument.fileName(profile)), profile);
     }
 
     private ConfigurationTaskResult fileSnapshot(UUID readId, String nodeId, String fileName) {
@@ -203,13 +222,16 @@ public final class ConfigurationOperations implements AutoCloseable {
                     List.of(nodeId));
         }
         if (!Objects.equals(result.sessionId(), targets.sessions().get(nodeId))) {
-            throw new ValidationException("TARGET_CHANGED", "The backend reconnected; read it again", List.of(nodeId));
+            throw new ValidationException("TARGET_CHANGED", "The node reconnected; read it again", List.of(nodeId));
         }
         return result;
     }
 
     public record SettingsState(UUID readOperationId, String nodeId, UUID sessionId, String revision,
+            GeneralSettingsDocument.Profile profile,
             Map<String, GeneralSettingsDocument.Field> fields) { }
+
+    private record SettingsSnapshot(ConfigurationTaskResult result, GeneralSettingsDocument.Profile profile) { }
 
     /** Typed, secret-bounded inventory from one retained successful VoteSites.yml read. */
     public synchronized VoteSitesState voteSitesState(UUID readId, String nodeId) {

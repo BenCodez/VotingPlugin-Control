@@ -7,6 +7,7 @@
 
   const READ_STATUSES = new Set(['AVAILABLE', 'ERROR', 'UNSUPPORTED']);
   const FIELD_STATUSES = new Set(['AVAILABLE', 'MISSING', 'UNSUPPORTED']);
+  const NETWORK_FIELDS = new Set(['OnlineMode', 'BedrockPlayerPrefix', 'AllowUnjoined']);
 
   function string(value) { return typeof value === 'string' ? value : ''; }
 
@@ -29,9 +30,11 @@
     if (!fields || typeof fields !== 'object') return result;
     Object.keys(fields).forEach(function (path) {
       const source = fields[path] || {};
+      const value = typeof source.value === 'boolean' || typeof source.value === 'string' ? source.value : undefined;
+      const status = FIELD_STATUSES.has(source.status) ? source.status : 'MISSING';
       result[path] = {
-        status: FIELD_STATUSES.has(source.status) ? source.status : 'MISSING',
-        value: source.value === true
+        status: status === 'AVAILABLE' && value === undefined ? 'UNSUPPORTED' : status,
+        value
       };
     });
     return result;
@@ -50,6 +53,14 @@
     return {
       id: target.id,
       sessionId: string(target.sessionId),
+      fileName: string(target.fileName) || 'Config.yml',
+      platform: string(target.platform),
+      role: string(target.role),
+      managedByProxy: target.managedByProxy === true,
+      reportingProxyIds: Array.isArray(target.reportingProxyIds)
+        ? target.reportingProxyIds.filter(function (id) { return typeof id === 'string' && id; }).slice().sort() : [],
+      networkIncomplete: target.networkIncomplete === true,
+      networkOnly: target.networkOnly === true,
       status: 'MISSING',
       revision: '',
       fields: {},
@@ -75,7 +86,20 @@
           if (!target || typeof target.id !== 'string' || !target.id) return;
           const sessionId = string(target.sessionId);
           const current = this.targets.get(target.id);
-          next.set(target.id, current && current.sessionId === sessionId ? current : targetRecord({id: target.id, sessionId}));
+          if (current && current.sessionId === sessionId
+              && current.fileName === (string(target.fileName) || 'Config.yml')) {
+            current.fileName = string(target.fileName) || current.fileName || 'Config.yml';
+            current.platform = string(target.platform);
+            current.role = string(target.role);
+            current.managedByProxy = target.managedByProxy === true;
+            current.reportingProxyIds = Array.isArray(target.reportingProxyIds)
+              ? target.reportingProxyIds.filter(function (id) { return typeof id === 'string' && id; }).slice().sort() : [];
+            current.networkIncomplete = target.networkIncomplete === true;
+            current.networkOnly = target.networkOnly === true;
+            next.set(target.id, current);
+          } else {
+            next.set(target.id, targetRecord(target));
+          }
         }, this);
       }
       let changed = next.size !== this.targets.size;
@@ -114,7 +138,8 @@
     }
 
     edit(field, value) {
-      if (typeof field !== 'string' || !field || typeof value !== 'boolean') return this;
+      if (typeof field !== 'string' || !field
+          || (typeof value !== 'boolean' && typeof value !== 'string')) return this;
       this.dirty.set(field, value);
       this.invalidatePreview();
       return this;
@@ -135,18 +160,40 @@
     aggregate(field) {
       const entries = [];
       this.targets.forEach(function (target) {
+        if (target.networkOnly && !NETWORK_FIELDS.has(field)) return;
         let status = target.status === 'ERROR' ? 'ERROR'
           : target.status === 'UNSUPPORTED' ? 'UNSUPPORTED' : 'MISSING';
         let value;
         const snapshot = target.fields[field];
         if (target.status === 'AVAILABLE' && snapshot) {
           status = snapshot.status;
-          if (status === 'AVAILABLE') value = snapshot.value === true;
+          if (status === 'AVAILABLE') value = this.logicalValue(target, field, snapshot.value);
         }
-        entries.push({id: target.id, status, value, revision: target.revision, sessionId: target.sessionId,
-          code: target.code, message: target.message});
-      });
+        const entry = {id: target.id, status, value, revision: target.revision, sessionId: target.sessionId,
+          code: target.code, message: target.message};
+        if (field === 'AllowUnjoined') {
+          entry.rawValue = snapshot && snapshot.value;
+          entry.role = target.role;
+        }
+        entries.push(entry);
+      }, this);
       return aggregateSnapshots(entries, function (left, right) { return left === right; });
+    }
+
+    logicalValue(target, field, value) {
+      if (field !== 'AllowUnjoined' || target.role !== 'BACKEND' || !target.managedByProxy) return value;
+      const proxy = Array.from(this.targets.values()).find(function (candidate) {
+        const snapshot = candidate.fields.AllowUnjoined;
+        return target.reportingProxyIds.includes(candidate.id) && candidate.role === 'PROXY'
+          && candidate.status === 'AVAILABLE'
+          && snapshot && snapshot.status === 'AVAILABLE';
+      });
+      return proxy ? proxy.fields.AllowUnjoined.value : value;
+    }
+
+    requestedValue(target, field, requested) {
+      if (field === 'Debug' && target.role === 'PROXY' && requested === 'EXTRA') return 'INFO';
+      return field === 'AllowUnjoined' && target.role === 'BACKEND' && target.managedByProxy ? true : requested;
     }
 
     plans() {
@@ -155,14 +202,19 @@
         const overrides = {};
         const skipped = [];
         this.dirty.forEach(function (requested, field) {
+          if (target.networkOnly && !NETWORK_FIELDS.has(field)) return;
           const snapshot = target.status === 'AVAILABLE' ? target.fields[field] : null;
-          if (snapshot && snapshot.status === 'AVAILABLE') {
-            if (snapshot.value !== requested) overrides[field] = requested;
+          if (target.networkIncomplete
+              && (field === 'OnlineMode' || field === 'BedrockPlayerPrefix' || field === 'AllowUnjoined')) {
+            skipped.push({field, status: 'TOPOLOGY_INCOMPLETE'});
+          } else if (snapshot && snapshot.status === 'AVAILABLE') {
+            const targetRequest = this.requestedValue(target, field, requested);
+            if (snapshot.value !== targetRequest) overrides[field] = targetRequest;
           } else {
             skipped.push({field, status: target.status === 'ERROR' ? 'ERROR'
               : target.status === 'UNSUPPORTED' ? 'UNSUPPORTED' : snapshot ? snapshot.status : 'MISSING'});
           }
-        });
+        }, this);
         plans.push({id: target.id, revision: target.revision, sessionId: target.sessionId,
           overrides, skipped, status: target.status});
       }, this);
@@ -210,10 +262,14 @@
     clearConfirmedDirty() {
       if (!this.targets.size) return this;
       this.dirty.forEach(function (requested, field) {
-        const confirmed = Array.from(this.targets.values()).every(function (target) {
-          const snapshot = target.status === 'AVAILABLE' && target.fields[field];
-          return snapshot && snapshot.status === 'AVAILABLE' && snapshot.value === requested;
+        const relevantTargets = Array.from(this.targets.values()).filter(function (target) {
+          return !target.networkOnly || NETWORK_FIELDS.has(field);
         });
+        const confirmed = relevantTargets.length > 0 && relevantTargets.every(function (target) {
+          const snapshot = target.status === 'AVAILABLE' && target.fields[field];
+          return snapshot && snapshot.status === 'AVAILABLE'
+            && snapshot.value === this.requestedValue(target, field, requested);
+        }, this);
         if (confirmed) this.dirty.delete(field);
       }, this);
       return this;

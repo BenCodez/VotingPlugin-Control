@@ -64,10 +64,10 @@ test('signature and preview reject stale edits, revisions, resets, and target se
   assert.equal(state.dirty.size, 0);
 });
 
-test('rejects non-boolean edits and clears prior results when a target session changes', () => {
+test('accepts typed string edits and clears prior results when a target session changes', () => {
   const state = new MultiTargetState([{id: 'a', sessionId: 'one'}]);
-  state.edit(FIELD, 'true');
-  assert.equal(state.dirty.size, 0);
+  state.edit(FIELD, 'INFO');
+  assert.equal(state.dirty.get(FIELD), 'INFO');
   state.setApplyResult('a', {success: true});
   state.setTargets([{id: 'a', sessionId: 'two'}]);
   assert.equal(state.results.size, 0);
@@ -94,4 +94,119 @@ test('single target use, apply results, and zero-change preview work without sou
   assert.equal(state.previewCurrent().items[0].id, 'only');
   state.setApplyResult('only', {status: 'APPLIED'});
   assert.deepEqual(state.results.get('only'), {status: 'APPLIED'});
+});
+
+test('proxy AllowUnjoined remains effective while backend prerequisite is repaired', () => {
+  const state = new MultiTargetState([{id: 'proxy', sessionId: 'p', role: 'PROXY', fileName: 'bungeeconfig.yml'},
+    {id: 'backend-a', sessionId: 'a', role: 'BACKEND', managedByProxy: true, reportingProxyIds: ['proxy']},
+    {id: 'backend-b', sessionId: 'b', role: 'BACKEND', managedByProxy: true, reportingProxyIds: ['proxy']}]);
+  state.setRead('proxy', {status: 'AVAILABLE', sessionId: 'p', revision: 'p1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: false}}});
+  state.setRead('backend-a', {status: 'AVAILABLE', sessionId: 'a', revision: 'a1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: true}}});
+  state.setRead('backend-b', {status: 'AVAILABLE', sessionId: 'b', revision: 'b1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: false}}});
+  assert.equal(state.aggregate('AllowUnjoined').value, false);
+  state.edit('AllowUnjoined', false);
+  const plans = new Map(state.plans().map(plan => [plan.id, plan]));
+  assert.deepEqual(plans.get('proxy').overrides, {});
+  assert.deepEqual(plans.get('backend-a').overrides, {});
+  assert.deepEqual(plans.get('backend-b').overrides, {AllowUnjoined: true});
+});
+
+test('AllowUnjoined does not rewrite an unrelated standalone backend', () => {
+  const state = new MultiTargetState([{id: 'proxy', sessionId: 'p', role: 'PROXY', fileName: 'bungeeconfig.yml'},
+    {id: 'managed', sessionId: 'a', role: 'BACKEND', managedByProxy: true, reportingProxyIds: ['proxy']},
+    {id: 'standalone', sessionId: 'b', role: 'BACKEND', managedByProxy: false}]);
+  state.setRead('proxy', {status: 'AVAILABLE', sessionId: 'p', revision: 'p1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: false}}});
+  state.setRead('managed', {status: 'AVAILABLE', sessionId: 'a', revision: 'a1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: false}}});
+  state.setRead('standalone', {status: 'AVAILABLE', sessionId: 'b', revision: 'b1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: false}}});
+  state.edit('AllowUnjoined', false);
+  const plans = new Map(state.plans().map(plan => [plan.id, plan]));
+  assert.deepEqual(plans.get('managed').overrides, {AllowUnjoined: true});
+  assert.deepEqual(plans.get('standalone').overrides, {});
+});
+
+test('offline proxy topology retains the backend AllowUnjoined prerequisite', () => {
+  const state = new MultiTargetState([
+    {id: 'proxy', sessionId: 'p', role: 'PROXY', networkIncomplete: true},
+    {id: 'backend', sessionId: 'b', role: 'BACKEND', managedByProxy: true,
+      reportingProxyIds: ['proxy'], networkIncomplete: true}]);
+  state.setRead('proxy', {status: 'ERROR', code: 'OFFLINE'});
+  state.setRead('backend', {status: 'AVAILABLE', revision: 'r1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: true}}});
+  state.edit('AllowUnjoined', false);
+  const plans = new Map(state.plans().map(plan => [plan.id, plan]));
+  assert.deepEqual(plans.get('backend').overrides, {});
+  assert.equal(state.requestedValue(state.targets.get('backend'), 'AllowUnjoined', false), true);
+});
+
+test('each managed backend uses its own reporting proxy AllowUnjoined value', () => {
+  const state = new MultiTargetState([
+    {id: 'proxy-a', sessionId: 'pa', role: 'PROXY'},
+    {id: 'proxy-b', sessionId: 'pb', role: 'PROXY'},
+    {id: 'backend-a', sessionId: 'ba', role: 'BACKEND', managedByProxy: true, reportingProxyIds: ['proxy-a']},
+    {id: 'backend-b', sessionId: 'bb', role: 'BACKEND', managedByProxy: true, reportingProxyIds: ['proxy-b']}]);
+  state.setRead('proxy-a', {status: 'AVAILABLE', revision: 'pa1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: true}}});
+  state.setRead('proxy-b', {status: 'AVAILABLE', revision: 'pb1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: false}}});
+  state.setRead('backend-a', {status: 'AVAILABLE', revision: 'ba1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: true}}});
+  state.setRead('backend-b', {status: 'AVAILABLE', revision: 'bb1',
+    fields: {AllowUnjoined: {status: 'AVAILABLE', value: true}}});
+  assert.equal(state.logicalValue(state.targets.get('backend-a'), 'AllowUnjoined', true), true);
+  assert.equal(state.logicalValue(state.targets.get('backend-b'), 'AllowUnjoined', true), false);
+  assert.equal(state.aggregate('AllowUnjoined').state, 'MIXED');
+});
+
+test('proxy debug maps Extra requests to its supported Info level', () => {
+  const state = new MultiTargetState([{id: 'proxy', sessionId: 'p', role: 'PROXY', fileName: 'bungeeconfig.yml'},
+    {id: 'backend', sessionId: 'b', role: 'BACKEND'}]);
+  state.setRead('proxy', {status: 'AVAILABLE', sessionId: 'p', revision: 'p1',
+    fields: {Debug: {status: 'AVAILABLE', value: 'INFO'}}});
+  state.setRead('backend', {status: 'AVAILABLE', sessionId: 'b', revision: 'b1',
+    fields: {Debug: {status: 'AVAILABLE', value: 'INFO'}}});
+  state.edit('Debug', 'EXTRA');
+  const plans = new Map(state.plans().map(plan => [plan.id, plan]));
+  assert.deepEqual(plans.get('proxy').overrides, {});
+  assert.deepEqual(plans.get('backend').overrides, {Debug: 'EXTRA'});
+});
+
+test('network synchronization skips a backend whose proxy topology is truncated', () => {
+  const state = new MultiTargetState([
+    {id: 'proxy', sessionId: 'p', role: 'PROXY', networkIncomplete: true},
+    {id: 'backend', sessionId: 'b', role: 'BACKEND', networkIncomplete: true}]);
+  state.setRead('proxy', {status: 'AVAILABLE', sessionId: 'p', revision: 'p1', fields: {
+    OnlineMode: {status: 'AVAILABLE', value: false}, BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'}}});
+  state.setRead('backend', {status: 'AVAILABLE', sessionId: 'b', revision: 'b1', fields: {
+    OnlineMode: {status: 'AVAILABLE', value: false}, BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'}}});
+  state.edit('OnlineMode', true); state.edit('BedrockPlayerPrefix', '_'); state.edit('AllowUnjoined', false);
+  state.plans().forEach(plan => {
+    assert.deepEqual(plan.overrides, {});
+    assert.deepEqual(plan.skipped, [{field: 'OnlineMode', status: 'TOPOLOGY_INCOMPLETE'},
+      {field: 'BedrockPlayerPrefix', status: 'TOPOLOGY_INCOMPLETE'},
+      {field: 'AllowUnjoined', status: 'TOPOLOGY_INCOMPLETE'}]);
+  });
+});
+
+test('automatically discovered sibling backends receive only network-aware edits', () => {
+  const state = new MultiTargetState([
+    {id: 'selected', sessionId: 'a', role: 'BACKEND'},
+    {id: 'sibling', sessionId: 'b', role: 'BACKEND', networkOnly: true}
+  ]);
+  const fields = {
+    OnlineMode: {status: 'AVAILABLE', value: false},
+    CountFakeVotes: {status: 'AVAILABLE', value: false}
+  };
+  state.setRead('selected', {status: 'AVAILABLE', sessionId: 'a', revision: '1', fields});
+  state.setRead('sibling', {status: 'AVAILABLE', sessionId: 'b', revision: '2', fields});
+  state.edit('OnlineMode', true).edit('CountFakeVotes', true);
+  const plans = new Map(state.plans().map(plan => [plan.id, plan]));
+  assert.deepEqual(plans.get('selected').overrides, {OnlineMode: true, CountFakeVotes: true});
+  assert.deepEqual(plans.get('sibling').overrides, {OnlineMode: true});
+  assert.equal(state.aggregate('CountFakeVotes').targets.length, 1);
 });

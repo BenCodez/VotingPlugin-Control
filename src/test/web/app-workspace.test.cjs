@@ -83,7 +83,7 @@ function harness() {
     }
   };
   const context = {
-    settingsEditor: null, voteSitesEditor: null, rewardsEditor: null,
+    configurationHealthChecks: () => [], settingsHealthReader: null, settingsEditor: null, voteSitesEditor: null, rewardsEditor: null,
     voteSitesHasDraft: () => false,
     ControlWorkspace,
     workspace: new ControlWorkspace.Workspace(),
@@ -91,6 +91,7 @@ function harness() {
     selectedServerId: '',
     nodeIndex: new Map(),
     nodeCapabilities: new Map(),
+    backendTopologyTruncatedNodeIds: new Set(),
     selectedNodes: new Set(['stale']),
     voteSitesTargetIds: new Set(['stale']),
     fileReadCache: new Map([['stale', {}]]),
@@ -143,7 +144,8 @@ function harness() {
   const names = ['text', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
     'friendlyCapability', 'managedCapabilities', 'proxyReportsFor', 'backendCard', 'nodePresence', 'nodeCard',
     'ordinaryTargetIds', 'comparisonTargetIds', 'confirmDiscardWorkspaceDrafts', 'changeWorkspaceTargets',
-    'inspectWorkspaceServer', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation'];
+    'inspectWorkspaceServer', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation',
+    'generalSettingsTargets', 'settingValueLabel'];
   vm.runInContext(names.map(declaration).join('\n'), context, {filename: 'app-workspace-helpers.js'});
   return context;
 }
@@ -251,6 +253,45 @@ test('comparisonTargetIds keeps only selected readable online Bukkit backends', 
   context.nodeCapabilities.set('proxy', ['config.files.v1']);
   context.nodeCapabilities.set('unsupported', ['config.quick-setup.v1']);
   assert.deepEqual([...run(context, 'comparisonTargetIds()')], ['readable']);
+});
+
+test('General Settings expands a selected managed node to every known proxy sibling', () => {
+  const context = harness();
+  context.authenticated = true;
+  const backendA = {...backend('backend-a'), sessionId: 'a', acceptedCapabilities: ['config.files.v1']};
+  const backendB = {...backend('backend-b'), sessionId: 'b', acceptedCapabilities: ['config.files.v1']};
+  const backendOffline = {...backend('backend-offline', false), sessionId: 'c', acceptedCapabilities: ['config.files.v1']};
+  const networkProxy = {...proxy('proxy'), sessionId: 'p', acceptedCapabilities: ['config.proxy-files.v1'],
+    backends: [{backendId: 'backend-a'}, {backendId: 'backend-b'}, {backendId: 'backend-offline'},
+      {backendId: 'not-enrolled'}]};
+  for (const node of [backendA, backendB, backendOffline, networkProxy]) {
+    context.nodeIndex.set(node.nodeId, node);
+    context.allNodeItems.push(node);
+  }
+  context.workspace.setTargets(['backend-a']);
+  const targets = run(context, 'generalSettingsTargets()');
+  assert.deepEqual([...targets.map(target => target.id)],
+    ['backend-a', 'proxy', 'backend-b', 'backend-offline', 'not-enrolled']);
+  assert.equal(targets.find(target => target.id === 'backend-b').managedByProxy, true);
+  assert.equal(targets.find(target => target.id === 'backend-b').networkOnly, true);
+  assert.equal(targets.find(target => target.id === 'proxy').networkOnly, false);
+  assert.equal(targets.find(target => target.id === 'backend-offline').online, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(targets.find(target => target.id === 'not-enrolled'))), {
+    id: 'not-enrolled', sessionId: '', online: false, fileName: 'Config.yml', platform: '', role: 'BACKEND',
+    managedByProxy: true, reportingProxyIds: ['proxy'], networkIncomplete: false, networkOnly: true,
+    supported: false
+  });
+  assert.equal(targets.find(target => target.id === 'proxy').fileName, 'bungeeconfig.yml');
+
+  context.workspace.setTargets(['proxy']);
+  assert.deepEqual([...run(context, 'generalSettingsTargets()').map(target => target.id)],
+    ['proxy', 'backend-a', 'backend-b', 'backend-offline', 'not-enrolled']);
+});
+
+test('General Settings renders an empty Bedrock prefix as a real value', () => {
+  const context = harness();
+  assert.equal(run(context, 'settingValueLabel("")'), 'Empty');
+  assert.equal(run(context, 'settingValueLabel(null)'), 'Unavailable');
 });
 
 test('workspace target changes, inspection, and scope overview preserve workspace without operations', () => {
@@ -451,4 +492,72 @@ test('source-only form and explicit coordinated previews preserve existing opera
   }
   assert.equal(context.calls.filter(call => call[0] === 'post').length, 3);
   assert.equal(context.configurationOperationsInFlight, 0);
+});
+
+test('global health includes registered nodes while the editing workspace remains empty', () => {
+  const context = harness();
+  context.authenticated = true;
+  context.workspace.managementScope = 'GLOBAL';
+  context.allNodeItems = [{...backend('a'), acceptedCapabilities: ['config.files.v1']}];
+  context.nodeIndex = new Map(context.allNodeItems.map(node => [node.nodeId, node]));
+  assert.equal(run(context, 'generalSettingsTargets()').length, 0);
+  assert.deepEqual([...run(context, 'generalSettingsTargets(true)').map(target => target.id)], ['a']);
+});
+
+test('fresh dashboard refresh loads configuration health even without inspection capability', async () => {
+  const context = harness();
+  const calls = context.calls;
+  Object.assign(context, {isWorkspaceOverview: () => false, dashboardLoading: false, inspectionInFlight: false,
+    refreshDashboardButton: {}, suppressNodeAutoLoad: 0, loadNodes: async () => {},
+    loadEnrollments: async () => {}, loadOperationHistory: async () => {},
+    refreshConfigurationHealth: async () => calls.push(['configurationHealthRead']),
+    inspectionCapableNode: () => false, renderMetrics: () => {}});
+  vm.runInContext(declaration('refreshDashboard'), context);
+  await run(context, 'refreshDashboard()');
+  assert.equal(calls.filter(call => call[0] === 'configurationHealthRead').length, 1);
+});
+
+test('health reader ignores late results after changing authentication or target context', async () => {
+  const context = harness();
+  let finish;
+  let key = 'a';
+  let renders = 0;
+  Object.assign(context, {authenticated: true, settingsHealthContext: '',
+    settingsHealthReader: {read: () => new Promise(resolve => {finish = resolve;})},
+    configurationHealthContext: () => key, renderMetrics: () => renders++});
+  vm.runInContext(declaration('refreshConfigurationHealth'), context);
+  const pending = run(context, 'refreshConfigurationHealth()');
+  key = 'b'; finish(); await pending;
+  assert.equal(context.settingsHealthContext, '');
+  assert.equal(renders, 0);
+});
+
+test('Network Doctor reads configuration health and includes typed checks on its first run', async () => {
+  const context = harness();
+  let click;
+  let reads = 0;
+  Object.assign(context, {runNetworkDoctor: {addEventListener: (_event, handler) => {click = handler;}},
+    downloadNetworkDiagnostics: {}, lastDiagnostics: null, networkDoctorResults: {},
+    runInspection: async () => ({result: {configuredVoteSites: 1}}), lastOverview: null,
+    invalidateDashboardInspection: () => {}, finiteCount: value => value,
+    configurationHealthChecks: () => [{path: 'OnlineMode', status: 'WARNING'}],
+    refreshConfigurationHealth: async () => {reads++;}, renderJsonResult: () => {}, updateSetupChecklist: () => {}});
+  const start = appSource.indexOf("runNetworkDoctor.addEventListener('click'");
+  const end = appSource.indexOf("downloadNetworkDiagnostics.addEventListener", start);
+  vm.runInContext(appSource.slice(start, end), context);
+  await click();
+  assert.equal(reads, 1);
+  assert.equal(context.lastDiagnostics.configurationChecks[0].status, 'WARNING');
+});
+
+test('configuration mutation fences an in-flight health read and forces a new context', () => {
+  const context = harness();
+  Object.assign(context, {authenticated: true, settingsHealthGeneration: 1, authenticationGeneration: 1,
+    settingsHealthReader: {model: {}}, settingsHealthContext: '',
+    ControlGeneralSettings: {healthChecks: () => [{status: 'PASS'}]}});
+  vm.runInContext(['configurationHealthContext', 'configurationHealthChecks'].map(declaration).join('\n'), context);
+  context.settingsHealthContext = run(context, 'configurationHealthContext()');
+  assert.equal(run(context, 'configurationHealthChecks()')[0].status, 'PASS');
+  context.settingsHealthGeneration++;
+  assert.equal(run(context, 'configurationHealthChecks()')[0].status, 'UNKNOWN');
 });
