@@ -530,6 +530,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("path !== '/api/v1/configuration/rewards/preview'"));
         assertTrue(script.body().contains("Your unsaved proxy-routing draft is retained"));
         assertTrue(script.body().contains("function invalidateConfigurationReads() {\n  settingsEditor?.invalidateReads();\n"
+                        + "  settingsHealthReader?.invalidateReads();\n  settingsHealthContext = '';\n  settingsHealthGeneration++;\n"
                         + "  voteSitesEditor?.invalidateReads();\n"
                         + "  if (authenticated && tabFromHash() === 'general-settings' && !settingsEditor?.state.busy) {\n"
                         + "    window.setTimeout(() => void settingsEditor?.read(false), 0);\n  }\n"
@@ -703,11 +704,11 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("|${dashboardConfigurationGeneration}`"));
         assertTrue(script.body().contains("Configuration changed; refreshing server overview"));
         assertTrue(script.body().contains("if (autoLoadPending.delete(tab)) void autoLoadTab(tab);"));
-		assertTrue(script.body().contains("await loadNodes();\n  } finally {\n    suppressNodeAutoLoad--;\n  }\n  await Promise.all([loadEnrollments(), loadOperationHistory()]);\n  if (!inspectionCapableNode())"),
+		assertTrue(script.body().contains("await loadNodes();\n  } finally {\n    suppressNodeAutoLoad--;\n  }\n  await Promise.all([loadEnrollments(), loadOperationHistory(), refreshConfigurationHealth()]);\n  if (!inspectionCapableNode())"),
 				"Dashboard refresh must reload node connectivity before reloading metadata and checking inspection capability.");
 		assertTrue(script.body().contains("if (suppressNodeAutoLoad === 0) void autoLoadTab(tabFromHash());"),
 				"An internal dashboard registry refresh must not recursively queue another dashboard load.");
-		assertTrue(script.body().contains("await Promise.all([loadEnrollments(), loadOperationHistory()]);\n  if (!inspectionCapableNode()"),
+		assertTrue(script.body().contains("await Promise.all([loadEnrollments(), loadOperationHistory(), refreshConfigurationHealth()]);\n  if (!inspectionCapableNode()"),
 				"An explicit dashboard refresh must reload enrollments and operation history before inspections.");
         assertTrue(script.body().contains("Object.keys(operation.nodeStates || {}).length || results.length"),
                 "Running-operation progress must count all targets, not only completed results.");

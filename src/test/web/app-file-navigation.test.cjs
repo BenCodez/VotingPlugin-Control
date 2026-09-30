@@ -79,7 +79,7 @@ test('Vote Sites Open YAML does not discard an unsaved named-reward YAML draft w
 test('configuration invalidation clears confirmed YAML identity and synchronizes the workbench', () => {
   let synchronized = 0;
   const context = {
-    settingsEditor: null, voteSitesEditor: null, rewardsEditor: null, authenticated: false,
+    settingsHealthReader: null, settingsHealthContext: '', settingsHealthGeneration: 0, settingsEditor: null, voteSitesEditor: null, rewardsEditor: null, authenticated: false,
     fileReadCache: new Map([['backend:Config.yml', {}]]), lastFileReadOperation: {},
     loadedQuickSetup: {}, configurationDirty: false,
     configurationContent: {value: 'Enabled: true'}, configurationContentPresent: true,

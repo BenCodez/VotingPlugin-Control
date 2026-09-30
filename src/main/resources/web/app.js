@@ -17,6 +17,8 @@ const welcome = document.querySelector('#welcome');
 const appShell = document.querySelector('#app-shell');
 const workspace = new ControlWorkspace.Workspace();
 let settingsEditor = null;
+let settingsHealthReader = null;
+let settingsHealthGeneration = 0;
 let voteSitesEditor = null;
 let rewardsEditor = null;
 const scopeBar = document.querySelector('#scope-bar');
@@ -1348,6 +1350,7 @@ async function loadSetupState() {
 
 function applyAuthenticatedSession(body) {
   settingsEditor?.clear();
+  settingsHealthReader?.clear();
   voteSitesEditor?.clear();
   rewardsEditor?.clear();
   workspace.login();
@@ -1794,7 +1797,15 @@ function renderScopeOverview() {
       const node = nodeIndex.get(id);
       if (node) grid.append(nodeCard(node));
     });
-    grid.prepend(text(document.createElement('p'), 'Registry connectivity and capabilities only. Individual health requires a server inspection; unknown is not healthy.'));
+    for (const check of configurationHealthChecks()) {
+      if (check.status === 'PASS') continue;
+      const warning = document.createElement('article');
+      warning.className = 'attention-item warning';
+      warning.append(text(document.createElement('strong'), `${check.status}: ${check.title}`),
+        text(document.createElement('p'), check.message));
+      grid.append(warning);
+    }
+    grid.prepend(text(document.createElement('p'), 'Registry connectivity and managed configuration checks. Runtime health requires individual inspection; unknown is not healthy.'));
   }
   text(document.querySelector('#metric-presence'), source ? nodePresence(source) : 'Unknown');
   text(document.querySelector('#metric-presence-detail'), 'Known only when a connected proxy reports it');
@@ -2013,7 +2024,7 @@ async function autoLoadTab(tab) {
     return;
   }
   if (tab === 'rewards') { await rewardsEditor?.read(false); return; }
-  if (tab === 'overview' && isWorkspaceOverview()) return;
+  if (tab === 'overview' && isWorkspaceOverview()) { await refreshConfigurationHealth(); return; }
   if (autoLoadInFlight.has(tab)) {
     autoLoadPending.add(tab);
     return;
@@ -2675,28 +2686,10 @@ function dashboardIssues() {
         'A retained vote event used a service identifier with no configured match.', 'Open Vote Sites', 'data', 'site-health-card'));
     });
   }
-  if (settingsEditor && settingsEditor.model.targets.size) {
-    const settingsModel = settingsEditor.model;
-    const autoCreate = settingsModel.aggregate('AutoCreateVoteSites');
-    if ([...settingsModel.targets.values()].some(target => target.role === 'BACKEND'
-      && target.status === 'AVAILABLE' && target.fields.AutoCreateVoteSites?.value === true)) {
-      issues.push(issue('warning', 'Auto-create Vote Sites is enabled',
-        'Disable it after vote sites are configured so unexpected service names do not create new entries.',
-        'Open General Settings', 'general-settings'));
-    }
-    for (const [path, label] of [['OnlineMode', 'Online Mode'], ['BedrockPlayerPrefix', 'Bedrock Player Prefix']]) {
-      const aggregate = settingsModel.aggregate(path);
-      if (aggregate.supportedState === 'MIXED') issues.push(issue('warning', `${label} differs across the managed network`,
-        'Review the per-node values and use the revision-bound preview to synchronize applicable nodes.',
-        'Open General Settings', 'general-settings'));
-    }
-    const badBackends = [...settingsModel.targets.values()].filter(target => target.role === 'BACKEND'
-      && target.managedByProxy
-      && target.status === 'AVAILABLE' && target.fields.AllowUnjoined?.status === 'AVAILABLE'
-      && target.fields.AllowUnjoined.value !== true);
-    if (badBackends.length) issues.push(issue('warning', 'Backend AllowUnjoined prerequisite is disabled',
-      `${badBackends.map(target => nodeIndex.get(target.id)?.displayName || target.id).join(', ')} must be enabled so the proxy remains authoritative. The proxy preference is not changed by this repair.`,
-      'Open General Settings', 'general-settings'));
+  for (const check of configurationHealthChecks()) {
+    if (check.status === 'PASS') continue;
+    issues.push(issue('warning', check.title,
+      check.message, 'Open General Settings', 'general-settings'));
   }
   operationHistoryItems.filter(operation => ['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state))
     .forEach(operation => issues.push(issue('warning', `${operationLabel(operation)} needs review`,
@@ -3652,6 +3645,7 @@ async function waitForDeployment(operation, generation) {
 
 function discardAuthenticationState(reason) {
   settingsEditor?.clear();
+  settingsHealthReader?.clear();
   voteSitesEditor?.clear();
   rewardsEditor?.clear();
   workspace.logout();
@@ -3908,6 +3902,9 @@ function operationContextCurrent(context) {
 
 function invalidateConfigurationReads() {
   settingsEditor?.invalidateReads();
+  settingsHealthReader?.invalidateReads();
+  settingsHealthContext = '';
+  settingsHealthGeneration++;
   voteSitesEditor?.invalidateReads();
   if (authenticated && tabFromHash() === 'general-settings' && !settingsEditor?.state.busy) {
     window.setTimeout(() => void settingsEditor?.read(false), 0);
@@ -5214,6 +5211,7 @@ async function refreshOverview(target = dataOverview) {
 async function refreshDashboard() {
   if (isWorkspaceOverview()) {
     await Promise.all([loadNodes(), loadOperationHistory()]);
+    await refreshConfigurationHealth();
     renderScopeOverview();
     renderOverviewActivity();
     return;
@@ -5232,7 +5230,7 @@ async function refreshDashboard() {
   } finally {
     suppressNodeAutoLoad--;
   }
-  await Promise.all([loadEnrollments(), loadOperationHistory()]);
+  await Promise.all([loadEnrollments(), loadOperationHistory(), refreshConfigurationHealth()]);
   if (!inspectionCapableNode()) {
     dashboardLoading = false;
     inspectionInFlight = false;
@@ -5342,7 +5340,8 @@ runNetworkDoctor.addEventListener('click', async () => {
   downloadNetworkDiagnostics.disabled = true;
   lastDiagnostics = null;
   try {
-    const diagnostics = await runInspection('diagnostics', {}, networkDoctorResults);
+    const [diagnostics] = await Promise.all([runInspection('diagnostics', {}, networkDoctorResults),
+      refreshConfigurationHealth()]);
     lastOverview = diagnostics.result;
     invalidateDashboardInspection();
     const node = nodeIndex.get(selectedServerId);
@@ -5364,7 +5363,7 @@ runNetworkDoctor.addEventListener('click', async () => {
     };
     lastDiagnostics = {
       schemaVersion: 1, generatedAt: new Date().toISOString(), selectedNodeId: selectedServerId,
-      checks, voteLog, node: diagnostics.result,
+      checks, configurationChecks: configurationHealthChecks(), voteLog, node: diagnostics.result,
       control: {application: 'VotingPlugin Control', registeredNodes: allNodeItems.length,
         nodes: allNodeItems.slice(0, 100).map(item => ({nodeId: item.nodeId, displayName: item.displayName,
           role: roleLabel(item), online: item.online, pluginVersion: item.pluginVersion}))}
@@ -6487,9 +6486,10 @@ function generalSettingsContext() {
       target.supported, target.managedByProxy, target.reportingProxyIds, target.networkIncomplete, target.networkOnly])]);
 }
 
-function generalSettingsTargets() {
-  if (workspace.managementScope === 'GLOBAL' || !authenticated) return [];
-  const ids = new Set([...workspace.selectedTargetIds]);
+function generalSettingsTargets(health = false) {
+  if ((!health && workspace.managementScope === 'GLOBAL') || !authenticated) return [];
+  const ids = new Set(health && workspace.managementScope === 'GLOBAL'
+    ? allNodeItems.map(node => node.nodeId) : [...workspace.selectedTargetIds]);
   const directlyManagedIds = new Set(ids);
   const backendReporters = new Map();
   const proxies = allNodeItems.filter(isProxy);
@@ -6540,6 +6540,31 @@ function generalSettingsTargets() {
       supported: proxy ? node?.acceptedCapabilities?.includes('config.proxy-files.v1') === true
         : isBackend(node) && node?.acceptedCapabilities?.includes('config.files.v1') === true};
   });
+}
+
+function configurationHealthContext() {
+  return JSON.stringify([authenticated, authenticationGeneration, settingsHealthGeneration, workspace.managementScope,
+    generalSettingsTargets(true)]);
+}
+
+function configurationHealthChecks() {
+  if (!authenticated) return [];
+  if (!settingsHealthReader || settingsHealthContext !== configurationHealthContext()) return [{
+    path: 'configuration', title: 'Configuration health is not verified', status: 'UNKNOWN',
+    nodeIds: [], unknownNodeIds: generalSettingsTargets(true).map(target => target.id),
+    message: 'Refresh Dashboard or run Network Doctor to read the current managed configuration.'
+  }];
+  return ControlGeneralSettings.healthChecks(settingsHealthReader.model);
+}
+
+let settingsHealthContext = '';
+async function refreshConfigurationHealth() {
+  if (!authenticated || !settingsHealthReader) return;
+  const captured = configurationHealthContext();
+  await settingsHealthReader.read(false);
+  if (captured !== configurationHealthContext()) return;
+  settingsHealthContext = captured;
+  renderMetrics();
 }
 
 function settingValueLabel(value) {
@@ -6715,6 +6740,19 @@ settingsEditor = ControlGeneralSettings.create({
   operation: (path, body) => startConfigurationOperation(path, body, document.querySelector('#general-settings-status')),
   request: (path, body) => authorized(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)}),
   changed: renderGeneralSettings
+});
+// Independent read-only state: health refreshes must not invalidate an editor draft/approval.
+settingsHealthReader = ControlGeneralSettings.create({
+  targets: () => generalSettingsTargets(true),
+  context: configurationHealthContext,
+  operation: (path, body) => {
+    if (path !== '/api/v1/configuration/read') throw new Error('Health checks are read-only');
+    return startConfigurationOperation(path, body, document.createElement('span'));
+  },
+  request: (path, body) => {
+    if (path !== '/api/v1/configuration/general-settings/state') throw new Error('Health checks are read-only');
+    return authorized(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  }
 });
 document.querySelector('#general-settings-read').addEventListener('click', () => void settingsEditor.read(true));
 document.querySelector('#general-settings-retry').addEventListener('click', () => void settingsEditor.read(true, true));

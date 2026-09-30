@@ -83,7 +83,7 @@ function harness() {
     }
   };
   const context = {
-    settingsEditor: null, voteSitesEditor: null, rewardsEditor: null,
+    configurationHealthChecks: () => [], settingsHealthReader: null, settingsEditor: null, voteSitesEditor: null, rewardsEditor: null,
     voteSitesHasDraft: () => false,
     ControlWorkspace,
     workspace: new ControlWorkspace.Workspace(),
@@ -478,4 +478,72 @@ test('source-only form and explicit coordinated previews preserve existing opera
   }
   assert.equal(context.calls.filter(call => call[0] === 'post').length, 3);
   assert.equal(context.configurationOperationsInFlight, 0);
+});
+
+test('global health includes registered nodes while the editing workspace remains empty', () => {
+  const context = harness();
+  context.authenticated = true;
+  context.workspace.managementScope = 'GLOBAL';
+  context.allNodeItems = [{...backend('a'), acceptedCapabilities: ['config.files.v1']}];
+  context.nodeIndex = new Map(context.allNodeItems.map(node => [node.nodeId, node]));
+  assert.equal(run(context, 'generalSettingsTargets()').length, 0);
+  assert.deepEqual([...run(context, 'generalSettingsTargets(true)').map(target => target.id)], ['a']);
+});
+
+test('fresh dashboard refresh loads configuration health even without inspection capability', async () => {
+  const context = harness();
+  const calls = context.calls;
+  Object.assign(context, {isWorkspaceOverview: () => false, dashboardLoading: false, inspectionInFlight: false,
+    refreshDashboardButton: {}, suppressNodeAutoLoad: 0, loadNodes: async () => {},
+    loadEnrollments: async () => {}, loadOperationHistory: async () => {},
+    refreshConfigurationHealth: async () => calls.push(['configurationHealthRead']),
+    inspectionCapableNode: () => false, renderMetrics: () => {}});
+  vm.runInContext(declaration('refreshDashboard'), context);
+  await run(context, 'refreshDashboard()');
+  assert.equal(calls.filter(call => call[0] === 'configurationHealthRead').length, 1);
+});
+
+test('health reader ignores late results after changing authentication or target context', async () => {
+  const context = harness();
+  let finish;
+  let key = 'a';
+  let renders = 0;
+  Object.assign(context, {authenticated: true, settingsHealthContext: '',
+    settingsHealthReader: {read: () => new Promise(resolve => {finish = resolve;})},
+    configurationHealthContext: () => key, renderMetrics: () => renders++});
+  vm.runInContext(declaration('refreshConfigurationHealth'), context);
+  const pending = run(context, 'refreshConfigurationHealth()');
+  key = 'b'; finish(); await pending;
+  assert.equal(context.settingsHealthContext, '');
+  assert.equal(renders, 0);
+});
+
+test('Network Doctor reads configuration health and includes typed checks on its first run', async () => {
+  const context = harness();
+  let click;
+  let reads = 0;
+  Object.assign(context, {runNetworkDoctor: {addEventListener: (_event, handler) => {click = handler;}},
+    downloadNetworkDiagnostics: {}, lastDiagnostics: null, networkDoctorResults: {},
+    runInspection: async () => ({result: {configuredVoteSites: 1}}), lastOverview: null,
+    invalidateDashboardInspection: () => {}, finiteCount: value => value,
+    configurationHealthChecks: () => [{path: 'OnlineMode', status: 'WARNING'}],
+    refreshConfigurationHealth: async () => {reads++;}, renderJsonResult: () => {}, updateSetupChecklist: () => {}});
+  const start = appSource.indexOf("runNetworkDoctor.addEventListener('click'");
+  const end = appSource.indexOf("downloadNetworkDiagnostics.addEventListener", start);
+  vm.runInContext(appSource.slice(start, end), context);
+  await click();
+  assert.equal(reads, 1);
+  assert.equal(context.lastDiagnostics.configurationChecks[0].status, 'WARNING');
+});
+
+test('configuration mutation fences an in-flight health read and forces a new context', () => {
+  const context = harness();
+  Object.assign(context, {authenticated: true, settingsHealthGeneration: 1, authenticationGeneration: 1,
+    settingsHealthReader: {model: {}}, settingsHealthContext: '',
+    ControlGeneralSettings: {healthChecks: () => [{status: 'PASS'}]}});
+  vm.runInContext(['configurationHealthContext', 'configurationHealthChecks'].map(declaration).join('\n'), context);
+  context.settingsHealthContext = run(context, 'configurationHealthContext()');
+  assert.equal(run(context, 'configurationHealthChecks()')[0].status, 'PASS');
+  context.settingsHealthGeneration++;
+  assert.equal(run(context, 'configurationHealthChecks()')[0].status, 'UNKNOWN');
 });

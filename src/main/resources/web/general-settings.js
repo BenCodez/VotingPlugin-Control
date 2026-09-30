@@ -336,5 +336,53 @@
     };
     return editor;
   }
-  return {create};
+  function healthChecks(model) {
+    const targets = Array.from(model.targets.values());
+    const checks = [];
+    function add(path, title, relevant, warning, message) {
+      const known = relevant.filter(target => target.status === 'AVAILABLE'
+        && target.fields[path] && target.fields[path].status === 'AVAILABLE');
+      const affected = warning(known);
+      const unknown = relevant.filter(target => !known.includes(target) || target.networkIncomplete);
+      const status = affected.length ? 'WARNING' : unknown.length || !relevant.length ? 'UNKNOWN' : 'PASS';
+      const label = {AutoCreateVoteSites: 'Auto-create Vote Sites', OnlineMode: 'Online Mode',
+        BedrockPlayerPrefix: 'Bedrock Player Prefix', AllowUnjoined: 'Backend AllowUnjoined prerequisite'}[path];
+      checks.push({path, title: status === 'WARNING' ? title
+        : label + (status === 'UNKNOWN' ? ' is not verified' : ' is verified'), status,
+        nodeIds: affected.map(target => target.id), unknownNodeIds: unknown.map(target => target.id),
+        message: affected.length ? message + ' Affected nodes: ' + affected.map(target => target.id).join(', ')
+          : unknown.length || !relevant.length ? 'Configuration could not be verified for all applicable nodes.'
+          : 'Verified from current managed configuration.'});
+    }
+    const backends = targets.filter(target => target.role === 'BACKEND');
+    add('AutoCreateVoteSites', 'Auto-create Vote Sites is enabled', backends,
+      known => known.filter(target => target.fields.AutoCreateVoteSites.value === true),
+      'Recommended: disable after configuring vote sites to avoid unexpected service entries.');
+    for (const pair of [['OnlineMode', 'Online Mode'], ['BedrockPlayerPrefix', 'Bedrock Player Prefix']]) {
+      add(pair[0], pair[1] + ' differs across the managed network', targets,
+        known => known.filter(target => {
+          const connected = new Set([target.id]);
+          let changed = true;
+          while (changed) {
+            changed = false;
+            targets.forEach(candidate => {
+              const links = [candidate.id].concat(candidate.reportingProxyIds || []);
+              if (!links.some(id => connected.has(id))) return;
+              links.forEach(id => { if (!connected.has(id)) { connected.add(id); changed = true; } });
+            });
+          }
+          return new Set(known.filter(candidate => connected.has(candidate.id))
+            .map(candidate => candidate.fields[pair[0]].value)).size > 1;
+        }),
+        'Review per-node values and use a revision-bound preview to synchronize applicable nodes.');
+    }
+    add('AllowUnjoined', 'Backend AllowUnjoined prerequisite is disabled',
+      backends.filter(target => target.managedByProxy),
+      known => known.filter(target => target.fields.AllowUnjoined.value !== true),
+      'Enable the backend prerequisite so the proxy controls acceptance; preserve the proxy preference.');
+    // Standalone servers have no proxy prerequisite to check.
+    if (!backends.some(target => target.managedByProxy) && !targets.some(target => target.role === 'PROXY')) checks.pop();
+    return checks;
+  }
+  return {create, healthChecks};
 }));

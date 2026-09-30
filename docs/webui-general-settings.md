@@ -107,3 +107,14 @@ single-flight and stale-result guards, mixed/partial reads, dirty fields and con
 smoke evidence uses actual static assets against controlled API fixtures. A disposable Paper 26.2 server with the current
 VotingPlugin connector also exercised the real HTTP connector, Config.yml READ/PREVIEW/APPLY/reload/confirmed READ,
 and stale revision rejection. That local gate never points at production configuration.
+
+### Configuration health outside the editor
+
+Dashboard refresh (including the network workspace) and Network Doctor read the same allowlisted,
+revision-bound managed configuration directly. Visiting General Settings first is not required.
+Health reads use a separate read-only state so refreshing health never discards an editor draft or
+approval. Reads are coalesced and cached for 30 seconds; configuration changes invalidate the cache.
+Offline, unsupported, missing, or incomplete-topology observations are reported as UNKNOWN rather
+than passing. Identity comparisons apply within reported proxy/backend groups, not between unrelated
+standalone servers. Network Doctor exports these observations as `configurationChecks`; no settings
+are written by a health check.

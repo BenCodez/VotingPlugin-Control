@@ -294,3 +294,40 @@ test('a failed proxy file read does not discard a successful backend group', asy
   assert.equal(editor.model.targets.get('backend').status, 'AVAILABLE');
   assert.equal(editor.model.targets.get('proxy').status, 'ERROR');
 });
+
+const {healthChecks} = require('../../main/resources/web/general-settings.js');
+function healthModel(values) {
+  return {targets: new Map(values.map(target => [target.id, {status: 'AVAILABLE', role: 'BACKEND', fields: {
+    AutoCreateVoteSites: {status: 'AVAILABLE', value: false},
+    OnlineMode: {status: 'AVAILABLE', value: true},
+    BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'},
+    AllowUnjoined: {status: 'AVAILABLE', value: true}
+  }, ...target}]))};
+}
+test('fresh health checks warn for real network configuration problems without edits', () => {
+  const model = healthModel([{id: 'proxy', role: 'PROXY'}, {id: 'a', managedByProxy: true, reportingProxyIds: ['proxy'],
+    fields: {AutoCreateVoteSites: {status: 'AVAILABLE', value: true}, OnlineMode: {status: 'AVAILABLE', value: false},
+      BedrockPlayerPrefix: {status: 'AVAILABLE', value: '^'}, AllowUnjoined: {status: 'AVAILABLE', value: false}}}]);
+  assert.deepEqual(healthChecks(model).map(check => check.status), ['WARNING', 'WARNING', 'WARNING', 'WARNING']);
+  assert.deepEqual(healthChecks(model).find(check => check.path === 'AllowUnjoined').nodeIds, ['a']);
+});
+test('healthy proxy prerequisites do not mistake the proxy preference for a mismatch', () => {
+  const model = healthModel([{id: 'proxy', role: 'PROXY', fields: {OnlineMode: {status: 'AVAILABLE', value: true},
+    BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'}, AllowUnjoined: {status: 'AVAILABLE', value: false}}},
+    {id: 'a', managedByProxy: true, reportingProxyIds: ['proxy']}]);
+  assert.ok(healthChecks(model).every(check => check.status === 'PASS'));
+  assert.ok(healthChecks(model).every(check => check.title.endsWith('is verified')));
+});
+test('offline, unsupported and missing fields remain unknown rather than healthy', () => {
+  for (const target of [{status: 'ERROR'}, {status: 'UNSUPPORTED'}, {fields: {}}, {networkIncomplete: true}]) {
+    const checks = healthChecks(healthModel([{id: 'a', ...target}]));
+    assert.ok(checks.every(check => check.status === 'UNKNOWN'));
+    assert.ok(checks.every(check => check.title.endsWith('is not verified')));
+  }
+});
+test('global health does not compare unrelated standalone networks', () => {
+  const model = healthModel([{id: 'a'}, {id: 'b', fields: {OnlineMode: {status: 'AVAILABLE', value: false},
+    BedrockPlayerPrefix: {status: 'AVAILABLE', value: '^'}, AutoCreateVoteSites: {status: 'AVAILABLE', value: false}}}]);
+  assert.ok(healthChecks(model).every(check => check.status === 'PASS'));
+  assert.ok(healthChecks(model).every(check => check.title.endsWith('is verified')));
+});
