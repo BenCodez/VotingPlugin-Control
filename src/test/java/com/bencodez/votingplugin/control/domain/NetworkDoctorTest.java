@@ -27,6 +27,15 @@ class NetworkDoctorTest {
         assertFalse(report.checks().stream().anyMatch(c -> c.id().equals("proxy.method.mismatch")));
     }
 
+    @Test void truncatedRegistryDoesNotAssertBackendNeedsEnrollment() {
+        NodeStatus proxy = node("proxy", "VELOCITY", true,
+                List.of(new BackendServerIdentity("outside-page", "outside-page", true, true, 1)));
+        assertEquals(NetworkDoctor.Status.UNKNOWN, status(NetworkDoctor.evaluate(List.of(proxy),
+                Map.of("proxy", proxyEvidence()), Instant.EPOCH, true), "topology.backend.unenrolled"));
+        assertEquals(NetworkDoctor.Status.WARNING, status(NetworkDoctor.evaluate(List.of(proxy),
+                Map.of("proxy", proxyEvidence()), Instant.EPOCH, false), "topology.backend.unenrolled"));
+    }
+
     @Test
     void validBackendVotifierTriggerIsInfoAndNoCarrierIsUnknown() {
         NodeStatus backend = node("backend-a", "BUKKIT", true, List.of());

@@ -879,7 +879,9 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const identity = name.value.toLowerCase();"));
         assertTrue(script.body().contains("if (identities.has(identity)) return null;"));
         assertTrue(script.body().contains("function invalidateDashboardInspection()"));
-        assertTrue(script.body().contains("lastDiagnostics = NetworkDoctorView.withConfigurationChecks(report, configurationHealthChecks());"));
+        assertTrue(script.body().contains("lastDiagnostics = NetworkDoctorView.withConfigurationChecks(report, configurationReader"));
+        assertTrue(script.body().contains("ControlGeneralSettings.healthChecks(configurationReader.model)"),
+                "Doctor checks must use the bounded reader from this run rather than cached dashboard state.");
         assertTrue(script.body().contains("lastOverview = envelope.result;\n    invalidateDashboardInspection();"),
                 "Setup diagnostics must invalidate any cached dashboard evidence.");
         assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));

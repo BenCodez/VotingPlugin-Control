@@ -4039,12 +4039,28 @@ function invalidateConfigurationReads() {
   updateExtendedButtons();
 }
 
-async function waitForOperation(operation, statusElement = operationStatus, context = operationContext()) {
+async function waitForOperation(operation, statusElement = operationStatus, context = operationContext(), options = {}) {
+  const checkDeadline = () => {
+    if (options.signal?.aborted || options.deadlineAt && Date.now() >= options.deadlineAt
+        || options.contextCurrent && !options.contextCurrent()) throw new Error('Configuration health read ended; evidence is unavailable.');
+  };
+  checkDeadline();
   if (operationContextCurrent(context)) text(statusElement, operationSummary(operation));
   rememberOperation(operation);
   while (operation.state === 'RUNNING') {
-    await new Promise(resolve => window.setTimeout(resolve, 1500));
-    operation = await authorized(`/api/v1/operations/${operation.operationId}`);
+    await new Promise((resolve, reject) => {
+      const finish = () => { options.signal?.removeEventListener('abort', abort); resolve(); };
+      const timer = window.setTimeout(finish, 1500);
+      const abort = () => {
+        window.clearTimeout(timer); options.signal?.removeEventListener('abort', abort);
+        reject(new Error('Configuration health read ended; evidence is unavailable.'));
+      };
+      options.signal?.addEventListener('abort', abort, {once: true});
+      if (options.signal?.aborted) abort();
+    });
+    checkDeadline();
+    operation = await authorized(`/api/v1/operations/${operation.operationId}`, {signal: options.signal});
+    checkDeadline();
     if (operationContextCurrent(context)) text(statusElement, operationSummary(operation));
     rememberOperation(operation);
   }
@@ -4067,7 +4083,7 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
   return operation;
 }
 
-async function startConfigurationOperation(path, body, statusElement = operationStatus) {
+async function startConfigurationOperation(path, body, statusElement = operationStatus, options = {}) {
   // Legacy forms remain source-only; coordinated workflows keep explicit targets.
   if (path.endsWith('/preview') && path !== '/api/v1/configuration/general-settings/preview'
       && path !== '/api/v1/configuration/vote-sites/preview'
@@ -4095,8 +4111,8 @@ async function startConfigurationOperation(path, body, statusElement = operation
   updateExtendedButtons();
   try {
     return await waitForOperation(await authorized(path, {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
-    }), statusElement, context);
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal: options.signal
+    }), statusElement, context, options);
   } finally {
     configurationOperationsInFlight--;
     updateConfigurationButtons();
@@ -5465,7 +5481,8 @@ runNetworkDoctor.addEventListener('click', async () => {
   updateExtendedButtons();
   text(networkDoctorResults, 'Collecting bounded read-only evidence across enrolled nodes…');
   try {
-    const candidates = allNodeItems.filter(node => node.online
+    const doctorNodes = allNodeItems.slice(0, 100);
+    const candidates = doctorNodes.filter(node => node.online
       && node.acceptedCapabilities.includes('data.inspect.v1')
       && node.acceptedCapabilities.includes('data.network-health.v1')).slice(0, 100);
     const deadlineAt = Date.now() + 175_000;
@@ -5480,12 +5497,16 @@ runNetworkDoctor.addEventListener('click', async () => {
         catch (_) { /* Missing or failed inspection evidence is represented by the server as UNKNOWN. */ }
       }
     };
-    try { await Promise.all([refreshConfigurationHealth(), ...Array.from({length: Math.min(3, candidates.length)}, worker)]); }
+    let configurationReader;
+    try { [configurationReader] = await Promise.all([refreshConfigurationHealth({nodeIds: new Set(doctorNodes.map(node => node.nodeId)),
+      contextCurrent, deadlineAt, signal: controller.signal}), ...Array.from({length: Math.min(3, candidates.length)}, worker)]); }
     finally { window.clearTimeout(deadlineTimer); controller.abort(); }
     if (!contextCurrent()) return;
     const report = await authorized('/api/v1/network-doctor');
     if (!contextCurrent()) return;
-    lastDiagnostics = NetworkDoctorView.withConfigurationChecks(report, configurationHealthChecks());
+    lastDiagnostics = NetworkDoctorView.withConfigurationChecks(report, configurationReader
+      ? ControlGeneralSettings.healthChecks(configurationReader.model) : [{path: 'configuration', title: 'Configuration health is not verified',
+        status: 'UNKNOWN', nodeIds: [], message: 'Configuration evidence changed or was unavailable during this run.'}]);
     NetworkDoctorView.render(networkDoctorResults, lastDiagnostics, document);
     downloadNetworkDiagnostics.disabled = false;
   } catch (error) {
@@ -6720,11 +6741,17 @@ function configurationHealthChecks() {
 }
 
 let settingsHealthContext = '';
-async function refreshConfigurationHealth() {
+async function refreshConfigurationHealth(options = {}) {
   if (!authenticated || !settingsHealthReader) return;
   const captured = configurationHealthContext();
-  await settingsHealthReader.read(false);
-  if (captured !== configurationHealthContext()) return;
+  // A doctor run owns a separate bounded reader, so an older dashboard flight cannot extend its deadline.
+  const reader = options.nodeIds ? createConfigurationHealthReader(
+    () => generalSettingsTargets(true).filter(target => options.nodeIds.has(target.id)).slice(0, 100), options)
+    : settingsHealthReader;
+  await reader.read(false);
+  if (captured !== configurationHealthContext() || options.contextCurrent && !options.contextCurrent()) return;
+  if (options.nodeIds) return reader;
+  if (reader !== settingsHealthReader) return;
   settingsHealthContext = captured;
   renderMetrics();
 }
@@ -6904,18 +6931,21 @@ settingsEditor = ControlGeneralSettings.create({
   changed: renderGeneralSettings
 });
 // Independent read-only state: health refreshes must not invalidate an editor draft/approval.
-settingsHealthReader = ControlGeneralSettings.create({
-  targets: () => generalSettingsTargets(true),
-  context: configurationHealthContext,
-  operation: (path, body) => {
-    if (path !== '/api/v1/configuration/read') throw new Error('Health checks are read-only');
-    return startConfigurationOperation(path, body, document.createElement('span'));
-  },
-  request: (path, body) => {
-    if (path !== '/api/v1/configuration/general-settings/state') throw new Error('Health checks are read-only');
-    return authorized(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-  }
-});
+function createConfigurationHealthReader(targets, options = {}) {
+  return ControlGeneralSettings.create({
+    targets,
+    context: configurationHealthContext,
+    operation: (path, body) => {
+      if (path !== '/api/v1/configuration/read') throw new Error('Health checks are read-only');
+      return startConfigurationOperation(path, body, document.createElement('span'), options);
+    },
+    request: (path, body) => {
+      if (path !== '/api/v1/configuration/general-settings/state') throw new Error('Health checks are read-only');
+      return authorized(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal: options.signal});
+    }
+  });
+}
+settingsHealthReader = createConfigurationHealthReader(() => generalSettingsTargets(true));
 document.querySelector('#general-settings-read').addEventListener('click', () => void settingsEditor.read(true));
 document.querySelector('#general-settings-retry').addEventListener('click', () => void settingsEditor.read(true, true));
 document.querySelector('#general-settings-preview').addEventListener('click', () => { document.querySelector('#general-settings-ack').checked = false; void settingsEditor.preview(); });

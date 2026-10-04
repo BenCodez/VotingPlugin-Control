@@ -293,8 +293,11 @@ public final class NetworkDoctor {
         Set<String> known = reportedNames == null ? new HashSet<>() : new HashSet<>(reportedNames);
         if (reportedNames == null) p.backends().forEach(b -> known.add(b.backendId()));
         for (var backend : p.backends()) {
-            if (nodes.stream().noneMatch(n -> !proxy(n) && n.nodeId().equals(backend.backendId()))) emit(p, "topology.backend.unenrolled", "Control & Topology", Status.WARNING,
-                    "A proxy-reported backend is not enrolled in this bounded Control view.", "registry.backends", "Enroll the intended backend or verify the reported identity.");
+            if (nodes.stream().noneMatch(n -> !proxy(n) && n.nodeId().equals(backend.backendId()))) emit(p, "topology.backend.unenrolled", "Control & Topology", truncated ? Status.UNKNOWN : Status.WARNING,
+                    truncated ? "A proxy-reported backend is outside this truncated Control view; enrollment cannot be verified."
+                            : "A proxy-reported backend is not enrolled in Control.", "registry.backends",
+                    truncated ? "Inspect the backend in the complete registry before changing enrollment."
+                            : "Enroll the intended backend or verify the reported identity.");
             if (!backend.presenceKnown()) emit(p, "routing.presence.unknown", "Routing", Status.UNKNOWN,
                     "Backend presence is not known; presence-dependent routing cannot be verified.", "registry.backends.presenceKnown", "Check presence reporting without sending a vote.");
         }

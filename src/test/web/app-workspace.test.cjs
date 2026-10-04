@@ -21,7 +21,7 @@ function declaration(name) {
   const match = new RegExp(`(?:^|\\n)(?:async )?function ${name}\\(`, 'm').exec(appSource);
   const start = match ? match.index + (match[0].startsWith('\n') ? 1 : 0) : -1;
   assert.notEqual(start, -1, `app.js declares ${name}`);
-  const open = appSource.indexOf('{', start);
+  const open = appSource.indexOf(') {', start) + 2;
   let depth = 0;
   let quote = '';
   for (let index = open; index < appSource.length; index++) {
@@ -609,8 +609,8 @@ test('Network Doctor reads configuration health and includes typed checks on its
     authorized: async () => ({checks: []}),
     runInspection: async () => ({result: {configuredVoteSites: 1}}), lastOverview: null,
     invalidateDashboardInspection: () => {}, finiteCount: value => value,
-    configurationHealthChecks: () => [{path: 'OnlineMode', status: 'WARNING'}],
-    refreshConfigurationHealth: async () => {reads++;}, renderJsonResult: () => {}, updateSetupChecklist: () => {}});
+    ControlGeneralSettings: {healthChecks: () => [{path: 'OnlineMode', status: 'WARNING'}]},
+    refreshConfigurationHealth: async () => {reads++; return {model: {}};}, renderJsonResult: () => {}, updateSetupChecklist: () => {}});
   context.NetworkDoctorView = {...context.NetworkDoctorView, render: () => {}};
   const start = appSource.indexOf("runNetworkDoctor.addEventListener('click'");
   const end = appSource.indexOf("downloadNetworkDiagnostics.addEventListener", start);
