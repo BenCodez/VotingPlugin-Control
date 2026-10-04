@@ -1,0 +1,50 @@
+/* Read-only presentation of server-produced checks; never interpret raw configuration here. */
+(function (root) {
+  'use strict';
+  const rank = {FAIL: 0, WARNING: 1, UNKNOWN: 2, INFO: 3, PASS: 4};
+  function groups(report) {
+    const result = new Map();
+    for (const check of Array.isArray(report?.checks) ? report.checks : []) {
+      if (!Object.hasOwn(rank, check.status)) continue;
+      const category = String(check.category || 'Other');
+      if (!result.has(category)) result.set(category, []);
+      result.get(category).push(check);
+    }
+    return [...result].map(([category, checks]) => ({category,
+      checks: checks.slice().sort((a, b) => rank[a.status] - rank[b.status])}));
+  }
+  function withConfigurationChecks(report, checks) {
+    const configurationChecks = (Array.isArray(checks) ? checks : []).slice(0, 100);
+    return {...report, configurationChecks, checks: [...(report.checks || []), ...configurationChecks.map(check => ({
+      id: `configuration.${check.path}`, category: 'Proxy Setup',
+      status: Object.hasOwn(rank, check.status) ? check.status : 'UNKNOWN', title: check.title || check.path,
+      explanation: check.message || 'Managed configuration evidence is unavailable.',
+      affectedNodes: [...new Set([...(check.nodeIds || []), ...(check.unknownNodeIds || [])])].slice(0, 100),
+      evidence: 'Current revision-bound managed configuration read',
+      nextAction: 'Review applicable settings through the normal preview/apply workflow.', restartRequired: false
+    }))]};
+  }
+  function render(container, report, document) {
+    container.replaceChildren();
+    const label = (tag, value) => { const element = document.createElement(tag); element.textContent = String(value); return element; };
+    container.append(label('p', 'Read-only reported evidence. UNKNOWN means unverified; no votes or configuration changes were made.'));
+    for (const group of groups(report)) {
+      const section = document.createElement('section');
+      section.append(label('h4', group.category));
+      const extra = document.createElement('details');
+      extra.append(label('summary', 'Show PASS / INFO'));
+      for (const check of group.checks) {
+        const item = document.createElement('div');
+        item.className = 'doctor-check';
+        item.append(label('strong', `${check.status}: ${check.title}`), label('p', check.explanation),
+          label('p', `Nodes: ${(check.affectedNodes || []).join(', ') || 'network'} · Evidence: ${check.evidence || 'unavailable'}`),
+          label('p', `Next: ${check.nextAction}${check.restartRequired ? ' (restart required)' : ''}`));
+        if (check.status === 'PASS' || check.status === 'INFO') extra.append(item); else section.append(item);
+      }
+      section.append(extra); container.append(section);
+    }
+  }
+  const api = {groups, render, withConfigurationChecks};
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.NetworkDoctorView = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this);

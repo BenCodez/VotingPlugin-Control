@@ -538,10 +538,15 @@ test('Network Doctor reads configuration health and includes typed checks on its
   let reads = 0;
   Object.assign(context, {runNetworkDoctor: {addEventListener: (_event, handler) => {click = handler;}},
     downloadNetworkDiagnostics: {}, lastDiagnostics: null, networkDoctorResults: {},
+    inspectionInFlight: false, authenticationGeneration: 1, allNodeItems: [], updateExtendedButtons: () => {},
+    AbortController, window: {setTimeout: () => 1, clearTimeout: () => {}},
+    NetworkDoctorView: require('../../main/resources/web/network-doctor.js'),
+    authorized: async () => ({checks: []}),
     runInspection: async () => ({result: {configuredVoteSites: 1}}), lastOverview: null,
     invalidateDashboardInspection: () => {}, finiteCount: value => value,
     configurationHealthChecks: () => [{path: 'OnlineMode', status: 'WARNING'}],
     refreshConfigurationHealth: async () => {reads++;}, renderJsonResult: () => {}, updateSetupChecklist: () => {}});
+  context.NetworkDoctorView = {...context.NetworkDoctorView, render: () => {}};
   const start = appSource.indexOf("runNetworkDoctor.addEventListener('click'");
   const end = appSource.indexOf("downloadNetworkDiagnostics.addEventListener", start);
   vm.runInContext(appSource.slice(start, end), context);

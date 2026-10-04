@@ -585,3 +585,10 @@ includes an explicit list of categories it omitted so a support recipient does n
 3. Never persist browser CSRF tokens, approval tokens, node raw credentials, new configuration secrets, or inspection
    filters/results containing player data. Snapshot content must remain the redacted node read, admin-only,
    owner-permissioned, and bounded.
+
+## Capability-negotiated Network Doctor
+
+The comprehensive validator uses `network-health` with both `data.inspect.v1` and `data.network-health.v1`, then serves
+structured checks through administrator-only `GET /api/v1/network-doctor`. Its pure domain evaluator compares only observed
+relationships. See [Network Doctor](network-doctor.md) for states, checks, freshness, security bounds, supported mixed-version
+behavior, and facts that remain UNKNOWN. Diagnostics never repair configuration or create votes.

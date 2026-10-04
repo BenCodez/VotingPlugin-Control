@@ -879,7 +879,7 @@ class ControlHttpServerTest {
         assertTrue(script.body().contains("const identity = name.value.toLowerCase();"));
         assertTrue(script.body().contains("if (identities.has(identity)) return null;"));
         assertTrue(script.body().contains("function invalidateDashboardInspection()"));
-        assertTrue(script.body().contains("lastOverview = diagnostics.result;\n    invalidateDashboardInspection();"));
+        assertTrue(script.body().contains("lastDiagnostics = NetworkDoctorView.withConfigurationChecks(report, configurationHealthChecks());"));
         assertTrue(script.body().contains("lastOverview = envelope.result;\n    invalidateDashboardInspection();"),
                 "Setup diagnostics must invalidate any cached dashboard evidence.");
         assertTrue(script.body().contains("function invalidVoteLoggingState(value)"));
@@ -998,8 +998,10 @@ class ControlHttpServerTest {
                 "['FAILED', 'COMPLETED_WITH_ERRORS'].includes(operation.state)).slice(0, 5)"),
                 "All bounded failed operations must contribute to the dashboard issue total.");
         assertTrue(script.body().contains("runDriftCheck.addEventListener('click', async () => {\n  setConfigView('compare');"));
-        assertTrue(script.body().contains("voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0"));
-        assertTrue(script.body().contains("voteSitesConfiguredKnown: configuredVoteSites != null"));
+        assertTrue(script.body().contains("NetworkDoctorView.withConfigurationChecks"));
+        HttpResponse<String> doctorView = get("/network-doctor.js", null);
+        assertEquals(200, doctorView.statusCode());
+        assertTrue(doctorView.body().contains("UNKNOWN means unverified"));
         int exactShortcut = script.body().indexOf("const exactShortcut = GLOBAL_PAGE_SHORTCUTS.get(normalized);");
         int fuzzySetting = script.body().indexOf("const setting = GENERAL_SETTING_FIELDS.find");
         assertTrue(exactShortcut >= 0 && exactShortcut < fuzzySetting);
@@ -1305,6 +1307,32 @@ class ControlHttpServerTest {
                 "{\"previewOperationId\":\"" + previewId + "\",\"approvalToken\":\"" + approval + "\"}",
                 adminToken), 409, "APPROVAL_REQUIRED");
         assertEquals(applyId, applyTask.get("operationId").asText());
+    }
+
+    @Test void networkDoctorRequiresAdminAndRetainsOnlyValidatedEvidence() throws Exception {
+        assertEquals(401, get("/api/v1/network-doctor", null).statusCode());
+        assertEquals(401, get("/api/v1/network-doctor", nodeToken).statusCode());
+        assertEquals(405, send("POST", "/api/v1/network-doctor", "{}", adminToken).statusCode());
+        String capable = registration().replace("\"presence.snapshot\"]",
+                "\"presence.snapshot\",\"data.inspect.v1\",\"data.network-health.v1\"]");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", capable, nodeToken).statusCode());
+        JsonNode queued = json.readTree(send("POST", "/api/v1/inspections",
+                "{\"nodeId\":\"proxy-a\",\"query\":{\"kind\":\"network-health\",\"filters\":{}}}", adminToken).body());
+        JsonNode task = json.readTree(send("POST", "/api/v1/nodes/proxy-a/inspections",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        var result = json.createObjectNode().put("sessionId", SESSION).put("success", true).put("message", "current");
+        result.put("attemptId", task.path("attemptId").asText());
+        var data = result.putObject("data").put("schemaVersion", 1).put("kind", "network-health")
+                .put("generatedAt", java.time.Instant.now().toString());
+        data.putObject("result").put("schemaVersion", 1).put("role", "PROXY").put("votifierProviderPresent", false);
+        String path = "/api/v1/nodes/proxy-a/inspections/" + queued.path("inspectionId").asText() + "/result";
+        assertEquals(200, send("POST", path, result.toString(), nodeToken).statusCode());
+        JsonNode report = json.readTree(get("/api/v1/network-doctor", adminToken).body());
+        assertTrue(report.path("checks").isArray());
+        assertTrue(java.util.stream.StreamSupport.stream(report.path("checks").spliterator(), false)
+                .anyMatch(check -> "votifier.proxy.provider".equals(check.path("id").asText()) && "FAIL".equals(check.path("status").asText())));
+        assertFalse(report.toString().contains("rawConfig"));
+        assertEquals(200, get("/network-doctor.js", null).statusCode());
     }
 
     @Test void inspectionRetryAndSnapshotRoutesAreEndToEnd() throws Exception {

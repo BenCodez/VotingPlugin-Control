@@ -93,6 +93,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final Map<String, WebResource> WEB_RESOURCES = Map.ofEntries(
             Map.entry("/", new WebResource("/web/index.html", "text/html; charset=utf-8")),
             Map.entry("/index.html", new WebResource("/web/index.html", "text/html; charset=utf-8")),
+            Map.entry("/network-doctor.js", new WebResource("/web/network-doctor.js", "text/javascript; charset=utf-8")),
             Map.entry("/app.js", new WebResource("/web/app.js", "text/javascript; charset=utf-8")),
             Map.entry("/workspace.js", new WebResource("/web/workspace.js", "text/javascript; charset=utf-8")),
             Map.entry("/configuration-state.js", new WebResource("/web/configuration-state.js", "text/javascript; charset=utf-8")),
@@ -497,6 +498,15 @@ public final class ControlHttpServer implements AutoCloseable {
                 send(exchange, 200, Map.of("nodeId", nodeId, "revoked", true));
                 return;
             }
+        }
+        if ("/api/v1/network-doctor".equals(path)) {
+            requireMethod(exchange, "GET");
+            authenticateAdmin(exchange, false);
+            NodeRegistry.RegistryPage page = registry.page(0, 100, null);
+            var evidence = inspectionOperations.networkEvidence(page.items());
+            send(exchange, 200, com.bencodez.votingplugin.control.domain.NetworkDoctor.evaluate(
+                    page.items(), evidence, Instant.now(), page.total() > page.items().size()));
+            return;
         }
         if (NODES.equals(path)) {
             requireMethod(exchange, "GET");

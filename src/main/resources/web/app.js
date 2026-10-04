@@ -3198,7 +3198,7 @@ function updateExtendedButtons() {
   const fileTargets = comparisonTargetIds();
   const driftReady = authenticated && fileTargets.length >= 2 && configurationOperationsInFlight === 0;
   refreshDashboardButton.disabled = !authenticated || inspectionInFlight || dashboardLoading;
-  runNetworkDoctor.disabled = !inspectionReady;
+  runNetworkDoctor.disabled = !authenticated || inspectionInFlight || !allNodeItems.length;
   downloadNetworkDiagnostics.disabled = !lastDiagnostics;
   refreshSetupChecklist.disabled = !inspectionReady;
   refreshDataOverview.disabled = !inspectionReady;
@@ -5432,41 +5432,45 @@ refreshSetupChecklist.addEventListener('click', async () => {
 refreshDataOverview.addEventListener('click', () => refreshOverview(dataOverview));
 
 runNetworkDoctor.addEventListener('click', async () => {
+  if (inspectionInFlight) return;
   downloadNetworkDiagnostics.disabled = true;
   lastDiagnostics = null;
+  const generation = authenticationGeneration;
+  const selected = selectedServerId;
+  const contextCurrent = () => generation === authenticationGeneration && selected === selectedServerId;
+  inspectionInFlight = true;
+  updateExtendedButtons();
+  text(networkDoctorResults, 'Collecting bounded read-only evidence across enrolled nodes…');
   try {
-    const [diagnostics] = await Promise.all([runInspection('diagnostics', {}, networkDoctorResults),
-      refreshConfigurationHealth()]);
-    lastOverview = diagnostics.result;
-    invalidateDashboardInspection();
-    const node = nodeIndex.get(selectedServerId);
-    const voteLog = diagnostics.result.voteLoggingEnabled !== true
-      ? {state: 'DISABLED', message: 'Vote logging is disabled; no retained logged-event history is expected.'}
-      : diagnostics.result.voteLogReadable === true
-      ? {state: 'READABLE', message: 'Retained logged-event history is readable. It is not a guaranteed record of every internal vote-delivery hop.'}
-      : {state: 'UNREADABLE', message: 'Vote logging is enabled, but retained logged-event history is not currently readable.'};
-    const configuredVoteSites = finiteCount(diagnostics.result.configuredVoteSites);
-    const checks = {
-      controlConnected: Boolean(node?.online),
-      configurationHealthy: diagnostics.result.configurationHealthy,
-      votifierDetected: diagnostics.result.votifierDetected,
-      voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0,
-      voteSitesConfiguredKnown: configuredVoteSites != null,
-      processRewards: diagnostics.result.processRewards,
-      voteLogging: voteLog,
-      topologyReported: isBackend(node) ? proxyReportsFor(node.nodeId).length > 0 || !diagnostics.result.proxyMode : true
+    const candidates = allNodeItems.filter(node => node.online
+      && node.acceptedCapabilities.includes('data.inspect.v1')
+      && node.acceptedCapabilities.includes('data.network-health.v1')).slice(0, 100);
+    const deadlineAt = Date.now() + 175_000;
+    const controller = new AbortController();
+    const deadlineTimer = window.setTimeout(() => controller.abort(), 175_000);
+    // Bound both concurrency and total request time; unavailable peers remain UNKNOWN in the report.
+    let index = 0;
+    const worker = async () => {
+      while (index < candidates.length && contextCurrent() && Date.now() < deadlineAt) {
+        const node = candidates[index++];
+        try { await runInspectionOnNode(node, 'network-health', {}, {manageBusy: false, contextCurrent, deadlineAt, signal: controller.signal}); }
+        catch (_) { /* Missing or failed inspection evidence is represented by the server as UNKNOWN. */ }
+      }
     };
-    lastDiagnostics = {
-      schemaVersion: 1, generatedAt: new Date().toISOString(), selectedNodeId: selectedServerId,
-      checks, configurationChecks: configurationHealthChecks(), voteLog, node: diagnostics.result,
-      control: {application: 'VotingPlugin Control', registeredNodes: allNodeItems.length,
-        nodes: allNodeItems.slice(0, 100).map(item => ({nodeId: item.nodeId, displayName: item.displayName,
-          role: roleLabel(item), online: item.online, pluginVersion: item.pluginVersion}))}
-    };
-    renderJsonResult(networkDoctorResults, lastDiagnostics);
-    updateSetupChecklist(diagnostics.result);
+    try { await Promise.all([refreshConfigurationHealth(), ...Array.from({length: Math.min(3, candidates.length)}, worker)]); }
+    finally { window.clearTimeout(deadlineTimer); controller.abort(); }
+    if (!contextCurrent()) return;
+    const report = await authorized('/api/v1/network-doctor');
+    if (!contextCurrent()) return;
+    lastDiagnostics = NetworkDoctorView.withConfigurationChecks(report, configurationHealthChecks());
+    NetworkDoctorView.render(networkDoctorResults, lastDiagnostics, document);
     downloadNetworkDiagnostics.disabled = false;
-  } catch (error) { text(networkDoctorResults, error.message); }
+  } catch (error) {
+    if (contextCurrent()) text(networkDoctorResults, error.message);
+  } finally {
+    inspectionInFlight = false;
+    updateExtendedButtons();
+  }
 });
 
 downloadNetworkDiagnostics.addEventListener('click', () => {
