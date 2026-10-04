@@ -55,6 +55,11 @@ class NetworkDoctorTest {
         NetworkDoctor.Report report = NetworkDoctor.evaluate(List.of(proxy, backend),
                 Map.of("proxy", p, "backend-a", b), Instant.EPOCH, false);
         assertEquals(NetworkDoctor.Status.FAIL, status(report, "votifier.forwarding.duplicate-path"));
+        assertTrue(report.checks().stream().filter(c -> c.id().equals("votifier.forwarding.duplicate-path"))
+                .anyMatch(c -> c.explanation().contains("matches an enrolled VotingPlugin backend with a Votifier provider")));
+        b.put("votifierProviderPresent", false);
+        assertEquals(NetworkDoctor.Status.FAIL, status(NetworkDoctor.evaluate(List.of(proxy, backend),
+                Map.of("proxy", p, "backend-a", b), Instant.EPOCH, false), "votifier.forwarding.duplicate-path"));
     }
 
     @Test
@@ -127,7 +132,9 @@ class NetworkDoctorTest {
         List<NodeStatus> nodes = new java.util.ArrayList<>();
         for (int i = 0; i < 100; i++) nodes.add(node("n" + i, "BUKKIT", false, List.of()));
         NetworkDoctor.Report report = NetworkDoctor.evaluate(nodes, Map.of(), Instant.EPOCH, false);
-        assertTrue(report.checks().size() <= 1000);
+        assertTrue(report.checks().size() <= 500);
+        assertTrue(report.truncated());
+        assertEquals(NetworkDoctor.Status.UNKNOWN, status(report, "control.evidence.truncated"));
     }
 
     @Test
@@ -201,6 +208,8 @@ class NetworkDoctorTest {
                 .put("enabled", true).put("delayValid", true).put("voteUrlState", "VALID");
         NetworkDoctor.Report report = evaluate(List.of(backend), e);
         assertEquals(NetworkDoctor.Status.FAIL, status(report, "votesite.service-site.duplicate"));
+        e.withArray("voteSites").addObject().put("name", "three").put("enabled", true).put("serviceSite", "");
+        assertEquals(NetworkDoctor.Status.FAIL, status(evaluate(List.of(backend), e), "votesite.service-site.missing"));
     }
 
     @Test
@@ -225,9 +234,9 @@ class NetworkDoctorTest {
     void duplicateMultiProxyPrimaryFails() {
         NodeStatus a = node("pa", "BUNGEECORD", true, List.of());
         NodeStatus b = node("pb", "BUNGEECORD", true, List.of());
-        ObjectNode ea = proxyEvidence().put("multiProxySupport", true).put("primaryServer", true).put("proxyServerName", "pa").put("topologyComplete", true);
+        ObjectNode ea = proxyEvidence().put("multiProxySupport", true).put("multiProxyMethod", "REDIS").put("primaryServer", true).put("proxyServerName", "pa").put("topologyComplete", true);
         ea.putArray("proxyServers").add("pb");
-        ObjectNode eb = proxyEvidence().put("multiProxySupport", true).put("primaryServer", true).put("proxyServerName", "pb").put("topologyComplete", true);
+        ObjectNode eb = proxyEvidence().put("multiProxySupport", true).put("multiProxyMethod", "REDIS").put("primaryServer", true).put("proxyServerName", "pb").put("topologyComplete", true);
         eb.putArray("proxyServers").add("pa");
         NetworkDoctor.Report report = NetworkDoctor.evaluate(List.of(a, b), Map.of("pa", ea, "pb", eb), Instant.EPOCH, false);
         assertEquals(NetworkDoctor.Status.FAIL, status(report, "multiproxy.primary.duplicate"));
@@ -282,7 +291,7 @@ class NetworkDoctorTest {
         NodeStatus proxy = node("proxy", "BUNGEE", true, List.of());
         ObjectNode p = base().put("configuredMethod", "HTTP").put("activeMethod", "HTTP")
                 .put("transportInitialized", true).put("bungeeManageTotals", true).put("topologyComplete", true)
-                .put("multiProxySupport", true).put("proxyServerName", "proxy")
+                .put("multiProxySupport", true).put("multiProxyMethod", "REDIS").put("proxyServerName", "proxy")
                 .put("multiProxyOneGlobalReward", true).put("sendVotesToAllServers", true)
                 .put("votePartyEnabled", true).put("votePartyVotesRequired", 0);
         p.putArray("proxyServers");
@@ -326,6 +335,59 @@ class NetworkDoctorTest {
         assertEquals(NetworkDoctor.Status.FAIL, status(evaluate(List.of(proxy), p), "storage.voteCacheMysql.unavailable"));
         p.put("voteCacheMainMysql", true);
         assertEquals(NetworkDoctor.Status.PASS, status(evaluate(List.of(proxy), p), "storage.voteCacheMysql.unavailable"));
+    }
+
+    @Test void socketMultiProxyUsesSocketPeersAndDoesNotCompareRedisPolicies() {
+        var primary = node("one", "VELOCITY", true, List.of()); var secondary = node("two", "VELOCITY", true, List.of());
+        var a = proxyEvidence().put("multiProxySupport", true).put("multiProxyMethod", "SOCKET").put("primaryServer", true)
+                .put("proxyServerName", "one").put("sharedAuthentication", "REQUIRED");
+        var b = proxyEvidence().put("multiProxySupport", true).put("multiProxyMethod", "SOCKET").put("primaryServer", false)
+                .put("proxyServerName", "two").put("sharedAuthentication", "COMPATIBILITY");
+        a.putArray("proxyServers"); b.putArray("proxyServers");
+        a.putArray("socketProxyServers").add("two"); b.putArray("socketProxyServers").add("one");
+        var report = NetworkDoctor.evaluate(List.of(primary, secondary), Map.of("one", a, "two", b), Instant.EPOCH, false);
+        assertTrue(report.checks().stream().filter(c -> c.id().equals("multiproxy.primary.duplicate")).allMatch(c -> c.status() == NetworkDoctor.Status.PASS));
+        assertFalse(report.checks().stream().anyMatch(c -> c.id().equals("multiproxy.authentication.mismatch") || c.id().equals("multiproxy.key.mismatch")));
+        b.remove("socketProxyServers");
+        assertTrue(NetworkDoctor.evaluate(List.of(primary, secondary), Map.of("one", a, "two", b), Instant.EPOCH, false).checks().stream()
+                .anyMatch(c -> c.id().equals("multiproxy.relationships") && c.status() == NetworkDoctor.Status.UNKNOWN));
+    }
+    @Test void inactiveRoutingListsCannotFailHealthyTopology() {
+        var proxy = node("proxy", "VELOCITY", true, List.of());
+        var p = proxyEvidence().put("broadcastServersApplicable", false).put("offlineForwardServersApplicable", false).put("votePartyEnabled", false);
+        p.putArray("backendNames").add("backend-a"); p.putArray("blockedServers"); p.putArray("whitelistedServers");
+        p.putArray("broadcastServers").add("unused"); p.putArray("offlineForwardServers").add("lobby"); p.putArray("votePartyServers").add("old");
+        assertFalse(evaluate(List.of(proxy), p).checks().stream().anyMatch(c -> c.id().equals("routing.unknown-server")));
+        p.put("broadcastServersApplicable", true);
+        assertEquals(NetworkDoctor.Status.FAIL, status(evaluate(List.of(proxy), p), "routing.unknown-server"));
+    }
+    @Test void offlineProxyTopologyCannotForceOnlineStandaloneIntoProxyMode() {
+        var stale = node("proxy", "VELOCITY", false, List.of(new BackendServerIdentity("backend-a", "backend-a", true, true, 1)));
+        var standalone = node("backend-a", "BUKKIT", true, List.of());
+        var b = backendHealthy("backend-a").put("proxyMode", false);
+        var report = NetworkDoctor.evaluate(List.of(stale, standalone), Map.of("backend-a", b), Instant.EPOCH, false);
+        assertFalse(report.checks().stream().anyMatch(c -> c.id().equals("backend.proxy-mode.disabled")));
+    }
+
+    @Test void caseOnlyBackendNamesCollideInOneNetwork() {
+        var proxy = node("proxy", "VELOCITY", true, List.of(new BackendServerIdentity("a", "a", true, true, 1), new BackendServerIdentity("b", "b", true, true, 1)));
+        var a = node("a", "BUKKIT", true, List.of()); var b = node("b", "BUKKIT", true, List.of());
+        var report = NetworkDoctor.evaluate(List.of(proxy, a, b), Map.of("proxy", proxyEvidence(), "a", backendHealthy("Lobby"), "b", backendHealthy("lobby")), Instant.EPOCH, false);
+        assertEquals(NetworkDoctor.Status.FAIL, status(report, "backend.server-name.duplicate"));
+    }
+    @Test void completeRewardFailureEvidenceAndInvalidSiteDelayFailButIncompleteRewardEvidenceDoesNot() {
+        var node = node("backend", "BUKKIT", true, List.of());
+        var data = backendHealthy("backend").put("rewardsComplete", true);
+        data.putArray("missingRewardFiles").add("daily.yml"); data.putArray("invalidRewardFiles").add("broken.yml");
+        data.putArray("missingRewardDependencies").add("PlaceholderAPI");
+        data.putArray("voteSites").addObject().put("name", "site").put("enabled", true).put("serviceSite", "svc").put("delayValid", false);
+        var report = evaluate(List.of(node), data);
+        assertEquals(NetworkDoctor.Status.FAIL, status(report, "rewards.missingRewardFiles"));
+        assertEquals(NetworkDoctor.Status.FAIL, status(report, "rewards.invalidRewardFiles"));
+        assertEquals(NetworkDoctor.Status.WARNING, status(report, "rewards.missingRewardDependencies"));
+        assertEquals(NetworkDoctor.Status.FAIL, status(report, "votesite.delay.invalid"));
+        data.put("rewardsComplete", false);
+        assertEquals(NetworkDoctor.Status.UNKNOWN, status(evaluate(List.of(node), data), "rewards.missingRewardFiles"));
     }
 
     private static NetworkDoctor.Report evaluate(List<NodeStatus> nodes, ObjectNode evidence) {

@@ -73,7 +73,7 @@ public final class NetworkDoctor {
         if (invalidFields != null && !invalidFields.isEmpty()) emit(n, "configuration.type.invalid", "Proxy Setup", Status.FAIL,
                 "Known configuration fields have invalid types or out-of-range values.", String.join(", ", invalidFields).substring(0, Math.min(160, String.join(", ", invalidFields).length())),
                 "Correct the reported managed settings; the checker does not repair them.");
-        boolean managed = proxy(n) || yes(bool(n, "proxyMode")) || nodes.stream().anyMatch(p -> proxy(p) && p.backends().stream().anyMatch(b -> b.backendId().equals(n.nodeId())));
+        boolean managed = proxy(n) || yes(bool(n, "proxyMode")) || nodes.stream().anyMatch(p -> p.online() && proxy(p) && p.backends().stream().anyMatch(b -> b.backendId().equals(n.nodeId())));
         if (!proxy(n) && managed) {
             requirement(n, "backend.proxy-mode.disabled", "Proxy Setup", "proxyMode", "This proxy-managed backend has UseBungeecord disabled.");
             String name = str(n, "serverName");
@@ -128,7 +128,9 @@ public final class NetworkDoctor {
         } else if (active == null || method == null) unknown(n, "transport.runtime.drift", "Runtime", "activeMethod");
         else emit(n, "transport.runtime.drift", "Runtime", Status.PASS, "Configured and active methods agree.", "configuredMethod / activeMethod", "No action required.");
         requirement(n, "transport.initialized", "Transport", "transportInitialized", "The required active transport failed to initialize.");
-        if ("INVALID".equals(str(n, "sharedAuthentication"))) emit(n, "transport.authentication.invalid", "Transport", Status.FAIL,
+        if ((Set.of("REDIS", "MQTT").contains(method == null ? "" : method)
+                || proxy(n) && yes(bool(n, "multiProxySupport")) && "REDIS".equals(str(n, "multiProxyMethod")))
+                && "INVALID".equals(str(n, "sharedAuthentication"))) emit(n, "transport.authentication.invalid", "Transport", Status.FAIL,
                 "SharedTransportAuthentication is not a supported mode.", "sharedAuthentication", "Choose a supported authentication policy.");
         String probe = str(n, "transportProbeState"); Integer players = num(n, "carrierPlayers");
         boolean waiting = "PLUGINMESSAGING".equals(method) && (players != null && players == 0 || "WAITING".equals(probe));
@@ -327,7 +329,7 @@ public final class NetworkDoctor {
                 compare(p, b, "pluginMessageChannel", "transport.pluginmessaging.channel-mismatch", "Transport", Status.FAIL);
                 compare(p, b, "encryption", "transport.encryption.mismatch", "Transport", Status.FAIL);
             }
-            if (Set.of("REDIS", "MQTT", "SOCKETS").contains(method == null ? "" : method)) {
+            if (Set.of("REDIS", "MQTT").contains(method == null ? "" : method)) {
                 compare(p, b, "sharedAuthentication", "transport.authentication.mode-mismatch", "Transport", Status.FAIL);
                 if (yesRequired(p) || yesRequired(b)) compare(p, b, "sharedKeyFingerprint", "transport.authentication.key-mismatch", "Transport", Status.FAIL);
                 if ("COMPATIBILITY".equals(str(p, "sharedAuthentication")) && data(b).has("sharedAuthentication")) emit(p, "transport.authentication.compatibility", "Transport", Status.WARNING,
@@ -372,6 +374,14 @@ public final class NetworkDoctor {
     private boolean yesRequired(NodeStatus n) { return "REQUIRED".equals(str(n, "sharedAuthentication")); }
     private void routing(NodeStatus p, Set<String> known, boolean complete) {
         for (String field : List.of("blockedServers", "whitelistedServers", "broadcastServers", "offlineForwardServers", "votePartyServers")) {
+            Boolean applicable = switch (field) {
+                case "broadcastServers" -> bool(p, "broadcastServersApplicable");
+                case "offlineForwardServers" -> bool(p, "offlineForwardServersApplicable");
+                case "votePartyServers" -> bool(p, "votePartyEnabled");
+                default -> true;
+            };
+            if (no(applicable)) continue;
+            if (applicable == null) { unknown(p, "routing." + field + ".unknown", "Routing", field + " applicability"); continue; }
             List<String> entries = list(p, field);
             if (entries == null) { unknown(p, "routing." + field + ".unknown", "Routing", field); continue; }
             for (String entry : entries) if (!known.contains(entry)) emit(p, "routing.unknown-server", "Routing", complete ? Status.FAIL : Status.UNKNOWN,
@@ -400,10 +410,11 @@ public final class NetworkDoctor {
                     "Multi-proxy requires a nonblank, nondefault unique identity.", "proxyServerName", "Set a unique ProxyServerName.");
             if (yes(bool(p, "multiProxyOneGlobalReward")) && yes(bool(p, "sendVotesToAllServers"))) emit(p, "multiproxy.global-reward.send-all", "Multi-Proxy", Status.FAIL,
                     "MultiProxyOneGlobalReward requires SendVotesToAllServers to be disabled.", "multiProxyOneGlobalReward / sendVotesToAllServers", "Correct the incompatible options.");
-            List<String> declared = list(p, "proxyServers");
-            if (declared == null) { unknown(p, "multiproxy.relationships", "Multi-Proxy", "proxyServers"); continue; }
+            String peersField = Set.of("SOCKET", "SOCKETS").contains(method == null ? "" : method) ? "socketProxyServers" : "REDIS".equals(method) ? "proxyServers" : null;
+            List<String> declared = peersField == null ? null : list(p, peersField);
+            if (declared == null) { unknown(p, "multiproxy.relationships", "Multi-Proxy", "transport-specific proxy peers"); continue; }
             List<NodeStatus> related = proxies.stream().filter(other -> other.nodeId().equals(p.nodeId()) || declared.contains(other.nodeId()) || declared.contains(str(other, "proxyServerName"))).toList();
-            boolean complete = yes(bool(p, "topologyComplete")) && declared.stream().allMatch(id -> related.stream().anyMatch(other -> id.equals(other.nodeId()) || id.equals(str(other, "proxyServerName"))));
+            boolean complete = declared.stream().allMatch(id -> related.stream().anyMatch(other -> id.equals(other.nodeId()) || id.equals(str(other, "proxyServerName"))));
             long primary = related.stream().filter(other -> yes(bool(other, "primaryServer"))).count();
             Status state = primary > 1 ? Status.FAIL : !complete || related.stream().anyMatch(other -> bool(other, "primaryServer") == null) ? Status.UNKNOWN : primary == 1 ? Status.PASS : Status.FAIL;
             emit(p, "multiproxy.primary.duplicate", "Multi-Proxy", state,
@@ -413,8 +424,10 @@ public final class NetworkDoctor {
                 if (name != null && name.equalsIgnoreCase(str(other, "proxyServerName"))) check("multiproxy.identity.duplicate", "Multi-Proxy", Status.FAIL,
                         "Duplicate proxy identity", "Related proxies share a case-normalized ProxyServerName.", List.of(p.nodeId(), other.nodeId()), "proxyServerName", "Assign distinct proxy identities.", true);
                 compare(p, other, "multiProxyMethod", "multiproxy.method.mismatch", "Multi-Proxy", Status.FAIL);
-                compare(p, other, "sharedAuthentication", "multiproxy.authentication.mismatch", "Multi-Proxy", Status.FAIL);
-                if (yesRequired(p) || yesRequired(other)) compare(p, other, "multiProxyKeyFingerprint", "multiproxy.key.mismatch", "Multi-Proxy", Status.FAIL);
+                if ("REDIS".equals(method)) {
+                    compare(p, other, "sharedAuthentication", "multiproxy.authentication.mismatch", "Multi-Proxy", Status.FAIL);
+                    if (yesRequired(p) || yesRequired(other)) compare(p, other, "multiProxyKeyFingerprint", "multiproxy.key.mismatch", "Multi-Proxy", Status.FAIL);
+                }
                 compare(p, other, "encryption", "multiproxy.encryption.mismatch", "Multi-Proxy", Status.FAIL);
             }
         }

@@ -7,7 +7,7 @@ import java.util.*;
 public final class NetworkHealthEvidence {
     private NetworkHealthEvidence() { }
     public static final String CAPABILITY = "data.network-health.v1";
-    private static final Set<String> BOOLEANS = Set.of("proxyMode", "configurationHealthy", "onlineMode",
+    private static final Set<String> BOOLEANS = Set.of("proxyMode", "broadcastServersApplicable", "offlineForwardServersApplicable", "configurationHealthy", "onlineMode",
             "resetMilestonesMonthly", "monthDateTotals", "automaticTimeChanges", "encryption", "transportInitialized",
             "restartRequired", "triggerVotifierEvent", "votifierProviderPresent", "votifierListenerInitialized",
             "votifierForwardingKnown", "bungeeManageTotals", "dedicatedVotingProxy", "httpPublicEndpointConfigured",
@@ -24,7 +24,7 @@ public final class NetworkHealthEvidence {
     private static final Set<String> INTEGERS = Set.of("timeHourOffset", "maxVotesPerDay", "votePartyVotesRequired",
             "carrierPlayers", "queuedVotes", "parkedVotes", "oldestPendingSeconds", "authenticationFailures");
     private static final Set<String> ARRAYS = Set.of("detectedPlugins", "backendNames", "forwardingDestinations", "blockedServers",
-            "whitelistedServers", "broadcastServers", "offlineForwardServers", "votePartyServers", "proxyServers",
+            "whitelistedServers", "broadcastServers", "offlineForwardServers", "votePartyServers", "proxyServers", "socketProxyServers",
             "waitUntilVoteDelayServices", "detectedServices", "loggedServices", "missingRewardFiles", "invalidRewardFiles",
             "missingRewardDependencies", "invalidConfigurationFields");
     private static final Set<String> METHODS = Set.of("PLUGINMESSAGING", "HTTP", "REDIS", "MQTT", "SOCKETS", "MYSQL", "INVALID");

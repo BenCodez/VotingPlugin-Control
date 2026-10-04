@@ -68,4 +68,23 @@ class NetworkHealthInspectionTest {
         assertTrue(ops.networkEvidence(registry.list(0, 100)).isEmpty());
     }
 
+    @Test void peerTimestampCannotExtendServerMeasuredFreshness() {
+        var time = new java.util.concurrent.atomic.AtomicReference<>(clock.instant());
+        Clock mutable = new Clock() {
+            public ZoneId getZone() { return ZoneOffset.UTC; }
+            public Clock withZone(ZoneId zone) { return this; }
+            public Instant instant() { return time.get(); }
+        };
+        var localRegistry = new InMemoryNodeRegistry(mutable, Duration.ofHours(1));
+        localRegistry.register(new NodeRegistration("backend-a", session, "a", "BUKKIT", "1", 1, caps(), Set.of()));
+        var localOps = new InspectionOperations(localRegistry, mutable);
+        var first = localOps.create("backend-a", new InspectionQuery("network-health", Map.of()));
+        var claim = localOps.claim("backend-a", session);
+        var data = envelope(); data.put("generatedAt", "2099-01-01T00:00:00Z");
+        localOps.complete(first.inspectionId(), "backend-a", new InspectionTaskResult(session, true, "OK", "ok", data, claim.attemptId()));
+        assertEquals(1, localOps.networkEvidence(localRegistry.list(0, 100)).size());
+        time.set(time.get().plusSeconds(301));
+        assertTrue(localOps.networkEvidence(localRegistry.list(0, 100)).isEmpty());
+    }
+
 }

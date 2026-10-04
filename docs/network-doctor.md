@@ -38,7 +38,8 @@ have not passed. Re-run checks for the relevant network when evidence expires.
   competing implementations, enabled VotifierPlus socket forwarding alongside VotingPlugin delivery, optional-provider
   diagnostics and external destination uncertainty.
 - **Routing:** unknown backend references, blocked/whitelist overlap, no eligible destinations, intentional exclusions,
-  allow-unjoined prerequisites and wait-for-online combinations. Invalid references are FAIL only with complete topology.
+  allow-unjoined prerequisites and wait-for-online combinations. Invalid references are FAIL only with complete topology
+  and evidence that the routing list participates in the configured feature. Inactive broadcast/VoteParty examples do not fail.
 - **Database & Storage:** unavailable selected storage/driver, enabled but unreadable VoteLog, database-dependent cache
   and GlobalData settings, GlobalData/prefix/shared storage identity inconsistencies, nonempty backend isolation prefixes.
 - **Vote Sites:** configured/enabled inventory, blank/placeholder/duplicate ServiceSite, case-only conflicts, unfinished
@@ -47,13 +48,16 @@ have not passed. Re-run checks for the relevant network when evidence expires.
 - **Rewards:** processing disabled, missing/unparseable named files or safely inferred dependencies when a complete
   inventory is reported, per-server identity problems, paired extra-all-sites settings.
 - **VoteParty:** nonpositive enabled threshold, absent effective rewards, and server-list routing references.
-- **Multi-Proxy:** declared group identities/primary count, method/auth/encryption consistency, incompatible global reward
+- **Multi-Proxy:** transport-specific declared group identities/primary count, method/auth/encryption consistency, incompatible global reward
   plus send-to-all settings, missing related peer evidence, and valid secondary ingress omission.
 - **Runtime:** reported queue/parked counts, oldest age, authentication counters, and restart state. A retained count alone
   does not prove a vote is lost. No arbitrary SQL or transport scan is used to obtain missing evidence.
 
 Checks are evaluated only within an observed proxy/backend relationship or declared multi-proxy group. Unrelated standalone
-servers are not compared. Backend identity mapping differences are recommendations to verify the mapping, because a Control
+servers are not compared. Offline proxy snapshots cannot force an online standalone backend into proxy-mode checks.
+Socket multi-proxy peers come from `socketProxyServers`; Redis peers come from `proxyServers`. Redis authentication settings
+are compared for Redis multi-proxy traffic, never borrowed from unrelated socket-connected backend networks.
+Backend identity mapping differences are recommendations to verify the mapping, because a Control
 node ID may be explicitly customized. Duplicate Control identities remain governed by registry/session/credential validation;
 Network Doctor does not override session ownership or infer two physical machines from a reconnect.
 
