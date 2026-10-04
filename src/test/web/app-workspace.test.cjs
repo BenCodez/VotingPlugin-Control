@@ -146,7 +146,7 @@ function harness() {
   const names = ['text', 'formatDateTime', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
     'friendlyCapability', 'managedCapabilities', 'proxyReportsFor', 'backendCard', 'nodePresence', 'nodeCard',
     'ordinaryTargetIds', 'comparisonTargetIds', 'confirmDiscardWorkspaceDrafts', 'changeWorkspaceTargets',
-    'inspectWorkspaceServer', 'renderTopology', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation',
+    'workspaceTargetNeedsReplacement', 'inspectWorkspaceServer', 'renderTopology', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation',
     'generalSettingsTargets', 'settingValueLabel'];
   vm.runInContext(names.map(declaration).join('\n'), context, {filename: 'app-workspace-helpers.js'});
   return context;
@@ -630,4 +630,56 @@ test('configuration mutation fences an in-flight health read and forces a new co
   assert.equal(run(context, 'configurationHealthChecks()')[0].status, 'PASS');
   context.settingsHealthGeneration++;
   assert.equal(run(context, 'configurationHealthChecks()')[0].status, 'UNKNOWN');
+});
+
+
+test('proxy route restoration creates a proxy workspace instead of resetting Home', () => {
+  const context = harness(); context.authenticated = true;
+  context.nodeIndex.set('velocity', {...proxy('velocity'), acceptedCapabilities: ['config.proxy-files.v1']});
+  context.window.location.hash = '#servers/velocity/overview';
+  run(context, 'applyNavigationRoute()');
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['velocity']);
+  assert.equal(context.workspace.inspectedServerId, 'velocity');
+  assert.equal(context.selectedServerId, 'velocity');
+  assert.equal(context.calls.some(call => call[0] === 'setActiveTab' && call[1] === 'home'), false);
+});
+
+test('opening a backend after proxy management replaces the proxy target and file identity', () => {
+  const context = harness(); context.authenticated = true;
+  context.nodeIndex.set('velocity', {...proxy('velocity'), acceptedCapabilities: ['config.proxy-files.v1']});
+  context.nodeIndex.set('lobby', {...backend('lobby'), acceptedCapabilities: ['config.files.v1']});
+  context.workspace.setTargets(['velocity']).inspect('velocity'); context.selectedServerId = 'velocity';
+  run(context, "inspectWorkspaceServer('lobby')");
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['lobby']);
+  assert.equal(context.workspace.inspectedServerId, 'lobby');
+  assert.equal(context.selectedServerId, 'lobby');
+  assert.equal(run(context, 'generalSettingsTargets()[0].fileName'), 'Config.yml');
+  assert.equal(context.calls.some(call => call[0] === 'clearApprovals'), true);
+});
+
+test('history transitions between proxy and backend routes replace only incompatible target sets', () => {
+  const context = harness(); context.authenticated = true;
+  context.nodeIndex.set('velocity', proxy('velocity'));
+  context.nodeIndex.set('lobby', backend('lobby')); context.nodeIndex.set('server', backend('server'));
+  context.workspace.setTargets(['lobby', 'server']); context.selectedServerId = 'lobby';
+  context.window.location.hash = '#servers/velocity/overview'; run(context, 'applyNavigationRoute()');
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['velocity']);
+  context.window.location.hash = '#servers/lobby/overview'; run(context, 'applyNavigationRoute()');
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['lobby']);
+  assert.equal(context.selectedServerId, 'lobby');
+  context.workspace.setTargets(['lobby', 'server']);
+  context.window.location.hash = '#servers/server/overview'; run(context, 'applyNavigationRoute()');
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['lobby', 'server']);
+});
+
+test('cancelling a proxy-to-backend history transition retains the proxy target and route', () => {
+  const context = harness(); context.authenticated = true;
+  context.nodeIndex.set('velocity', proxy('velocity')); context.nodeIndex.set('lobby', backend('lobby'));
+  context.workspace.setTargets(['velocity']).inspect('velocity'); context.selectedServerId = 'velocity';
+  context.activeNavigationHash = '#servers/velocity/overview';
+  context.settingsEditor = {model: {dirty: new Set(['Server'])}}; context.window.confirm = () => false;
+  context.window.location.hash = '#servers/lobby/overview'; run(context, 'applyNavigationRoute()');
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['velocity']);
+  assert.equal(context.selectedServerId, 'velocity');
+  assert.equal(context.window.location.hash, '#servers/velocity/overview');
 });

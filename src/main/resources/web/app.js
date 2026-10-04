@@ -1709,6 +1709,13 @@ function changeWorkspaceTargets(change) {
   return true;
 }
 
+function workspaceTargetNeedsReplacement(id) {
+  const proxyTarget = workspace.selectedTargetIds.size === 1
+    && isProxy(nodeIndex.get([...workspace.selectedTargetIds][0]));
+  return !workspace.managementScope || (isProxy(nodeIndex.get(id))
+    ? workspace.selectedTargetIds.size !== 1 || !workspace.selectedTargetIds.has(id) : proxyTarget);
+}
+
 function inspectWorkspaceServer(id) {
   if (!isBackend(nodeIndex.get(id)) && !isProxy(nodeIndex.get(id))) return;
   if (workspace.managementScope === 'GLOBAL') {
@@ -1717,7 +1724,7 @@ function inspectWorkspaceServer(id) {
     workspace.returnToServers();
     clearApprovals();
   }
-  if (isProxy(nodeIndex.get(id)) || !workspace.managementScope) {
+  if (workspaceTargetNeedsReplacement(id)) {
     if (!changeWorkspaceTargets(() => workspace.setTargets([id]))) return;
   }
   if (selectPrimaryServer(id) === false) return;
@@ -1764,11 +1771,13 @@ function applyNavigationRoute() {
     return setActiveTab('home');
   }
   if (route.inspectedServerId) {
-    if (!isBackend(nodeIndex.get(route.inspectedServerId))) {
+    const destination = nodeIndex.get(route.inspectedServerId);
+    if (!isBackend(destination) && !isProxy(destination)) {
       window.history.replaceState(null, '', '#home');
       return setActiveTab('home');
     }
-    if (!workspace.managementScope) workspace.setTargets([route.inspectedServerId]);
+    if (workspaceTargetNeedsReplacement(route.inspectedServerId)
+        && !changeWorkspaceTargets(() => workspace.setTargets([route.inspectedServerId]))) return cancelNavigation();
     if (selectPrimaryServer(route.inspectedServerId) === false) return cancelNavigation();
     workspace.inspect(route.inspectedServerId);
   } else if (route.page === 'overview') workspace.inspect('');
