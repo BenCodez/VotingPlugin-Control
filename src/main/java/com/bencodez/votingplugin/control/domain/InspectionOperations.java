@@ -97,24 +97,37 @@ public final class InspectionOperations {
     public synchronized Map<String, JsonNode> networkEvidence(List<NodeStatus> nodes) {
         prune();
         Map<String, JsonNode> result = new LinkedHashMap<>();
-        for (NodeStatus node : nodes) {
-            if (!node.online() || !node.acceptedCapabilities().contains(NetworkHealthEvidence.CAPABILITY)
-                    || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)) continue;
-            for (StoredInspection stored : inspections.values()) {
-                if (stored.nodeId.equals(node.nodeId()) && stored.query.requiresNetworkHealth()
-                        && Objects.equals(stored.targetSession, node.sessionId())
-                        && stored.createdAt.isAfter(clock.instant().minus(Duration.ofMinutes(5)))) {
-                    result.remove(node.nodeId());
-                    if ("COMPLETE".equals(stored.state) && stored.result != null && stored.result.success()
-                            && Objects.equals(stored.result.sessionId(), node.sessionId())) {
-                        JsonNode evidence = stored.result.data().path("result");
-                        if (("BUKKIT".equals(node.platform()) ? "BACKEND" : "PROXY").equals(evidence.path("role").asText()))
-                            result.put(node.nodeId(), evidence.deepCopy());
-                    }
-                }
+        for (NodeStatus snapshot : nodes) {
+            try {
+                // Keep evidence selection under the same per-node session fence as claim/completion.
+                registry.withSession(snapshot.nodeId(), snapshot.sessionId(), current -> {
+                    collectNetworkEvidence(current, result);
+                    return null;
+                });
+            } catch (ValidationException changed) {
+                if (!Set.of("SESSION_MISMATCH", "NODE_NOT_FOUND").contains(changed.code())) throw changed;
+                // A page can outlive registration replacement; absence means UNKNOWN to the doctor.
             }
         }
         return result;
+    }
+
+    private void collectNetworkEvidence(NodeStatus node, Map<String, JsonNode> result) {
+        if (!node.online() || !node.acceptedCapabilities().contains(NetworkHealthEvidence.CAPABILITY)
+                || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)) return;
+        for (StoredInspection stored : inspections.values()) {
+            if (stored.nodeId.equals(node.nodeId()) && stored.query.requiresNetworkHealth()
+                    && Objects.equals(stored.targetSession, node.sessionId())
+                    && stored.createdAt.isAfter(clock.instant().minus(Duration.ofMinutes(5)))) {
+                result.remove(node.nodeId());
+                if ("COMPLETE".equals(stored.state) && stored.result != null && stored.result.success()
+                        && Objects.equals(stored.result.sessionId(), node.sessionId())) {
+                    JsonNode evidence = stored.result.data().path("result");
+                    if (("BUKKIT".equals(node.platform()) ? "BACKEND" : "PROXY").equals(evidence.path("role").asText()))
+                        result.put(node.nodeId(), evidence.deepCopy());
+                }
+            }
+        }
     }
 
     public synchronized InspectionView get(UUID id) {

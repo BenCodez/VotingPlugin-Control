@@ -37,6 +37,29 @@ class NetworkHealthInspectionTest {
         register(UUID.randomUUID(), caps());
         assertTrue(ops.networkEvidence(registry.list(0, 100)).isEmpty());
     }
+    @Test void staleRegistryPageCannotReuseEvidenceAfterSessionReplacement() {
+        register(session, caps());
+        var first = ops.create("backend-a", new InspectionQuery("network-health", Map.of()));
+        var claim = ops.claim("backend-a", session);
+        ops.complete(first.inspectionId(), "backend-a", new InspectionTaskResult(session, true, "OK", "ok", envelope(), claim.attemptId()));
+        var page = registry.page(0, 100, null);
+        assertEquals(1, ops.networkEvidence(page.items()).size());
+        register(UUID.randomUUID(), caps());
+        assertEquals(page.revision(), registry.page(0, 100, null).revision());
+        assertTrue(ops.networkEvidence(page.items()).isEmpty());
+    }
+
+    @Test void staleRegistryCapabilitiesCannotAuthorizeRetainedEvidence() {
+        register(session, caps());
+        var first = ops.create("backend-a", new InspectionQuery("network-health", Map.of()));
+        var claim = ops.claim("backend-a", session);
+        ops.complete(first.inspectionId(), "backend-a", new InspectionTaskResult(session, true, "OK", "ok", envelope(), claim.attemptId()));
+        var page = registry.page(0, 100, null);
+        register(session, Set.of(InspectionQuery.CAPABILITY));
+        assertEquals(page.revision(), registry.page(0, 100, null).revision());
+        assertTrue(ops.networkEvidence(page.items()).isEmpty());
+    }
+
     @Test void capabilityLossCancelsClaimAndDoesNotAcceptLateResult() {
         register(session, caps());
         var created = ops.create("backend-a", new InspectionQuery("network-health", Map.of()));
