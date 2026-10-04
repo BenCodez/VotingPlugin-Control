@@ -76,6 +76,21 @@ test('reconcile preserves known offline Bukkit targets and cleans disappeared ta
   assert.equal(workspace.inspectedServerId, '');
 });
 
+test('reconcile preserves a proxy-only workspace and inspected proxy', () => {
+  const workspace = new Workspace().setTargets(['proxy']).inspect('proxy');
+  workspace.reconcile([{nodeId: 'proxy', platform: 'VELOCITY', online: true}]);
+  assert.deepEqual([...workspace.selectedTargetIds], ['proxy']);
+  assert.equal(workspace.managementScope, 'SERVER');
+  assert.equal(workspace.inspectedServerId, 'proxy');
+});
+
+test('reconcile removes proxies from mixed backend workspaces', () => {
+  const workspace = new Workspace().setTargets(['backend', 'proxy']).inspect('proxy');
+  workspace.reconcile([{...backend('backend'), online: true}, {nodeId: 'proxy', platform: 'VELOCITY', online: true}]);
+  assert.deepEqual([...workspace.selectedTargetIds], ['backend']);
+  assert.equal(workspace.inspectedServerId, '');
+});
+
 test('selectEligible chooses only online Bukkit nodes with an eligible versioned capability', () => {
   const workspace = new Workspace();
   workspace.selectEligible([

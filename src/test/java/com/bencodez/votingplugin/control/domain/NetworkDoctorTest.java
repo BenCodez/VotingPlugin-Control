@@ -274,7 +274,7 @@ class NetworkDoctorTest {
     }
 
     @Test
-    void routingOverlapAndNoEligibleBackendAreDistinctWarningsAndFailures() {
+    void whitelistOverridesBlockedEntriesButBlockedOnlyCanExcludeAllDestinations() {
         BackendServerIdentity relation = new BackendServerIdentity("backend-a", "backend-a", true, true, 0);
         NodeStatus proxy = node("proxy", "VELOCITY", true, List.of(relation));
         ObjectNode p = base().put("configuredMethod", "HTTP").put("activeMethod", "HTTP")
@@ -283,7 +283,12 @@ class NetworkDoctorTest {
         p.putArray("whitelistedServers").add("backend-a");
         NetworkDoctor.Report report = evaluate(List.of(proxy), p);
         assertEquals(NetworkDoctor.Status.WARNING, status(report, "routing.block-whitelist.overlap"));
+        assertEquals(NetworkDoctor.Status.PASS, status(report, "routing.no-eligible-backends"));
+        assertFalse(report.checks().stream().anyMatch(c -> c.id().equals("routing.backend.excluded")));
+        p.putArray("whitelistedServers");
+        report = evaluate(List.of(proxy), p);
         assertEquals(NetworkDoctor.Status.FAIL, status(report, "routing.no-eligible-backends"));
+        assertEquals(NetworkDoctor.Status.WARNING, status(report, "routing.backend.excluded"));
     }
 
     @Test

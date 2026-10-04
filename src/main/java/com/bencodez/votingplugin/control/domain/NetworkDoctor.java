@@ -390,12 +390,12 @@ public final class NetworkDoctor {
         List<String> blocked = list(p, "blockedServers"), white = list(p, "whitelistedServers");
         if (blocked == null || white == null || !complete) { unknown(p, "routing.no-eligible-backends", "Routing", "routing / topologyComplete"); return; }
         if (white.stream().anyMatch(blocked::contains)) emit(p, "routing.block-whitelist.overlap", "Routing", Status.WARNING,
-                "BlockedServers and WhiteListedServers overlap; this is confusing even when block precedence is intended.", "blockedServers / whitelistedServers", "Remove unintended overlapping rules.");
-        long eligible = known.stream().filter(s -> !blocked.contains(s) && (white.isEmpty() || white.contains(s))).count();
+                "BlockedServers and WhiteListedServers overlap; a nonempty whitelist takes precedence for normal vote routing.", "blockedServers / whitelistedServers", "Remove unintended overlapping rules.");
+        long eligible = known.stream().filter(s -> white.isEmpty() ? !blocked.contains(s) : white.contains(s)).count();
         emit(p, "routing.no-eligible-backends", "Routing", eligible == 0 ? Status.FAIL : Status.PASS,
                 eligible == 0 ? "Routing rules leave no possible backend destination." : "Routing rules leave at least one configured backend destination; runtime delivery is checked separately.",
                 "blockedServers / whitelistedServers / topology", "Review whitelist and blocked rules.");
-        if (known.stream().anyMatch(s -> blocked.contains(s) || !white.isEmpty() && !white.contains(s))) emit(p, "routing.backend.excluded", "Routing", Status.WARNING,
+        if (known.stream().anyMatch(s -> white.isEmpty() ? blocked.contains(s) : !white.contains(s))) emit(p, "routing.backend.excluded", "Routing", Status.WARNING,
                 "At least one known backend is excluded from normal vote routing.", "blockedServers / whitelistedServers", "Confirm intentional exclusions.");
     }
     private void multiProxy() {
