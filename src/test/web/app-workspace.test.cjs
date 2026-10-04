@@ -141,7 +141,7 @@ function harness() {
     calls
   };
   vm.createContext(context);
-  const names = ['text', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
+  const names = ['text', 'formatDateTime', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
     'friendlyCapability', 'managedCapabilities', 'proxyReportsFor', 'backendCard', 'nodePresence', 'nodeCard',
     'ordinaryTargetIds', 'comparisonTargetIds', 'confirmDiscardWorkspaceDrafts', 'changeWorkspaceTargets',
     'inspectWorkspaceServer', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation',
@@ -367,6 +367,42 @@ test('nodeCard keeps offline Bukkit nodes selectable, but disables proxy and unk
     assert.equal(card.find(node => node.textContent === 'No supported management capability reported. Configuration tools are unavailable.')?.textContent,
       'No supported management capability reported. Configuration tools are unavailable.');
   }
+});
+
+test('proxy card opens a proxy workspace for settings without making it a backend target', () => {
+  const context = harness();
+  const proxyNode = {nodeId: 'proxy', displayName: 'Velocity', platform: 'VELOCITY', online: true,
+    sessionId: 'proxy-session', acceptedCapabilities: ['config.proxy-files.v1'], backends: []};
+  context.nodeIndex.set('proxy', proxyNode);
+  context.proxyNode = proxyNode;
+  context.nodeIndex.set('backend-a', backend('backend-a'));
+  context.nodeIndex.set('backend-b', backend('backend-b'));
+  context.workspace.setTargets(['backend-a', 'backend-b']);
+  context.selectedServerId = 'backend-a';
+  const card = run(context, 'nodeCard(proxyNode)');
+  const action = card.find(node => node.tagName === 'button' && node.textContent === 'Manage proxy settings');
+  assert.ok(action);
+  action.listeners.get('click')();
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['proxy']);
+  assert.equal(context.workspace.inspectedServerId, 'proxy');
+  assert.equal(context.selectedServerId, 'proxy');
+  assert.equal(context.calls.at(-1)[1], 'overview');
+});
+
+test('backend inspection preserves a multi-server workspace and honors dirty cancellation', () => {
+  const context = harness();
+  context.authenticated = true;
+  context.nodeIndex.set('backend-a', backend('backend-a'));
+  context.nodeIndex.set('backend-b', backend('backend-b'));
+  context.workspace.setTargets(['backend-a', 'backend-b']);
+  context.selectedServerId = 'backend-a';
+  context.backendB = {...backend('backend-b'), displayName: 'Backend B', acceptedCapabilities: [], backends: []};
+  context.nodeIndex.set('backend-b', context.backendB);
+  const card = run(context, 'nodeCard(backendB)');
+  const action = card.find(node => node.tagName === 'button' && node.textContent === 'Inspect server overview');
+  action.listeners.get('click')();
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['backend-a', 'backend-b']);
+  assert.equal(context.selectedServerId, 'backend-b');
 });
 
 test('back and forward scope navigation retains targets, maps presets, and restores a cancelled hash', () => {

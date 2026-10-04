@@ -377,7 +377,7 @@ public final class NetworkDoctor {
             Boolean applicable = switch (field) {
                 case "broadcastServers" -> bool(p, "broadcastServersApplicable");
                 case "offlineForwardServers" -> bool(p, "offlineForwardServersApplicable");
-                case "votePartyServers" -> bool(p, "votePartyEnabled");
+                case "votePartyServers" -> bool(p, "votePartyServersApplicable");
                 default -> true;
             };
             if (no(applicable)) continue;

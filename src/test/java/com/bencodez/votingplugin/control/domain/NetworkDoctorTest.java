@@ -390,6 +390,17 @@ class NetworkDoctorTest {
         assertEquals(NetworkDoctor.Status.UNKNOWN, status(evaluate(List.of(node), data), "rewards.missingRewardFiles"));
     }
 
+    @Test void votePartySendAllMakesItsExplicitListInactive() {
+        var proxy = node("proxy", "VELOCITY", true, List.of());
+        var data = proxyEvidence().put("votePartyEnabled", true).put("votePartyServersApplicable", false).put("votePartyVotesRequired", 100);
+        data.putArray("backendNames").add("backend-a"); data.putArray("votePartyServers").add("retired");
+        assertFalse(evaluate(List.of(proxy), data).checks().stream().anyMatch(c -> c.id().equals("routing.unknown-server")));
+        data.put("votePartyServersApplicable", true);
+        assertEquals(NetworkDoctor.Status.FAIL, status(evaluate(List.of(proxy), data), "routing.unknown-server"));
+        data.remove("votePartyServersApplicable");
+        assertEquals(NetworkDoctor.Status.UNKNOWN, status(evaluate(List.of(proxy), data), "routing.votePartyServers.unknown"));
+    }
+
     private static NetworkDoctor.Report evaluate(List<NodeStatus> nodes, ObjectNode evidence) {
         return NetworkDoctor.evaluate(nodes, Map.of(nodes.get(0).nodeId(), evidence), Instant.EPOCH, false);
     }

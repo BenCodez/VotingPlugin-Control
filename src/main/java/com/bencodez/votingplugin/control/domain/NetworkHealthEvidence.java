@@ -7,7 +7,7 @@ import java.util.*;
 public final class NetworkHealthEvidence {
     private NetworkHealthEvidence() { }
     public static final String CAPABILITY = "data.network-health.v1";
-    private static final Set<String> BOOLEANS = Set.of("proxyMode", "broadcastServersApplicable", "offlineForwardServersApplicable", "configurationHealthy", "onlineMode",
+    private static final Set<String> BOOLEANS = Set.of("proxyMode", "votePartyServersApplicable", "broadcastServersApplicable", "offlineForwardServersApplicable", "configurationHealthy", "onlineMode",
             "resetMilestonesMonthly", "monthDateTotals", "automaticTimeChanges", "encryption", "transportInitialized",
             "restartRequired", "triggerVotifierEvent", "votifierProviderPresent", "votifierListenerInitialized",
             "votifierForwardingKnown", "bungeeManageTotals", "dedicatedVotingProxy", "httpPublicEndpointConfigured",

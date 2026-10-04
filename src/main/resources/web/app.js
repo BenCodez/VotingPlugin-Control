@@ -505,7 +505,21 @@ function renderJsonResult(element, value, emptyMessage = 'No data returned.') {
 
 function formatEpoch(value) {
   const epoch = Number(value);
-  return Number.isFinite(epoch) && epoch > 0 ? new Date(epoch).toLocaleString() : 'Unknown';
+  return formatDateTime(Number.isFinite(epoch) && epoch > 0 ? (epoch < 1e12 ? epoch * 1000 : epoch) : null);
+}
+
+function formatDateTime(value) {
+  if (value == null || value === '') return 'Unknown';
+  const numeric = typeof value === 'number' || (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value))
+    ? Number(value) : NaN;
+  if (Number.isFinite(numeric)) {
+    if (numeric <= 0) return 'Unknown';
+    const date = new Date(numeric < 1e12 ? numeric * 1000 : numeric);
+    return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
+  }
+  if (typeof value !== 'string') return 'Unknown';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
 }
 
 function plainObject(value) {
@@ -885,7 +899,7 @@ function renderVoteTrace(trace) {
       const event = item.event;
       const eventRow = document.createElement('tr');
       const time = Number(event.voteTime);
-      eventRow.append(text(document.createElement('td'), Number.isFinite(time) && time > 0 ? new Date(time).toLocaleString() : 'Unknown'));
+      eventRow.append(text(document.createElement('td'), formatEpoch(time)));
       eventRow.append(text(document.createElement('td'), event.event || 'Unknown'));
       eventRow.append(text(document.createElement('td'), event.status || 'Unknown'));
       eventRow.append(text(document.createElement('td'), event.playerName || event.playerUuid || 'Unknown'));
@@ -1133,7 +1147,7 @@ function renderOperationHistory() {
     heading.className = 'section-title';
     const identity = document.createElement('div');
     identity.append(text(document.createElement('strong'), `Plugin deployment · ${deployment.state}`));
-    identity.append(text(document.createElement('small'), `${deployment.deploymentId} · ${new Date(deployment.createdAt).toLocaleString()}`));
+    identity.append(text(document.createElement('small'), `${deployment.deploymentId} · ${formatDateTime(deployment.createdAt)}`));
     heading.append(identity);
     if ((deployment.nodes || []).some(node => node.state === 'FAILED')) {
       const retry = text(document.createElement('button'), 'Retry failed targets');
@@ -1569,14 +1583,14 @@ function nodeCard(node) {
       ? `Reported by ${proxies.map(proxy => proxy.displayName).join(', ')}.`
       : 'No connected proxy reports this backend ID.'));
   }
-  const seen = text(document.createElement('p'), `Last seen: ${node.lastSeen ? new Date(node.lastSeen).toLocaleString() : 'Unknown'} · ${nodePresence(node)}`);
+  const seen = text(document.createElement('p'), `Last seen: ${formatDateTime(node.lastSeen)} · ${nodePresence(node)}`);
   seen.className = 'node-detail';
   article.append(header, meta, detail, seen, list, selector);
   if (!managedCapabilities(node).length) {
     article.append(text(document.createElement('p'), 'No supported management capability reported. Configuration tools are unavailable.'));
   }
-  if (isBackend(node)) {
-    const inspect = text(document.createElement('button'), 'Inspect server overview');
+  if (isBackend(node) || isProxy(node)) {
+    const inspect = text(document.createElement('button'), isProxy(node) ? 'Manage proxy settings' : 'Inspect server overview');
     inspect.type = 'button';
     inspect.className = 'secondary compact';
     inspect.addEventListener('click', () => inspectWorkspaceServer(node.nodeId));
@@ -1696,14 +1710,16 @@ function changeWorkspaceTargets(change) {
 }
 
 function inspectWorkspaceServer(id) {
-  if (!isBackend(nodeIndex.get(id))) return;
+  if (!isBackend(nodeIndex.get(id)) && !isProxy(nodeIndex.get(id))) return;
   if (workspace.managementScope === 'GLOBAL') {
-    if (!confirmDiscardUnsavedConfiguration('returning to the server workspace')) return;
+    if (!confirmDiscardWorkspaceDrafts('returning to the server workspace')) return;
     resetServerContextValues('Returning to server tools.');
     workspace.returnToServers();
     clearApprovals();
   }
-  if (!workspace.managementScope) workspace.setTargets([id]);
+  if (isProxy(nodeIndex.get(id)) || !workspace.managementScope) {
+    if (!changeWorkspaceTargets(() => workspace.setTargets([id]))) return;
+  }
   if (selectPrimaryServer(id) === false) return;
   workspace.inspect(id);
   setActiveTab('overview', true);
@@ -1814,7 +1830,7 @@ function renderScopeOverview() {
   text(document.querySelector('#metric-presence-detail'), 'Known only when a connected proxy reports it');
   const recent = overviewOperations()[0];
   text(document.querySelector('#metric-last-operation'), recent ? operationPhase(recent) : '—');
-  text(document.querySelector('#metric-last-operation-detail'), recent ? `${operationLabel(recent)} · ${recent.createdAt ? new Date(recent.createdAt).toLocaleString() : 'Time unknown'}` : 'No retained operation for this scope');
+  text(document.querySelector('#metric-last-operation-detail'), recent ? `${operationLabel(recent)} · ${formatDateTime(recent.createdAt)}` : 'No retained operation for this scope');
   const health = document.querySelector('#overview-site-health');
   health.replaceChildren();
   const sites = dashboardLoadedContext === dashboardContext() ? dashboardVoteSiteHealth?.sites : null;
@@ -2200,7 +2216,7 @@ function renderSelectedServer() {
   const relationshipText = relationships.length
     ? ` Reported by ${relationships.map(proxy => proxy.displayName).join(', ')}.` : '';
   text(selectedServerSummary,
-    `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion || 'version unknown'}.${relationshipText} Last seen: ${selected.lastSeen ? new Date(selected.lastSeen).toLocaleString() : 'unknown'}. ${nodePresence(selected)}.`);
+    `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion || 'version unknown'}.${relationshipText} Last seen: ${formatDateTime(selected.lastSeen)}. ${nodePresence(selected)}.`);
   const capabilities = managedCapabilities(selected);
   if (capabilities.length === 0) capabilities.push('Discovery only');
   capabilities.forEach(value => {
@@ -2868,7 +2884,7 @@ function renderOverviewActivity() {
     const targetCount = Object.keys(operation.nodeStates || {}).length || results.length;
     const successful = results.filter(result => result?.success).length;
     item.append(text(document.createElement('strong'), operationLabel(operation)));
-    const when = operation.createdAt ? new Date(operation.createdAt).toLocaleString() : 'Time unavailable';
+    const when = formatDateTime(operation.createdAt);
     item.append(text(document.createElement('small'), `${operationPhase(operation)} · ${successful}/${targetCount} targets successful · ${when}`));
     overviewActivity.append(item);
   });
@@ -5556,7 +5572,7 @@ async function loadSnapshots() {
       item.className = 'result-item';
       const detail = document.createElement('div');
       detail.append(text(document.createElement('strong'), snapshot.name));
-      detail.append(text(document.createElement('small'), `${new Date(snapshot.createdAt).toLocaleString()} · ${snapshot.documents.length} document(s)`));
+      detail.append(text(document.createElement('small'), `${formatDateTime(snapshot.createdAt)} · ${snapshot.documents.length} document(s)`));
       const restore = text(document.createElement('button'), 'Load for restore preview');
       restore.type = 'button';
       restore.className = 'secondary compact';
