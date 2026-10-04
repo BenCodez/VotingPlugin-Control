@@ -2265,6 +2265,13 @@ function renderTopology() {
     proxyIdentity.append(text(document.createElement('strong'), proxy.displayName));
     proxyIdentity.append(text(document.createElement('small'),
       `${platformLabel(proxy.platform)} proxy · Control ${proxy.online ? 'connected' : 'disconnected'}`));
+    if (proxy.online) {
+      const manage = text(document.createElement('button'), 'Manage proxy settings');
+      manage.type = 'button';
+      manage.className = 'secondary compact';
+      manage.addEventListener('click', () => inspectWorkspaceServer(proxy.nodeId));
+      proxyIdentity.append(manage);
+    }
     const backendList = document.createElement('div');
     backendList.className = 'topology-backends';
     const backends = Array.isArray(proxy.backends) ? proxy.backends : [];

@@ -54,6 +54,7 @@ function harness() {
       this.value = '';
       this.textContent = '';
       this.className = '';
+      this.classList = {toggle: () => {}, add: () => {}, remove: () => {}};
     }
     append(...items) { this.children.push(...items); }
     prepend(...items) { this.children.unshift(...items); }
@@ -92,6 +93,7 @@ function harness() {
     nodeIndex: new Map(),
     nodeCapabilities: new Map(),
     backendTopologyTruncatedNodeIds: new Set(),
+    backendTopologyTruncated: false,
     selectedNodes: new Set(['stale']),
     voteSitesTargetIds: new Set(['stale']),
     fileReadCache: new Map([['stale', {}]]),
@@ -101,7 +103,7 @@ function harness() {
     autoLoadPending: new Set(['stale']),
     configurationContent: element(), configurationFile: element(), logout: element(), sidebarToggle: element(),
     globalSearch: element(), headerAction: element(), authCard: element(), welcome: element(), appShell: element(),
-    serverPickerLabel: element(), enrollmentCard: element(), quickPreset: element(),
+    serverPickerLabel: element(), enrollmentCard: element(), quickPreset: element(), topology: element(),
     authenticated: false, csrfToken: 'old', approvedPreview: {}, approvedFilePreview: {}, approvedQuickPreview: {},
     loadedQuickSetup: {}, quickSetupDirty: true, voteSitesSourceId: 'stale', voteSitesTargetsInitialized: true,
     transportTestProxyId: 'stale', transportTestBackendId: 'stale', proxyMethodProxyId: 'stale',
@@ -144,7 +146,7 @@ function harness() {
   const names = ['text', 'formatDateTime', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
     'friendlyCapability', 'managedCapabilities', 'proxyReportsFor', 'backendCard', 'nodePresence', 'nodeCard',
     'ordinaryTargetIds', 'comparisonTargetIds', 'confirmDiscardWorkspaceDrafts', 'changeWorkspaceTargets',
-    'inspectWorkspaceServer', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation',
+    'inspectWorkspaceServer', 'renderTopology', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation',
     'generalSettingsTargets', 'settingValueLabel'];
   vm.runInContext(names.map(declaration).join('\n'), context, {filename: 'app-workspace-helpers.js'});
   return context;
@@ -389,7 +391,34 @@ test('proxy card opens a proxy workspace for settings without making it a backen
   assert.equal(context.calls.at(-1)[1], 'overview');
 });
 
-test('backend inspection preserves a multi-server workspace and honors dirty cancellation', () => {
+test('topology overview exposes the same proxy settings action', () => {
+  const context = harness();
+  context.authenticated = true;
+  const node = {...proxy('proxy'), displayName: 'Velocity', sessionId: 'p', acceptedCapabilities: ['config.proxy-files.v1'], backends: []};
+  context.nodeIndex.set('proxy', node);
+  context.allNodeItems.push(node);
+  run(context, 'renderTopology()');
+  const action = context.topology.find(item => item.tagName === 'button' && item.textContent === 'Manage proxy settings');
+  assert.ok(action);
+  action.listeners.get('click')();
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['proxy']);
+});
+
+test('proxy settings cancellation preserves backend targets and selected source', () => {
+  const context = harness();
+  context.authenticated = true;
+  context.workspace.setTargets(['backend-a', 'backend-b']);
+  context.selectedServerId = 'backend-a';
+  context.nodeIndex.set('proxy', proxy('proxy'));
+  context.settingsEditor = {model: {dirty: new Set(['Server'])}};
+  context.window.confirm = () => false;
+  run(context, "inspectWorkspaceServer('proxy')");
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['backend-a', 'backend-b']);
+  assert.equal(context.selectedServerId, 'backend-a');
+  assert.equal(context.calls.length, 0);
+});
+
+test('backend inspection preserves a multi-server workspace', () => {
   const context = harness();
   context.authenticated = true;
   context.nodeIndex.set('backend-a', backend('backend-a'));
