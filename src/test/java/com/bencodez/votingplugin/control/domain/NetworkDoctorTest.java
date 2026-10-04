@@ -42,6 +42,17 @@ class NetworkDoctorTest {
         assertEquals(NetworkDoctor.Status.UNKNOWN, status(report, "votifier.external-destination"));
     }
 
+    @Test void nuVotifierActiveForwardingFailsWithoutInventingDestinationNames() {
+        NodeStatus proxy = node("proxy", "VELOCITY", true, List.of());
+        ObjectNode evidence = proxyEvidence().put("votifierForwardingEnabled", true);
+        evidence.remove("forwardingDestinations"); evidence.remove("votifierForwardingKnown");
+        assertEquals(NetworkDoctor.Status.FAIL, status(evaluate(List.of(proxy), evidence), "votifier.forwarding.duplicate-path"));
+        evidence.put("votifierForwardingEnabled", false);
+        assertEquals(NetworkDoctor.Status.PASS, status(evaluate(List.of(proxy), evidence), "votifier.forwarding.duplicate-path"));
+        evidence.remove("votifierForwardingEnabled");
+        assertEquals(NetworkDoctor.Status.UNKNOWN, status(evaluate(List.of(proxy), evidence), "votifier.forwarding.duplicate-path"));
+    }
+
     @Test
     void proxyForwardingToKnownBackendWithVotifierIsFail() {
         BackendServerIdentity relation = new BackendServerIdentity("backend-a", "backend-a", true, true, 1);

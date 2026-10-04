@@ -180,18 +180,23 @@ public final class NetworkDoctor {
         if (plugins != null && plugins.stream().filter(p -> Set.of("votifier", "votifierplus", "nuvotifier").contains(p.toLowerCase(Locale.ROOT))).count() > 1)
             emit(n, "votifier.providers.competing", "Votifier", Status.WARNING, "Multiple Votifier implementations may compete for proxy ingress.", "detectedPlugins", "Keep one intended listener per ingress role.");
         List<String> destinations = list(n, "forwardingDestinations");
-        if (!yes(bool(n, "votifierForwardingKnown")) || destinations == null) unknown(n, "votifier.forwarding.duplicate-path", "Votifier", "optional VotifierPlus diagnostics");
-        else if (destinations.isEmpty()) emit(n, "votifier.forwarding.duplicate-path", "Votifier", Status.PASS, "The provider reports no enabled socket forwarding destinations.", "forwardingDestinations", "No action required.");
+        Boolean forwarding = bool(n, "votifierForwardingEnabled");
+        if (yes(bool(n, "votifierForwardingKnown")) && destinations != null && !destinations.isEmpty()) forwarding = true;
+        else if (forwarding == null && yes(bool(n, "votifierForwardingKnown")) && destinations != null) forwarding = false;
+        if (forwarding == null) unknown(n, "votifier.forwarding.duplicate-path", "Votifier", "optional provider forwarding diagnostics");
+        else if (!forwarding) emit(n, "votifier.forwarding.duplicate-path", "Votifier", Status.PASS,
+                "The provider reports no enabled forwarding source/destinations.", "provider forwarding diagnostics", "No action required.");
         else if (managed) {
-            boolean proven = nodes.stream().anyMatch(b -> !proxy(b) && yes(bool(b, "votifierProviderPresent"))
+            boolean proven = destinations != null && nodes.stream().anyMatch(b -> !proxy(b) && yes(bool(b, "votifierProviderPresent"))
                     && destinations.stream().anyMatch(d -> d.equals(b.nodeId()) || d.equals(str(b, "serverName")))
                     && n.backends().stream().anyMatch(r -> r.backendId().equals(b.nodeId())));
             emit(n, "votifier.forwarding.duplicate-path", "Votifier", Status.FAIL,
-                    proven ? "An enabled proxy VotifierPlus destination matches an enrolled VotingPlugin backend with a Votifier provider: socket forwarding and VotingPlugin delivery can process the same vote twice."
-                            : "Proxy VotifierPlus socket forwarding is enabled alongside VotingPlugin proxy delivery, creating a second possible path. Destination names do not prove remote host identity.",
-                    "forwardingDestinations / registry.backends", "Disable unintended VotifierPlus socket forwarding. TriggerVotifierEvent does not make socket forwarding safe.");
+                    proven ? "An enabled proxy Votifier forwarding destination matches an enrolled VotingPlugin backend with a Votifier provider: provider forwarding and VotingPlugin delivery can process the same vote twice."
+                            : "Proxy Votifier forwarding is enabled alongside VotingPlugin proxy delivery, creating a second possible path. Destination names do not prove remote host identity.",
+                    "votifierForwardingEnabled / forwardingDestinations / registry.backends", "Disable unintended Votifier provider forwarding. TriggerVotifierEvent does not make a second forwarding path safe.");
         }
     }
+
     private void storage(NodeStatus n) {
         requirement(n, "storage.database.unavailable", "Database & Storage", "databaseInitialized", "The selected storage/database is unavailable.");
         requirement(n, "storage.jdbc-driver.missing", "Database & Storage", "jdbcDriverAvailable", "The selected database has no suitable JDBC driver.");

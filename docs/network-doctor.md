@@ -88,8 +88,11 @@ Key/storage equality, when reported, uses 64-character non-reversible fingerprin
 
 VotifierPlus optionally supplies an immutable diagnostic snapshot containing provider presence, listener initialization,
 forwarding availability, and enabled forwarding **entry names** only. VotingPlugin consumes it without a mandatory upgrade
-or dependency. Older VotifierPlus, NuVotifier, and other providers lacking that API cannot prove forwarding/listener state:
-those checks are UNKNOWN. Oversized/incomplete forwarding evidence must not pass as an empty configuration.
+or dependency. VotingPlugin also observes existing NuVotifier proxy forwarding through a narrow read-only adapter for recognized
+runtime class/field shapes; no NuVotifier changes are required. Active forwarding can be reported through the optional
+Boolean `votifierForwardingEnabled`, independently of destination-name availability. Unsupported shapes, null runtime
+handlers, and unavailable listener observations remain UNKNOWN. Older VotifierPlus and other providers lacking supported
+diagnostics also remain UNKNOWN. Oversized/incomplete forwarding evidence must not pass as an empty configuration.
 
 ## Evidence that may remain UNKNOWN
 

@@ -10,7 +10,7 @@ public final class NetworkHealthEvidence {
     private static final Set<String> BOOLEANS = Set.of("proxyMode", "votePartyServersApplicable", "broadcastServersApplicable", "offlineForwardServersApplicable", "configurationHealthy", "onlineMode",
             "resetMilestonesMonthly", "monthDateTotals", "automaticTimeChanges", "encryption", "transportInitialized",
             "restartRequired", "triggerVotifierEvent", "votifierProviderPresent", "votifierListenerInitialized",
-            "votifierForwardingKnown", "bungeeManageTotals", "dedicatedVotingProxy", "httpPublicEndpointConfigured",
+            "votifierForwardingKnown", "votifierForwardingEnabled", "bungeeManageTotals", "dedicatedVotingProxy", "httpPublicEndpointConfigured",
             "httpEnrolled", "httpIdentityValid", "httpConnectionCodePresent", "redisSsl", "databaseInitialized",
             "jdbcDriverAvailable", "voteLoggingEnabled", "voteLogReadable", "voteCacheMysql", "nonVotedCacheMysql",
             "voteCacheMainMysql", "nonVotedCacheMainMysql", "voteCacheDatabaseInitialized", "nonVotedCacheDatabaseInitialized",

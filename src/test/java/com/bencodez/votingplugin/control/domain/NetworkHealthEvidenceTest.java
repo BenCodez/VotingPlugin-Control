@@ -23,6 +23,8 @@ class NetworkHealthEvidenceTest {
         ObjectNode unknown = base().put("password", "secret");
         assertFalse(NetworkHealthEvidence.valid(unknown));
         assertFalse(NetworkHealthEvidence.valid(base().put("onlineMode", "true")));
+        assertFalse(NetworkHealthEvidence.valid(base().put("votifierForwardingEnabled", "true")));
+        assertTrue(NetworkHealthEvidence.valid(base().put("votifierForwardingEnabled", true)));
         assertFalse(NetworkHealthEvidence.valid(base().put("configuredMethod", "TCP")));
         assertFalse(NetworkHealthEvidence.valid(base().put("sharedKeyFingerprint", "secret-key")));
     }
