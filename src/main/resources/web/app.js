@@ -505,7 +505,21 @@ function renderJsonResult(element, value, emptyMessage = 'No data returned.') {
 
 function formatEpoch(value) {
   const epoch = Number(value);
-  return Number.isFinite(epoch) && epoch > 0 ? new Date(epoch).toLocaleString() : 'Unknown';
+  return formatDateTime(Number.isFinite(epoch) && epoch > 0 ? (epoch < 1e12 ? epoch * 1000 : epoch) : null);
+}
+
+function formatDateTime(value) {
+  if (value == null || value === '') return 'Unknown';
+  const numeric = typeof value === 'number' || (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value))
+    ? Number(value) : NaN;
+  if (Number.isFinite(numeric)) {
+    if (numeric <= 0) return 'Unknown';
+    const date = new Date(numeric < 1e12 ? numeric * 1000 : numeric);
+    return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
+  }
+  if (typeof value !== 'string') return 'Unknown';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
 }
 
 function plainObject(value) {
@@ -885,7 +899,7 @@ function renderVoteTrace(trace) {
       const event = item.event;
       const eventRow = document.createElement('tr');
       const time = Number(event.voteTime);
-      eventRow.append(text(document.createElement('td'), Number.isFinite(time) && time > 0 ? new Date(time).toLocaleString() : 'Unknown'));
+      eventRow.append(text(document.createElement('td'), formatEpoch(time)));
       eventRow.append(text(document.createElement('td'), event.event || 'Unknown'));
       eventRow.append(text(document.createElement('td'), event.status || 'Unknown'));
       eventRow.append(text(document.createElement('td'), event.playerName || event.playerUuid || 'Unknown'));
@@ -1133,7 +1147,7 @@ function renderOperationHistory() {
     heading.className = 'section-title';
     const identity = document.createElement('div');
     identity.append(text(document.createElement('strong'), `Plugin deployment · ${deployment.state}`));
-    identity.append(text(document.createElement('small'), `${deployment.deploymentId} · ${new Date(deployment.createdAt).toLocaleString()}`));
+    identity.append(text(document.createElement('small'), `${deployment.deploymentId} · ${formatDateTime(deployment.createdAt)}`));
     heading.append(identity);
     if ((deployment.nodes || []).some(node => node.state === 'FAILED')) {
       const retry = text(document.createElement('button'), 'Retry failed targets');
@@ -1569,14 +1583,14 @@ function nodeCard(node) {
       ? `Reported by ${proxies.map(proxy => proxy.displayName).join(', ')}.`
       : 'No connected proxy reports this backend ID.'));
   }
-  const seen = text(document.createElement('p'), `Last seen: ${node.lastSeen ? new Date(node.lastSeen).toLocaleString() : 'Unknown'} · ${nodePresence(node)}`);
+  const seen = text(document.createElement('p'), `Last seen: ${formatDateTime(node.lastSeen)} · ${nodePresence(node)}`);
   seen.className = 'node-detail';
   article.append(header, meta, detail, seen, list, selector);
   if (!managedCapabilities(node).length) {
     article.append(text(document.createElement('p'), 'No supported management capability reported. Configuration tools are unavailable.'));
   }
-  if (isBackend(node)) {
-    const inspect = text(document.createElement('button'), 'Inspect server overview');
+  if (isBackend(node) || isProxy(node)) {
+    const inspect = text(document.createElement('button'), isProxy(node) ? 'Manage proxy settings' : 'Inspect server overview');
     inspect.type = 'button';
     inspect.className = 'secondary compact';
     inspect.addEventListener('click', () => inspectWorkspaceServer(node.nodeId));
@@ -1695,15 +1709,24 @@ function changeWorkspaceTargets(change) {
   return true;
 }
 
+function workspaceTargetNeedsReplacement(id) {
+  const proxyTarget = workspace.selectedTargetIds.size === 1
+    && isProxy(nodeIndex.get([...workspace.selectedTargetIds][0]));
+  return !workspace.managementScope || (isProxy(nodeIndex.get(id))
+    ? workspace.selectedTargetIds.size !== 1 || !workspace.selectedTargetIds.has(id) : proxyTarget);
+}
+
 function inspectWorkspaceServer(id) {
-  if (!isBackend(nodeIndex.get(id))) return;
+  if (!isBackend(nodeIndex.get(id)) && !isProxy(nodeIndex.get(id))) return;
   if (workspace.managementScope === 'GLOBAL') {
-    if (!confirmDiscardUnsavedConfiguration('returning to the server workspace')) return;
+    if (!confirmDiscardWorkspaceDrafts('returning to the server workspace')) return;
     resetServerContextValues('Returning to server tools.');
     workspace.returnToServers();
     clearApprovals();
   }
-  if (!workspace.managementScope) workspace.setTargets([id]);
+  if (workspaceTargetNeedsReplacement(id)) {
+    if (!changeWorkspaceTargets(() => workspace.setTargets([id]))) return;
+  }
   if (selectPrimaryServer(id) === false) return;
   workspace.inspect(id);
   setActiveTab('overview', true);
@@ -1748,11 +1771,13 @@ function applyNavigationRoute() {
     return setActiveTab('home');
   }
   if (route.inspectedServerId) {
-    if (!isBackend(nodeIndex.get(route.inspectedServerId))) {
+    const destination = nodeIndex.get(route.inspectedServerId);
+    if (!isBackend(destination) && !isProxy(destination)) {
       window.history.replaceState(null, '', '#home');
       return setActiveTab('home');
     }
-    if (!workspace.managementScope) workspace.setTargets([route.inspectedServerId]);
+    if (workspaceTargetNeedsReplacement(route.inspectedServerId)
+        && !changeWorkspaceTargets(() => workspace.setTargets([route.inspectedServerId]))) return cancelNavigation();
     if (selectPrimaryServer(route.inspectedServerId) === false) return cancelNavigation();
     workspace.inspect(route.inspectedServerId);
   } else if (route.page === 'overview') workspace.inspect('');
@@ -1814,7 +1839,7 @@ function renderScopeOverview() {
   text(document.querySelector('#metric-presence-detail'), 'Known only when a connected proxy reports it');
   const recent = overviewOperations()[0];
   text(document.querySelector('#metric-last-operation'), recent ? operationPhase(recent) : '—');
-  text(document.querySelector('#metric-last-operation-detail'), recent ? `${operationLabel(recent)} · ${recent.createdAt ? new Date(recent.createdAt).toLocaleString() : 'Time unknown'}` : 'No retained operation for this scope');
+  text(document.querySelector('#metric-last-operation-detail'), recent ? `${operationLabel(recent)} · ${formatDateTime(recent.createdAt)}` : 'No retained operation for this scope');
   const health = document.querySelector('#overview-site-health');
   health.replaceChildren();
   const sites = dashboardLoadedContext === dashboardContext() ? dashboardVoteSiteHealth?.sites : null;
@@ -2200,7 +2225,7 @@ function renderSelectedServer() {
   const relationshipText = relationships.length
     ? ` Reported by ${relationships.map(proxy => proxy.displayName).join(', ')}.` : '';
   text(selectedServerSummary,
-    `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion || 'version unknown'}.${relationshipText} Last seen: ${selected.lastSeen ? new Date(selected.lastSeen).toLocaleString() : 'unknown'}. ${nodePresence(selected)}.`);
+    `${roleLabel(selected)} · ${platformLabel(selected.platform)} · VotingPlugin ${selected.pluginVersion || 'version unknown'}.${relationshipText} Last seen: ${formatDateTime(selected.lastSeen)}. ${nodePresence(selected)}.`);
   const capabilities = managedCapabilities(selected);
   if (capabilities.length === 0) capabilities.push('Discovery only');
   capabilities.forEach(value => {
@@ -2249,6 +2274,13 @@ function renderTopology() {
     proxyIdentity.append(text(document.createElement('strong'), proxy.displayName));
     proxyIdentity.append(text(document.createElement('small'),
       `${platformLabel(proxy.platform)} proxy · Control ${proxy.online ? 'connected' : 'disconnected'}`));
+    if (proxy.online) {
+      const manage = text(document.createElement('button'), 'Manage proxy settings');
+      manage.type = 'button';
+      manage.className = 'secondary compact';
+      manage.addEventListener('click', () => inspectWorkspaceServer(proxy.nodeId));
+      proxyIdentity.append(manage);
+    }
     const backendList = document.createElement('div');
     backendList.className = 'topology-backends';
     const backends = Array.isArray(proxy.backends) ? proxy.backends : [];
@@ -2868,7 +2900,7 @@ function renderOverviewActivity() {
     const targetCount = Object.keys(operation.nodeStates || {}).length || results.length;
     const successful = results.filter(result => result?.success).length;
     item.append(text(document.createElement('strong'), operationLabel(operation)));
-    const when = operation.createdAt ? new Date(operation.createdAt).toLocaleString() : 'Time unavailable';
+    const when = formatDateTime(operation.createdAt);
     item.append(text(document.createElement('small'), `${operationPhase(operation)} · ${successful}/${targetCount} targets successful · ${when}`));
     overviewActivity.append(item);
   });
@@ -3198,7 +3230,7 @@ function updateExtendedButtons() {
   const fileTargets = comparisonTargetIds();
   const driftReady = authenticated && fileTargets.length >= 2 && configurationOperationsInFlight === 0;
   refreshDashboardButton.disabled = !authenticated || inspectionInFlight || dashboardLoading;
-  runNetworkDoctor.disabled = !inspectionReady;
+  runNetworkDoctor.disabled = !authenticated || inspectionInFlight || !allNodeItems.length;
   downloadNetworkDiagnostics.disabled = !lastDiagnostics;
   refreshSetupChecklist.disabled = !inspectionReady;
   refreshDataOverview.disabled = !inspectionReady;
@@ -4016,12 +4048,28 @@ function invalidateConfigurationReads() {
   updateExtendedButtons();
 }
 
-async function waitForOperation(operation, statusElement = operationStatus, context = operationContext()) {
+async function waitForOperation(operation, statusElement = operationStatus, context = operationContext(), options = {}) {
+  const checkDeadline = () => {
+    if (options.signal?.aborted || options.deadlineAt && Date.now() >= options.deadlineAt
+        || options.contextCurrent && !options.contextCurrent()) throw new Error('Configuration health read ended; evidence is unavailable.');
+  };
+  checkDeadline();
   if (operationContextCurrent(context)) text(statusElement, operationSummary(operation));
   rememberOperation(operation);
   while (operation.state === 'RUNNING') {
-    await new Promise(resolve => window.setTimeout(resolve, 1500));
-    operation = await authorized(`/api/v1/operations/${operation.operationId}`);
+    await new Promise((resolve, reject) => {
+      const finish = () => { options.signal?.removeEventListener('abort', abort); resolve(); };
+      const timer = window.setTimeout(finish, 1500);
+      const abort = () => {
+        window.clearTimeout(timer); options.signal?.removeEventListener('abort', abort);
+        reject(new Error('Configuration health read ended; evidence is unavailable.'));
+      };
+      options.signal?.addEventListener('abort', abort, {once: true});
+      if (options.signal?.aborted) abort();
+    });
+    checkDeadline();
+    operation = await authorized(`/api/v1/operations/${operation.operationId}`, {signal: options.signal});
+    checkDeadline();
     if (operationContextCurrent(context)) text(statusElement, operationSummary(operation));
     rememberOperation(operation);
   }
@@ -4044,7 +4092,7 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
   return operation;
 }
 
-async function startConfigurationOperation(path, body, statusElement = operationStatus) {
+async function startConfigurationOperation(path, body, statusElement = operationStatus, options = {}) {
   // Legacy forms remain source-only; coordinated workflows keep explicit targets.
   if (path.endsWith('/preview') && path !== '/api/v1/configuration/general-settings/preview'
       && path !== '/api/v1/configuration/vote-sites/preview'
@@ -4072,8 +4120,8 @@ async function startConfigurationOperation(path, body, statusElement = operation
   updateExtendedButtons();
   try {
     return await waitForOperation(await authorized(path, {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
-    }), statusElement, context);
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal: options.signal
+    }), statusElement, context, options);
   } finally {
     configurationOperationsInFlight--;
     updateConfigurationButtons();
@@ -4183,6 +4231,7 @@ async function loadAllNodes() {
         truncated ||= Boolean(page.backendItemsTruncated);
         (page.backendItemsTruncatedNodeIds || []).forEach(nodeId => truncatedNodeIds.add(nodeId));
         pageMetadata.set(offset, {
+          registrySnapshot: page.registrySnapshot,
           backendItemsReturned: page.backendItemsReturned,
           backendItemsTruncated: Boolean(page.backendItemsTruncated)
         });
@@ -5432,41 +5481,52 @@ refreshSetupChecklist.addEventListener('click', async () => {
 refreshDataOverview.addEventListener('click', () => refreshOverview(dataOverview));
 
 runNetworkDoctor.addEventListener('click', async () => {
+  if (inspectionInFlight) return;
   downloadNetworkDiagnostics.disabled = true;
   lastDiagnostics = null;
+  const generation = authenticationGeneration;
+  const selected = selectedServerId;
+  const contextCurrent = () => generation === authenticationGeneration && selected === selectedServerId;
+  inspectionInFlight = true;
+  updateExtendedButtons();
+  text(networkDoctorResults, 'Collecting bounded read-only evidence across enrolled nodes…');
   try {
-    const [diagnostics] = await Promise.all([runInspection('diagnostics', {}, networkDoctorResults),
-      refreshConfigurationHealth()]);
-    lastOverview = diagnostics.result;
-    invalidateDashboardInspection();
-    const node = nodeIndex.get(selectedServerId);
-    const voteLog = diagnostics.result.voteLoggingEnabled !== true
-      ? {state: 'DISABLED', message: 'Vote logging is disabled; no retained logged-event history is expected.'}
-      : diagnostics.result.voteLogReadable === true
-      ? {state: 'READABLE', message: 'Retained logged-event history is readable. It is not a guaranteed record of every internal vote-delivery hop.'}
-      : {state: 'UNREADABLE', message: 'Vote logging is enabled, but retained logged-event history is not currently readable.'};
-    const configuredVoteSites = finiteCount(diagnostics.result.configuredVoteSites);
-    const checks = {
-      controlConnected: Boolean(node?.online),
-      configurationHealthy: diagnostics.result.configurationHealthy,
-      votifierDetected: diagnostics.result.votifierDetected,
-      voteSitesConfigured: configuredVoteSites == null ? null : configuredVoteSites > 0,
-      voteSitesConfiguredKnown: configuredVoteSites != null,
-      processRewards: diagnostics.result.processRewards,
-      voteLogging: voteLog,
-      topologyReported: isBackend(node) ? proxyReportsFor(node.nodeId).length > 0 || !diagnostics.result.proxyMode : true
+    const registrySnapshot = nodePageMetadata.get(0)?.registrySnapshot;
+    const doctorNodes = allNodeItems.slice(0, 100);
+    const candidates = doctorNodes.filter(node => node.online
+      && node.acceptedCapabilities.includes('data.inspect.v1')
+      && node.acceptedCapabilities.includes('data.network-health.v1')).slice(0, 100);
+    const deadlineAt = Date.now() + 175_000;
+    const controller = new AbortController();
+    const deadlineTimer = window.setTimeout(() => controller.abort(), 175_000);
+    // Bound both concurrency and total request time; unavailable peers remain UNKNOWN in the report.
+    let index = 0;
+    const worker = async () => {
+      while (index < candidates.length && contextCurrent() && Date.now() < deadlineAt) {
+        const node = candidates[index++];
+        try { await runInspectionOnNode(node, 'network-health', {}, {manageBusy: false, contextCurrent, deadlineAt, signal: controller.signal}); }
+        catch (_) { /* Missing or failed inspection evidence is represented by the server as UNKNOWN. */ }
+      }
     };
-    lastDiagnostics = {
-      schemaVersion: 1, generatedAt: new Date().toISOString(), selectedNodeId: selectedServerId,
-      checks, configurationChecks: configurationHealthChecks(), voteLog, node: diagnostics.result,
-      control: {application: 'VotingPlugin Control', registeredNodes: allNodeItems.length,
-        nodes: allNodeItems.slice(0, 100).map(item => ({nodeId: item.nodeId, displayName: item.displayName,
-          role: roleLabel(item), online: item.online, pluginVersion: item.pluginVersion}))}
-    };
-    renderJsonResult(networkDoctorResults, lastDiagnostics);
-    updateSetupChecklist(diagnostics.result);
+    let configurationReader;
+    try { [configurationReader] = await Promise.all([refreshConfigurationHealth({nodeIds: new Set(doctorNodes.map(node => node.nodeId)),
+      contextCurrent, deadlineAt, signal: controller.signal}), ...Array.from({length: Math.min(3, candidates.length)}, worker)]); }
+    finally { window.clearTimeout(deadlineTimer); controller.abort(); }
+    if (!contextCurrent()) return;
+    const report = await authorized('/api/v1/network-doctor');
+    if (!contextCurrent()) return;
+    lastDiagnostics = NetworkDoctorView.withConfigurationChecks(report, configurationReader
+      && NetworkDoctorView.registrySnapshotMatches(registrySnapshot, report)
+      ? ControlGeneralSettings.healthChecks(configurationReader.model) : [{path: 'configuration', title: 'Configuration health is not verified',
+        status: 'UNKNOWN', nodeIds: [], message: 'Configuration evidence changed or was unavailable during this run.'}]);
+    NetworkDoctorView.render(networkDoctorResults, lastDiagnostics, document);
     downloadNetworkDiagnostics.disabled = false;
-  } catch (error) { text(networkDoctorResults, error.message); }
+  } catch (error) {
+    if (contextCurrent()) text(networkDoctorResults, error.message);
+  } finally {
+    inspectionInFlight = false;
+    updateExtendedButtons();
+  }
 });
 
 downloadNetworkDiagnostics.addEventListener('click', () => {
@@ -5552,7 +5612,7 @@ async function loadSnapshots() {
       item.className = 'result-item';
       const detail = document.createElement('div');
       detail.append(text(document.createElement('strong'), snapshot.name));
-      detail.append(text(document.createElement('small'), `${new Date(snapshot.createdAt).toLocaleString()} · ${snapshot.documents.length} document(s)`));
+      detail.append(text(document.createElement('small'), `${formatDateTime(snapshot.createdAt)} · ${snapshot.documents.length} document(s)`));
       const restore = text(document.createElement('button'), 'Load for restore preview');
       restore.type = 'button';
       restore.className = 'secondary compact';
@@ -6621,9 +6681,9 @@ function generalSettingsContext() {
       target.supported, target.managedByProxy, target.reportingProxyIds, target.networkIncomplete, target.networkOnly])]);
 }
 
-function generalSettingsTargets(health = false) {
+function generalSettingsTargets(health = false, seedIds) {
   if ((!health && workspace.managementScope === 'GLOBAL') || !authenticated) return [];
-  const ids = new Set(health && workspace.managementScope === 'GLOBAL'
+  const ids = new Set(seedIds !== undefined ? seedIds : health && workspace.managementScope === 'GLOBAL'
     ? allNodeItems.map(node => node.nodeId) : [...workspace.selectedTargetIds]);
   const directlyManagedIds = new Set(ids);
   const backendReporters = new Map();
@@ -6693,11 +6753,38 @@ function configurationHealthChecks() {
 }
 
 let settingsHealthContext = '';
-async function refreshConfigurationHealth() {
+async function refreshConfigurationHealth(options = {}) {
   if (!authenticated || !settingsHealthReader) return;
   const captured = configurationHealthContext();
-  await settingsHealthReader.read(false);
-  if (captured !== configurationHealthContext()) return;
+  // A doctor run owns a separate bounded reader, so an older dashboard flight cannot extend its deadline.
+  const reader = options.nodeIds ? createConfigurationHealthReader(
+    () => {
+      const allTargets = generalSettingsTargets(true, options.nodeIds);
+      // Retain topology-only placeholders in the model so missing unenrolled
+      // backends remain UNKNOWN, while only requested targets can schedule reads.
+      const requestedAll = allTargets.filter(target => options.nodeIds.has(target.id));
+      const requested = requestedAll.slice(0, 100);
+      const omitted = new Set(requested.map(target => target.id));
+      const related = new Set(requested.map(target => target.id));
+      let expanded = true;
+      while (expanded) {
+        expanded = false;
+        allTargets.forEach(target => {
+          const links = [target.id, ...(target.reportingProxyIds || [])];
+          if (!links.some(id => related.has(id))) return;
+          links.forEach(id => { if (!related.has(id)) { related.add(id); expanded = true; } });
+        });
+      }
+      const placeholders = allTargets.filter(target => (!omitted.has(target.id)
+        && (options.nodeIds.has(target.id) || related.has(target.id))))
+        .map(target => ({...target, online: false, supported: false, networkIncomplete: true}));
+      return [...requested, ...placeholders];
+    }, options)
+    : settingsHealthReader;
+  await reader.read(false);
+  if (captured !== configurationHealthContext() || options.contextCurrent && !options.contextCurrent()) return;
+  if (options.nodeIds) return reader;
+  if (reader !== settingsHealthReader) return;
   settingsHealthContext = captured;
   renderMetrics();
 }
@@ -6877,18 +6964,21 @@ settingsEditor = ControlGeneralSettings.create({
   changed: renderGeneralSettings
 });
 // Independent read-only state: health refreshes must not invalidate an editor draft/approval.
-settingsHealthReader = ControlGeneralSettings.create({
-  targets: () => generalSettingsTargets(true),
-  context: configurationHealthContext,
-  operation: (path, body) => {
-    if (path !== '/api/v1/configuration/read') throw new Error('Health checks are read-only');
-    return startConfigurationOperation(path, body, document.createElement('span'));
-  },
-  request: (path, body) => {
-    if (path !== '/api/v1/configuration/general-settings/state') throw new Error('Health checks are read-only');
-    return authorized(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
-  }
-});
+function createConfigurationHealthReader(targets, options = {}) {
+  return ControlGeneralSettings.create({
+    targets,
+    context: configurationHealthContext,
+    operation: (path, body) => {
+      if (path !== '/api/v1/configuration/read') throw new Error('Health checks are read-only');
+      return startConfigurationOperation(path, body, document.createElement('span'), options);
+    },
+    request: (path, body) => {
+      if (path !== '/api/v1/configuration/general-settings/state') throw new Error('Health checks are read-only');
+      return authorized(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), signal: options.signal});
+    }
+  });
+}
+settingsHealthReader = createConfigurationHealthReader(() => generalSettingsTargets(true));
 document.querySelector('#general-settings-read').addEventListener('click', () => void settingsEditor.read(true));
 document.querySelector('#general-settings-retry').addEventListener('click', () => void settingsEditor.read(true, true));
 document.querySelector('#general-settings-preview').addEventListener('click', () => { document.querySelector('#general-settings-ack').checked = false; void settingsEditor.preview(); });

@@ -6,6 +6,7 @@ import com.bencodez.votingplugin.control.artifact.ArtifactStore;
 import com.bencodez.votingplugin.control.artifact.JenkinsVotingPluginSource;
 import com.bencodez.votingplugin.control.artifact.ArtifactStore.ArtifactException;
 import com.bencodez.votingplugin.control.domain.NodeRegistry;
+import com.bencodez.votingplugin.control.domain.RegistrySnapshot;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
 import com.bencodez.votingplugin.control.domain.ConfigurationSnapshots;
 import com.bencodez.votingplugin.control.domain.InspectionOperations;
@@ -93,6 +94,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final Map<String, WebResource> WEB_RESOURCES = Map.ofEntries(
             Map.entry("/", new WebResource("/web/index.html", "text/html; charset=utf-8")),
             Map.entry("/index.html", new WebResource("/web/index.html", "text/html; charset=utf-8")),
+            Map.entry("/network-doctor.js", new WebResource("/web/network-doctor.js", "text/javascript; charset=utf-8")),
             Map.entry("/app.js", new WebResource("/web/app.js", "text/javascript; charset=utf-8")),
             Map.entry("/workspace.js", new WebResource("/web/workspace.js", "text/javascript; charset=utf-8")),
             Map.entry("/configuration-state.js", new WebResource("/web/configuration-state.js", "text/javascript; charset=utf-8")),
@@ -498,6 +500,18 @@ public final class ControlHttpServer implements AutoCloseable {
                 return;
             }
         }
+        if ("/api/v1/network-doctor".equals(path)) {
+            requireMethod(exchange, "GET");
+            authenticateAdmin(exchange, false);
+            NodeRegistry.RegistryPage page = registry.page(0, 100, null);
+            var evidence = inspectionOperations.networkEvidence(page.items());
+            var report = com.bencodez.votingplugin.control.domain.NetworkDoctor.evaluate(
+                    page.items(), evidence, Instant.now(), page.total() > page.items().size());
+            send(exchange, 200, new com.bencodez.votingplugin.control.domain.NetworkDoctor.Report(
+                    report.schemaVersion(), report.generatedAt(), report.checks(), report.truncated(),
+                    RegistrySnapshot.sha256(page)));
+            return;
+        }
         if (NODES.equals(path)) {
             requireMethod(exchange, "GET");
             authenticateAdmin(exchange, false);
@@ -509,6 +523,7 @@ public final class ControlHttpServer implements AutoCloseable {
             NodeRegistry.RegistryPage registryPage = registry.page(offset, limit, expectedRevision);
             BackendPage page = boundedNodePage(registryPage.items());
             send(exchange, 200, Map.of("items", page.items(), "offset", offset, "limit", limit,
+                    "registrySnapshot", RegistrySnapshot.sha256(registryPage),
                     "registryRevision", registryPage.revision(), "total", registryPage.total(),
                     "backendItemsReturned", page.backendItemsReturned(),
                     "backendItemsTruncatedNodeIds", page.backendItemsTruncatedNodeIds(),

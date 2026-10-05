@@ -21,7 +21,7 @@ function declaration(name) {
   const match = new RegExp(`(?:^|\\n)(?:async )?function ${name}\\(`, 'm').exec(appSource);
   const start = match ? match.index + (match[0].startsWith('\n') ? 1 : 0) : -1;
   assert.notEqual(start, -1, `app.js declares ${name}`);
-  const open = appSource.indexOf('{', start);
+  const open = appSource.indexOf(') {', start) + 2;
   let depth = 0;
   let quote = '';
   for (let index = open; index < appSource.length; index++) {
@@ -54,6 +54,7 @@ function harness() {
       this.value = '';
       this.textContent = '';
       this.className = '';
+      this.classList = {toggle: () => {}, add: () => {}, remove: () => {}};
     }
     append(...items) { this.children.push(...items); }
     prepend(...items) { this.children.unshift(...items); }
@@ -92,6 +93,7 @@ function harness() {
     nodeIndex: new Map(),
     nodeCapabilities: new Map(),
     backendTopologyTruncatedNodeIds: new Set(),
+    backendTopologyTruncated: false,
     selectedNodes: new Set(['stale']),
     voteSitesTargetIds: new Set(['stale']),
     fileReadCache: new Map([['stale', {}]]),
@@ -101,7 +103,7 @@ function harness() {
     autoLoadPending: new Set(['stale']),
     configurationContent: element(), configurationFile: element(), logout: element(), sidebarToggle: element(),
     globalSearch: element(), headerAction: element(), authCard: element(), welcome: element(), appShell: element(),
-    serverPickerLabel: element(), enrollmentCard: element(), quickPreset: element(),
+    serverPickerLabel: element(), enrollmentCard: element(), quickPreset: element(), topology: element(),
     authenticated: false, csrfToken: 'old', approvedPreview: {}, approvedFilePreview: {}, approvedQuickPreview: {},
     loadedQuickSetup: {}, quickSetupDirty: true, voteSitesSourceId: 'stale', voteSitesTargetsInitialized: true,
     transportTestProxyId: 'stale', transportTestBackendId: 'stale', proxyMethodProxyId: 'stale',
@@ -141,10 +143,10 @@ function harness() {
     calls
   };
   vm.createContext(context);
-  const names = ['text', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
+  const names = ['text', 'formatDateTime', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
     'friendlyCapability', 'managedCapabilities', 'proxyReportsFor', 'backendCard', 'nodePresence', 'nodeCard',
     'ordinaryTargetIds', 'comparisonTargetIds', 'confirmDiscardWorkspaceDrafts', 'changeWorkspaceTargets',
-    'inspectWorkspaceServer', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation',
+    'workspaceTargetNeedsReplacement', 'inspectWorkspaceServer', 'renderTopology', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation',
     'generalSettingsTargets', 'settingValueLabel'];
   vm.runInContext(names.map(declaration).join('\n'), context, {filename: 'app-workspace-helpers.js'});
   return context;
@@ -369,6 +371,69 @@ test('nodeCard keeps offline Bukkit nodes selectable, but disables proxy and unk
   }
 });
 
+test('proxy card opens a proxy workspace for settings without making it a backend target', () => {
+  const context = harness();
+  const proxyNode = {nodeId: 'proxy', displayName: 'Velocity', platform: 'VELOCITY', online: true,
+    sessionId: 'proxy-session', acceptedCapabilities: ['config.proxy-files.v1'], backends: []};
+  context.nodeIndex.set('proxy', proxyNode);
+  context.proxyNode = proxyNode;
+  context.nodeIndex.set('backend-a', backend('backend-a'));
+  context.nodeIndex.set('backend-b', backend('backend-b'));
+  context.workspace.setTargets(['backend-a', 'backend-b']);
+  context.selectedServerId = 'backend-a';
+  const card = run(context, 'nodeCard(proxyNode)');
+  const action = card.find(node => node.tagName === 'button' && node.textContent === 'Manage proxy settings');
+  assert.ok(action);
+  action.listeners.get('click')();
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['proxy']);
+  assert.equal(context.workspace.inspectedServerId, 'proxy');
+  assert.equal(context.selectedServerId, 'proxy');
+  assert.equal(context.calls.at(-1)[1], 'overview');
+});
+
+test('topology overview exposes the same proxy settings action', () => {
+  const context = harness();
+  context.authenticated = true;
+  const node = {...proxy('proxy'), displayName: 'Velocity', sessionId: 'p', acceptedCapabilities: ['config.proxy-files.v1'], backends: []};
+  context.nodeIndex.set('proxy', node);
+  context.allNodeItems.push(node);
+  run(context, 'renderTopology()');
+  const action = context.topology.find(item => item.tagName === 'button' && item.textContent === 'Manage proxy settings');
+  assert.ok(action);
+  action.listeners.get('click')();
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['proxy']);
+});
+
+test('proxy settings cancellation preserves backend targets and selected source', () => {
+  const context = harness();
+  context.authenticated = true;
+  context.workspace.setTargets(['backend-a', 'backend-b']);
+  context.selectedServerId = 'backend-a';
+  context.nodeIndex.set('proxy', proxy('proxy'));
+  context.settingsEditor = {model: {dirty: new Set(['Server'])}};
+  context.window.confirm = () => false;
+  run(context, "inspectWorkspaceServer('proxy')");
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['backend-a', 'backend-b']);
+  assert.equal(context.selectedServerId, 'backend-a');
+  assert.equal(context.calls.length, 0);
+});
+
+test('backend inspection preserves a multi-server workspace', () => {
+  const context = harness();
+  context.authenticated = true;
+  context.nodeIndex.set('backend-a', backend('backend-a'));
+  context.nodeIndex.set('backend-b', backend('backend-b'));
+  context.workspace.setTargets(['backend-a', 'backend-b']);
+  context.selectedServerId = 'backend-a';
+  context.backendB = {...backend('backend-b'), displayName: 'Backend B', acceptedCapabilities: [], backends: []};
+  context.nodeIndex.set('backend-b', context.backendB);
+  const card = run(context, 'nodeCard(backendB)');
+  const action = card.find(node => node.tagName === 'button' && node.textContent === 'Inspect server overview');
+  action.listeners.get('click')();
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['backend-a', 'backend-b']);
+  assert.equal(context.selectedServerId, 'backend-b');
+});
+
 test('back and forward scope navigation retains targets, maps presets, and restores a cancelled hash', () => {
   const context = harness();
   context.authenticated = true;
@@ -538,16 +603,50 @@ test('Network Doctor reads configuration health and includes typed checks on its
   let reads = 0;
   Object.assign(context, {runNetworkDoctor: {addEventListener: (_event, handler) => {click = handler;}},
     downloadNetworkDiagnostics: {}, lastDiagnostics: null, networkDoctorResults: {},
+    inspectionInFlight: false, authenticationGeneration: 1, allNodeItems: [], nodePageMetadata: new Map([[0, {registrySnapshot: 'a'.repeat(64)}]]), updateExtendedButtons: () => {},
+    AbortController, window: {setTimeout: () => 1, clearTimeout: () => {}},
+    NetworkDoctorView: require('../../main/resources/web/network-doctor.js'),
+    authorized: async () => ({checks: [], registrySnapshot: 'a'.repeat(64)}),
     runInspection: async () => ({result: {configuredVoteSites: 1}}), lastOverview: null,
     invalidateDashboardInspection: () => {}, finiteCount: value => value,
-    configurationHealthChecks: () => [{path: 'OnlineMode', status: 'WARNING'}],
-    refreshConfigurationHealth: async () => {reads++;}, renderJsonResult: () => {}, updateSetupChecklist: () => {}});
+    ControlGeneralSettings: {healthChecks: () => [{path: 'OnlineMode', status: 'WARNING'}]},
+    refreshConfigurationHealth: async () => {reads++; return {model: {}};}, renderJsonResult: () => {}, updateSetupChecklist: () => {}});
+  context.NetworkDoctorView = {...context.NetworkDoctorView, render: () => {}};
   const start = appSource.indexOf("runNetworkDoctor.addEventListener('click'");
   const end = appSource.indexOf("downloadNetworkDiagnostics.addEventListener", start);
   vm.runInContext(appSource.slice(start, end), context);
   await click();
   assert.equal(reads, 1);
   assert.equal(context.lastDiagnostics.configurationChecks[0].status, 'WARNING');
+});
+
+test('Network Doctor drops stale or unsupported registry configuration conclusions', async () => {
+  for (const reportSnapshot of ['b'.repeat(64), undefined]) {
+    const context = harness();
+    let click;
+    let conclusions = 0;
+    Object.assign(context, {runNetworkDoctor: {addEventListener: (_event, handler) => {click = handler;}},
+      downloadNetworkDiagnostics: {}, lastDiagnostics: null, networkDoctorResults: {},
+      inspectionInFlight: false, authenticationGeneration: 1, allNodeItems: [],
+      nodePageMetadata: new Map([[0, {registrySnapshot: 'a'.repeat(64)}]]), updateExtendedButtons: () => {},
+      AbortController, window: {setTimeout: () => 1, clearTimeout: () => {}},
+      NetworkDoctorView: {...require('../../main/resources/web/network-doctor.js'), render: () => {}},
+      authorized: async () => ({checks: [], registrySnapshot: reportSnapshot}),
+      ControlGeneralSettings: {healthChecks: () => {conclusions++; return [{path: 'OnlineMode', status: 'PASS'}];}},
+      refreshConfigurationHealth: async () => {
+        // A refresh during collection must not replace the originally collected snapshot.
+        context.nodePageMetadata.set(0, {registrySnapshot: reportSnapshot});
+        return {model: {}};
+      }});
+    const start = appSource.indexOf("runNetworkDoctor.addEventListener('click'");
+    const end = appSource.indexOf("downloadNetworkDiagnostics.addEventListener", start);
+    vm.runInContext(appSource.slice(start, end), context);
+    await click();
+    assert.equal(conclusions, 0);
+    assert.equal(context.lastDiagnostics.configurationChecks[0].status, 'UNKNOWN');
+    assert.equal(context.lastDiagnostics.checks.some(check => check.status === 'PASS'), false);
+    assert.equal(context.downloadNetworkDiagnostics.disabled, false);
+  }
 });
 
 test('configuration mutation fences an in-flight health read and forces a new context', () => {
@@ -560,4 +659,73 @@ test('configuration mutation fences an in-flight health read and forces a new co
   assert.equal(run(context, 'configurationHealthChecks()')[0].status, 'PASS');
   context.settingsHealthGeneration++;
   assert.equal(run(context, 'configurationHealthChecks()')[0].status, 'UNKNOWN');
+});
+
+
+test('proxy route restoration creates a proxy workspace instead of resetting Home', () => {
+  const context = harness(); context.authenticated = true;
+  context.nodeIndex.set('velocity', {...proxy('velocity'), acceptedCapabilities: ['config.proxy-files.v1']});
+  context.window.location.hash = '#servers/velocity/overview';
+  run(context, 'applyNavigationRoute()');
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['velocity']);
+  assert.equal(context.workspace.inspectedServerId, 'velocity');
+  assert.equal(context.selectedServerId, 'velocity');
+  assert.equal(context.calls.some(call => call[0] === 'setActiveTab' && call[1] === 'home'), false);
+});
+
+test('opening a backend after proxy management replaces the proxy target and file identity', () => {
+  const context = harness(); context.authenticated = true;
+  context.nodeIndex.set('velocity', {...proxy('velocity'), acceptedCapabilities: ['config.proxy-files.v1']});
+  context.nodeIndex.set('lobby', {...backend('lobby'), acceptedCapabilities: ['config.files.v1']});
+  context.workspace.setTargets(['velocity']).inspect('velocity'); context.selectedServerId = 'velocity';
+  run(context, "inspectWorkspaceServer('lobby')");
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['lobby']);
+  assert.equal(context.workspace.inspectedServerId, 'lobby');
+  assert.equal(context.selectedServerId, 'lobby');
+  assert.equal(run(context, 'generalSettingsTargets()[0].fileName'), 'Config.yml');
+  assert.equal(context.calls.some(call => call[0] === 'clearApprovals'), true);
+});
+
+test('history transitions between proxy and backend routes replace only incompatible target sets', () => {
+  const context = harness(); context.authenticated = true;
+  context.nodeIndex.set('velocity', proxy('velocity'));
+  context.nodeIndex.set('lobby', backend('lobby')); context.nodeIndex.set('server', backend('server'));
+  context.workspace.setTargets(['lobby', 'server']); context.selectedServerId = 'lobby';
+  context.window.location.hash = '#servers/velocity/overview'; run(context, 'applyNavigationRoute()');
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['velocity']);
+  context.window.location.hash = '#servers/lobby/overview'; run(context, 'applyNavigationRoute()');
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['lobby']);
+  assert.equal(context.selectedServerId, 'lobby');
+  context.workspace.setTargets(['lobby', 'server']);
+  context.window.location.hash = '#servers/server/overview'; run(context, 'applyNavigationRoute()');
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['lobby', 'server']);
+});
+
+test('cancelling a proxy-to-backend history transition retains the proxy target and route', () => {
+  const context = harness(); context.authenticated = true;
+  context.nodeIndex.set('velocity', proxy('velocity')); context.nodeIndex.set('lobby', backend('lobby'));
+  context.workspace.setTargets(['velocity']).inspect('velocity'); context.selectedServerId = 'velocity';
+  context.activeNavigationHash = '#servers/velocity/overview';
+  context.settingsEditor = {model: {dirty: new Set(['Server'])}}; context.window.confirm = () => false;
+  context.window.location.hash = '#servers/lobby/overview'; run(context, 'applyNavigationRoute()');
+  assert.deepEqual([...context.workspace.selectedTargetIds], ['velocity']);
+  assert.equal(context.selectedServerId, 'velocity');
+  assert.equal(context.window.location.hash, '#servers/velocity/overview');
+});
+
+test('node pagination retains the first doctor page snapshot independently of later pages', async () => {
+  const context = harness();
+  let pageNumber = 0;
+  Object.assign(context, {PAGE_SIZE: 100, MAX_REGISTRY_SCAN_ATTEMPTS: 1,
+    authorized: async () => {
+      const page = pageNumber++;
+      return {items: Array.from({length: 100}, (_, i) => ({nodeId: `node-${page * 100 + i}`})),
+        registryRevision: 7, total: 200, registrySnapshot: (page ? 'b' : 'a').repeat(64),
+        backendItemsReturned: 0, backendItemsTruncated: false, backendItemsTruncatedNodeIds: []};
+    }});
+  vm.runInContext(declaration('loadAllNodes'), context);
+  const registry = await context.loadAllNodes();
+  assert.equal(registry.items.length, 200);
+  assert.equal(registry.pageMetadata.get(0).registrySnapshot, 'a'.repeat(64));
+  assert.equal(registry.pageMetadata.get(100).registrySnapshot, 'b'.repeat(64));
 });

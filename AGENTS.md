@@ -113,6 +113,16 @@ The CI definition is `.github/workflows/maven.yml`. The shaded runnable artifact
     reload, automatically restart, or include older nodes that did not negotiate the exact capability. A Control restart
     invalidates in-progress download authority and requires an explicit retry.
 
+## Network Doctor invariants
+
+Use the pure `domain/NetworkDoctor` evaluator and strict `NetworkHealthEvidence` allow-list. Missing, offline, stale,
+unsupported, truncated, or wrong-session evidence is UNKNOWN, never PASS. New facts require additive capability negotiation
+and bounded producer/consumer tests. Compare only observed proxy/backend or declared multi-proxy relationships. Keep the
+validator read-only and optional: no configuration repair, votes, commands, SQL/scans, raw files/logs or secrets. Backend
+Votifier plus TriggerVotifierEvent is a valid synthetic-event path; proxy VotifierPlus socket forwarding alongside
+VotingPlugin delivery is a separate duplicate-risk path. Do not infer listener/runtime readiness from plugin presence or
+persisted configuration. See `docs/network-doctor.md`.
+
 ## Paired protocol workflow
 
 The implementation paired with this repository lives in `BenCodez/VotingPlugin`:

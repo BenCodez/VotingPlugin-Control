@@ -12,12 +12,12 @@ public record InspectionQuery(String kind, Map<String, String> filters) {
     public static final int MAX_REWARD_PROPOSAL = 64 * 1024;
     public static final Set<String> KINDS = Set.of("overview", "player", "vote-site-health", "vote-log-summary",
             "vote-log-search", "vote-trace", "vote-site-resolution", "reward-simulation", "diagnostics",
-            "reward-file-inventory");
+            "reward-file-inventory", "network-health");
 
     public InspectionQuery {
         filters = filters == null ? Map.of() : Map.copyOf(new LinkedHashMap<>(filters));
         if (!KINDS.contains(kind)) throw new IllegalArgumentException("inspection kind is unsupported");
-        if ("reward-file-inventory".equals(kind) && !filters.isEmpty())
+        if (("reward-file-inventory".equals(kind) || "network-health".equals(kind)) && !filters.isEmpty())
             throw new IllegalArgumentException("reward file inventory takes no filters");
         if (filters.size() > 12 || filters.entrySet().stream().anyMatch(entry -> entry.getKey() == null
                 || !entry.getKey().matches("[a-z][A-Za-z0-9]{0,39}") || entry.getValue() == null
@@ -25,6 +25,8 @@ public record InspectionQuery(String kind, Map<String, String> filters) {
             throw new IllegalArgumentException("inspection filters are invalid");
         }
     }
+
+    public boolean requiresNetworkHealth() { return "network-health".equals(kind); }
 
     public boolean requiresRewardFiles() { return "reward-file-inventory".equals(kind); }
 

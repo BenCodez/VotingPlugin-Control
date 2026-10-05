@@ -76,6 +76,21 @@ test('reconcile preserves known offline Bukkit targets and cleans disappeared ta
   assert.equal(workspace.inspectedServerId, '');
 });
 
+test('reconcile preserves a proxy-only workspace and inspected proxy', () => {
+  const workspace = new Workspace().setTargets(['proxy']).inspect('proxy');
+  workspace.reconcile([{nodeId: 'proxy', platform: 'VELOCITY', online: true}]);
+  assert.deepEqual([...workspace.selectedTargetIds], ['proxy']);
+  assert.equal(workspace.managementScope, 'SERVER');
+  assert.equal(workspace.inspectedServerId, 'proxy');
+});
+
+test('reconcile removes proxies from mixed backend workspaces', () => {
+  const workspace = new Workspace().setTargets(['backend', 'proxy']).inspect('proxy');
+  workspace.reconcile([{...backend('backend'), online: true}, {nodeId: 'proxy', platform: 'VELOCITY', online: true}]);
+  assert.deepEqual([...workspace.selectedTargetIds], ['backend']);
+  assert.equal(workspace.inspectedServerId, '');
+});
+
 test('selectEligible chooses only online Bukkit nodes with an eligible versioned capability', () => {
   const workspace = new Workspace();
   workspace.selectEligible([
@@ -140,6 +155,27 @@ test('session persistence restores Global without pretending all backends are se
   restored.returnToServers();
   assert.equal(restored.managementScope, 'MULTI_SERVER');
   assert.deepEqual([...restored.selectedTargetIds], ['one', 'two']);
+});
+
+test('Global registry refresh preserves a proxy-only previous workspace', () => {
+  const workspace = new Workspace().setTargets(['proxy']).enterGlobal();
+  workspace.reconcile([{nodeId: 'proxy', platform: 'VELOCITY', online: true}]);
+  assert.equal(workspace.managementScope, 'GLOBAL');
+  assert.deepEqual([...workspace.previousTargetIds], ['proxy']);
+  workspace.returnToServers();
+  assert.equal(workspace.managementScope, 'SERVER');
+  assert.deepEqual([...workspace.selectedTargetIds], ['proxy']);
+});
+
+test('persisted Global restore preserves a proxy-only previous workspace', () => {
+  const storage = session();
+  new Workspace(storage).setTargets(['proxy']).enterGlobal().setRoute('#global/network');
+  const restored = new Workspace(storage).restore([{nodeId: 'proxy', platform: 'BUNGEECORD', online: false}]);
+  assert.equal(restored.managementScope, 'GLOBAL');
+  assert.deepEqual([...restored.previousTargetIds], ['proxy']);
+  restored.returnToServers();
+  assert.equal(restored.managementScope, 'SERVER');
+  assert.deepEqual([...restored.selectedTargetIds], ['proxy']);
 });
 
 test('Global restore filters disappeared and non-Bukkit previous targets', () => {

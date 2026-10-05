@@ -241,7 +241,14 @@
     }
 
     reconcile(nodes) {
-      const validIds = new Set((Array.isArray(nodes) ? nodes : []).filter(isBukkit).map(node => node.nodeId));
+      const proxyCandidates = this.managementScope === 'GLOBAL' ? this.previousTargetIds : this.selectedTargetIds;
+      const proxyOnly = proxyCandidates.size === 1
+        && [...proxyCandidates].some(id => (Array.isArray(nodes) ? nodes : [])
+          .some(node => node && node.nodeId === id
+            && ['VELOCITY', 'BUNGEECORD'].includes(String(node.platform || '').toUpperCase())));
+      const validIds = new Set((Array.isArray(nodes) ? nodes : [])
+        .filter(node => isBukkit(node) || proxyOnly && node && node.nodeId === [...proxyCandidates][0])
+        .map(node => node.nodeId));
       const keep = ids => new Set([...ids].filter(id => validIds.has(id)));
       this.selectedTargetIds = keep(this.selectedTargetIds);
       this.previousTargetIds = keep(this.previousTargetIds);

@@ -14,6 +14,10 @@ The scope-first WebUI and legacy single-source editing boundary are documented i
 
 ## Features
 
+- **Read-only Network Doctor:** grouped FAIL/WARNING/UNKNOWN setup checks across observed proxy/backend networks,
+  path-aware Votifier forwarding checks, capability-negotiated bounded diagnostics, and a redacted structured JSON download.
+  Unsupported or missing evidence remains UNKNOWN; [check coverage and limits](docs/network-doctor.md).
+
 VotingPlugin Control is designed to manage and troubleshoot a VotingPlugin network from one place.
 
 ### Network management

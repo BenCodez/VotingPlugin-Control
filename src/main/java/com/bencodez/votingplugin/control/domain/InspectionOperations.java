@@ -72,6 +72,7 @@ public final class InspectionOperations {
         NodeStatus node = registry.find(nodeId);
         if (node == null) throw new ValidationException("NODE_NOT_FOUND", "Node was not found", List.of(nodeId));
         if (!node.online() || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)
+                || query.requiresNetworkHealth() && !node.acceptedCapabilities().contains(NetworkHealthEvidence.CAPABILITY)
                 || query.requiresRewardFiles() && !node.acceptedCapabilities().contains(InspectionQuery.REWARD_FILE_CAPABILITY)) {
             throw new ValidationException("NODE_UNAVAILABLE", "Node cannot answer inspection queries", List.of(nodeId));
         }
@@ -90,6 +91,43 @@ public final class InspectionOperations {
             throw failure;
         }
         return view(stored);
+    }
+
+    /** Server receipt time and session are authoritative; peer timestamps do not extend freshness. */
+    public synchronized Map<String, JsonNode> networkEvidence(List<NodeStatus> nodes) {
+        prune();
+        Map<String, JsonNode> result = new LinkedHashMap<>();
+        for (NodeStatus snapshot : nodes) {
+            try {
+                // Keep evidence selection under the same per-node session fence as claim/completion.
+                registry.withSession(snapshot.nodeId(), snapshot.sessionId(), current -> {
+                    collectNetworkEvidence(current, result);
+                    return null;
+                });
+            } catch (ValidationException changed) {
+                if (!Set.of("SESSION_MISMATCH", "NODE_NOT_FOUND").contains(changed.code())) throw changed;
+                // A page can outlive registration replacement; absence means UNKNOWN to the doctor.
+            }
+        }
+        return result;
+    }
+
+    private void collectNetworkEvidence(NodeStatus node, Map<String, JsonNode> result) {
+        if (!node.online() || !node.acceptedCapabilities().contains(NetworkHealthEvidence.CAPABILITY)
+                || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)) return;
+        for (StoredInspection stored : inspections.values()) {
+            if (stored.nodeId.equals(node.nodeId()) && stored.query.requiresNetworkHealth()
+                    && Objects.equals(stored.targetSession, node.sessionId())
+                    && stored.createdAt.isAfter(clock.instant().minus(Duration.ofMinutes(5)))) {
+                result.remove(node.nodeId());
+                if ("COMPLETE".equals(stored.state) && stored.result != null && stored.result.success()
+                        && Objects.equals(stored.result.sessionId(), node.sessionId())) {
+                    JsonNode evidence = stored.result.data().path("result");
+                    if (("BUKKIT".equals(node.platform()) ? "BACKEND" : "PROXY").equals(evidence.path("role").asText()))
+                        result.put(node.nodeId(), evidence.deepCopy());
+                }
+            }
+        }
     }
 
     public synchronized InspectionView get(UUID id) {
@@ -113,6 +151,7 @@ public final class InspectionOperations {
         for (StoredInspection stored : inspections.values()) {
             if (!stored.nodeId.equals(nodeId) || "COMPLETE".equals(stored.state)) continue;
             if (!node.online() || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY)
+                    || stored.query.requiresNetworkHealth() && !node.acceptedCapabilities().contains(NetworkHealthEvidence.CAPABILITY)
                     || stored.query.requiresRewardFiles()
                     && !node.acceptedCapabilities().contains(InspectionQuery.REWARD_FILE_CAPABILITY)) {
                 completeUnavailable(stored, node.sessionId());
@@ -168,7 +207,16 @@ public final class InspectionOperations {
         if (!Objects.equals(stored.attemptId, result.attemptId())) {
             throw new ValidationException("TASK_NOT_CLAIMED", "Inspection attempt does not match", List.of());
         }
+        if (stored.query.requiresNetworkHealth() && (!node.online()
+                || !node.acceptedCapabilities().contains(NetworkHealthEvidence.CAPABILITY)
+                || !node.acceptedCapabilities().contains(InspectionQuery.CAPABILITY))) {
+            completeUnavailable(stored, node.sessionId());
+            return view(stored);
+        }
         validateResult(result, stored.query.kind());
+        if (stored.query.requiresNetworkHealth() && result.success()
+                && !("BUKKIT".equals(node.platform()) ? "BACKEND" : "PROXY").equals(result.data().path("result").path("role").asText()))
+            throw invalid("network health role does not match the node platform");
         InspectionTaskResult previousResult = stored.result;
         String previousState = stored.state;
         Instant previousLease = stored.leasedAt;
@@ -237,6 +285,9 @@ public final class InspectionOperations {
                 Instant.parse(result.data().path("generatedAt").asText());
             } catch (java.time.format.DateTimeParseException failure) {
                 throw invalid("inspection data generatedAt is invalid");
+            }
+            if ("network-health".equals(expectedKind) && !NetworkHealthEvidence.valid(result.data().path("result"))) {
+                throw invalid("network health evidence is invalid");
             }
             if ("player".equals(expectedKind) && !validPlayerResult(result.data().path("result"))) {
                 throw invalid("player inspection data is invalid");

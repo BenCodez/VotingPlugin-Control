@@ -12,9 +12,9 @@ class InspectionQueryTest {
     @Test void supportsOnlyTheBoundedReadOnlyInspectionCatalog() {
         for (String kind : InspectionQuery.KINDS) {
             InspectionQuery query = new InspectionQuery(kind,
-                    "reward-file-inventory".equals(kind) ? Map.of() : Map.of("player", "Example"));
+                    ("reward-file-inventory".equals(kind) || "network-health".equals(kind)) ? Map.of() : Map.of("player", "Example"));
             assertEquals(kind, query.kind());
-            if (!query.requiresRewardFiles()) assertEquals("Example", query.filters().get("player"));
+            if (!query.requiresRewardFiles() && !query.requiresNetworkHealth()) assertEquals("Example", query.filters().get("player"));
         }
         assertEquals("data.inspect.v1", InspectionQuery.CAPABILITY);
         assertThrows(IllegalArgumentException.class, () -> new InspectionQuery("raw-sql", Map.of()));
