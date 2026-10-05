@@ -50,3 +50,23 @@ test('upstream truncation remains visible even when the browser adds no checks',
   render(container, report, {createElement: create});
   assert.match(container.children[1].textContent, /^UNKNOWN:/);
 });
+
+test('affected-node overflow marks the rendered and downloaded report incomplete', () => {
+  const nodes = Array.from({length: 100}, (_, i) => `backend-${i}`);
+  const result = withConfigurationChecks({checks: []}, [{path: 'OnlineMode', status: 'UNKNOWN',
+    nodeIds: nodes, unknownNodeIds: [nodes[0], 'outside-page']}]);
+  assert.equal(result.checks[0].affectedNodes.length, 100);
+  assert.equal(result.truncated, true);
+  assert.equal(JSON.parse(JSON.stringify(result)).truncated, true);
+  const create = tag => ({tag, children: [], append(...items) {this.children.push(...items);}, replaceChildren() {this.children=[];}});
+  const container = create('div');
+  render(container, result, {createElement: create});
+  assert.match(container.children[1].textContent, /^UNKNOWN: This report is incomplete/);
+});
+test('exactly 100 distinct affected nodes stays complete despite repeated IDs', () => {
+  const nodes = Array.from({length: 100}, (_, i) => `backend-${i}`);
+  const result = withConfigurationChecks({checks: []}, [{path: 'OnlineMode', status: 'PASS',
+    nodeIds: [...nodes, nodes[0]], unknownNodeIds: nodes}]);
+  assert.equal(result.checks[0].affectedNodes.length, 100);
+  assert.equal(result.truncated, false);
+});

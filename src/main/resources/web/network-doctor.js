@@ -20,13 +20,15 @@
     const serverChecksKept = serverChecks.slice(0, serverLimit);
     const configurationLimit = Math.min(100, Math.max(0, serverLimit - serverChecksKept.length));
     const configurationChecks = incomingConfigurationChecks.slice(0, configurationLimit);
+    const affectedNodesFor = check => [...new Set([...(check.nodeIds || []), ...(check.unknownNodeIds || [])])];
     const truncated = Boolean(report?.truncated) || serverChecks.length > serverChecksKept.length
-      || incomingConfigurationChecks.length > configurationChecks.length;
+      || incomingConfigurationChecks.length > configurationChecks.length
+      || configurationChecks.some(check => affectedNodesFor(check).length > 100);
     return {...report, truncated, configurationChecks, checks: [...serverChecksKept, ...configurationChecks.map(check => ({
       id: `configuration.${check.path}`, category: 'Proxy Setup',
       status: Object.hasOwn(rank, check.status) ? check.status : 'UNKNOWN', title: check.title || check.path,
       explanation: check.message || 'Managed configuration evidence is unavailable.',
-      affectedNodes: [...new Set([...(check.nodeIds || []), ...(check.unknownNodeIds || [])])].slice(0, 100),
+      affectedNodes: affectedNodesFor(check).slice(0, 100),
       evidence: 'Current revision-bound managed configuration read',
       nextAction: 'Review applicable settings through the normal preview/apply workflow.', restartRequired: false
     }))]};
