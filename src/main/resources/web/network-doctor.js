@@ -14,8 +14,15 @@
       checks: checks.slice().sort((a, b) => rank[a.status] - rank[b.status])}));
   }
   function withConfigurationChecks(report, checks) {
-    const configurationChecks = (Array.isArray(checks) ? checks : []).slice(0, 100);
-    return {...report, configurationChecks, checks: [...(report.checks || []), ...configurationChecks.map(check => ({
+    const serverChecks = Array.isArray(report?.checks) ? report.checks : [];
+    const incomingConfigurationChecks = Array.isArray(checks) ? checks : [];
+    const serverLimit = 500;
+    const serverChecksKept = serverChecks.slice(0, serverLimit);
+    const configurationLimit = Math.min(100, Math.max(0, serverLimit - serverChecksKept.length));
+    const configurationChecks = incomingConfigurationChecks.slice(0, configurationLimit);
+    const truncated = Boolean(report?.truncated) || serverChecks.length > serverChecksKept.length
+      || incomingConfigurationChecks.length > configurationChecks.length;
+    return {...report, truncated, configurationChecks, checks: [...serverChecksKept, ...configurationChecks.map(check => ({
       id: `configuration.${check.path}`, category: 'Proxy Setup',
       status: Object.hasOwn(rank, check.status) ? check.status : 'UNKNOWN', title: check.title || check.path,
       explanation: check.message || 'Managed configuration evidence is unavailable.',
