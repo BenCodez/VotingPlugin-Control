@@ -134,3 +134,44 @@ test('doctor retains enrolled related peers outside the page but excludes standa
   assert.equal(reader.model.targets.has('standalone'), false);
   assert.equal(ControlGeneralSettings.healthChecks(reader.model).find(check => check.path === 'OnlineMode').status, 'UNKNOWN');
 });
+
+test('doctor configuration targets start from the full doctor page in server and multi-server scopes', async () => {
+  for (const scope of ['SERVER', 'MULTI_SERVER']) {
+    const nodes = [
+      {nodeId: 'selected', sessionId: 'selected', online: true, platform: 'BUKKIT', acceptedCapabilities: ['config.files.v1']},
+      {nodeId: 'second-selected', sessionId: 'second-selected', online: true, platform: 'BUKKIT', acceptedCapabilities: ['config.files.v1']},
+      {nodeId: 'other-proxy', sessionId: 'other-proxy', online: true, platform: 'VELOCITY', acceptedCapabilities: ['config.proxy-files.v1'],
+        backends: [{backendId: 'other-backend'}]},
+      {nodeId: 'other-backend', sessionId: 'other-backend', online: true, platform: 'BUKKIT', acceptedCapabilities: ['config.files.v1']}
+    ];
+    const selected = scope === 'SERVER' ? ['selected'] : ['selected', 'second-selected'];
+    const calls = [];
+    const ctx = context({workspace: {managementScope: scope, selectedTargetIds: new Set(selected)},
+      allNodeItems: nodes, nodeIndex: new Map(nodes.map(node => [node.nodeId, node])), backendTopologyTruncatedNodeIds: new Set(),
+      isProxy: node => ['VELOCITY', 'BUNGEECORD'].includes(node?.platform), isBackend: node => node?.platform === 'BUKKIT',
+      startConfigurationOperation: async (_path, body) => {
+        calls.push(...body.nodeIds);
+        return {operationId: 'read', results: Object.fromEntries(body.nodeIds.map(id => [id, {success: true, sessionId: id, revision: 'r'}]))};
+      }, authorized: async (_path, request) => {
+        const id = JSON.parse(request.body).nodeId;
+        return {nodeId: id, sessionId: id, revision: 'r', fields: {
+          OnlineMode: {status: 'AVAILABLE', value: true}, BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'}
+        }};
+      }});
+    // Execute the real target builder, including its workspace seeding and topology expansion.
+    vm.runInContext(section('function generalSettingsTargets(', 'function configurationHealthContext('), ctx);
+    const reader = await ctx.refreshConfigurationHealth({nodeIds: new Set(nodes.map(node => node.nodeId))});
+    assert.deepEqual(calls.sort(), nodes.map(node => node.nodeId).sort(), scope);
+    assert.equal(reader.model.targets.size, 4, scope);
+    assert.equal(ControlGeneralSettings.healthChecks(reader.model).find(check => check.path === 'OnlineMode').status, 'PASS');
+    assert.deepEqual([...ctx.workspace.selectedTargetIds], selected, 'Doctor must not alter the selected workspace');
+    nodes[3].online = false;
+    calls.length = 0;
+    const unavailable = await ctx.refreshConfigurationHealth({nodeIds: new Set(nodes.map(node => node.nodeId))});
+    assert.equal(unavailable.model.targets.size, 4);
+    assert.equal(calls.includes('other-backend'), false, 'An offline peer must remain evidence-only');
+    const checks = ControlGeneralSettings.healthChecks(unavailable.model);
+    assert.equal(checks.find(check => check.path === 'OnlineMode').status, 'UNKNOWN');
+    assert.equal(checks.find(check => check.path === 'BedrockPlayerPrefix').status, 'UNKNOWN');
+  }
+});

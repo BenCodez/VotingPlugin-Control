@@ -6678,9 +6678,9 @@ function generalSettingsContext() {
       target.supported, target.managedByProxy, target.reportingProxyIds, target.networkIncomplete, target.networkOnly])]);
 }
 
-function generalSettingsTargets(health = false) {
+function generalSettingsTargets(health = false, seedIds) {
   if ((!health && workspace.managementScope === 'GLOBAL') || !authenticated) return [];
-  const ids = new Set(health && workspace.managementScope === 'GLOBAL'
+  const ids = new Set(seedIds !== undefined ? seedIds : health && workspace.managementScope === 'GLOBAL'
     ? allNodeItems.map(node => node.nodeId) : [...workspace.selectedTargetIds]);
   const directlyManagedIds = new Set(ids);
   const backendReporters = new Map();
@@ -6756,7 +6756,7 @@ async function refreshConfigurationHealth(options = {}) {
   // A doctor run owns a separate bounded reader, so an older dashboard flight cannot extend its deadline.
   const reader = options.nodeIds ? createConfigurationHealthReader(
     () => {
-      const allTargets = generalSettingsTargets(true);
+      const allTargets = generalSettingsTargets(true, options.nodeIds);
       // Retain topology-only placeholders in the model so missing unenrolled
       // backends remain UNKNOWN, while only requested targets can schedule reads.
       const requestedAll = allTargets.filter(target => options.nodeIds.has(target.id));
