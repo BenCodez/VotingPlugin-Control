@@ -21,7 +21,11 @@ not added to configuration history. Peer timestamps cannot extend freshness.
 `GET /api/v1/network-doctor` requires the same administrator/browser authentication as node inspection views. It does not
 accept user-supplied evidence. The server evaluates its current registry plus eligible inspection results. The report is
 limited to 100 nodes and 500 checks; limits are explicitly reported as UNKNOWN/truncated. Missing nodes or omitted checks
-have not passed. Re-run checks for the relevant network when evidence expires.
+have not passed. The report also carries an opaque `registrySnapshot` fingerprint for the exact bounded node page used by
+the evaluation. The WebUI compares it with the token from its first `/api/v1/nodes` page and discards configuration
+evidence as UNKNOWN when they differ or either token is unavailable. The fingerprint covers only bounded public node
+identity/session/platform/online/capability and backend identity metadata; heartbeat timestamps and player counts do not
+invalidate it. Re-run checks for the relevant network when evidence expires.
 
 ## Checks
 

@@ -11,7 +11,12 @@ public final class NetworkDoctor {
     public enum Status { PASS, WARNING, FAIL, UNKNOWN, INFO }
     public record Check(String id, String category, Status status, String title, String explanation,
                         List<String> affectedNodes, String evidence, String nextAction, boolean restartRequired) { }
-    public record Report(int schemaVersion, Instant generatedAt, List<Check> checks, boolean truncated) { }
+    public record Report(int schemaVersion, Instant generatedAt, List<Check> checks, boolean truncated,
+                         String registrySnapshot) {
+        public Report(int schemaVersion, Instant generatedAt, List<Check> checks, boolean truncated) {
+            this(schemaVersion, generatedAt, checks, truncated, "");
+        }
+    }
     private static final int MAX_CHECKS = 500;
     private final List<Check> checks = new ArrayList<>();
     private final List<NodeStatus> nodes;

@@ -4231,6 +4231,7 @@ async function loadAllNodes() {
         truncated ||= Boolean(page.backendItemsTruncated);
         (page.backendItemsTruncatedNodeIds || []).forEach(nodeId => truncatedNodeIds.add(nodeId));
         pageMetadata.set(offset, {
+          registrySnapshot: page.registrySnapshot,
           backendItemsReturned: page.backendItemsReturned,
           backendItemsTruncated: Boolean(page.backendItemsTruncated)
         });
@@ -5490,6 +5491,7 @@ runNetworkDoctor.addEventListener('click', async () => {
   updateExtendedButtons();
   text(networkDoctorResults, 'Collecting bounded read-only evidence across enrolled nodes…');
   try {
+    const registrySnapshot = nodePageMetadata.get(0)?.registrySnapshot;
     const doctorNodes = allNodeItems.slice(0, 100);
     const candidates = doctorNodes.filter(node => node.online
       && node.acceptedCapabilities.includes('data.inspect.v1')
@@ -5514,6 +5516,7 @@ runNetworkDoctor.addEventListener('click', async () => {
     const report = await authorized('/api/v1/network-doctor');
     if (!contextCurrent()) return;
     lastDiagnostics = NetworkDoctorView.withConfigurationChecks(report, configurationReader
+      && NetworkDoctorView.registrySnapshotMatches(registrySnapshot, report)
       ? ControlGeneralSettings.healthChecks(configurationReader.model) : [{path: 'configuration', title: 'Configuration health is not verified',
         status: 'UNKNOWN', nodeIds: [], message: 'Configuration evidence changed or was unavailable during this run.'}]);
     NetworkDoctorView.render(networkDoctorResults, lastDiagnostics, document);

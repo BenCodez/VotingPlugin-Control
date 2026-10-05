@@ -13,6 +13,10 @@
     return [...result].map(([category, checks]) => ({category,
       checks: checks.slice().sort((a, b) => rank[a.status] - rank[b.status])}));
   }
+  function registrySnapshotMatches(expected, report) {
+    return typeof expected === 'string' && /^[a-f0-9]{64}$/.test(expected)
+      && expected === report?.registrySnapshot;
+  }
   function withConfigurationChecks(report, checks) {
     const serverChecks = Array.isArray(report?.checks) ? report.checks : [];
     const incomingConfigurationChecks = Array.isArray(checks) ? checks : [];
@@ -58,7 +62,7 @@
       section.append(extra); container.append(section);
     }
   }
-  const api = {groups, render, withConfigurationChecks};
+  const api = {groups, render, withConfigurationChecks, registrySnapshotMatches};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.NetworkDoctorView = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

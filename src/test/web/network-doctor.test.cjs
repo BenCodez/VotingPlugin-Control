@@ -70,3 +70,13 @@ test('exactly 100 distinct affected nodes stays complete despite repeated IDs', 
   assert.equal(result.checks[0].affectedNodes.length, 100);
   assert.equal(result.truncated, false);
 });
+
+test('registry snapshot matching requires identical bounded tokens from both peers', () => {
+  const {registrySnapshotMatches} = require('../../main/resources/web/network-doctor.js');
+  const token = 'a'.repeat(64);
+  assert.equal(registrySnapshotMatches(token, {registrySnapshot: token}), true);
+  for (const expected of [undefined, '', 'a'.repeat(65), 'A'.repeat(64)])
+    assert.equal(registrySnapshotMatches(expected, {registrySnapshot: expected}), false);
+  assert.equal(registrySnapshotMatches(token, {}), false);
+  assert.equal(registrySnapshotMatches(token, {registrySnapshot: 'b'.repeat(64)}), false);
+});

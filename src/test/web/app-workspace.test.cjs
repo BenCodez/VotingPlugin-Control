@@ -603,10 +603,10 @@ test('Network Doctor reads configuration health and includes typed checks on its
   let reads = 0;
   Object.assign(context, {runNetworkDoctor: {addEventListener: (_event, handler) => {click = handler;}},
     downloadNetworkDiagnostics: {}, lastDiagnostics: null, networkDoctorResults: {},
-    inspectionInFlight: false, authenticationGeneration: 1, allNodeItems: [], updateExtendedButtons: () => {},
+    inspectionInFlight: false, authenticationGeneration: 1, allNodeItems: [], nodePageMetadata: new Map([[0, {registrySnapshot: 'a'.repeat(64)}]]), updateExtendedButtons: () => {},
     AbortController, window: {setTimeout: () => 1, clearTimeout: () => {}},
     NetworkDoctorView: require('../../main/resources/web/network-doctor.js'),
-    authorized: async () => ({checks: []}),
+    authorized: async () => ({checks: [], registrySnapshot: 'a'.repeat(64)}),
     runInspection: async () => ({result: {configuredVoteSites: 1}}), lastOverview: null,
     invalidateDashboardInspection: () => {}, finiteCount: value => value,
     ControlGeneralSettings: {healthChecks: () => [{path: 'OnlineMode', status: 'WARNING'}]},
@@ -618,6 +618,35 @@ test('Network Doctor reads configuration health and includes typed checks on its
   await click();
   assert.equal(reads, 1);
   assert.equal(context.lastDiagnostics.configurationChecks[0].status, 'WARNING');
+});
+
+test('Network Doctor drops stale or unsupported registry configuration conclusions', async () => {
+  for (const reportSnapshot of ['b'.repeat(64), undefined]) {
+    const context = harness();
+    let click;
+    let conclusions = 0;
+    Object.assign(context, {runNetworkDoctor: {addEventListener: (_event, handler) => {click = handler;}},
+      downloadNetworkDiagnostics: {}, lastDiagnostics: null, networkDoctorResults: {},
+      inspectionInFlight: false, authenticationGeneration: 1, allNodeItems: [],
+      nodePageMetadata: new Map([[0, {registrySnapshot: 'a'.repeat(64)}]]), updateExtendedButtons: () => {},
+      AbortController, window: {setTimeout: () => 1, clearTimeout: () => {}},
+      NetworkDoctorView: {...require('../../main/resources/web/network-doctor.js'), render: () => {}},
+      authorized: async () => ({checks: [], registrySnapshot: reportSnapshot}),
+      ControlGeneralSettings: {healthChecks: () => {conclusions++; return [{path: 'OnlineMode', status: 'PASS'}];}},
+      refreshConfigurationHealth: async () => {
+        // A refresh during collection must not replace the originally collected snapshot.
+        context.nodePageMetadata.set(0, {registrySnapshot: reportSnapshot});
+        return {model: {}};
+      }});
+    const start = appSource.indexOf("runNetworkDoctor.addEventListener('click'");
+    const end = appSource.indexOf("downloadNetworkDiagnostics.addEventListener", start);
+    vm.runInContext(appSource.slice(start, end), context);
+    await click();
+    assert.equal(conclusions, 0);
+    assert.equal(context.lastDiagnostics.configurationChecks[0].status, 'UNKNOWN');
+    assert.equal(context.lastDiagnostics.checks.some(check => check.status === 'PASS'), false);
+    assert.equal(context.downloadNetworkDiagnostics.disabled, false);
+  }
 });
 
 test('configuration mutation fences an in-flight health read and forces a new context', () => {
@@ -682,4 +711,21 @@ test('cancelling a proxy-to-backend history transition retains the proxy target 
   assert.deepEqual([...context.workspace.selectedTargetIds], ['velocity']);
   assert.equal(context.selectedServerId, 'velocity');
   assert.equal(context.window.location.hash, '#servers/velocity/overview');
+});
+
+test('node pagination retains the first doctor page snapshot independently of later pages', async () => {
+  const context = harness();
+  let pageNumber = 0;
+  Object.assign(context, {PAGE_SIZE: 100, MAX_REGISTRY_SCAN_ATTEMPTS: 1,
+    authorized: async () => {
+      const page = pageNumber++;
+      return {items: Array.from({length: 100}, (_, i) => ({nodeId: `node-${page * 100 + i}`})),
+        registryRevision: 7, total: 200, registrySnapshot: (page ? 'b' : 'a').repeat(64),
+        backendItemsReturned: 0, backendItemsTruncated: false, backendItemsTruncatedNodeIds: []};
+    }});
+  vm.runInContext(declaration('loadAllNodes'), context);
+  const registry = await context.loadAllNodes();
+  assert.equal(registry.items.length, 200);
+  assert.equal(registry.pageMetadata.get(0).registrySnapshot, 'a'.repeat(64));
+  assert.equal(registry.pageMetadata.get(100).registrySnapshot, 'b'.repeat(64));
 });

@@ -1132,6 +1132,7 @@ class ControlHttpServerTest {
         assertTrue(listed.at("/items/0/online").asBoolean());
         assertEquals(1, listed.get("total").asInt());
         assertTrue(listed.has("registryRevision"));
+        assertTrue(listed.get("registrySnapshot").asText().matches("[0-9a-f]{64}"));
     }
 
     @Test void nodePaginationRejectsAStaleRegistryRevision() throws Exception {
@@ -1330,6 +1331,9 @@ class ControlHttpServerTest {
         String path = "/api/v1/nodes/proxy-a/inspections/" + queued.path("inspectionId").asText() + "/result";
         assertEquals(200, send("POST", path, result.toString(), nodeToken).statusCode());
         JsonNode report = json.readTree(get("/api/v1/network-doctor", adminToken).body());
+        assertTrue(report.get("registrySnapshot").asText().matches("[0-9a-f]{64}"));
+        JsonNode page = json.readTree(get("/api/v1/nodes?offset=0&limit=100", adminToken).body());
+        assertEquals(page.get("registrySnapshot").asText(), report.get("registrySnapshot").asText());
         assertTrue(report.path("checks").isArray());
         assertTrue(java.util.stream.StreamSupport.stream(report.path("checks").spliterator(), false)
                 .anyMatch(check -> "votifier.proxy.provider".equals(check.path("id").asText()) && "FAIL".equals(check.path("status").asText())));
