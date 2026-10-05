@@ -6762,7 +6762,18 @@ async function refreshConfigurationHealth(options = {}) {
       const requestedAll = allTargets.filter(target => options.nodeIds.has(target.id));
       const requested = requestedAll.slice(0, 100);
       const omitted = new Set(requested.map(target => target.id));
-      const placeholders = allTargets.filter(target => (!omitted.has(target.id) && target.networkOnly))
+      const related = new Set(requested.map(target => target.id));
+      let expanded = true;
+      while (expanded) {
+        expanded = false;
+        allTargets.forEach(target => {
+          const links = [target.id, ...(target.reportingProxyIds || [])];
+          if (!links.some(id => related.has(id))) return;
+          links.forEach(id => { if (!related.has(id)) { related.add(id); expanded = true; } });
+        });
+      }
+      const placeholders = allTargets.filter(target => (!omitted.has(target.id)
+        && (options.nodeIds.has(target.id) || related.has(target.id))))
         .map(target => ({...target, online: false, supported: false, networkIncomplete: true}));
       return [...requested, ...placeholders];
     }, options)

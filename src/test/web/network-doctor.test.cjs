@@ -31,3 +31,22 @@ test('a complete report remains untruncated at the combined boundary', () => {
   assert.equal(result.configurationChecks.length, 100);
   assert.equal(result.truncated, false);
 });
+
+test('browser-side report truncation is visible outside collapsed PASS checks', () => {
+  const create = tag => ({tag, children: [], append(...items) {this.children.push(...items);}, replaceChildren() {this.children=[];}});
+  const report = withConfigurationChecks({checks: Array.from({length: 498}, () => ({status: 'PASS', category: 'Runtime'}))},
+    Array.from({length: 4}, (_, i) => ({path: `Config-${i}`, status: 'PASS'})));
+  const container = create('div');
+  render(container, report, {createElement: create});
+  assert.equal(container.children[1].tag, 'p');
+  assert.match(container.children[1].textContent, /^UNKNOWN: This report is incomplete/);
+  assert.equal(JSON.parse(JSON.stringify(report)).truncated, true);
+  assert.equal(report.checks.length, 500);
+});
+test('upstream truncation remains visible even when the browser adds no checks', () => {
+  const create = tag => ({tag, children: [], append(...items) {this.children.push(...items);}, replaceChildren() {this.children=[];}});
+  const report = withConfigurationChecks({truncated: true, checks: []}, []);
+  const container = create('div');
+  render(container, report, {createElement: create});
+  assert.match(container.children[1].textContent, /^UNKNOWN:/);
+});

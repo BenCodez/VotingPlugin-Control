@@ -157,6 +157,27 @@ test('session persistence restores Global without pretending all backends are se
   assert.deepEqual([...restored.selectedTargetIds], ['one', 'two']);
 });
 
+test('Global registry refresh preserves a proxy-only previous workspace', () => {
+  const workspace = new Workspace().setTargets(['proxy']).enterGlobal();
+  workspace.reconcile([{nodeId: 'proxy', platform: 'VELOCITY', online: true}]);
+  assert.equal(workspace.managementScope, 'GLOBAL');
+  assert.deepEqual([...workspace.previousTargetIds], ['proxy']);
+  workspace.returnToServers();
+  assert.equal(workspace.managementScope, 'SERVER');
+  assert.deepEqual([...workspace.selectedTargetIds], ['proxy']);
+});
+
+test('persisted Global restore preserves a proxy-only previous workspace', () => {
+  const storage = session();
+  new Workspace(storage).setTargets(['proxy']).enterGlobal().setRoute('#global/network');
+  const restored = new Workspace(storage).restore([{nodeId: 'proxy', platform: 'BUNGEECORD', online: false}]);
+  assert.equal(restored.managementScope, 'GLOBAL');
+  assert.deepEqual([...restored.previousTargetIds], ['proxy']);
+  restored.returnToServers();
+  assert.equal(restored.managementScope, 'SERVER');
+  assert.deepEqual([...restored.selectedTargetIds], ['proxy']);
+});
+
 test('Global restore filters disappeared and non-Bukkit previous targets', () => {
   const storage = session();
   new Workspace(storage).setTargets(['one', 'gone', 'proxy']).enterGlobal().setRoute('#global/network');

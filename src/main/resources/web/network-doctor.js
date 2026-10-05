@@ -35,6 +35,11 @@
     container.replaceChildren();
     const label = (tag, value) => { const element = document.createElement(tag); element.textContent = String(value); return element; };
     container.append(label('p', 'Read-only reported evidence. UNKNOWN means unverified; no votes or configuration changes were made.'));
+    if (report?.truncated) {
+      const notice = label('p', 'UNKNOWN: This report is incomplete. Some nodes or checks were omitted by the reporting limits; omitted evidence is not verified. Inspect a smaller workspace for the missing evidence.');
+      notice.className = 'doctor-check';
+      container.append(notice);
+    }
     for (const group of groups(report)) {
       const section = document.createElement('section');
       section.append(label('h4', group.category));

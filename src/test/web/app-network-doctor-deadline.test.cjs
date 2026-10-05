@@ -72,7 +72,7 @@ test('deadline-expired configuration evidence cannot reuse previous healthy dash
 });
 test('doctor keeps unenrolled topology placeholders unknown without reading them', async () => {
   const targets = [{id: 'proxy', sessionId: 'p', online: true, supported: true, networkOnly: false},
-    {id: 'missing-backend', sessionId: '', online: false, supported: false, networkOnly: true}];
+    {id: 'missing-backend', sessionId: '', online: false, supported: false, networkOnly: false, reportingProxyIds: ['proxy']}];
   const calls = [];
   const ctx = context({generalSettingsTargets: () => targets,
     startConfigurationOperation: async (_path, body) => {
@@ -106,7 +106,8 @@ test('doctor keeps the read page bounded when related enrolled peers exceed it',
   assert.equal(ControlGeneralSettings.healthChecks(reader.model).find(check => check.path === 'OnlineMode').status, 'UNKNOWN');
 });
 test('doctor reports matching enrolled network values as verified', async () => {
-  const targets = ['proxy', 'backend'].map(id => ({id, sessionId: id, online: true, supported: true, role: id === 'proxy' ? 'PROXY' : 'BACKEND'}));
+  const targets = [{id: 'proxy', sessionId: 'proxy', online: true, supported: true, role: 'PROXY'},
+    {id: 'backend', sessionId: 'backend', online: true, supported: true, role: 'BACKEND', reportingProxyIds: ['proxy']}];
   const ctx = context({generalSettingsTargets: () => targets,
     startConfigurationOperation: async (_path, body) => ({operationId: 'read', results: Object.fromEntries(body.nodeIds.map(id => [id, {success: true, sessionId: id, revision: 'r'}]))}),
     authorized: async (_path, request) => ({nodeId: JSON.parse(request.body).nodeId, sessionId: JSON.parse(request.body).nodeId, revision: 'r', fields: {
@@ -116,4 +117,20 @@ test('doctor reports matching enrolled network values as verified', async () => 
   const checks = ControlGeneralSettings.healthChecks(reader.model);
   assert.equal(checks.find(check => check.path === 'OnlineMode').status, 'PASS');
   assert.equal(checks.find(check => check.path === 'BedrockPlayerPrefix').status, 'PASS');
+});
+test('doctor retains enrolled related peers outside the page but excludes standalone nodes', async () => {
+  const targets = [
+    {id: 'proxy', sessionId: 'proxy', online: true, supported: true, role: 'PROXY'},
+    {id: 'backend-outside-page', sessionId: 'backend', online: true, supported: true, role: 'BACKEND', networkOnly: false, reportingProxyIds: ['proxy']},
+    {id: 'standalone', sessionId: 'standalone', online: true, supported: true, role: 'BACKEND', networkOnly: false}
+  ];
+  const ctx = context({generalSettingsTargets: () => targets,
+    startConfigurationOperation: async (_path, body) => ({operationId: 'read', results: {proxy: {success: true, sessionId: 'proxy', revision: 'r'}}}),
+    authorized: async () => ({nodeId: 'proxy', sessionId: 'proxy', revision: 'r', fields: {
+      OnlineMode: {status: 'AVAILABLE', value: true}, BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'}
+    }})});
+  const reader = await ctx.refreshConfigurationHealth({nodeIds: new Set(['proxy'])});
+  assert.equal(reader.model.targets.has('backend-outside-page'), true);
+  assert.equal(reader.model.targets.has('standalone'), false);
+  assert.equal(ControlGeneralSettings.healthChecks(reader.model).find(check => check.path === 'OnlineMode').status, 'UNKNOWN');
 });

@@ -241,12 +241,13 @@
     }
 
     reconcile(nodes) {
-      const proxyOnly = this.selectedTargetIds.size === 1
-        && [...this.selectedTargetIds].some(id => (Array.isArray(nodes) ? nodes : [])
+      const proxyCandidates = this.managementScope === 'GLOBAL' ? this.previousTargetIds : this.selectedTargetIds;
+      const proxyOnly = proxyCandidates.size === 1
+        && [...proxyCandidates].some(id => (Array.isArray(nodes) ? nodes : [])
           .some(node => node && node.nodeId === id
             && ['VELOCITY', 'BUNGEECORD'].includes(String(node.platform || '').toUpperCase())));
       const validIds = new Set((Array.isArray(nodes) ? nodes : [])
-        .filter(node => isBukkit(node) || proxyOnly && node && node.nodeId === [...this.selectedTargetIds][0])
+        .filter(node => isBukkit(node) || proxyOnly && node && node.nodeId === [...proxyCandidates][0])
         .map(node => node.nodeId));
       const keep = ids => new Set([...ids].filter(id => validIds.has(id)));
       this.selectedTargetIds = keep(this.selectedTargetIds);
