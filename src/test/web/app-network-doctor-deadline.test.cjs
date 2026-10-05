@@ -70,3 +70,50 @@ test('deadline-expired configuration evidence cannot reuse previous healthy dash
   assert.equal(reader.model.targets.get('node').status, 'ERROR');
   assert.equal(ControlGeneralSettings.healthChecks(reader.model).some(check => check.status === 'PASS'), false);
 });
+test('doctor keeps unenrolled topology placeholders unknown without reading them', async () => {
+  const targets = [{id: 'proxy', sessionId: 'p', online: true, supported: true, networkOnly: false},
+    {id: 'missing-backend', sessionId: '', online: false, supported: false, networkOnly: true}];
+  const calls = [];
+  const ctx = context({generalSettingsTargets: () => targets,
+    startConfigurationOperation: async (_path, body) => {
+      calls.push(body.nodeIds); return {operationId: 'read', results: {proxy: {success: true, sessionId: 'p', revision: 'r'}}};
+    }, authorized: async (_path, request) => {
+      const body = JSON.parse(request.body); return {nodeId: body.nodeId, sessionId: 'p', revision: 'r', fields: {
+        OnlineMode: {status: 'AVAILABLE', value: true}, BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'}
+      }};
+    }});
+  const reader = await ctx.refreshConfigurationHealth({nodeIds: new Set(['proxy'])});
+  assert.deepEqual(calls, [['proxy']]);
+  assert.equal(reader.model.targets.get('missing-backend').status, 'UNSUPPORTED');
+  const checks = ControlGeneralSettings.healthChecks(reader.model);
+  assert.equal(checks.find(check => check.path === 'OnlineMode').status, 'UNKNOWN');
+  assert.equal(checks.find(check => check.path === 'BedrockPlayerPrefix').status, 'UNKNOWN');
+});
+test('doctor keeps the read page bounded when related enrolled peers exceed it', async () => {
+  const targets = Array.from({length: 105}, (_, i) => ({id: `backend-${i}`, sessionId: `s-${i}`,
+    online: true, supported: true, networkOnly: true, role: 'BACKEND'}));
+  const calls = [];
+  const ctx = context({generalSettingsTargets: () => targets,
+    startConfigurationOperation: async (_path, body) => {
+      calls.push(body.nodeIds); return {operationId: 'read', results: Object.fromEntries(body.nodeIds.map(id => [id,
+        {success: true, sessionId: `s-${id.slice(8)}`, revision: 'r'}]))};
+    }, authorized: async (_path, request) => {
+      const body = JSON.parse(request.body); return {nodeId: body.nodeId, sessionId: `s-${body.nodeId.slice(8)}`, revision: 'r', fields: {}};
+    }});
+  const reader = await ctx.refreshConfigurationHealth({nodeIds: new Set(targets.map(target => target.id))});
+  assert.equal(calls.flat().length, 100);
+  assert.equal(reader.model.targets.size, 105);
+  assert.equal(ControlGeneralSettings.healthChecks(reader.model).find(check => check.path === 'OnlineMode').status, 'UNKNOWN');
+});
+test('doctor reports matching enrolled network values as verified', async () => {
+  const targets = ['proxy', 'backend'].map(id => ({id, sessionId: id, online: true, supported: true, role: id === 'proxy' ? 'PROXY' : 'BACKEND'}));
+  const ctx = context({generalSettingsTargets: () => targets,
+    startConfigurationOperation: async (_path, body) => ({operationId: 'read', results: Object.fromEntries(body.nodeIds.map(id => [id, {success: true, sessionId: id, revision: 'r'}]))}),
+    authorized: async (_path, request) => ({nodeId: JSON.parse(request.body).nodeId, sessionId: JSON.parse(request.body).nodeId, revision: 'r', fields: {
+      OnlineMode: {status: 'AVAILABLE', value: true}, BedrockPlayerPrefix: {status: 'AVAILABLE', value: '.'}
+    }})});
+  const reader = await ctx.refreshConfigurationHealth({nodeIds: new Set(['proxy', 'backend'])});
+  const checks = ControlGeneralSettings.healthChecks(reader.model);
+  assert.equal(checks.find(check => check.path === 'OnlineMode').status, 'PASS');
+  assert.equal(checks.find(check => check.path === 'BedrockPlayerPrefix').status, 'PASS');
+});

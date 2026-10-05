@@ -6755,7 +6755,17 @@ async function refreshConfigurationHealth(options = {}) {
   const captured = configurationHealthContext();
   // A doctor run owns a separate bounded reader, so an older dashboard flight cannot extend its deadline.
   const reader = options.nodeIds ? createConfigurationHealthReader(
-    () => generalSettingsTargets(true).filter(target => options.nodeIds.has(target.id)).slice(0, 100), options)
+    () => {
+      const allTargets = generalSettingsTargets(true);
+      // Retain topology-only placeholders in the model so missing unenrolled
+      // backends remain UNKNOWN, while only requested targets can schedule reads.
+      const requestedAll = allTargets.filter(target => options.nodeIds.has(target.id));
+      const requested = requestedAll.slice(0, 100);
+      const omitted = new Set(requested.map(target => target.id));
+      const placeholders = allTargets.filter(target => (!omitted.has(target.id) && target.networkOnly))
+        .map(target => ({...target, online: false, supported: false, networkIncomplete: true}));
+      return [...requested, ...placeholders];
+    }, options)
     : settingsHealthReader;
   await reader.read(false);
   if (captured !== configurationHealthContext() || options.contextCurrent && !options.contextCurrent()) return;
