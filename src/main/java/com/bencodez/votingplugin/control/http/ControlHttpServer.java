@@ -5,6 +5,7 @@ import com.bencodez.votingplugin.control.auth.WebSessionStore;
 import com.bencodez.votingplugin.control.artifact.ArtifactStore;
 import com.bencodez.votingplugin.control.artifact.JenkinsVotingPluginSource;
 import com.bencodez.votingplugin.control.artifact.ArtifactStore.ArtifactException;
+import com.bencodez.votingplugin.control.domain.AgentOperations;
 import com.bencodez.votingplugin.control.domain.NodeRegistry;
 import com.bencodez.votingplugin.control.domain.RegistrySnapshot;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
@@ -112,6 +113,11 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final int MAX_BACKENDS_PER_NODE_SUMMARY = 256;
     private static final long ARTIFACT_TRANSFER_TIMEOUT_SECONDS = 120;
 
+    private static final String AGENT_API = "/api/v1/agent/";
+    private static final String AGENT_OWNER = "/api/v1/agent-admin/";
+    private static final int AGENT_REQUEST_BYTES = 16 * 1024;
+    private final AgentOperations agentOperations;
+    private final ObjectMapper agentJson;
     private final HttpServer server;
     private final ObjectMapper json;
     private final NodeRegistry registry;
@@ -254,6 +260,17 @@ public final class ControlHttpServer implements AutoCloseable {
         json.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
                 .maxNestingDepth(20).maxStringLength(ManagedConfiguration.MAX_CONTENT + 4096)
                 .maxNumberLength(64).build());
+        agentOperations = new AgentOperations(registry, configurationOperations, clock);
+        agentJson = json.copy().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                .disable(com.fasterxml.jackson.databind.MapperFeature.ALLOW_COERCION_OF_SCALARS)
+                .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT);
+        agentJson.coercionConfigFor(com.fasterxml.jackson.databind.type.LogicalType.Textual)
+                .setCoercion(com.fasterxml.jackson.databind.cfg.CoercionInputShape.Integer,
+                        com.fasterxml.jackson.databind.cfg.CoercionAction.Fail)
+                .setCoercion(com.fasterxml.jackson.databind.cfg.CoercionInputShape.Float,
+                        com.fasterxml.jackson.databind.cfg.CoercionAction.Fail)
+                .setCoercion(com.fasterxml.jackson.databind.cfg.CoercionInputShape.Boolean,
+                        com.fasterxml.jackson.databind.cfg.CoercionAction.Fail);
         authLimiter = new AuthFailureLimiter(nanoTime, MAX_AUTH_FAILURES_PER_MINUTE, TimeUnit.MINUTES.toNanos(1));
         passwordFailureLimiter = new PasswordFailureLimiter(nanoTime, MAX_PASSWORD_FAILURES_PER_CLIENT,
                 TimeUnit.MINUTES.toNanos(1), MAX_PASSWORD_FAILURE_CLIENTS);
@@ -388,6 +405,10 @@ public final class ControlHttpServer implements AutoCloseable {
             health.put("identity", identity);
             if (launchId != null) health.put("launchId", launchId);
             send(exchange, 200, health);
+            return;
+        }
+        if (path != null && (path.startsWith(AGENT_API) || path.startsWith(AGENT_OWNER))) {
+            routeAgent(exchange, path);
             return;
         }
         if (AUTH_SETUP.equals(path)) {
@@ -1027,9 +1048,93 @@ public final class ControlHttpServer implements AutoCloseable {
         return new BackendPage(List.copyOf(items), returned, truncated, List.copyOf(truncatedNodeIds));
     }
 
+    private void routeAgent(HttpExchange exchange, String path) throws IOException {
+        if (exchange.getRequestURI().getRawQuery() != null
+                || !path.equals(exchange.getRequestURI().getRawPath())) {
+            throw new IllegalArgumentException("Invalid agent route");
+        }
+        if (path.startsWith(AGENT_OWNER)) {
+            switch (path.substring(AGENT_OWNER.length())) {
+                case "grants" -> {
+                    requireMethod(exchange, "GET");
+                    authenticateWebSession(exchange, false);
+                    send(exchange, 200, agentOperations.list());
+                }
+                case "issue" -> {
+                    requireMethod(exchange, "POST");
+                    authenticateWebSession(exchange, true);
+                    send(exchange, 201, agentOperations.issue(read(exchange, AgentOperations.Issue.class, true)));
+                }
+                case "revoke" -> {
+                    requireMethod(exchange, "POST");
+                    authenticateWebSession(exchange, true);
+                    agentOperations.revoke(readAgentId(exchange));
+                    send(exchange, 200, Map.of("revoked", true));
+                }
+                case "review" -> {
+                    requireMethod(exchange, "POST");
+                    authenticateWebSession(exchange, true);
+                    send(exchange, 200, configurationOperations.getAgentReview(readAgentId(exchange)));
+                }
+                case "approve" -> {
+                    requireMethod(exchange, "POST");
+                    authenticateWebSession(exchange, true);
+                    send(exchange, 202, agentOperations.approve(readAgentId(exchange)));
+                }
+                default -> error(exchange, 404, "NOT_FOUND", "Route not found", List.of());
+            }
+            return;
+        }
+        requireMethod(exchange, "POST");
+        String token = bearer(exchange);
+        String route = path.substring(AGENT_API.length());
+        String action = switch (route) {
+            case "nodes" -> "discover";
+            case "read", "preview", "status" -> route;
+            default -> null;
+        };
+        if (action == null) {
+            error(exchange, 404, "NOT_FOUND", "Route not found", List.of());
+            return;
+        }
+        try {
+            agentOperations.requireAccess(token, action);
+            Object result = switch (route) {
+                case "nodes" -> {
+                    read(exchange, AgentEmpty.class, true);
+                    yield agentOperations.discover(token);
+                }
+                case "read" -> agentOperations.read(token, read(exchange, AgentOperations.Read.class, true));
+                case "preview" -> agentOperations.preview(token, read(exchange, AgentOperations.Preview.class, true));
+                case "status" -> agentOperations.status(token, readAgentId(exchange));
+                default -> throw new IllegalStateException("Unhandled agent route");
+            };
+            byte[] bytes = agentJson.writeValueAsBytes(result);
+            if (bytes.length > 32 * 1024) throw new IllegalArgumentException("Agent result exceeds limit");
+            sendBytes(exchange, 200, "application/json; charset=utf-8", bytes);
+        } catch (SecurityException denied) {
+            authenticationFailed();
+        }
+    }
+
+    private UUID readAgentId(HttpExchange exchange) throws IOException {
+        AgentId request = read(exchange, AgentId.class, true);
+        return AgentOperations.parseId(request.operationId());
+    }
+
+    private record AgentEmpty() { }
+    private record AgentId(String operationId) { }
+
     private <T> T read(HttpExchange exchange, Class<T> type) throws IOException {
-        String contentType = exchange.getRequestHeaders().getFirst("Content-Type");
-        if (contentType == null || !contentType.toLowerCase(Locale.ROOT).startsWith("application/json")) {
+        return read(exchange, type, false);
+    }
+
+    private <T> T read(HttpExchange exchange, Class<T> type, boolean agent) throws IOException {
+        int maximum = agent ? AGENT_REQUEST_BYTES : MAX_REQUEST_BYTES;
+        String contentType = agent ? singleHeader(exchange, "Content-Type")
+                : exchange.getRequestHeaders().getFirst("Content-Type");
+        if (contentType == null || (agent ? !"application/json".equalsIgnoreCase(contentType.split(";", 2)[0].trim())
+                : !contentType.toLowerCase(Locale.ROOT).startsWith("application/json"))) {
             throw new ValidationException("UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json", List.of());
         }
         List<String> lengths = exchange.getRequestHeaders().get("Content-Length");
@@ -1046,8 +1151,8 @@ public final class ControlHttpServer implements AutoCloseable {
             if (length < 0) {
                 throw new IllegalArgumentException("Invalid Content-Length");
             }
-            if (length > MAX_REQUEST_BYTES) {
-                throw new RequestTooLargeException(MAX_REQUEST_BYTES);
+            if (length > maximum) {
+                throw new RequestTooLargeException(maximum);
             }
         }
         byte[] bytes;
@@ -1057,8 +1162,8 @@ public final class ControlHttpServer implements AutoCloseable {
             int count;
             while ((count = input.read(buffer)) != -1) {
                 total += count;
-                if (total > MAX_REQUEST_BYTES) {
-                    throw new RequestTooLargeException(MAX_REQUEST_BYTES);
+                if (total > maximum) {
+                    throw new RequestTooLargeException(maximum);
                 }
                 output.write(buffer, 0, count);
             }
@@ -1067,6 +1172,11 @@ public final class ControlHttpServer implements AutoCloseable {
         String text = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(bytes)).toString();
+        if (agent) {
+            T value = agentJson.readValue(text, type);
+            requireRequest(value);
+            return value;
+        }
         if (type == ConfigurationRequests.SettingsState.class || type == ConfigurationRequests.SettingsPreview.class
                 || type == ConfigurationRequests.SettingsDiscard.class || type == ConfigurationRequests.VoteSitesState.class
                 || type == ConfigurationRequests.VoteSitesPreview.class || type == ConfigurationRequests.VoteSitesDiscard.class

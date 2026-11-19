@@ -60,6 +60,14 @@ Do not infer support from plugin version strings. Check `acceptedCapabilities` f
 Deploy the paired VotingPlugin connector change before enabling Control features that require a new capability. During a
 mixed-version rollout, older nodes remain connected but are excluded from v2 HTTP previews and applies.
 
+## Local agent setup
+
+The packaged stdio MCP adapter calls Control's scoped agent API. The browser owner issues and revokes
+short-lived grants. Each grant authorizes only exact node IDs and discovery, read, preview or status actions.
+Agent previews bind a successful named-site projection from the redacted managed VoteSites.yml read to the same node session and file revision. Control's
+browser-only approval route uses the normal configuration operation engine without returning its approval token.
+Existing node capability negotiation and the node task protocol are unchanged. See [agent setup](agent-setup.md).
+
 ## WebUI feature map
 
 The dependency-free WebUI is an API client, not a privileged implementation path. Every write below still uses the same

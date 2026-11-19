@@ -42,7 +42,10 @@ public final class ControlApplication {
 
     public static void main(String[] args) {
         try {
-            if (args.length > 0) {
+            if (args.length == 1 && "mcp".equals(args[0])) {
+                new com.bencodez.votingplugin.control.mcp.StdioAdapter(System.getenv("VP_CONTROL_MCP_ORIGIN"),
+                        System.getenv("VP_CONTROL_MCP_TOKEN")).run(System.in, System.out);
+            } else if (args.length > 0) {
                 runOwnerCommand(args);
             } else {
                 runServer(System.getenv());

@@ -1062,6 +1062,122 @@ function rememberOperation(operation) {
   renderOperationHistory();
 }
 
+const agentGrantForm = document.querySelector('#agent-grant-form');
+const agentGrantStatus = document.querySelector('#agent-grant-status');
+const agentCredentialOutput = document.querySelector('#agent-credential-output');
+const agentGrants = document.querySelector('#agent-grants');
+const agentReview = document.querySelector('#agent-review');
+const agentReviewDetail = document.querySelector('#agent-review-detail');
+const agentReviewStatus = document.querySelector('#agent-review-status');
+const agentReviewApply = document.querySelector('#agent-review-apply');
+let agentReviewId = null;
+
+function agentAdmin(action, body) {
+  return authorized('/api/v1/agent-admin/' + action, body === undefined ? {} : {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+  });
+}
+
+function clearAgentCredential() {
+  agentCredentialOutput.querySelector('input').value = '';
+  agentCredentialOutput.hidden = true;
+}
+
+async function loadAgentGrants() {
+  const grants = await agentAdmin('grants');
+  agentGrants.replaceChildren(...grants.map(grant => {
+    const row = document.createElement('p');
+    const label = document.createTextNode(`${grant.id} · ${grant.nodeIds.join(', ')} · ${grant.actions.join(', ')} · ${grant.expiresAt} `);
+    const revoke = text(document.createElement('button'), 'Revoke');
+    revoke.type = 'button';
+    revoke.addEventListener('click', async () => {
+      revoke.disabled = true;
+      clearAgentCredential();
+      try {
+        await agentAdmin('revoke', {operationId: grant.id});
+        await loadAgentGrants();
+      } catch (error) { text(agentGrantStatus, error.message); }
+      finally { revoke.disabled = false; }
+    });
+    row.append(label, revoke);
+    return row;
+  }));
+}
+
+agentGrantForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  clearAgentCredential();
+  const button = event.submitter;
+  button.disabled = true;
+  try {
+    const form = new FormData(agentGrantForm);
+    const grant = await agentAdmin('issue', {
+      nodeIds: form.get('nodes').split(',').map(id => id.trim()),
+      actions: form.getAll('actions'),
+      minutes: Number(form.get('minutes'))
+    });
+    agentCredentialOutput.querySelector('input').value = grant.token;
+    agentCredentialOutput.hidden = false;
+    text(agentGrantStatus, `Grant expires at ${grant.expiresAt}.`);
+    await loadAgentGrants();
+  } catch (error) { text(agentGrantStatus, error.message); }
+  finally { button.disabled = false; }
+});
+
+document.querySelector('#agent-grant-refresh').addEventListener('click', () => {
+  loadAgentGrants().catch(error => text(agentGrantStatus, error.message));
+});
+
+async function reviewAgentPreview(operationId) {
+  agentReviewId = operationId;
+  agentReviewApply.disabled = true;
+  text(agentReviewDetail, '');
+  text(agentReviewStatus, 'Loading preview…');
+  if (!agentReview.open) agentReview.showModal();
+  try {
+    const {operation, before} = await agentAdmin('review', {operationId});
+    if (agentReviewId !== operationId || !agentReview.open) return;
+    const options = operation.configuration.options;
+    const details = [...Object.entries(options), ['displayItem.amount', '1']]
+      .map(([key, value]) => `${key}: ${before.exists === 'true' && Object.hasOwn(before, key)
+        ? JSON.stringify(before[key]) : '(absent)'} → ${JSON.stringify(value)}`).join('\n');
+    text(agentReviewDetail, `Agent ${operation.agentId}
+${operationSummary(operation)}
+
+Proposed settings
+${details}`);
+    text(agentReviewStatus, operation.browserReviewReady ? 'Review the listed changes before applying.'
+      : 'This preview is not ready for approval. Refresh Activity to check again.');
+    agentReviewApply.disabled = !operation.browserReviewReady;
+  } catch (error) {
+    if (agentReviewId === operationId && agentReview.open) text(agentReviewStatus, error.message);
+  }
+}
+
+agentReviewApply.addEventListener('click', async () => {
+  const operationId = agentReviewId;
+  agentReviewApply.disabled = true;
+  try {
+    const operation = await agentAdmin('approve', {operationId});
+    if (agentReviewId !== operationId || !agentReview.open) return;
+    text(agentReviewStatus, `Apply queued · ${operation.operationId}`);
+    await loadOperationHistory();
+  } catch (error) {
+    if (agentReviewId === operationId && agentReview.open) text(agentReviewStatus, error.message);
+  }
+});
+
+agentReview.addEventListener('close', () => {
+  agentReviewId = null;
+  agentReviewApply.disabled = true;
+  text(agentReviewDetail, '');
+  text(agentReviewStatus, '');
+});
+
+function agentReviewFromHash() {
+  return /^#agent-review\/([0-9a-f-]{36})$/.exec(window.location.hash)?.[1];
+}
+
 function renderOperationHistory() {
   operationHistory.replaceChildren();
   if (operationHistoryItems.length === 0 && deploymentHistoryItems.length === 0) {
@@ -1109,6 +1225,12 @@ function renderOperationHistory() {
         } finally { retry.disabled = false; }
       });
       actions.append(retry);
+    }
+    if (operation.type === 'PREVIEW' && operation.agentId) {
+      const review = text(document.createElement('button'), 'Review agent preview');
+      review.type = 'button';
+      review.addEventListener('click', () => void reviewAgentPreview(operation.operationId));
+      actions.append(review);
     }
     if (operation.type === 'PREVIEW' && operation.state === 'SUCCEEDED' && operation.approvalToken
         && operation.configuration?.domain === 'quick-setup'
@@ -1365,6 +1487,7 @@ async function loadSetupState() {
 }
 
 function applyAuthenticatedSession(body) {
+  const agentPreview = agentReviewFromHash();
   configurationTargetNodeId = null;
   settingsEditor?.clear();
   settingsHealthReader?.clear();
@@ -1376,6 +1499,7 @@ function applyAuthenticatedSession(body) {
   window.history.replaceState(null, '', '#home');
   authenticated = true;
   csrfToken = body.csrfToken;
+  if (agentPreview) void reviewAgentPreview(agentPreview);
   approvedPreview = null;
   approvedFilePreview = null;
   approvedQuickPreview = null;
@@ -1751,6 +1875,12 @@ function enterGlobalWorkspace() {
 
 function applyNavigationRoute() {
   if (!authenticated) return;
+  const agentPreview = agentReviewFromHash();
+  if (agentPreview) {
+    window.history.replaceState(null, '', activeNavigationHash || '#home');
+    void reviewAgentPreview(agentPreview);
+    return;
+  }
   const route = ControlWorkspace.parseRoute(window.location.hash);
   const cancelNavigation = () => window.history.replaceState(null, '', activeNavigationHash);
   if (route.scope === 'GLOBAL' && workspace.managementScope !== 'GLOBAL') {
@@ -3754,6 +3884,11 @@ async function waitForDeployment(operation, generation) {
 }
 
 function discardAuthenticationState(reason) {
+  clearAgentCredential();
+  agentGrantForm.reset();
+  agentGrants.replaceChildren();
+  text(agentGrantStatus, '');
+  if (agentReview.open) agentReview.close();
   settingsEditor?.clear();
   settingsHealthReader?.clear();
   voteSitesEditor?.clear();

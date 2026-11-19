@@ -105,7 +105,98 @@ public final class ConfigurationOperations implements AutoCloseable {
                 Base64.getUrlEncoder().withoutPadding().encodeToString(token));
     }
 
+    public synchronized void auditAgentGrant(UUID agent, String outcome) {
+        audit.append("AGENT_GRANT", agent, null, outcome);
+    }
+
+    public synchronized OperationView createAgentVoteSite(UUID agent, String nodeId,
+            ManagedConfiguration configuration, UUID readId) {
+        prune();
+        if (!"vote-site".equals(configuration.preset())) throw invalid("Unsupported agent preset");
+        configuration.validateProposal();
+        ValidatedTargets targets = validateTargets(List.of(nodeId), QUICK_SETUP_CAPABILITY);
+        if (!"BUKKIT".equalsIgnoreCase(targets.platforms().get(nodeId))) throw invalid("Agent setup requires a Bukkit node");
+        validateConfigurationTargets(targets, configuration);
+        var retained = operations.values().stream().filter(op -> agent.equals(op.agent)).toList();
+        if (retained.size() >= 48 || retained.stream().filter(op -> !op.complete()).count() >= 4) {
+            throw invalid("Agent operation limit reached");
+        }
+        if (readId == null) {
+            var selector = ManagedConfiguration.file("VoteSites.yml", null);
+            ValidatedTargets readTargets = validateTargets(List.of(nodeId), FILE_CAPABILITY);
+            validateConfigurationTargets(readTargets, selector);
+            OperationView view = create("READ", readTargets, selector, null, Map.of(), agent);
+            operations.get(view.operationId()).agentSite = configuration.options().get("name");
+            return view;
+        }
+        StoredOperation read = agentOperation(agent, readId);
+        ConfigurationTaskResult result = read.results.get(nodeId);
+        if (!"READ".equals(read.type) || result == null || !result.success()
+                || !Objects.equals(read.agentSite, configuration.options().get("name"))
+                || !Objects.equals(result.sessionId(), targets.sessions().get(nodeId))) {
+            throw invalid("A successful READ of this site in the current node session is required");
+        }
+        ManagedConfiguration proposal = AgentSetup.proposal(read.agentBefore, configuration);
+        byte[] token = new byte[32];
+        random.nextBytes(token);
+        OperationView preview = create("PREVIEW", targets, proposal,
+                Base64.getUrlEncoder().withoutPadding().encodeToString(token),
+                Map.of(nodeId, result.revision()), agent);
+        operations.get(preview.operationId()).agentBefore = read.agentBefore;
+        return preview;
+    }
+
+    public synchronized AgentReview getAgentReview(UUID id) {
+        prune();
+        StoredOperation operation = operations.get(id);
+        if (operation == null || operation.agent == null || !"PREVIEW".equals(operation.type)) {
+            throw new ValidationException("OPERATION_NOT_FOUND", "Agent preview was not found", List.of());
+        }
+        return new AgentReview(view(operation), operation.agentBefore);
+    }
+
+    public synchronized OperationView getAgentOperation(UUID agent, UUID id) {
+        prune();
+        return view(agentOperation(agent, id));
+    }
+
+    synchronized Map<String, String> agentReadValues(UUID agent, UUID id) {
+        StoredOperation operation = agentOperation(agent, id);
+        return "READ".equals(operation.type) ? operation.agentBefore : Map.of();
+    }
+
+    synchronized UUID agentApplyId(UUID agent, UUID previewId) {
+        return operations.values().stream().filter(op -> agent.equals(op.agent) && "APPLY".equals(op.type)
+                && previewId.equals(op.sourceOperationId)).map(op -> op.id).findFirst().orElse(null);
+    }
+
+    private StoredOperation agentOperation(UUID agent, UUID id) {
+        StoredOperation operation = operations.get(id);
+        if (operation == null || !agent.equals(operation.agent)) {
+            throw new ValidationException("OPERATION_NOT_FOUND", "Operation was not found", List.of());
+        }
+        return operation;
+    }
+
+    public synchronized OperationView approveAgentPreview(UUID id) {
+        prune();
+        StoredOperation preview = operations.get(id);
+        if (preview == null || !agentReviewReady(preview)) throw invalid("Preview is unavailable for browser approval");
+        return createApply(id, preview.approvalToken, true);
+    }
+
+    private boolean agentReviewReady(StoredOperation operation) {
+        return operation.agent != null && "PREVIEW".equals(operation.type)
+                && !operation.approvalUsed && operation.complete()
+                && operation.results.values().stream().allMatch(ConfigurationTaskResult::success)
+                && clock.instant().isBefore(operation.createdAt.plus(ACTIVE_RETENTION));
+    }
+
     public synchronized OperationView createApply(UUID previewId, String approvalToken) {
+        return createApply(previewId, approvalToken, false);
+    }
+
+    private OperationView createApply(UUID previewId, String approvalToken, boolean browserAgentReview) {
         prune();
         LinkedHashMap<UUID, StoredOperation> priorOperations = new LinkedHashMap<>(operations);
         long priorChanges = retainedChangeBytes;
@@ -113,6 +204,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         long priorFiles = retainedFileBytes;
         StoredOperation preview = operations.get(previewId);
         if (preview == null || !"PREVIEW".equals(preview.type)) throw invalid("preview operation was not found");
+        if ((preview.agent != null) != browserAgentReview) throw invalid("Preview requires its original approval route");
         if (!preview.complete() || preview.results.values().stream().anyMatch(result -> !result.success())) {
             throw new ValidationException("PREVIEW_INCOMPLETE", "Every node must pass preview before apply", List.of());
         }
@@ -133,9 +225,14 @@ public final class ConfigurationOperations implements AutoCloseable {
         boolean priorApprovalUsed = preview.approvalUsed;
         StoredOperation apply = store("APPLY", targets, preview.configuration,
                 null, revisions, preview.id);
+        apply.agent = preview.agent;
         preview.approvalUsed = true;
         try {
-            audit.append("APPLY_APPROVED", apply.id, null, "QUEUED");
+            if (browserAgentReview) {
+                audit.append("AGENT_APPLY_APPROVED", apply.id, targets.nodeIds().get(0), preview.id.toString());
+            } else {
+                audit.append("APPLY_APPROVED", apply.id, null, "QUEUED");
+            }
             persist();
         } catch (RuntimeException e) {
             operations.clear();
@@ -343,7 +440,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     private OperationView discardVisualPreview(UUID id, String token, String source) {
         prune();
         StoredOperation preview = operations.get(id);
-        if (preview == null || !"PREVIEW".equals(preview.type) || preview.expectedRevisions.isEmpty()
+        if (preview == null || preview.agent != null || !"PREVIEW".equals(preview.type) || preview.expectedRevisions.isEmpty()
                 || token == null || token.length() > 128 || preview.approvalToken == null
                 || !MessageDigest.isEqual(token.getBytes(java.nio.charset.StandardCharsets.UTF_8),
                     preview.approvalToken.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
@@ -382,7 +479,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         prune();
         StoredOperation original = operations.get(id);
         if (original == null) throw new ValidationException("OPERATION_NOT_FOUND", "Operation was not found", List.of());
-        if (original.recovered) {
+        if (original.recovered || original.agent != null) {
             throw new ValidationException("RETRY_REQUIRES_INPUT",
                     "Recovered operations are history only; start a fresh read or preview", List.of());
         }
@@ -451,7 +548,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             if ("QUEUED".equals(state) || ("IN_PROGRESS".equals(state) && leased != null
                     && !now.isBefore(leased.plus(LEASE)))) {
                 if (cancelChangedFileRole(operation, node)) continue;
-                if (cancelChangedBackendSetupRole(operation, node)) continue;
+                if (cancelChangedAgentTarget(operation, node) || cancelChangedBackendSetupRole(operation, node)) continue;
                 if (cancelChangedProxyMethodRole(operation, node)) continue;
                 if (deferProxyMethodApply(operation, node)) continue;
                 if (cancelLostCapability(operation, node)) continue;
@@ -586,6 +683,14 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
         automaticCancellation(operation, node.nodeId(), sessionId(node), "TARGET_CHANGED",
                 "Node platform changed after the task was created; create it again", "TARGET_ROLE_CHANGED");
+        return true;
+    }
+
+    private boolean cancelChangedAgentTarget(StoredOperation operation, NodeStatus node) {
+        if (operation.agent == null || ("BUKKIT".equalsIgnoreCase(node.platform())
+                && Objects.equals(operation.targetSessions.get(node.nodeId()), node.sessionId()))) return false;
+        automaticCancellation(operation, node.nodeId(), node.sessionId(), "TARGET_CHANGED",
+                "Agent operation target reconnected or changed role", "TARGET_CHANGED");
         return true;
     }
 
@@ -778,7 +883,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (!Objects.equals(operation.claimSessions.get(nodeId), result.sessionId())) {
             throw new ValidationException("SESSION_MISMATCH", "Operation task belongs to another node session", List.of());
         }
-        if (cancelChangedFileRole(operation, node) || cancelChangedBackendSetupRole(operation, node)
+        if (cancelChangedAgentTarget(operation, node) || cancelChangedFileRole(operation, node)
+                || cancelChangedBackendSetupRole(operation, node)
                 || cancelChangedProxyMethodRole(operation, node)
                 || cancelLostCapability(operation, node)) {
             return view(operation);
@@ -790,6 +896,28 @@ public final class ConfigurationOperations implements AutoCloseable {
             result = new ConfigurationTaskResult(result.sessionId(), false, "STALE_REVISION",
                     "Configuration changed since READ; read and preview again", null,
                     (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
+        }
+        if (operation.agent != null && "PREVIEW".equals(operation.type) && result.success()
+                && (result.changes().size() >= 20 || result.changes().contains("additional changes omitted")
+                || retainedChangeBytes + result.changes().stream().mapToLong(
+                        change -> change.getBytes(StandardCharsets.UTF_8).length).sum() > MAX_RETAINED_CHANGE_BYTES
+                || !operation.configuration.equals(result.configuration())
+                || !AgentSetup.reviewableChanges(operation.configuration, operation.agentBefore, result.changes()))) {
+            result = new ConfigurationTaskResult(result.sessionId(), false, "DIFF_UNAVAILABLE",
+                    "Preview changes cannot be reviewed completely", null, (ManagedConfiguration) null,
+                    List.of(), false, false, result.attemptId());
+        }
+        Map<String, String> agentRead = Map.of();
+        if (operation.agent != null && "READ".equals(operation.type) && result.success()) {
+            try {
+                agentRead = AgentSetup.readSite(operation.agentSite, result.configuration());
+                result = new ConfigurationTaskResult(result.sessionId(), true, "OK", "Named site read",
+                        result.revision(), (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
+            } catch (IllegalArgumentException unreviewable) {
+                result = new ConfigurationTaskResult(result.sessionId(), false, "DIFF_UNAVAILABLE",
+                        "VoteSites.yml or the named site cannot be represented safely", null,
+                        (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
+            }
         }
         String priorState = operation.states.get(nodeId);
         ConfigurationTaskResult priorResult = operation.results.get(nodeId);
@@ -815,6 +943,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             operation.attemptIds.remove(nodeId);
             persist();
             audit.append("TASK_COMPLETED", operation.id, nodeId, result.success() ? "SUCCESS" : result.code());
+            if (!agentRead.isEmpty()) operation.agentBefore = agentRead;
         } catch (RuntimeException failure) {
             restoreTransition(operation, nodeId, priorState, priorResult, priorLease, priorAttempt,
                     priorChanges, priorMessages, priorFiles, priorConfigurationGeneration,
@@ -830,13 +959,20 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     private OperationView create(String type, ValidatedTargets targets, ManagedConfiguration config, String token,
             Map<String, String> revisions) {
+        return create(type, targets, config, token, revisions, null);
+    }
+
+    private OperationView create(String type, ValidatedTargets targets, ManagedConfiguration config, String token,
+            Map<String, String> revisions, UUID agent) {
         LinkedHashMap<UUID, StoredOperation> priorOperations = new LinkedHashMap<>(operations);
         long priorChanges = retainedChangeBytes;
         long priorMessages = retainedMessageBytes;
         long priorFiles = retainedFileBytes;
         StoredOperation operation = store(type, targets, config, token, revisions, null);
         try {
-            audit.append("OPERATION_CREATED", operation.id, null, type);
+            operation.agent = agent;
+            if (agent == null) audit.append("OPERATION_CREATED", operation.id, null, type);
+            else audit.append("AGENT_" + type + "_CREATED", operation.id, targets.nodeIds().get(0), agent.toString());
             persist();
         } catch (RuntimeException e) {
             operations.clear();
@@ -1062,7 +1198,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                 ? "SUCCEEDED" : "COMPLETED_WITH_ERRORS") : "RUNNING";
         String approval = "PREVIEW".equals(operation.type) && operation.complete()
                 && operation.results.values().stream().allMatch(ConfigurationTaskResult::success)
-                && !operation.approvalUsed ? operation.approvalToken : null;
+                && !operation.approvalUsed && operation.agent == null ? operation.approvalToken : null;
         Map<String, ConfigurationTaskResult> results = operation.results;
         if (!includeRetainedContent) {
             LinkedHashMap<String, ConfigurationTaskResult> summaries = new LinkedHashMap<>();
@@ -1076,11 +1212,11 @@ public final class ConfigurationOperations implements AutoCloseable {
         return new OperationView(operation.id, operation.type, state, operation.createdAt,
                 operation.configuration == null ? null : operation.configuration.publicView(),
                 Map.copyOf(operation.states), Map.copyOf(results), approval, operation.sourceOperationId,
-                operation.recovered, retryable(operation));
+                operation.recovered, retryable(operation), operation.agent, agentReviewReady(operation));
     }
 
     private static boolean retryable(StoredOperation operation) {
-        if (operation.recovered || !operation.complete()
+        if (operation.recovered || operation.agent != null || !operation.complete()
                 || operation.results.values().stream().allMatch(ConfigurationTaskResult::success)) return false;
         if ("PREVIEW".equals(operation.type) && !operation.expectedRevisions.isEmpty()) return false;
         return !("APPLY".equals(operation.type)
@@ -1206,7 +1342,17 @@ public final class ConfigurationOperations implements AutoCloseable {
     public record OperationView(UUID operationId, String type, String state, Instant createdAt,
                                 ManagedConfiguration configuration, Map<String, String> nodeStates,
                                 Map<String, ConfigurationTaskResult> results, String approvalToken,
-                                UUID sourceOperationId, boolean recovered, boolean retryable) { }
+                                UUID sourceOperationId, boolean recovered, boolean retryable, UUID agentId, boolean browserReviewReady) {
+        public OperationView(UUID operationId, String type, String state, Instant createdAt,
+                             ManagedConfiguration configuration, Map<String, String> nodeStates,
+                             Map<String, ConfigurationTaskResult> results, String approvalToken,
+                             UUID sourceOperationId, boolean recovered, boolean retryable) {
+            this(operationId, type, state, createdAt, configuration, nodeStates, results, approvalToken,
+                    sourceOperationId, recovered, retryable, null, false);
+        }
+    }
+
+    public record AgentReview(OperationView operation, Map<String, String> before) { }
 
     public record OperationListView(List<OperationView> items, Map<String, UUID> voteLoggingRestartSessions,
                                     long configurationGeneration) {
@@ -1235,6 +1381,9 @@ public final class ConfigurationOperations implements AutoCloseable {
         private final UUID sourceOperationId;
         private final boolean recovered;
         private boolean approvalUsed;
+        private UUID agent;
+        private String agentSite;
+        private Map<String, String> agentBefore = Map.of();
 
         private StoredOperation(UUID id, String type, ManagedConfiguration configuration, String approvalToken,
                                 Instant createdAt, LinkedHashMap<String, String> states,
