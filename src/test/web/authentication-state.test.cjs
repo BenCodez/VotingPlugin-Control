@@ -88,7 +88,7 @@ function harness() {
     updateConfigurationButtons() {}, updateExtendedButtons() {}, text(target, value) { target.textContent = value; }
   };
   vm.createContext(context);
-  vm.runInContext(['clearSessionRewardFileOptions', 'discardTypedFieldApproval', 'clearTypedFields', 'clearAgentCredential',
+  vm.runInContext(['clearSessionRewardFileOptions', 'discardTypedFieldApproval', 'discardTypedFieldOperation', 'clearTypedFields', 'clearAgentCredential',
     'discardAuthenticationState'].map(declaration).join('\n'),
     context, {filename: 'authentication-state.js'});
   return {context, element};

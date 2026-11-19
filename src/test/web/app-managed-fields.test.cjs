@@ -91,3 +91,87 @@ for (const [name, change] of Object.entries({
     assert.equal(rereads(), 0);
   });
 }
+
+function previewHarness() {
+  let click;
+  const requests = [];
+  const discarded = [];
+  const ctx = {
+    typedFields: {readOperationId: 'read', nodeId: 'backend', file: 'Config.yml', authGeneration: 1},
+    typedFieldsCurrent: editor => ctx.current && editor === ctx.typedFields,
+    current: true, authenticated: true, authenticationGeneration: 1, logoutInFlight: false,
+    typedFieldsKey: {value: 'Enabled'}, typedFieldsValue: {value: 'true'}, typedFieldsStatus: {},
+    typedFieldsPreview: {addEventListener(_name, handler) { click = handler; }},
+    typedFieldsApply: {}, text: (target, value) => { target.textContent = value; },
+    operationContext: () => ({}),
+    waitForOperation: async operation => operation,
+    authorized: (url, request) => {
+      const data = JSON.parse(request.body);
+      if (url.endsWith('/discard-preview')) {
+        discarded.push(data.previewOperationId);
+        return Promise.resolve();
+      }
+      assert.ok(url.endsWith('/preview'));
+      return new Promise(resolve => requests.push(resolve));
+    }
+  };
+  vm.createContext(ctx);
+  vm.runInContext(section('function discardTypedFieldApproval(', 'function clearTypedFields(')
+    + section("typedFieldsPreview.addEventListener('click'", "typedFieldsApply.addEventListener('click'"), ctx);
+  const complete = (index, operationId, key) => requests[index]({
+    operation: {operationId, browserReviewReady: true}, before: {[key]: 'before'}, after: {[key]: 'after'}
+  });
+  return {ctx, click, complete, discarded};
+}
+
+test('out-of-order preview responses discard only the stale operation and preserve the newer approval', async () => {
+  const {ctx, click, complete, discarded} = previewHarness();
+  const older = click();
+  ctx.typedFieldsKey.value = 'Other';
+  const newer = click();
+  complete(1, 'newer', 'Other');
+  await newer;
+  const status = ctx.typedFieldsStatus.textContent;
+  complete(0, 'older', 'Enabled');
+  await older;
+  assert.deepEqual(discarded, ['older']);
+  assert.equal(ctx.typedFields.approval?.previewOperationId, 'newer');
+  assert.equal(ctx.typedFieldsApply.disabled, false);
+  assert.equal(ctx.typedFieldsStatus.textContent, status);
+});
+
+test('preview completion in a changed editor context discards only its own operation', async () => {
+  const {ctx, click, complete, discarded} = previewHarness();
+  const pending = click();
+  ctx.current = false;
+  complete(0, 'stale', 'Enabled');
+  await pending;
+  assert.deepEqual(discarded, ['stale']);
+  assert.equal(ctx.typedFields.approval, null);
+  assert.equal(ctx.typedFieldsApply.disabled, true);
+});
+
+test('a superseded poll cannot publish an approval even for identical field values', async () => {
+  const {ctx, click, complete, discarded} = previewHarness();
+  let finishPoll;
+  let polling;
+  const started = new Promise(resolve => { polling = resolve; });
+  ctx.waitForOperation = operation => {
+    if (operation.operationId !== 'older') return Promise.resolve(operation);
+    return new Promise(resolve => {
+      finishPoll = () => resolve(operation);
+      polling();
+    });
+  };
+  const older = click();
+  complete(0, 'older', 'Enabled');
+  await started;
+  const newer = click();
+  complete(1, 'newer', 'Enabled');
+  await newer;
+  finishPoll();
+  await older;
+  assert.deepEqual(discarded, ['older']);
+  assert.equal(ctx.typedFields.approval?.previewOperationId, 'newer');
+  assert.equal(ctx.typedFieldsApply.disabled, false);
+});

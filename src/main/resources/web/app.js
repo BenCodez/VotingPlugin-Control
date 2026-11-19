@@ -4906,9 +4906,14 @@ function typedFieldsCurrent(editor, generation = inputGeneration) {
 
 function discardTypedFieldApproval(editor) {
   const approval = editor?.approval;
-  if (!approval) return;
+  if (!editor) return;
+  editor.previewRequest = null;
   editor.approval = null;
-  if (authenticated && editor.authGeneration === authenticationGeneration && !logoutInFlight) {
+  discardTypedFieldOperation(editor, approval);
+}
+
+function discardTypedFieldOperation(editor, approval) {
+  if (approval && authenticated && editor.authGeneration === authenticationGeneration && !logoutInFlight) {
     void authorized('/api/v1/configuration/managed-fields/discard-preview', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(approval)
     }).catch(() => {});
@@ -4968,8 +4973,10 @@ document.querySelector('#open-managed-fields').addEventListener('click', async (
 
 typedFieldsKey.addEventListener('change', selectTypedField);
 typedFieldsValue.addEventListener('input', () => {
+  const previewPending = Boolean(typedFields?.previewRequest);
   discardTypedFieldApproval(typedFields);
   typedFieldsApply.disabled = true;
+  if (previewPending) typedFieldsPreview.disabled = !typedFields.fields.has(typedFieldsKey.value);
 });
 typedFieldsDialog.addEventListener('close', clearTypedFields);
 
@@ -4979,6 +4986,11 @@ typedFieldsPreview.addEventListener('click', async () => {
   const key = typedFieldsKey.value;
   const input = typedFieldsValue.value;
   discardTypedFieldApproval(editor);
+  const request = {};
+  editor.previewRequest = request;
+  const requestCurrent = () => editor.previewRequest === request && typedFieldsCurrent(editor)
+    && key === typedFieldsKey.value && input === typedFieldsValue.value;
+  let approval;
   typedFieldsApply.disabled = true;
   typedFieldsPreview.disabled = true;
   try {
@@ -4987,25 +4999,27 @@ typedFieldsPreview.addEventListener('click', async () => {
       body: JSON.stringify({readOperationId: editor.readOperationId, nodeId: editor.nodeId, file: editor.file,
         overrides: {[key]: JSON.parse(input)}})
     });
-    editor.approval = {previewOperationId: proposal.operation.operationId};
-    const requestCurrent = () => typedFieldsCurrent(editor) && key === typedFieldsKey.value && input === typedFieldsValue.value;
-    if (!requestCurrent()) {
-      discardTypedFieldApproval(editor);
-      return;
-    }
+    approval = {previewOperationId: proposal.operation.operationId};
+    if (!requestCurrent()) return;
     const operation = await waitForOperation(proposal.operation, typedFieldsStatus, operationContext(),
       {contextCurrent: requestCurrent});
-    if (!typedFieldsCurrent(editor)) return;
+    if (!requestCurrent()) return;
     if (operation.browserReviewReady) {
+      editor.approval = approval;
+      approval = null;
       const restart = editor.file === 'bungeeconfig.yml'
         ? '\nRestart the node separately before assuming the running transport changed.' : '';
       text(typedFieldsStatus, `${editor.nodeId} · ${editor.file} · ${key}\n${proposal.before[key]} → ${proposal.after[key]}${restart}`);
       typedFieldsApply.disabled = false;
     }
   } catch (error) {
-    if (typedFieldsCurrent(editor)) text(typedFieldsStatus, error.message);
+    if (requestCurrent()) text(typedFieldsStatus, error.message);
   } finally {
-    if (typedFieldsCurrent(editor)) typedFieldsPreview.disabled = false;
+    discardTypedFieldOperation(editor, approval);
+    if (requestCurrent()) {
+      editor.previewRequest = null;
+      typedFieldsPreview.disabled = false;
+    }
   }
 });
 
