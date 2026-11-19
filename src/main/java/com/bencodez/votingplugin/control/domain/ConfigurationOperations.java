@@ -26,6 +26,7 @@ import java.util.UUID;
 
 /** In-memory, bounded coordinator for outbound node configuration tasks. */
 public final class ConfigurationOperations implements AutoCloseable {
+    public static final int MAX_AGENT_TARGETS = 10;
     public static final String CAPABILITY = "config.proxy-routing.v1";
     public static final String FILE_CAPABILITY = "config.files.v1";
     public static final String PROXY_FILE_CAPABILITY = "config.proxy-files.v1";
@@ -180,19 +181,39 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (!"BUKKIT".equals(targets.platforms().get(nodeId))) throw invalid("Site policy requires a Bukkit backend");
         var configuration = AgentSetup.sitePolicy(enabled);
         if (readId == null) return create("READ", targets, configuration, null, Map.of(), agent);
-        StoredOperation read = agentOperation(agent, readId);
-        ConfigurationTaskResult current = read.results.get(nodeId);
-        if (!"READ".equals(read.type) || !AgentSetup.SITE_POLICY.equals(read.configuration.preset())
-                || current == null || !current.success() || !Objects.equals(current.sessionId(), targets.sessions().get(nodeId))) {
-            throw invalid("A successful site-policy READ in the current backend session is required");
+        return createAgentSitePolicyBatch(agent, Map.of(nodeId, readId), enabled);
+    }
+
+    synchronized OperationView createAgentSitePolicyBatch(UUID agent, Map<String, UUID> readIds, boolean enabled) {
+        prune();
+        requireAgentCapacity(agent);
+        if (readIds.isEmpty() || readIds.size() > MAX_AGENT_TARGETS) throw invalid("Invalid agent target count");
+        var configuration = AgentSetup.sitePolicy(enabled);
+        ValidatedTargets targets = validateTargets(new ArrayList<>(readIds.keySet()), QUICK_SETUP_CAPABILITY);
+        Map<String, String> revisions = new LinkedHashMap<>();
+        Map<String, Map<String, String>> before = new LinkedHashMap<>();
+        for (var target : readIds.entrySet()) {
+            String nodeId = target.getKey();
+            StoredOperation read = agentOperation(agent, target.getValue());
+            ConfigurationTaskResult current = read.results.get(nodeId);
+            if (!"BUKKIT".equals(targets.platforms().get(nodeId)) || !"READ".equals(read.type)
+                    || !AgentSetup.SITE_POLICY.equals(read.configuration.preset()) || current == null
+                    || !current.success() || !Objects.equals(current.sessionId(), targets.sessions().get(nodeId))) {
+                throw new ValidationException("READ_REQUIRED", "A current successful site-policy read is required", List.of(nodeId));
+            }
+            if (read.agentBefore.equals(configuration.options())) {
+                throw new ValidationException("NO_CHANGE", "Site policy is already set to the requested value", List.of(nodeId));
+            }
+            before.put(nodeId, read.agentBefore);
+            revisions.put(nodeId, current.revision());
         }
-        if (read.agentBefore.equals(configuration.options())) throw invalid("Site policy is already set to the requested value");
         byte[] token = new byte[32];
         random.nextBytes(token);
         OperationView preview = create("PREVIEW", targets, configuration,
-                Base64.getUrlEncoder().withoutPadding().encodeToString(token),
-                Map.of(nodeId, current.revision()), agent);
-        operations.get(preview.operationId()).agentBefore = read.agentBefore;
+                Base64.getUrlEncoder().withoutPadding().encodeToString(token), revisions, agent);
+        StoredOperation stored = operations.get(preview.operationId());
+        stored.agentBeforeByNode = Map.copyOf(before);
+        if (before.size() == 1) stored.agentBefore = before.values().iterator().next();
         return preview;
     }
 
@@ -246,7 +267,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (operation == null || operation.agent == null || !"PREVIEW".equals(operation.type)) {
             throw new ValidationException("OPERATION_NOT_FOUND", "Agent preview was not found", List.of());
         }
-        return new AgentReview(view(operation), operation.agentBefore);
+        return new AgentReview(view(operation), operation.agentBefore, operation.agentBeforeByNode);
     }
 
     public synchronized OperationView getAgentOperation(UUID agent, UUID id) {
@@ -323,7 +344,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         preview.approvalUsed = true;
         try {
             if (browserAgentReview) {
-                audit.append("AGENT_APPLY_APPROVED", apply.id, targets.nodeIds().get(0), preview.id.toString());
+                audit.append("AGENT_APPLY_APPROVED", apply.id, targets.nodeIds().size() == 1 ? targets.nodeIds().get(0) : null,
+                        preview.id.toString());
             } else {
                 audit.append("APPLY_APPROVED", apply.id, null, "QUEUED");
             }
@@ -1089,7 +1111,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         try {
             operation.agent = agent;
             if (agent == null) audit.append("OPERATION_CREATED", operation.id, null, type);
-            else audit.append("AGENT_" + type + "_CREATED", operation.id, targets.nodeIds().get(0), agent.toString());
+            else audit.append("AGENT_" + type + "_CREATED", operation.id,
+                    targets.nodeIds().size() == 1 ? targets.nodeIds().get(0) : null, agent.toString());
             persist();
         } catch (RuntimeException e) {
             operations.clear();
@@ -1469,7 +1492,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
     }
 
-    public record AgentReview(OperationView operation, Map<String, String> before) { }
+    public record AgentReview(OperationView operation, Map<String, String> before,
+                              Map<String, Map<String, String>> beforeByNode) { }
 
     public record OperationListView(List<OperationView> items, Map<String, UUID> voteLoggingRestartSessions,
                                     long configurationGeneration) {
@@ -1502,6 +1526,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         private String agentSite;
         private UUID agentPeerSession;
         private Map<String, String> agentBefore = Map.of();
+        private Map<String, Map<String, String>> agentBeforeByNode = Map.of();
 
         private StoredOperation(UUID id, String type, ManagedConfiguration configuration, String approvalToken,
                                 Instant createdAt, LinkedHashMap<String, String> states,

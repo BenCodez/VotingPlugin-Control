@@ -176,22 +176,30 @@ public final class StdioAdapter {
                 || !Set.of("READ", "PREVIEW", "APPLY").contains(result.path("type").asText())
                 || !Set.of("RUNNING", "SUCCEEDED", "COMPLETED_WITH_ERRORS").contains(result.path("state").asText())
                 || !result.path("browserReviewReady").isBoolean()
-                || !result.path("nodes").isObject() || result.path("nodes").size() != 1
-                || !result.path("results").isObject() || result.path("results").size() > 1) return false;
+                || !result.path("nodes").isObject() || result.path("nodes").isEmpty()
+                || result.path("nodes").size() > com.bencodez.votingplugin.control.domain.ConfigurationOperations.MAX_AGENT_TARGETS
+                || !result.path("results").isObject() || result.path("results").size() > result.path("nodes").size()) return false;
         if (result.has("applyOperationId") && !canonicalId(result.path("applyOperationId"))) return false;
         if (result.has("reviewPath") && !result.path("reviewPath").asText().equals(
                 "/#agent-review/" + result.path("operationId").asText())) return false;
         var nodes = result.path("nodes").fields();
-        var node = nodes.next();
-        if (!node.getKey().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-                || !Set.of("QUEUED", "IN_PROGRESS", "COMPLETE").contains(node.getValue().asText())) return false;
+        while (nodes.hasNext()) {
+            var node = nodes.next();
+            if (!node.getKey().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+                    || !Set.of("QUEUED", "IN_PROGRESS", "COMPLETE").contains(node.getValue().asText())) return false;
+        }
         if (result.has("values") && !validValues(result)) return false;
-        if (result.path("results").isEmpty()) return true;
-        JsonNode details = result.path("results").path(node.getKey());
-        return fields(details, Set.of("code", "success", "rolledBack", "reloaded"))
-                && details.path("code").asText().matches("[A-Z][A-Z0-9_]{0,63}")
-                && details.path("success").isBoolean() && details.path("rolledBack").isBoolean()
-                && details.path("reloaded").isBoolean();
+        var results = result.path("results").fields();
+        while (results.hasNext()) {
+            var row = results.next();
+            JsonNode details = row.getValue();
+            if (!result.path("nodes").has(row.getKey())
+                    || !fields(details, Set.of("code", "success", "rolledBack", "reloaded"))
+                    || !details.path("code").asText().matches("[A-Z][A-Z0-9_]{0,63}")
+                    || !details.path("success").isBoolean() || !details.path("rolledBack").isBoolean()
+                    || !details.path("reloaded").isBoolean()) return false;
+        }
+        return true;
     }
 
     private static boolean validTopology(JsonNode result) {
@@ -325,6 +333,11 @@ public final class StdioAdapter {
         tools.put("read_site_policy", new Tool("read_site_policy", "site-policy-read",
                 "Read automatic vote-site creation policy on one authorized backend.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));
+        tools.put("preview_site_policy_batch", new Tool("preview_site_policy_batch", "site-policy-batch",
+                "Preview one policy change on an explicit set of at most ten authorized backends.",
+                object(Map.of("targets", Map.of("type", "array", "minItems", 1, "maxItems", 10, "items",
+                        object(Map.of("nodeId", node, "readOperationId", id), List.of("nodeId", "readOperationId"))),
+                        "enabled", flag), List.of("targets", "enabled"))));
         tools.put("preview_site_policy", new Tool("preview_site_policy", "site-policy-preview",
                 "Preview automatic vote-site creation policy for browser approval.",
                 object(Map.of("nodeId", node, "readOperationId", id, "enabled", flag),

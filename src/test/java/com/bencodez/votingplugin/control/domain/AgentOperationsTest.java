@@ -319,6 +319,81 @@ class AgentOperationsTest {
         }
     }
 
+    @Test void batchPolicyRequiresEveryCurrentRevisionAndReportsPartialApply() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        Map<String, UUID> sessions = new java.util.LinkedHashMap<>();
+        for (String node : List.of("backend-a", "backend-b")) {
+            UUID session = UUID.randomUUID();
+            sessions.put(node, session);
+            registry.register(new NodeRegistration(node, session, node, "BUKKIT", "fixture", 1,
+                    Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        }
+        try (var operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var grant = agents.issue(new AgentOperations.Issue(List.copyOf(sessions.keySet()),
+                    List.of("site-policy", "site-policy-batch", "status"), 10, null));
+            Map<String, String> revisions = Map.of("backend-a", "a".repeat(64), "backend-b", "b".repeat(64));
+            List<AgentOperations.SitePolicyTarget> targets = new java.util.ArrayList<>();
+            for (var item : sessions.entrySet()) {
+                String node = item.getKey();
+                UUID session = item.getValue();
+                var queued = (Map<?, ?>) agents.readSitePolicy(grant.token(), new AgentOperations.SitePolicyRead(node));
+                UUID readId = (UUID) queued.get("operationId");
+                var claim = operations.claim(node, session);
+                operations.complete(readId, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revisions.get(node), AgentSetup.sitePolicy(false), List.of(), false, false, claim.attemptId()));
+                targets.add(new AgentOperations.SitePolicyTarget(node, readId.toString()));
+            }
+            var limited = agents.issue(new AgentOperations.Issue(List.copyOf(sessions.keySet()),
+                    List.of("site-policy"), 10, null));
+            var request = new AgentOperations.SitePolicyBatch(targets, true);
+            assertThrows(SecurityException.class, () -> agents.previewSitePolicyBatch(limited.token(), request));
+
+            UUID stale = (UUID) ((Map<?, ?>) agents.previewSitePolicyBatch(grant.token(), request)).get("operationId");
+            for (var item : sessions.entrySet()) {
+                String node = item.getKey();
+                UUID session = item.getValue();
+                var claim = operations.claim(node, session);
+                String revision = node.equals("backend-b") ? "c".repeat(64) : revisions.get(node);
+                operations.complete(stale, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revision, AgentSetup.sitePolicy(true), List.of("changed AutoCreateVoteSites"),
+                        false, false, claim.attemptId()));
+            }
+            assertFalse(operations.get(stale).browserReviewReady());
+            assertThrows(ValidationException.class, () -> agents.approve(stale));
+
+            UUID preview = (UUID) ((Map<?, ?>) agents.previewSitePolicyBatch(grant.token(), request)).get("operationId");
+            for (var item : sessions.entrySet()) {
+                String node = item.getKey();
+                UUID session = item.getValue();
+                var claim = operations.claim(node, session);
+                operations.complete(preview, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revisions.get(node), AgentSetup.sitePolicy(true), List.of("changed AutoCreateVoteSites"),
+                        false, false, claim.attemptId()));
+            }
+            assertEquals(sessions.keySet(), operations.getAgentReview(preview).beforeByNode().keySet());
+            var apply = agents.approve(preview);
+            assertThrows(ValidationException.class, () -> agents.approve(preview));
+            for (var item : sessions.entrySet()) {
+                String node = item.getKey();
+                UUID session = item.getValue();
+                var claim = operations.claim(node, session);
+                assertEquals(revisions.get(node), claim.expectedRevision());
+                boolean success = node.equals("backend-a");
+                operations.complete(apply.operationId(), node, new ConfigurationTaskResult(session, success,
+                        success ? "OK" : "RELOAD_FAILED", "fixture", success ? revisions.get(node) : null,
+                        success ? AgentSetup.sitePolicy(true) : null, List.of(), success, !success, claim.attemptId()));
+            }
+            var status = (Map<?, ?>) agents.status(grant.token(), apply.operationId());
+            assertEquals("COMPLETED_WITH_ERRORS", status.get("state"));
+            var results = (Map<?, ?>) status.get("results");
+            assertEquals(true, ((Map<?, ?>) results.get("backend-a")).get("reloaded"));
+            assertEquals(true, ((Map<?, ?>) results.get("backend-b")).get("rolledBack"));
+        }
+    }
+
     private static final class MutableClock extends Clock {
         private Instant now = Instant.EPOCH;
 

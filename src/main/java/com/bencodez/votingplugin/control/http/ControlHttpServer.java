@@ -1136,6 +1136,7 @@ public final class ControlHttpServer implements AutoCloseable {
             case "routing-read", "routing-preview" -> "routing";
             case "transport" -> "transport";
             case "site-policy-read", "site-policy-preview" -> "site-policy";
+            case "site-policy-batch" -> "site-policy-batch";
             case "read", "preview", "status" -> route;
             default -> null;
         };
@@ -1153,6 +1154,7 @@ public final class ControlHttpServer implements AutoCloseable {
                 case "health" -> agentOperations.health(token, read(exchange, AgentOperations.HealthRequest.class, true));
                 case "health-refresh" -> agentOperations.refreshHealth(token, read(exchange, AgentOperations.RefreshHealth.class, true));
                 case "site-policy-read" -> agentOperations.readSitePolicy(token, read(exchange, AgentOperations.SitePolicyRead.class, true));
+                case "site-policy-batch" -> agentOperations.previewSitePolicyBatch(token, read(exchange, AgentOperations.SitePolicyBatch.class, true));
                 case "site-policy-preview" -> agentOperations.previewSitePolicy(token, read(exchange, AgentOperations.SitePolicyPreview.class, true));
                 case "transport" -> agentOperations.checkTransport(token, read(exchange, AgentOperations.TransportRequest.class, true));
                 case "routing-read" -> agentOperations.readRouting(token, read(exchange, AgentOperations.RoutingRead.class, true));

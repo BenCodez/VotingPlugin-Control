@@ -20,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch");
     private final Map<UUID, Grant> grants = new HashMap<>();
     private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
@@ -178,6 +178,25 @@ public final class AgentOperations {
             requireNode(grant, request.nodeId());
             return project(operations.createAgentSitePolicy(grant.id(), request.nodeId(), request.enabled(),
                     parseId(request.readOperationId())));
+        });
+    }
+
+    public synchronized Object previewSitePolicyBatch(String token, SitePolicyBatch request) {
+        Grant grant = authorize(token, "site-policy-batch");
+        if (request.enabled() == null || request.targets() == null || request.targets().isEmpty()
+                || request.targets().size() > ConfigurationOperations.MAX_AGENT_TARGETS) {
+            throw invalid("Explicit site policy and 1 to 10 targets are required");
+        }
+        return withStableTopology(() -> {
+            Map<String, UUID> reads = new LinkedHashMap<>();
+            for (SitePolicyTarget target : request.targets()) {
+                if (target == null) throw invalid("Invalid target");
+                requireNode(grant, target.nodeId());
+                if (reads.putIfAbsent(target.nodeId(), parseId(target.readOperationId())) != null) {
+                    throw invalid("Targets must be unique");
+                }
+            }
+            return project(operations.createAgentSitePolicyBatch(grant.id(), reads, request.enabled()));
         });
     }
 
@@ -411,6 +430,8 @@ public final class AgentOperations {
     public record RefreshHealth(String nodeId) { }
     public record SitePolicyRead(String nodeId) { }
     public record SitePolicyPreview(String nodeId, String readOperationId, Boolean enabled) { }
+    public record SitePolicyTarget(String nodeId, String readOperationId) { }
+    public record SitePolicyBatch(List<SitePolicyTarget> targets, Boolean enabled) { }
     public record RoutingRead(String nodeId) { }
     public record TransportRequest(String proxyNodeId, String backendNodeId) { }
     public record RoutingPreview(String nodeId, String readOperationId, Boolean sendVotesToAllServers,

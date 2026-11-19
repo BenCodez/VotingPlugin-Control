@@ -89,3 +89,12 @@ Select **Read and preview automatic vote-site creation** and **Track operations*
 from the current policy read and an explicit Boolean `enabled`. Control requires the same file revision and a diff
 limited to `AutoCreateVoteSites`. The prior value is the backend’s effective value, including its default where applicable.
 The operator reviews and applies the change in the browser.
+
+### Batch proposal
+
+Grant **Preview automatic vote-site creation across multiple backends** separately to use `preview_site_policy_batch`.
+Obtain a current policy read for each target with the same grant. Pass one Boolean `enabled` and 1–10 explicit
+`targets`, each with `nodeId` and `readOperationId`. Offline, unsupported, unchanged, or missing targets prevent
+queueing the batch. Any failed or stale preview blocks approval for the entire batch. The browser lists each prior
+value and revision. An approved apply can still fail on individual nodes. Inspect each node's outcome and rollback
+indicator before taking further action.
