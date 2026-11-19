@@ -1137,6 +1137,7 @@ public final class ControlHttpServer implements AutoCloseable {
             case "transport" -> "transport";
             case "site-policy-read", "site-policy-preview" -> "site-policy";
             case "site-policy-batch" -> "site-policy-batch";
+            case "vote-sites-editor-read", "vote-sites-editor-preview" -> "vote-sites-editor";
             case "settings-read", "settings-preview" -> "general-settings";
             case "read", "preview", "status" -> route;
             default -> null;
@@ -1154,6 +1155,10 @@ public final class ControlHttpServer implements AutoCloseable {
                 case "topology" -> agentOperations.topology(token, read(exchange, AgentOperations.Discovery.class, true));
                 case "health" -> agentOperations.health(token, read(exchange, AgentOperations.HealthRequest.class, true));
                 case "health-refresh" -> agentOperations.refreshHealth(token, read(exchange, AgentOperations.RefreshHealth.class, true));
+                case "vote-sites-editor-read" -> agentOperations.readVoteSitesEditor(token,
+                        read(exchange, AgentOperations.VoteSitesEditorRead.class, true));
+                case "vote-sites-editor-preview" -> agentOperations.previewVoteSitesEditor(token,
+                        read(exchange, AgentOperations.VoteSitesEditorPreview.class, true));
                 case "settings-read" -> agentOperations.readGeneralSettings(token, read(exchange, AgentOperations.GeneralSettingsRead.class, true));
                 case "settings-preview" -> agentOperations.previewGeneralSettings(token, read(exchange, AgentOperations.GeneralSettingsPreview.class, true));
                 case "site-policy-read" -> agentOperations.readSitePolicy(token, read(exchange, AgentOperations.SitePolicyRead.class, true));

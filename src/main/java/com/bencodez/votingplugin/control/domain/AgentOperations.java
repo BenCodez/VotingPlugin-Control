@@ -20,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings", "vote-sites-editor");
     private final Map<UUID, Grant> grants = new HashMap<>();
     private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
@@ -161,6 +161,23 @@ public final class AgentOperations {
                 return Map.of("nodeId", request.nodeId(), "state", observation.state());
             });
         }
+    }
+
+    public synchronized Object readVoteSitesEditor(String token, VoteSitesEditorRead request) {
+        Grant grant = authorize(token, "vote-sites-editor");
+        return withStableTopology(() -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.readAgentVoteSitesEditor(grant.id(), request.nodeId(), request.siteKey()));
+        });
+    }
+
+    public synchronized Object previewVoteSitesEditor(String token, VoteSitesEditorPreview request) {
+        Grant grant = authorize(token, "vote-sites-editor");
+        return withStableTopology(() -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.previewAgentVoteSitesEditor(grant.id(), request.nodeId(),
+                    parseId(request.readOperationId()), request.action(), request.siteKey(), request.fields()));
+        });
     }
 
     public synchronized Object readGeneralSettings(String token, GeneralSettingsRead request) {
@@ -449,6 +466,9 @@ public final class AgentOperations {
     public record Discovery(Integer offset) { }
     public record HealthRequest(List<String> nodeIds) { }
     public record RefreshHealth(String nodeId) { }
+    public record VoteSitesEditorRead(String nodeId, String siteKey) { }
+    public record VoteSitesEditorPreview(String nodeId, String siteKey, String readOperationId,
+                                         String action, Map<String, Object> fields) { }
     public record GeneralSettingsRead(String nodeId) { }
     public record GeneralSettingsPreview(String nodeId, String readOperationId, Map<String, Object> overrides) { }
     public record SitePolicyRead(String nodeId) { }

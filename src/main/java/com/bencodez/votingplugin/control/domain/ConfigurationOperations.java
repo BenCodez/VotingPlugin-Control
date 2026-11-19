@@ -278,6 +278,28 @@ public final class ConfigurationOperations implements AutoCloseable {
         return createGeneralSettingsPreview(readId, nodeId, overrides, agent);
     }
 
+    synchronized OperationView readAgentVoteSitesEditor(UUID agent, String nodeId, String siteKey) {
+        prune();
+        requireAgentCapacity(agent);
+        if (siteKey == null || !siteKey.matches("[A-Za-z0-9_-]{1,64}")) throw invalid("Invalid site key");
+        var selector = ManagedConfiguration.file("VoteSites.yml", null);
+        ValidatedTargets targets = validateTargets(List.of(nodeId), selector.capability());
+        validateConfigurationTargets(targets, selector);
+        OperationView read = create("READ", targets, selector, null, Map.of(), agent);
+        operations.get(read.operationId()).agentEditorSite = siteKey;
+        return read;
+    }
+
+    synchronized OperationView previewAgentVoteSitesEditor(UUID agent, String nodeId, UUID readId,
+            String action, String siteKey, Map<String, Object> fields) {
+        prune();
+        requireAgentCapacity(agent);
+        if (siteKey == null || !siteKey.equals(agentOperation(agent, readId).agentEditorSite)) {
+            throw invalid("A current editor read of this exact site is required");
+        }
+        return createVoteSitesPreview(readId, nodeId, action, siteKey, fields, agent);
+    }
+
     private void requireAgentCapacity(UUID agent) {
         var retained = operations.values().stream().filter(op -> agent.equals(op.agent)).toList();
         if (retained.size() >= 48 || retained.stream().filter(op -> !op.complete()).count() >= 4) {
@@ -511,6 +533,13 @@ public final class ConfigurationOperations implements AutoCloseable {
     /** Creates one revision-bound preview for one exact typed site action on one target. */
     public synchronized OperationView createVoteSitesPreview(UUID readId, String nodeId, String action,
             String siteKey, Map<String, Object> fields) {
+        StoredOperation read = operations.get(readId);
+        if (read != null && read.agent != null) throw invalid("Agent reads require the agent editor");
+        return createVoteSitesPreview(readId, nodeId, action, siteKey, fields, null);
+    }
+
+    private OperationView createVoteSitesPreview(UUID readId, String nodeId, String action, String siteKey,
+            Map<String, Object> fields, UUID agent) {
         ConfigurationTaskResult snapshot = fileSnapshot(readId, nodeId, "VoteSites.yml");
         String proposal;
         try {
@@ -519,6 +548,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                 case "EDIT" -> VoteSitesDocument.edit(snapshot.configuration().content(), siteKey, fields);
                 case "REMOVE" -> {
                     if (fields != null && !fields.isEmpty()) throw new IllegalArgumentException();
+                    if (agent != null) VoteSitesDocument.requireReviewableRemoval(snapshot.configuration().content(), siteKey);
                     yield VoteSitesDocument.remove(snapshot.configuration().content(), siteKey);
                 }
                 default -> throw new IllegalArgumentException();
@@ -534,8 +564,40 @@ public final class ConfigurationOperations implements AutoCloseable {
         validateConfigurationTargets(targets, configuration);
         byte[] token = new byte[32];
         random.nextBytes(token);
-        return create("PREVIEW", targets, configuration,
-                Base64.getUrlEncoder().withoutPadding().encodeToString(token), Map.of(nodeId, snapshot.revision()));
+        String approval = Base64.getUrlEncoder().withoutPadding().encodeToString(token);
+        var revisions = Map.of(nodeId, snapshot.revision());
+        if (agent == null) return create("PREVIEW", targets, configuration, approval, revisions);
+        Map<String, String> before;
+        Map<String, String> after;
+        try {
+            before = AgentSetup.editorSiteValues(siteKey, snapshot.configuration().content());
+            after = AgentSetup.editorSiteValues(siteKey, proposal);
+        } catch (IllegalArgumentException unsafe) {
+            throw invalid("Site values cannot be reviewed safely");
+        }
+        var changes = new LinkedHashMap<String, String>();
+        var prior = new LinkedHashMap<String, String>();
+        var paths = new java.util.HashSet<String>();
+        for (String key : VoteSitesDocument.editableKeys()) {
+            if (Objects.equals(before.get(key), after.get(key))) continue;
+            String path = "VoteSites." + siteKey + "." + key;
+            if (before.containsKey(key)) prior.put(path, before.get(key));
+            changes.put(path, after.getOrDefault(key, "(removed)"));
+            paths.add("changed " + path);
+        }
+        if (paths.isEmpty()) throw invalid("Site action has no reviewable changes");
+        if (!before.get("exists").equals(after.get("exists"))) {
+            String path = "VoteSites." + siteKey + " exists";
+            prior.put(path, before.get("exists"));
+            changes.put(path, after.get("exists"));
+        }
+        var preview = create("PREVIEW", targets, configuration, approval, revisions, agent);
+        StoredOperation stored = operations.get(preview.operationId());
+        stored.agentBefore = Map.copyOf(prior);
+        stored.agentAfter = Map.copyOf(changes);
+        stored.agentDocumentDigest = AgentSetup.documentDigest(snapshot.configuration().content());
+        stored.agentExpectedChanges = Set.copyOf(paths);
+        return preview;
     }
 
     public record VoteSitesState(UUID readOperationId, String nodeId, UUID sessionId, String revision,
@@ -565,6 +627,8 @@ public final class ConfigurationOperations implements AutoCloseable {
     /** Source-preserving one-target reward edit, approved through the existing PREVIEW/APPLY path. */
     public synchronized OperationView createRewardsPreview(UUID readId, String nodeId, String fileName,
             String rewardPath, String action, String field, Object value) {
+        StoredOperation read = operations.get(readId);
+        if (read != null && read.agent != null) throw invalid("Agent reads require the agent editor");
         if (!"VoteSites.yml".equals(fileName) && !isNamedRewardFile(fileName))
             throw invalid("This reward scope is advanced-only");
         ConfigurationTaskResult snapshot = fileSnapshot(readId, nodeId, fileName);
@@ -1028,7 +1092,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private static boolean agentPreviewReviewable(StoredOperation operation, ConfigurationTaskResult result) {
-        if (operation.agentGeneralSettings) {
+        if (operation.agentDocumentDigest != null) {
             return result.configuration() != null && result.configuration().content() != null
                     && operation.agentDocumentDigest.equals(AgentSetup.documentDigest(result.configuration().content()))
                     && result.changes().size() == operation.agentExpectedChanges.size()
@@ -1105,6 +1169,11 @@ public final class ConfigurationOperations implements AutoCloseable {
                     }
                     agentRead = AgentSetup.settingsValues(GeneralSettingsDocument.fields(result.configuration().content(),
                             GeneralSettingsDocument.profileForFile(operation.configuration.fileName())));
+                } else if (operation.agentEditorSite != null) {
+                    if (result.configuration() == null || result.configuration().content() == null) {
+                        throw new IllegalArgumentException("Missing redacted VoteSites source");
+                    }
+                    agentRead = AgentSetup.editorSiteValues(operation.agentEditorSite, result.configuration().content());
                 } else {
                     agentRead = ManagedConfiguration.PROXY_ROUTING.equals(operation.configuration.domain())
                             ? AgentSetup.routingValues(result.configuration())
@@ -1594,6 +1663,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         private boolean approvalUsed;
         private UUID agent;
         private String agentSite;
+        private String agentEditorSite;
         private boolean agentGeneralSettings;
         private String agentDocumentDigest;
         private Set<String> agentExpectedChanges = Set.of();

@@ -74,6 +74,26 @@ final class AgentSetup {
         }
     }
 
+    static Map<String, String> editorSiteValues(String key, String document) {
+        var values = new LinkedHashMap<String, String>();
+        values.put("siteKey", key);
+        var site = VoteSitesDocument.inventory(document).sites().stream()
+                .filter(row -> key.equalsIgnoreCase(row.key())).findFirst().orElse(null);
+        values.put("exists", Boolean.toString(site != null));
+        if (site == null) return Map.copyOf(values);
+        if (!site.editable() || !key.equals(site.key())) throw new IllegalArgumentException("Ambiguous site");
+        site.fields().forEach((path, field) -> {
+            if (field.status() == VoteSitesDocument.Status.UNSUPPORTED
+                    || field.status() == VoteSitesDocument.Status.AVAILABLE
+                    && "VoteURL".equals(path) && !safeUrl(field.value().toString())) {
+                throw new IllegalArgumentException("Site contains a field that cannot be reviewed safely");
+            }
+            if (field.status() == VoteSitesDocument.Status.AVAILABLE) values.put(path, field.value().toString());
+        });
+        values.put("rewardsConfigured", Boolean.toString(site.rewardsConfigured()));
+        return Map.copyOf(values);
+    }
+
     static Map<String, String> settingsValues(Map<String, GeneralSettingsDocument.Field> fields) {
         Map<String, String> values = new LinkedHashMap<>();
         fields.forEach((key, field) -> {

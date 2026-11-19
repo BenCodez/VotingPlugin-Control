@@ -22,6 +22,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -486,6 +487,97 @@ class AgentOperationsTest {
             assertEquals("OPERATION_LIMIT", denied.code());
             assertNotNull(operations.createRead(List.of(node), ManagedConfiguration.file("Config.yml", null)));
             assertNotNull(agents.approve(firstPreview));
+        }
+    }
+
+    @Test void typedSiteEditorBindsReviewToExactMaskedSourceAndRejectsOpaqueDeletion() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        String node = "backend";
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration(node, session, node, "BUKKIT", "fixture", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        try (var operations = new ConfigurationOperations(registry, new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var grant = agents.issue(new AgentOperations.Issue(List.of(node), List.of("vote-sites-editor", "status"), 10, null));
+            var unrelated = agents.issue(new AgentOperations.Issue(List.of(node), List.of("read", "preview"), 10, null));
+            var read = new AgentOperations.VoteSitesEditorRead(node, "Example");
+            assertThrows(SecurityException.class, () -> agents.readVoteSitesEditor(unrelated.token(), read));
+            UUID readId = (UUID) ((Map<?, ?>) agents.readVoteSitesEditor(grant.token(), read)).get("operationId");
+            var current = ManagedConfiguration.file("VoteSites.yml",
+                    "VoteSites:\n  Example:\n    Enabled: true\n    Rewards:\n      Messages:\n        Player: Welcome\n");
+            var task = operations.claim(node, session);
+            String revision = "b".repeat(64);
+            operations.complete(readId, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                    revision, current, List.of(), false, false, task.attemptId()));
+            var readStatus = (Map<?, ?>) agents.status(grant.token(), readId);
+            assertEquals(Map.of("siteKey", "Example", "exists", "true", "Enabled", "true", "rewardsConfigured", "true"),
+                    readStatus.get("values"));
+            assertFalse(readStatus.toString().contains("Welcome"));
+            var remove = new AgentOperations.VoteSitesEditorPreview(node, "Example", readId.toString(), "REMOVE", null);
+            assertThrows(ValidationException.class, () -> agents.previewVoteSitesEditor(grant.token(), remove));
+            assertThrows(ValidationException.class,
+                    () -> operations.createVoteSitesPreview(readId, node, "REMOVE", "Example", null));
+            var wrongKey = new AgentOperations.VoteSitesEditorPreview(node, "Other", readId.toString(), "EDIT",
+                    Map.of("Enabled", false));
+            assertThrows(ValidationException.class, () -> agents.previewVoteSitesEditor(grant.token(), wrongKey));
+            var edit = new AgentOperations.VoteSitesEditorPreview(node, "Example", readId.toString(), "EDIT",
+                    Map.of("Enabled", false));
+            UUID bad = (UUID) ((Map<?, ?>) agents.previewVoteSitesEditor(grant.token(), edit)).get("operationId");
+            var mismatch = operations.claim(node, session);
+            var differentSource = ManagedConfiguration.file("VoteSites.yml", current.content().replace("Welcome", "Changed"));
+            operations.complete(bad, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                    revision, differentSource, List.of("changed VoteSites.Example.Enabled"), false, false, mismatch.attemptId()));
+            assertFalse(operations.get(bad).browserReviewReady());
+
+            UUID preview = (UUID) ((Map<?, ?>) agents.previewVoteSitesEditor(grant.token(), edit)).get("operationId");
+            var previewTask = operations.claim(node, session);
+            assertTrue(previewTask.configuration().content().contains("Player: Welcome"));
+            operations.complete(preview, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                    revision, current, List.of("changed VoteSites.Example.Enabled"), false, false, previewTask.attemptId()));
+            assertEquals(Map.of("VoteSites.Example.Enabled", "false"), operations.getAgentReview(preview).after());
+            assertThrows(ValidationException.class, () -> operations.createApply(preview, "invalid"));
+            assertNull(operations.get(preview).approvalToken());
+            assertNotNull(agents.approve(preview));
+            assertThrows(ValidationException.class, () -> agents.approve(preview));
+            assertEquals(revision, operations.claim(node, session).expectedRevision());
+        }
+    }
+
+    @Test void typedSiteEditorSupportsExplicitAdditionAndSimpleRemoval() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        String node = "backend";
+        registry.register(new NodeRegistration(node, session, node, "BUKKIT", "fixture", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        try (var operations = new ConfigurationOperations(registry, new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var grant = agents.issue(new AgentOperations.Issue(List.of(node), List.of("vote-sites-editor", "status"), 10, null));
+            var fields = Map.<String, Object>of("Enabled", true, "Hidden", false, "Name", "Example",
+                    "ServiceSite", "example.test", "VoteURL", "https://example.test/vote", "VoteDelay", "24h",
+                    "Priority", 5, "DisplayItem.Material", "DIAMOND", "DisplayItem.Amount", 1);
+            for (String action : List.of("ADD", "REMOVE")) {
+                boolean adding = "ADD".equals(action);
+                String yaml = adding ? "VoteSites:\n" : "VoteSites:\n  Example:\n    Enabled: true\n";
+                var current = ManagedConfiguration.file("VoteSites.yml", yaml);
+                UUID id = (UUID) ((Map<?, ?>) agents.readVoteSitesEditor(grant.token(),
+                        new AgentOperations.VoteSitesEditorRead(node, "Example"))).get("operationId");
+                var read = operations.claim(node, session);
+                String revision = "a".repeat(64);
+                operations.complete(id, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revision, current, List.of(), false, false, read.attemptId()));
+                UUID preview = (UUID) ((Map<?, ?>) agents.previewVoteSitesEditor(grant.token(),
+                        new AgentOperations.VoteSitesEditorPreview(node, "Example", id.toString(), action,
+                                adding ? fields : null))).get("operationId");
+                var task = operations.claim(node, session);
+                var changed = (adding ? fields.keySet() : Set.of("Enabled")).stream()
+                        .map(key -> "changed VoteSites.Example." + key).toList();
+                operations.complete(preview, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revision, current, changed, false, false, task.attemptId()));
+                assertTrue(operations.get(preview).browserReviewReady());
+                assertEquals(Boolean.toString(adding), operations.getAgentReview(preview).after().get("VoteSites.Example exists"));
+            }
         }
     }
 

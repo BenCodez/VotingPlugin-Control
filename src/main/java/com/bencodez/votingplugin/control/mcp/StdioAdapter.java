@@ -1,6 +1,7 @@
 package com.bencodez.votingplugin.control.mcp;
 
 import com.bencodez.votingplugin.control.domain.GeneralSettingsDocument;
+import com.bencodez.votingplugin.control.domain.VoteSitesDocument;
 
 import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.core.StreamReadFeature;
@@ -259,6 +260,8 @@ public final class StdioAdapter {
     private static boolean validValues(JsonNode result) {
         JsonNode values = result.path("values");
         Set<String> keys = new java.util.HashSet<>(GeneralSettingsDocument.editableKeys());
+        keys.addAll(VoteSitesDocument.editableKeys());
+        keys.addAll(Set.of("siteKey", "rewardsConfigured"));
         keys.addAll(Set.of("name", "exists", "serviceSite", "voteUrl", "enabled", "displayName", "priority",
                 "hidden", "voteDelay", "material", "displayItem.amount", "sendVotesToAllServers", "blockedServers"));
         if (!"READ".equals(result.path("type").asText()) || !fields(values, keys)) return false;
@@ -332,6 +335,23 @@ public final class StdioAdapter {
         tools.put("refresh_node_health", new Tool("refresh_node_health", "health-refresh",
                 "Queue the read-only Network Doctor observation for an authorized node.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));
+        Map<String, Object> editorFields = Map.of(
+                "Enabled", flag, "Hidden", flag, "Name", Map.of("type", "string", "maxLength", 200),
+                "ServiceSite", Map.of("type", "string", "minLength", 1, "maxLength", 2048),
+                "VoteURL", Map.of("type", "string", "minLength", 1, "maxLength", 500),
+                "VoteDelay", Map.of("type", "string", "minLength", 1, "maxLength", 64),
+                "Priority", Map.of("type", "integer", "minimum", Integer.MIN_VALUE, "maximum", Integer.MAX_VALUE),
+                "DisplayItem.Material", Map.of("type", "string", "pattern", "^[A-Za-z0-9_:-]{1,100}$"),
+                "DisplayItem.Amount", Map.of("type", "integer", "minimum", 1, "maximum", 64));
+        tools.put("read_vote_site_editor", new Tool("read_vote_site_editor", "vote-sites-editor-read",
+                "Read the typed editor fields for one exact site on an authorized backend.",
+                object(Map.of("nodeId", node, "siteKey", name), List.of("nodeId", "siteKey"))));
+        tools.put("preview_vote_site_editor", new Tool("preview_vote_site_editor", "vote-sites-editor-preview",
+                "Preview adding, editing, or removing a named site for review in Control. Removal requires a site with only reviewable fields.",
+                object(Map.of("nodeId", node, "siteKey", name, "readOperationId", id,
+                        "action", Map.of("type", "string", "enum", List.of("ADD", "EDIT", "REMOVE")),
+                        "fields", object(editorFields, List.of())),
+                        List.of("nodeId", "siteKey", "readOperationId", "action"))));
         Map<String, Object> settings = new LinkedHashMap<>();
         for (String key : GeneralSettingsDocument.editableKeys()) {
             settings.put(key, Map.of("oneOf", List.of(flag, Map.of("type", "string", "maxLength", 32))));

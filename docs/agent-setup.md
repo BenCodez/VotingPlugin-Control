@@ -107,3 +107,14 @@ The tool selects the fixed file for the target role and uses Control's curated G
 available typed fields, while redacted documents stay within Control's existing bounded retention. The node must
 return the same current revision, redacted document, and expected changed paths before browser approval. A successful
 proxy-file apply reports `restartRequired`; the operator restarts through the existing owner workflow.
+
+
+## Optional typed Vote Sites editor
+
+Grant **Read and preview typed Vote Sites edits** and **Track operations** to use `read_vote_site_editor`
+and `preview_vote_site_editor` on one Bukkit backend with `config.files.v1`. Read an exact `siteKey`, then preview
+`ADD`, `EDIT`, or `REMOVE` with that read operation ID. Add requires all nine schema fields; edit requires one or
+more changed fields. Remove takes no fields. A site with inline Rewards or unreviewable fields needs the browser editor.
+The proposal preserves unrelated sites and sections. Control checks the current redacted source and complete changed
+paths against the reviewed proposal before making browser approval available. MCP returns typed fields and a Rewards
+presence indicator, and omits raw documents and approval material.
