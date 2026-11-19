@@ -46,6 +46,7 @@ VotingPlugin Control is designed to manage and troubleshoot a VotingPlugin netwo
 
 - Run guided setup for standalone and proxy/backend networks.
 - Configure common settings through searchable presets.
+- Use Codex CLI or a compatible local stdio MCP client to read and preview a named backend vote site or automatic site-creation policy for up to ten explicit backends through opt-in local MCP, then review and apply it in Control. Separately grant agents scoped topology, Network Doctor checks, proxy routing previews, non-vote transport checks, and typed General Settings, Vote Sites, and Rewards editor previews. Network grants can include coordinated proxy-method previews and guided common settings, VoteLog, and Vote Party v2. See [agent setup](docs/agent-setup.md).
 - Set up or synchronize Vote Sites while preserving existing rewards and sensitive values.
 - Configure automatic Vote Site creation.
 - Configure VoteLogging and retention.

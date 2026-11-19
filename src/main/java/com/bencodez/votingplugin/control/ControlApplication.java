@@ -42,7 +42,10 @@ public final class ControlApplication {
 
     public static void main(String[] args) {
         try {
-            if (args.length > 0) {
+            if (args.length == 1 && "mcp".equals(args[0])) {
+                new com.bencodez.votingplugin.control.mcp.StdioAdapter(System.getenv("VP_CONTROL_MCP_ORIGIN"),
+                        System.getenv("VP_CONTROL_MCP_TOKEN")).run(System.in, System.out);
+            } else if (args.length > 0) {
                 runOwnerCommand(args);
             } else {
                 runServer(System.getenv());
@@ -169,7 +172,7 @@ public final class ControlApplication {
                 configuration.dataDirectory(), clock);
         ControlHttpServer server = new ControlHttpServer(configuration.address(), registry, identity, credentials,
                 operations, inspections, snapshots, artifacts, deployments, configuration.secureCookies(),
-                configuration.trustedProxyAddresses(), configuration.launchId());
+                configuration.trustedProxyAddresses(), configuration.launchId(), configuration.agentEnabled());
         ProcessHandle parent = parentProcess(configuration.parentPid());
         CountDownLatch shutdown = new CountDownLatch(1);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -267,7 +270,7 @@ public final class ControlApplication {
 
     record Configuration(InetSocketAddress address, Path dataDirectory, Duration offlineTimeout,
                          int requestTimeoutSeconds, boolean secureCookies, Set<String> trustedProxyAddresses,
-                         String launchId, Long parentPid) {
+                         String launchId, Long parentPid, boolean agentEnabled) {
         static Configuration from(Map<String, String> environment) throws IOException {
             String host = environment.getOrDefault("CONTROL_HOST", "127.0.0.1").trim();
             if (host.isEmpty()) {
@@ -288,7 +291,8 @@ public final class ControlApplication {
             return new Configuration(new InetSocketAddress(resolved, port),
                     requirePath(environment.getOrDefault("CONTROL_DATA_DIR", "data")),
                     Duration.ofSeconds(offlineSeconds), requestSeconds, secureCookies, trustedProxies, launchId,
-                    parentPid);
+                    parentPid, strictBoolean(environment.getOrDefault("CONTROL_MCP_ENABLED", "false"),
+                            "MCP management"));
         }
 
         private static String launchId(String value) {

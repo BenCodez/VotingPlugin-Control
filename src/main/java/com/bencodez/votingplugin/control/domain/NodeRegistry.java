@@ -13,9 +13,17 @@ public interface NodeRegistry {
     List<NodeStatus> list(int offset, int limit);
     RegistryPage page(int offset, int limit, Long expectedRevision);
     NodeStatus find(String nodeId);
+    default java.time.Instant topologyObservedAt(String nodeId) { return null; }
     void requireSession(String nodeId, java.util.UUID sessionId);
     <T> T withSession(String nodeId, java.util.UUID sessionId,
                       java.util.function.Function<NodeStatus, T> action);
+
+    /** Topology writers and registration synchronize on this registry during authorization and queue creation. */
+    default <T> T withStableTopology(java.util.function.Supplier<T> action) {
+        synchronized (this) {
+            return action.get();
+        }
+    }
 
     record RegistrationResult(NodeStatus node, boolean created) { }
     record SnapshotResult(NodeStatus node, boolean applied) { }

@@ -5,6 +5,7 @@ import com.bencodez.votingplugin.control.auth.WebSessionStore;
 import com.bencodez.votingplugin.control.artifact.ArtifactStore;
 import com.bencodez.votingplugin.control.artifact.JenkinsVotingPluginSource;
 import com.bencodez.votingplugin.control.artifact.ArtifactStore.ArtifactException;
+import com.bencodez.votingplugin.control.domain.AgentOperations;
 import com.bencodez.votingplugin.control.domain.NodeRegistry;
 import com.bencodez.votingplugin.control.domain.RegistrySnapshot;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
@@ -112,6 +113,12 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final int MAX_BACKENDS_PER_NODE_SUMMARY = 256;
     private static final long ARTIFACT_TRANSFER_TIMEOUT_SECONDS = 120;
 
+    private static final String AGENT_API = "/api/v1/agent/";
+    private static final String AGENT_OWNER = "/api/v1/agent-admin/";
+    private static final int AGENT_REQUEST_BYTES = 16 * 1024;
+    private final AgentOperations agentOperations;
+    private final boolean agentEnabled;
+    private final ObjectMapper agentJson;
     private final HttpServer server;
     private final ObjectMapper json;
     private final NodeRegistry registry;
@@ -142,10 +149,15 @@ public final class ControlHttpServer implements AutoCloseable {
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials, String launchId) throws IOException {
+        this(address, registry, identity, credentials, launchId, false);
+    }
+
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, String launchId, boolean agentEnabled) throws IOException {
         this(address, registry, identity, credentials,
                 new ConfigurationOperations(registry, new com.bencodez.votingplugin.control.domain.ConfigurationAuditLog(
                         java.nio.file.Files.createTempDirectory("votingplugin-control-test-audit"), Clock.systemUTC()),
-                        Clock.systemUTC()), Clock.systemUTC(), System::nanoTime, false, Set.of(), launchId);
+                        Clock.systemUTC()), agentEnabled, launchId);
     }
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
@@ -207,6 +219,26 @@ public final class ControlHttpServer implements AutoCloseable {
                 secureCookies, trustedProxyAddresses, launchId);
     }
 
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, ConfigurationOperations configurationOperations,
+                             InspectionOperations inspectionOperations, ConfigurationSnapshots configurationSnapshots,
+                             ArtifactStore artifactStore, DeploymentOperations deploymentOperations,
+                             boolean secureCookies, Set<String> trustedProxyAddresses, String launchId,
+                             boolean agentEnabled) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
+                configurationSnapshots, artifactStore, deploymentOperations, Clock.systemUTC(), System::nanoTime,
+                secureCookies, trustedProxyAddresses, launchId, agentEnabled);
+    }
+
+    private ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                              CredentialStore credentials, ConfigurationOperations operations,
+                              boolean agentEnabled, String launchId) throws IOException {
+        this(address, registry, identity, credentials, operations,
+                new InspectionOperations(registry, Clock.systemUTC()), temporarySnapshots(), temporaryArtifactStore(),
+                new DeploymentOperations(registry, Clock.systemUTC()), Clock.systemUTC(), System::nanoTime,
+                false, Set.of(), launchId, agentEnabled);
+    }
+
     ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                       CredentialStore credentials, ConfigurationOperations configurationOperations, Clock clock,
                       java.util.function.LongSupplier nanoTime, boolean secureCookies,
@@ -233,6 +265,18 @@ public final class ControlHttpServer implements AutoCloseable {
                       ArtifactStore artifactStore, DeploymentOperations deploymentOperations,
                       Clock clock, java.util.function.LongSupplier nanoTime, boolean secureCookies,
                       Set<String> trustedProxyAddresses, String launchId) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
+                configurationSnapshots, artifactStore, deploymentOperations, clock, nanoTime, secureCookies,
+                trustedProxyAddresses, launchId, false);
+    }
+
+    private ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                      CredentialStore credentials, ConfigurationOperations configurationOperations,
+                      InspectionOperations inspectionOperations, ConfigurationSnapshots configurationSnapshots,
+                      ArtifactStore artifactStore, DeploymentOperations deploymentOperations,
+                      Clock clock, java.util.function.LongSupplier nanoTime, boolean secureCookies,
+                      Set<String> trustedProxyAddresses, String launchId, boolean agentEnabled) throws IOException {
+        this.agentEnabled = agentEnabled;
         this.registry = Objects.requireNonNull(registry, "registry");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.credentials = Objects.requireNonNull(credentials, "credentials");
@@ -254,6 +298,17 @@ public final class ControlHttpServer implements AutoCloseable {
         json.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
                 .maxNestingDepth(20).maxStringLength(ManagedConfiguration.MAX_CONTENT + 4096)
                 .maxNumberLength(64).build());
+        agentOperations = new AgentOperations(registry, configurationOperations, inspectionOperations, clock);
+        agentJson = json.copy().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                .disable(com.fasterxml.jackson.databind.MapperFeature.ALLOW_COERCION_OF_SCALARS)
+                .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT);
+        agentJson.coercionConfigFor(com.fasterxml.jackson.databind.type.LogicalType.Textual)
+                .setCoercion(com.fasterxml.jackson.databind.cfg.CoercionInputShape.Integer,
+                        com.fasterxml.jackson.databind.cfg.CoercionAction.Fail)
+                .setCoercion(com.fasterxml.jackson.databind.cfg.CoercionInputShape.Float,
+                        com.fasterxml.jackson.databind.cfg.CoercionAction.Fail)
+                .setCoercion(com.fasterxml.jackson.databind.cfg.CoercionInputShape.Boolean,
+                        com.fasterxml.jackson.databind.cfg.CoercionAction.Fail);
         authLimiter = new AuthFailureLimiter(nanoTime, MAX_AUTH_FAILURES_PER_MINUTE, TimeUnit.MINUTES.toNanos(1));
         passwordFailureLimiter = new PasswordFailureLimiter(nanoTime, MAX_PASSWORD_FAILURES_PER_CLIENT,
                 TimeUnit.MINUTES.toNanos(1), MAX_PASSWORD_FAILURE_CLIENTS);
@@ -388,6 +443,10 @@ public final class ControlHttpServer implements AutoCloseable {
             health.put("identity", identity);
             if (launchId != null) health.put("launchId", launchId);
             send(exchange, 200, health);
+            return;
+        }
+        if (path != null && (path.startsWith(AGENT_API) || path.startsWith(AGENT_OWNER))) {
+            routeAgent(exchange, path);
             return;
         }
         if (AUTH_SETUP.equals(path)) {
@@ -1027,9 +1086,127 @@ public final class ControlHttpServer implements AutoCloseable {
         return new BackendPage(List.copyOf(items), returned, truncated, List.copyOf(truncatedNodeIds));
     }
 
+    private void routeAgent(HttpExchange exchange, String path) throws IOException {
+        if (!agentEnabled) {
+            error(exchange, 403, "AGENT_DISABLED", "MCP management is disabled on this Control instance", List.of());
+            return;
+        }
+        if (exchange.getRequestURI().getRawQuery() != null
+                || !path.equals(exchange.getRequestURI().getRawPath())) {
+            throw new IllegalArgumentException("Invalid agent route");
+        }
+        if (path.startsWith(AGENT_OWNER)) {
+            switch (path.substring(AGENT_OWNER.length())) {
+                case "grants" -> {
+                    requireMethod(exchange, "GET");
+                    authenticateWebSession(exchange, false);
+                    send(exchange, 200, agentOperations.list());
+                }
+                case "issue" -> {
+                    requireMethod(exchange, "POST");
+                    authenticateWebSession(exchange, true);
+                    send(exchange, 201, agentOperations.issue(read(exchange, AgentOperations.Issue.class, true)));
+                }
+                case "revoke" -> {
+                    requireMethod(exchange, "POST");
+                    authenticateWebSession(exchange, true);
+                    agentOperations.revoke(readAgentId(exchange));
+                    send(exchange, 200, Map.of("revoked", true));
+                }
+                case "review" -> {
+                    requireMethod(exchange, "POST");
+                    authenticateWebSession(exchange, true);
+                    send(exchange, 200, configurationOperations.getAgentReview(readAgentId(exchange)));
+                }
+                case "approve" -> {
+                    requireMethod(exchange, "POST");
+                    authenticateWebSession(exchange, true);
+                    send(exchange, 202, agentOperations.approve(readAgentId(exchange)));
+                }
+                default -> error(exchange, 404, "NOT_FOUND", "Route not found", List.of());
+            }
+            return;
+        }
+        requireMethod(exchange, "POST");
+        String token = bearer(exchange);
+        String route = path.substring(AGENT_API.length());
+        String action = switch (route) {
+            case "nodes" -> "discover";
+            case "topology", "health", "health-refresh" -> "health";
+            case "routing-read", "routing-preview" -> "routing";
+            case "transport" -> "transport";
+            case "site-policy-read", "site-policy-preview" -> "site-policy";
+            case "site-policy-batch" -> "site-policy-batch";
+            case "guided-read", "guided-preview" -> "guided";
+            case "proxy-method-read", "proxy-method-preview" -> "proxy-method";
+            case "reward-read", "reward-preview" -> "rewards-editor";
+            case "vote-sites-editor-read", "vote-sites-editor-preview" -> "vote-sites-editor";
+            case "settings-read", "settings-preview" -> "general-settings";
+            case "read", "preview", "status" -> route;
+            default -> null;
+        };
+        if (action == null) {
+            error(exchange, 404, "NOT_FOUND", "Route not found", List.of());
+            return;
+        }
+        try {
+            if ("guided".equals(action)) agentOperations.requireGuidedAccess(token);
+            else agentOperations.requireAccess(token, action);
+            Object result = switch (route) {
+                case "nodes" -> {
+                    yield agentOperations.discover(token, read(exchange, AgentOperations.Discovery.class, true));
+                }
+                case "topology" -> agentOperations.topology(token, read(exchange, AgentOperations.Discovery.class, true));
+                case "health" -> agentOperations.health(token, read(exchange, AgentOperations.HealthRequest.class, true));
+                case "health-refresh" -> agentOperations.refreshHealth(token, read(exchange, AgentOperations.RefreshHealth.class, true));
+                case "guided-read" -> agentOperations.readGuided(token, read(exchange, AgentOperations.GuidedRead.class, true));
+                case "guided-preview" -> agentOperations.previewGuided(token, read(exchange, AgentOperations.GuidedPreview.class, true));
+                case "proxy-method-read" -> agentOperations.readProxyMethod(token, read(exchange, AgentOperations.ProxyMethodRead.class, true));
+                case "proxy-method-preview" -> agentOperations.previewProxyMethod(token, read(exchange, AgentOperations.ProxyMethodPreview.class, true));
+                case "reward-read" -> agentOperations.readReward(token, read(exchange, AgentOperations.RewardRead.class, true));
+                case "reward-preview" -> agentOperations.previewReward(token, read(exchange, AgentOperations.RewardPreview.class, true));
+                case "vote-sites-editor-read" -> agentOperations.readVoteSitesEditor(token,
+                        read(exchange, AgentOperations.VoteSitesEditorRead.class, true));
+                case "vote-sites-editor-preview" -> agentOperations.previewVoteSitesEditor(token,
+                        read(exchange, AgentOperations.VoteSitesEditorPreview.class, true));
+                case "settings-read" -> agentOperations.readGeneralSettings(token, read(exchange, AgentOperations.GeneralSettingsRead.class, true));
+                case "settings-preview" -> agentOperations.previewGeneralSettings(token, read(exchange, AgentOperations.GeneralSettingsPreview.class, true));
+                case "site-policy-read" -> agentOperations.readSitePolicy(token, read(exchange, AgentOperations.SitePolicyRead.class, true));
+                case "site-policy-batch" -> agentOperations.previewSitePolicyBatch(token, read(exchange, AgentOperations.SitePolicyBatch.class, true));
+                case "site-policy-preview" -> agentOperations.previewSitePolicy(token, read(exchange, AgentOperations.SitePolicyPreview.class, true));
+                case "transport" -> agentOperations.checkTransport(token, read(exchange, AgentOperations.TransportRequest.class, true));
+                case "routing-read" -> agentOperations.readRouting(token, read(exchange, AgentOperations.RoutingRead.class, true));
+                case "routing-preview" -> agentOperations.previewRouting(token, read(exchange, AgentOperations.RoutingPreview.class, true));
+                case "read" -> agentOperations.read(token, read(exchange, AgentOperations.Read.class, true));
+                case "preview" -> agentOperations.preview(token, read(exchange, AgentOperations.Preview.class, true));
+                case "status" -> agentOperations.status(token, readAgentId(exchange));
+                default -> throw new IllegalStateException("Unhandled agent route");
+            };
+            byte[] bytes = agentJson.writeValueAsBytes(result);
+            if (bytes.length > 32 * 1024) throw new IllegalArgumentException("Agent result exceeds limit");
+            sendBytes(exchange, 200, "application/json; charset=utf-8", bytes);
+        } catch (SecurityException denied) {
+            authenticationFailed();
+        }
+    }
+
+    private UUID readAgentId(HttpExchange exchange) throws IOException {
+        AgentId request = read(exchange, AgentId.class, true);
+        return AgentOperations.parseId(request.operationId());
+    }
+
+    private record AgentId(String operationId) { }
+
     private <T> T read(HttpExchange exchange, Class<T> type) throws IOException {
-        String contentType = exchange.getRequestHeaders().getFirst("Content-Type");
-        if (contentType == null || !contentType.toLowerCase(Locale.ROOT).startsWith("application/json")) {
+        return read(exchange, type, false);
+    }
+
+    private <T> T read(HttpExchange exchange, Class<T> type, boolean agent) throws IOException {
+        int maximum = agent ? AGENT_REQUEST_BYTES : MAX_REQUEST_BYTES;
+        String contentType = agent ? singleHeader(exchange, "Content-Type")
+                : exchange.getRequestHeaders().getFirst("Content-Type");
+        if (contentType == null || (agent ? !"application/json".equalsIgnoreCase(contentType.split(";", 2)[0].trim())
+                : !contentType.toLowerCase(Locale.ROOT).startsWith("application/json"))) {
             throw new ValidationException("UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json", List.of());
         }
         List<String> lengths = exchange.getRequestHeaders().get("Content-Length");
@@ -1046,8 +1223,8 @@ public final class ControlHttpServer implements AutoCloseable {
             if (length < 0) {
                 throw new IllegalArgumentException("Invalid Content-Length");
             }
-            if (length > MAX_REQUEST_BYTES) {
-                throw new RequestTooLargeException(MAX_REQUEST_BYTES);
+            if (length > maximum) {
+                throw new RequestTooLargeException(maximum);
             }
         }
         byte[] bytes;
@@ -1057,8 +1234,8 @@ public final class ControlHttpServer implements AutoCloseable {
             int count;
             while ((count = input.read(buffer)) != -1) {
                 total += count;
-                if (total > MAX_REQUEST_BYTES) {
-                    throw new RequestTooLargeException(MAX_REQUEST_BYTES);
+                if (total > maximum) {
+                    throw new RequestTooLargeException(maximum);
                 }
                 output.write(buffer, 0, count);
             }
@@ -1067,6 +1244,11 @@ public final class ControlHttpServer implements AutoCloseable {
         String text = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(bytes)).toString();
+        if (agent) {
+            T value = agentJson.readValue(text, type);
+            requireRequest(value);
+            return value;
+        }
         if (type == ConfigurationRequests.SettingsState.class || type == ConfigurationRequests.SettingsPreview.class
                 || type == ConfigurationRequests.SettingsDiscard.class || type == ConfigurationRequests.VoteSitesState.class
                 || type == ConfigurationRequests.VoteSitesPreview.class || type == ConfigurationRequests.VoteSitesDiscard.class

@@ -55,6 +55,23 @@ public final class VoteSitesDocument {
         return new Inventory(Collections.unmodifiableList(sites));
     }
 
+    public static List<String> editableKeys() {
+        return FIELDS;
+    }
+
+    static void requireReviewableRemoval(String content, String key) {
+        SiteInfo site = parse(content).byKey().get(key);
+        if (site == null) throw invalidOperation();
+        for (String property : site.properties().keySet()) {
+            if (FIELD_SET.contains(property) && !property.startsWith("DisplayItem.")) continue;
+            if ("DisplayItem".equals(property)
+                    && site.properties().get(property).getValueNode() instanceof MappingNode display
+                    && !properties(display).isEmpty()
+                    && Set.of("Material", "Amount").containsAll(properties(display).keySet())) continue;
+            throw invalidOperation();
+        }
+    }
+
     /** Adds one safe, absent site with all nine typed fields. */
     public static String add(String content, String siteKey, Map<String, ?> fields) {
         Parsed parsed = parse(content);

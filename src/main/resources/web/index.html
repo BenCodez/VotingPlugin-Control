@@ -706,6 +706,14 @@
         <section class="card stacked-card"><div class="section-title"><div><h3>Safe service-site test</h3><p>Resolve a service name and report whether it would match or auto-create. No fake vote is submitted and no reward runs.</p></div></div><form id="site-resolution-form" class="inline-form"><label for="site-resolution-service">Service site<input id="site-resolution-service" maxlength="64" placeholder="PlanetMinecraft.com" required></label><label class="check-row"><input id="site-resolution-disabled" type="checkbox"> Include disabled sites</label><button id="resolve-site" type="submit" disabled>Test resolution</button></form><div id="site-resolution-result" class="result-panel">No service tested.</div></section>
       </section>
 
+      <dialog id="agent-review">
+        <h2>Review agent configuration preview</h2>
+        <pre id="agent-review-detail"></pre>
+        <p id="agent-review-status" role="status"></p>
+        <button type="button" id="agent-review-apply" disabled>Approve and apply</button>
+        <form method="dialog"><button type="submit">Close</button></form>
+      </dialog>
+
       <section class="tab-panel" id="activity-panel" data-panel="activity" hidden>
         <div class="page-heading">
           <div><p class="eyebrow">Safe changes</p><h2>Activity</h2></div>
@@ -720,6 +728,36 @@
         <div class="page-heading">
           <div><p class="eyebrow">Control access</p><h2>Node enrollment</h2></div>
         </div>
+        <section class="card">
+          <h3>Agent access</h3>
+          <p>Agent access is off by default. Set <code>CONTROL_MCP_ENABLED=true</code> on Control and restart to enable it.</p>
+          <form id="agent-grant-form">
+            <label>Exact node IDs (comma-separated) <input name="nodes" maxlength="3249"></label>
+            <label>Or grant the enrolled network of this proxy <input name="proxy" maxlength="64"></label>
+            <label>Expires after (minutes) <input name="minutes" type="number" min="1" max="1440" value="60" required></label>
+            <label><input name="actions" value="discover" type="checkbox" checked> Discover</label>
+            <label><input name="actions" value="read" type="checkbox" checked> Read</label>
+            <label><input name="actions" value="preview" type="checkbox" checked> Preview</label>
+            <label><input name="actions" value="status" type="checkbox" checked> Track operations</label>
+            <label><input type="checkbox" name="actions" value="health"> Topology and diagnostics</label>
+            <label><input type="checkbox" name="actions" value="routing"> Read and preview proxy routing</label>
+            <label><input type="checkbox" name="actions" value="transport"> Run non-vote transport checks</label>
+            <label><input type="checkbox" name="actions" value="site-policy"> Read and preview automatic vote-site creation</label>
+            <label><input type="checkbox" name="actions" value="site-policy-batch"> Preview automatic vote-site creation across multiple backends</label>
+            <label><input type="checkbox" name="actions" value="common-settings"> Read and preview common voting settings</label>
+            <label><input type="checkbox" name="actions" value="vote-logging"> Read and preview VoteLog settings</label>
+            <label><input type="checkbox" name="actions" value="vote-party"> Read and preview Vote Party v2 settings</label>
+            <label><input type="checkbox" name="actions" value="proxy-method"> Read and preview coordinated proxy method changes</label>
+            <label><input type="checkbox" name="actions" value="rewards-editor"> Read and preview typed Reward fields</label>
+            <label><input type="checkbox" name="actions" value="vote-sites-editor"> Read and preview typed Vote Sites edits</label>
+            <label><input type="checkbox" name="actions" value="general-settings"> Read and preview typed General Settings</label>
+            <button type="submit">Issue agent credential</button>
+            <button type="button" id="agent-grant-refresh">List active grants</button>
+          </form>
+          <p id="agent-grant-status" role="status"></p>
+          <label id="agent-credential-output" hidden>Copy credential now <input readonly autocomplete="off" spellcheck="false"></label>
+          <div id="agent-grants"></div>
+        </section>
         <section class="card" id="enrollment-card" hidden>
           <p>Create or rotate a credential without running a server command. Copy the displayed credential into that
             node's configured <code>control-credential.txt</code>; it is shown only once.</p>
