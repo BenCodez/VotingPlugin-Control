@@ -2,10 +2,14 @@
 
 VotingPlugin Control can provide a local stdio MCP connection to Codex CLI and Claude Code. The agent can discover authorized enrolled nodes, read one named vote site on a Bukkit backend, preview a change and track the result. The owner reviews and applies the preview in Control. The backend uses existing managed-file and quick-setup capabilities over the current task protocol.
 
+## Enable MCP management
+
+Control disables the agent API by default. Set `CONTROL_MCP_ENABLED=true` on the Control server and restart that service to enable it. The client adapter cannot enable server access. Remove the setting or set it to `false` and restart Control to disable it. See the [management coverage matrix](mcp-network-coverage.md) for supported tools.
+
 ## Connect a client
 
 1. Install VotingPlugin and enroll the backend as an administrator. Check that Control reports the backend online with both accepted capabilities, `config.files.v1` and `config.quick-setup.v1`.
-2. Open **Access → Agent access** in Control. Enter the exact node IDs and choose the actions and lifetime. Issue the credential and copy it when displayed. Control keeps only its verifier in memory. Grants expire after the chosen lifetime (up to 24 hours), can be revoked immediately, and are invalidated when Control restarts. Revocation prevents new requests and prevents approval of pending previews. A write the owner already approved can still complete.
+2. Open **Access → Agent access** in Control. Enter exact node IDs or enter one online proxy ID to grant its enrolled network. Choose the actions and lifetime. Issue the credential and copy it when displayed. Control keeps only its verifier in memory. Grants expire after the chosen lifetime (up to 24 hours), can be revoked immediately, and are invalidated when Control restarts. Revocation prevents new requests and prevents approval of pending previews. A write the owner already approved can still complete. A proxy grant covers the proxy and the enrolled Bukkit nodes in its reported snapshot at issuance. Removing a member or disconnecting the proxy drops current access. A new proxy session or newly reported backend requires a fresh grant. The grant list shows the selected proxy and node count. Control uses the latest reported snapshot for that live proxy session. A heartbeat does not certify the age or accuracy of its topology.
 3. Supply `VP_CONTROL_MCP_ORIGIN` and `VP_CONTROL_MCP_TOKEN` in the local client environment. Use a verified HTTPS origin or literal loopback HTTP such as `http://127.0.0.1:8080`. Use the actual Control port. Keep the token out of tool arguments, command-line arguments, agent prompts and checked-in files.
 4. Configure the client to launch the Control all-in-one JAR with its `mcp` subcommand. Use an absolute path to the JAR.
 
@@ -40,7 +44,7 @@ Approve in the browser to queue the exact preview. The agent can poll the previe
 
 | Tool | Arguments |
 |---|---|
-| `list_nodes` | Empty object. Returns up to the 50 nodes on the grant. |
+| `list_nodes` | Optional `offset`, starting at zero. Returns up to 50 authorized nodes and `nextOffset` when there are more positions to check. |
 | `read_setup` | `nodeId`, `name`. |
 | `preview_setup` | `nodeId`, `readOperationId`, `options`. Options require `name`, `serviceSite` and `voteUrl` and may include `enabled`, `displayName`, `priority`, `hidden`, `voteDelay` and `material`. |
 | `get_operation` | `operationId`. Only operations from the current grant are visible. |

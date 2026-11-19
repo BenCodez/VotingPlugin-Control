@@ -730,8 +730,10 @@
         </div>
         <section class="card">
           <h3>Agent access</h3>
+          <p>Agent access is off by default. Set <code>CONTROL_MCP_ENABLED=true</code> on Control and restart to enable it.</p>
           <form id="agent-grant-form">
-            <label>Exact node IDs (comma-separated) <input name="nodes" required maxlength="3249"></label>
+            <label>Exact node IDs (comma-separated) <input name="nodes" maxlength="3249"></label>
+            <label>Or grant the enrolled network of this proxy <input name="proxy" maxlength="64"></label>
             <label>Expires after (minutes) <input name="minutes" type="number" min="1" max="1440" value="60" required></label>
             <label><input name="actions" value="discover" type="checkbox" checked> Discover</label>
             <label><input name="actions" value="read" type="checkbox" checked> Read</label>

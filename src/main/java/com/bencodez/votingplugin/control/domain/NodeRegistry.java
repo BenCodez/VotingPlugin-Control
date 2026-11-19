@@ -17,6 +17,13 @@ public interface NodeRegistry {
     <T> T withSession(String nodeId, java.util.UUID sessionId,
                       java.util.function.Function<NodeStatus, T> action);
 
+    /** Topology writers and registration synchronize on this registry during authorization and queue creation. */
+    default <T> T withStableTopology(java.util.function.Supplier<T> action) {
+        synchronized (this) {
+            return action.get();
+        }
+    }
+
     record RegistrationResult(NodeStatus node, boolean created) { }
     record SnapshotResult(NodeStatus node, boolean applied) { }
     record RegistryPage(List<NodeStatus> items, long revision, int total) { }

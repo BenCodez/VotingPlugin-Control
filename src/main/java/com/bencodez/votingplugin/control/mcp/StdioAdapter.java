@@ -147,7 +147,10 @@ public final class StdioAdapter {
     private static boolean validResult(String route, JsonNode result) {
         if ("nodes".equals(route)) {
             JsonNode items = result.path("items");
-            if (!fields(result, Set.of("items")) || !items.isArray() || items.size() > 50) return false;
+            if (!fields(result, Set.of("items", "nextOffset")) || !items.isArray() || items.size() > 50) return false;
+            if (result.has("nextOffset") && (!result.path("nextOffset").isIntegralNumber()
+                    || !result.path("nextOffset").canConvertToInt() || result.path("nextOffset").intValue() < 1
+                    || result.path("nextOffset").intValue() > 4097)) return false;
             for (JsonNode node : items) {
                 if (!fields(node, Set.of("nodeId", "platform", "online", "acceptedCapabilities"))
                         || !node.path("nodeId").asText().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -253,7 +256,7 @@ public final class StdioAdapter {
         Map<String, Object> flag = Map.of("type", "boolean");
         Map<String, Object> text = Map.of("type", "string", "minLength", 1, "maxLength", 200);
         tools.put("list_nodes", new Tool("list_nodes", "nodes", "List authorized enrolled Control nodes.",
-                object(Map.of(), List.of())));
+                object(Map.of("offset", Map.of("type", "integer", "minimum", 0, "maximum", 4097)), List.of())));
         tools.put("read_setup", new Tool("read_setup", "read", "Read one named backend vote site.",
                 object(Map.of("nodeId", node, "name", name), List.of("nodeId", "name"))));
         tools.put("preview_setup", new Tool("preview_setup", "preview",

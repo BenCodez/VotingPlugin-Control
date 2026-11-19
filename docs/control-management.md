@@ -63,7 +63,7 @@ mixed-version rollout, older nodes remain connected but are excluded from v2 HTT
 ## Local agent setup
 
 The packaged stdio MCP adapter calls Control's scoped agent API. The browser owner issues and revokes
-short-lived grants. Each grant authorizes only exact node IDs and discovery, read, preview or status actions.
+short-lived grants after the administrator sets `CONTROL_MCP_ENABLED=true` on Control. A grant covers exact node IDs or an enrolled proxy network and explicitly selected discovery, read, preview or status actions.
 Agent previews bind a successful named-site projection from the redacted managed VoteSites.yml read to the same node session and file revision. Control's
 browser-only approval route uses the normal configuration operation engine without returning its approval token.
 Existing node capability negotiation and the node task protocol are unchanged. See [agent setup](agent-setup.md).

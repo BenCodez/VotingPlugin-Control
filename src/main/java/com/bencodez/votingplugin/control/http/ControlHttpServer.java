@@ -117,6 +117,7 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final String AGENT_OWNER = "/api/v1/agent-admin/";
     private static final int AGENT_REQUEST_BYTES = 16 * 1024;
     private final AgentOperations agentOperations;
+    private final boolean agentEnabled;
     private final ObjectMapper agentJson;
     private final HttpServer server;
     private final ObjectMapper json;
@@ -148,10 +149,15 @@ public final class ControlHttpServer implements AutoCloseable {
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                              CredentialStore credentials, String launchId) throws IOException {
+        this(address, registry, identity, credentials, launchId, false);
+    }
+
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, String launchId, boolean agentEnabled) throws IOException {
         this(address, registry, identity, credentials,
                 new ConfigurationOperations(registry, new com.bencodez.votingplugin.control.domain.ConfigurationAuditLog(
                         java.nio.file.Files.createTempDirectory("votingplugin-control-test-audit"), Clock.systemUTC()),
-                        Clock.systemUTC()), Clock.systemUTC(), System::nanoTime, false, Set.of(), launchId);
+                        Clock.systemUTC()), agentEnabled, launchId);
     }
 
     public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
@@ -213,6 +219,26 @@ public final class ControlHttpServer implements AutoCloseable {
                 secureCookies, trustedProxyAddresses, launchId);
     }
 
+    public ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                             CredentialStore credentials, ConfigurationOperations configurationOperations,
+                             InspectionOperations inspectionOperations, ConfigurationSnapshots configurationSnapshots,
+                             ArtifactStore artifactStore, DeploymentOperations deploymentOperations,
+                             boolean secureCookies, Set<String> trustedProxyAddresses, String launchId,
+                             boolean agentEnabled) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
+                configurationSnapshots, artifactStore, deploymentOperations, Clock.systemUTC(), System::nanoTime,
+                secureCookies, trustedProxyAddresses, launchId, agentEnabled);
+    }
+
+    private ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                              CredentialStore credentials, ConfigurationOperations operations,
+                              boolean agentEnabled, String launchId) throws IOException {
+        this(address, registry, identity, credentials, operations,
+                new InspectionOperations(registry, Clock.systemUTC()), temporarySnapshots(), temporaryArtifactStore(),
+                new DeploymentOperations(registry, Clock.systemUTC()), Clock.systemUTC(), System::nanoTime,
+                false, Set.of(), launchId, agentEnabled);
+    }
+
     ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
                       CredentialStore credentials, ConfigurationOperations configurationOperations, Clock clock,
                       java.util.function.LongSupplier nanoTime, boolean secureCookies,
@@ -239,6 +265,18 @@ public final class ControlHttpServer implements AutoCloseable {
                       ArtifactStore artifactStore, DeploymentOperations deploymentOperations,
                       Clock clock, java.util.function.LongSupplier nanoTime, boolean secureCookies,
                       Set<String> trustedProxyAddresses, String launchId) throws IOException {
+        this(address, registry, identity, credentials, configurationOperations, inspectionOperations,
+                configurationSnapshots, artifactStore, deploymentOperations, clock, nanoTime, secureCookies,
+                trustedProxyAddresses, launchId, false);
+    }
+
+    private ControlHttpServer(InetSocketAddress address, NodeRegistry registry, ControlIdentity identity,
+                      CredentialStore credentials, ConfigurationOperations configurationOperations,
+                      InspectionOperations inspectionOperations, ConfigurationSnapshots configurationSnapshots,
+                      ArtifactStore artifactStore, DeploymentOperations deploymentOperations,
+                      Clock clock, java.util.function.LongSupplier nanoTime, boolean secureCookies,
+                      Set<String> trustedProxyAddresses, String launchId, boolean agentEnabled) throws IOException {
+        this.agentEnabled = agentEnabled;
         this.registry = Objects.requireNonNull(registry, "registry");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.credentials = Objects.requireNonNull(credentials, "credentials");
@@ -1049,6 +1087,10 @@ public final class ControlHttpServer implements AutoCloseable {
     }
 
     private void routeAgent(HttpExchange exchange, String path) throws IOException {
+        if (!agentEnabled) {
+            error(exchange, 403, "AGENT_DISABLED", "MCP management is disabled on this Control instance", List.of());
+            return;
+        }
         if (exchange.getRequestURI().getRawQuery() != null
                 || !path.equals(exchange.getRequestURI().getRawPath())) {
             throw new IllegalArgumentException("Invalid agent route");
@@ -1101,8 +1143,7 @@ public final class ControlHttpServer implements AutoCloseable {
             agentOperations.requireAccess(token, action);
             Object result = switch (route) {
                 case "nodes" -> {
-                    read(exchange, AgentEmpty.class, true);
-                    yield agentOperations.discover(token);
+                    yield agentOperations.discover(token, read(exchange, AgentOperations.Discovery.class, true));
                 }
                 case "read" -> agentOperations.read(token, read(exchange, AgentOperations.Read.class, true));
                 case "preview" -> agentOperations.preview(token, read(exchange, AgentOperations.Preview.class, true));
@@ -1122,7 +1163,6 @@ public final class ControlHttpServer implements AutoCloseable {
         return AgentOperations.parseId(request.operationId());
     }
 
-    private record AgentEmpty() { }
     private record AgentId(String operationId) { }
 
     private <T> T read(HttpExchange exchange, Class<T> type) throws IOException {

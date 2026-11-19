@@ -1087,7 +1087,9 @@ async function loadAgentGrants() {
   const grants = await agentAdmin('grants');
   agentGrants.replaceChildren(...grants.map(grant => {
     const row = document.createElement('p');
-    const label = document.createTextNode(`${grant.id} · ${grant.nodeIds.join(', ')} · ${grant.actions.join(', ')} · ${grant.expiresAt} `);
+    const scope = grant.proxyNodeId ? `Proxy ${grant.proxyNodeId} · ${grant.nodeCount} enrolled nodes`
+      : grant.nodeIds.join(', ');
+    const label = document.createTextNode(`${grant.id} · ${scope} · ${grant.actions.join(', ')} · ${grant.expiresAt} `);
     const revoke = text(document.createElement('button'), 'Revoke');
     revoke.type = 'button';
     revoke.addEventListener('click', async () => {
@@ -1112,7 +1114,8 @@ agentGrantForm.addEventListener('submit', async event => {
   try {
     const form = new FormData(agentGrantForm);
     const grant = await agentAdmin('issue', {
-      nodeIds: form.get('nodes').split(',').map(id => id.trim()),
+      nodeIds: form.get('nodes').split(',').map(id => id.trim()).filter(Boolean),
+      proxyNodeId: form.get('proxy').trim() || null,
       actions: form.getAll('actions'),
       minutes: Number(form.get('minutes'))
     });

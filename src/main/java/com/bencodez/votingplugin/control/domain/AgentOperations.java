@@ -1,6 +1,8 @@
 package com.bencodez.votingplugin.control.domain;
 
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
+import com.bencodez.votingplugin.control.protocol.NodeStatus;
+import java.util.HashSet;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -14,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 public final class AgentOperations {
     private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status");
@@ -31,24 +34,48 @@ public final class AgentOperations {
 
     public synchronized Issued issue(Issue request) {
         grants.values().removeIf(grant -> !clock.instant().isBefore(grant.expiresAt()));
-        if (request == null || request.nodeIds() == null || request.nodeIds().isEmpty()
-                || request.nodeIds().size() > 50 || request.actions() == null || request.actions().isEmpty()
-                || request.actions().size() > ACTIONS.size() || request.actions().stream().anyMatch(action -> action == null || !ACTIONS.contains(action)) || request.minutes() == null || request.minutes() < 1
-                || request.minutes() > 1440 || grants.size() >= 64) throw invalid("Invalid agent grant or grant limit reached");
-        request.nodeIds().forEach(AgentOperations::validateNodeId);
+        if (request == null || request.actions() == null || request.actions().isEmpty()
+                || request.actions().size() > ACTIONS.size()
+                || request.actions().stream().anyMatch(action -> action == null || !ACTIONS.contains(action))
+                || request.minutes() == null || request.minutes() < 1 || request.minutes() > 1440
+                || grants.size() >= 64) throw invalid("Invalid agent grant or grant limit reached");
+        NodeStatus root = null;
+        Set<String> nodes;
+        if (request.proxyNodeId() != null) {
+            if (request.nodeIds() != null && !request.nodeIds().isEmpty()) throw invalid("Choose one scope");
+            validateNodeId(request.proxyNodeId());
+            root = registry.find(request.proxyNodeId());
+            if (!onlineProxy(root) || root.snapshotSequence() < 0) {
+                throw invalid("An online enrolled proxy with a topology snapshot is required");
+            }
+            nodes = new HashSet<>();
+            nodes.add(root.nodeId());
+            for (var backend : root.backends()) {
+                NodeStatus member = registry.find(backend.backendId());
+                if (member != null && "BUKKIT".equals(member.platform())) nodes.add(member.nodeId());
+            }
+        } else {
+            if (request.nodeIds() == null || request.nodeIds().isEmpty() || request.nodeIds().size() > 50) {
+                throw invalid("Node scope requires 1 to 50 exact node IDs");
+            }
+            request.nodeIds().forEach(AgentOperations::validateNodeId);
+            nodes = Set.copyOf(request.nodeIds());
+        }
         UUID id = UUID.randomUUID();
         byte[] secret = new byte[32];
         random.nextBytes(secret);
         String token = "vp-agent-" + id + "." + Base64.getUrlEncoder().withoutPadding().encodeToString(secret);
         Instant expiry = clock.instant().plusSeconds(60L * request.minutes());
-        operations.auditAgentGrant(id, "ISSUED");
-        grants.put(id, new Grant(id, Set.copyOf(request.nodeIds()), Set.copyOf(request.actions()), expiry, digest(token)));
+        operations.auditAgentGrant(id, root == null ? "ISSUED" : "NETWORK_ISSUED");
+        grants.put(id, new Grant(id, nodes.stream().sorted().toList(), Set.copyOf(request.actions()),
+                expiry, digest(token), root == null ? null : root.nodeId(), root == null ? null : root.sessionId()));
         return new Issued(id, token, expiry);
     }
 
     public synchronized List<GrantView> list() {
         return grants.values().stream().filter(grant -> clock.instant().isBefore(grant.expiresAt()))
-                .map(grant -> new GrantView(grant.id(), grant.nodes(), grant.actions(), grant.expiresAt())).toList();
+                .map(grant -> new GrantView(grant.id(), grant.proxyNodeId() == null ? grant.nodes() : List.of(),
+                        grant.actions(), grant.expiresAt(), grant.proxyNodeId(), grant.nodes().size())).toList();
     }
 
     public synchronized void revoke(UUID id) {
@@ -60,25 +87,36 @@ public final class AgentOperations {
         authorize(token, action);
     }
 
-    public synchronized Object discover(String token) {
+    public synchronized Object discover(String token, Discovery request) {
         Grant grant = authorize(token, "discover");
-        return Map.of("items", grant.nodes().stream().sorted().map(registry::find)
-                .filter(java.util.Objects::nonNull)
-                .map(node -> Map.of("nodeId", node.nodeId(), "platform", node.platform(), "online", node.online(),
-                        "acceptedCapabilities", node.acceptedCapabilities())).toList());
+        int offset = request.offset() == null ? 0 : request.offset();
+        if (offset < 0 || offset > grant.nodes().size()) throw invalid("Invalid discovery offset");
+        int end = Math.min(offset + 50, grant.nodes().size());
+        return withStableScope(grant, () -> {
+            Set<String> permitted = permittedNodes(grant);
+            if (permitted.isEmpty()) return Map.of("items", List.of());
+            var results = new LinkedHashMap<String, Object>();
+            results.put("items", grant.nodes().subList(offset, end).stream().filter(permitted::contains)
+                    .map(registry::find).filter(java.util.Objects::nonNull)
+                    .map(node -> Map.of("nodeId", node.nodeId(), "platform", node.platform(), "online", node.online(),
+                            "acceptedCapabilities", node.acceptedCapabilities())).toList());
+            if (end < grant.nodes().size()) results.put("nextOffset", end);
+            return results;
+        });
     }
 
     public synchronized Object read(String token, Read request) {
         Grant grant = authorize(token, "read");
-        requireNode(grant, request.nodeId());
         siteName(request.name());
-        return project(operations.createAgentVoteSite(grant.id(), request.nodeId(),
-                configuration(Map.of("name", request.name())), null));
+        return withStableScope(grant, () -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.createAgentVoteSite(grant.id(), request.nodeId(),
+                    configuration(Map.of("name", request.name())), null));
+        });
     }
 
     public synchronized Object preview(String token, Preview request) {
         Grant grant = authorize(token, "preview");
-        requireNode(grant, request.nodeId());
         if (request.readOperationId() == null || request.options() == null) throw invalid("Read and options are required");
         Site site = request.options();
         siteName(site.name());
@@ -96,29 +134,49 @@ public final class AgentOperations {
             if (site.priority() < 0 || site.priority() > 100) throw invalid("Invalid priority");
             values.put("priority", site.priority().toString());
         }
-        return project(operations.createAgentVoteSite(grant.id(), request.nodeId(), configuration(values),
-                parseId(request.readOperationId())));
+        return withStableScope(grant, () -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.createAgentVoteSite(grant.id(), request.nodeId(), configuration(values),
+                    parseId(request.readOperationId())));
+        });
     }
 
     public synchronized Object status(String token, UUID id) {
         Grant grant = authorize(token, "status");
-        var operation = operations.getAgentOperation(grant.id(), id);
-        var projected = project(operation);
-        if ("READ".equals(operation.type()) && "SUCCEEDED".equals(operation.state())) {
-            projected.put("values", operations.agentReadValues(grant.id(), id));
-        }
-        if ("PREVIEW".equals(operation.type())) {
-            UUID applyId = operations.agentApplyId(grant.id(), id);
-            if (applyId != null) projected.put("applyOperationId", applyId);
-        }
-        return projected;
+        return withStableScope(grant, () -> {
+            var operation = operations.getAgentOperation(grant.id(), id);
+            operation.nodeStates().keySet().forEach(nodeId -> requireNode(grant, nodeId));
+            var projected = project(operation);
+            if ("READ".equals(operation.type()) && "SUCCEEDED".equals(operation.state())) {
+                projected.put("values", operations.agentReadValues(grant.id(), id));
+            }
+            if ("PREVIEW".equals(operation.type())) {
+                UUID applyId = operations.agentApplyId(grant.id(), id);
+                if (applyId != null) projected.put("applyOperationId", applyId);
+            }
+            return projected;
+        });
     }
 
     public synchronized ConfigurationOperations.OperationView approve(UUID id) {
         var preview = operations.get(id);
         Grant grant = grants.get(preview.agentId());
         if (grant == null || !clock.instant().isBefore(grant.expiresAt())) throw invalid("Agent grant is unavailable");
-        return operations.approveAgentPreview(id);
+        return withStableScope(grant, () -> {
+            if (!permittedNodes(grant).containsAll(preview.nodeStates().keySet())) {
+                throw invalid("Preview target is outside the current grant scope");
+            }
+            return operations.approveAgentPreview(id);
+        });
+    }
+
+    private <T> T withStableScope(Grant grant, Supplier<T> action) {
+        if (grant.proxyNodeId() == null) return action.get();
+        // Configuration claims and completions already acquire the operations
+        // monitor before entering the registry. Preserve that order.
+        synchronized (operations) {
+            return registry.withStableTopology(action);
+        }
     }
 
     private static Map<String, Object> project(ConfigurationOperations.OperationView operation) {
@@ -162,9 +220,27 @@ public final class AgentOperations {
         throw new SecurityException("Agent access denied");
     }
 
-    private static void requireNode(Grant grant, String id) {
+    private void requireNode(Grant grant, String id) {
         validateNodeId(id);
-        if (!grant.nodes().contains(id)) denied();
+        if (!permittedNodes(grant).contains(id)) denied();
+    }
+
+    private Set<String> permittedNodes(Grant grant) {
+        if (grant.proxyNodeId() == null) return Set.copyOf(grant.nodes());
+        NodeStatus proxy = registry.find(grant.proxyNodeId());
+        if (!onlineProxy(proxy) || !grant.proxySession().equals(proxy.sessionId())) return Set.of();
+        Set<String> current = new HashSet<>();
+        current.add(proxy.nodeId());
+        for (var backend : proxy.backends()) {
+            NodeStatus member = registry.find(backend.backendId());
+            if (member != null && "BUKKIT".equals(member.platform())) current.add(member.nodeId());
+        }
+        current.retainAll(grant.nodes());
+        return current;
+    }
+
+    private static boolean onlineProxy(NodeStatus node) {
+        return node != null && node.online() && Set.of("BUNGEECORD", "VELOCITY").contains(node.platform());
     }
 
     public static UUID parseId(String id) {
@@ -208,12 +284,14 @@ public final class AgentOperations {
         }
     }
 
-    public record Issue(List<String> nodeIds, List<String> actions, Integer minutes) { }
+    public record Issue(List<String> nodeIds, List<String> actions, Integer minutes, String proxyNodeId) { }
+    public record Discovery(Integer offset) { }
     public record Issued(UUID id, String token, Instant expiresAt) { }
-    public record GrantView(UUID id, Set<String> nodeIds, Set<String> actions, Instant expiresAt) { }
+    public record GrantView(UUID id, List<String> nodeIds, Set<String> actions, Instant expiresAt, String proxyNodeId, int nodeCount) { }
     public record Read(String nodeId, String name) { }
     public record Preview(String nodeId, String readOperationId, Site options) { }
     public record Site(String name, String serviceSite, String voteUrl, Boolean enabled, String displayName,
                        Integer priority, Boolean hidden, String voteDelay, String material) { }
-    private record Grant(UUID id, Set<String> nodes, Set<String> actions, Instant expiresAt, byte[] verifier) { }
+    private record Grant(UUID id, List<String> nodes, Set<String> actions, Instant expiresAt, byte[] verifier,
+                         String proxyNodeId, UUID proxySession) { }
 }

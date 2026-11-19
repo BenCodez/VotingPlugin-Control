@@ -37,13 +37,17 @@ class AgentMcpHttpTest {
     private URI base;
 
     @BeforeEach void start() throws Exception {
+        start(true);
+    }
+
+    private void start(boolean agentEnabled) throws Exception {
         credentials = new CredentialStore(directory);
         nodeToken = credentials.rotateNode("proxy-a");
         adminToken = credentials.rotateAdmin();
         server = new ControlHttpServer(new InetSocketAddress("127.0.0.1", 0),
                 new InMemoryNodeRegistry(Clock.systemUTC(), Duration.ofSeconds(90)),
                 new ControlIdentity(UUID.fromString("00000000-0000-0000-0000-000000000099"), "test", 1),
-                credentials, "00000000-0000-0000-0000-000000000123");
+                credentials, "00000000-0000-0000-0000-000000000123", agentEnabled);
         server.start();
         base = URI.create("http://127.0.0.1:" + server.port());
         client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
@@ -55,6 +59,14 @@ class AgentMcpHttpTest {
             server.close();
         }
     }
+    @Test void defaultOffDeniesAgentRoutesAndPreservesOwnerApi() throws Exception {
+        stop();
+        start(false);
+        assertError(send("POST", "/api/v1/agent/nodes", "{}", adminToken), 403, "AGENT_DISABLED");
+        assertError(send("POST", "/api/v1/agent-admin/issue", "{}", adminToken), 403, "AGENT_DISABLED");
+        assertEquals(200, get("/api/v1/nodes", adminToken).statusCode());
+    }
+
     @Test void agentVoteSiteUsesScopedReadAndBrowserOnlyApproval() throws Exception {
         String fixturePassphrase = UUID.randomUUID().toString();
         credentials.setWebPassword(fixturePassphrase.toCharArray());
