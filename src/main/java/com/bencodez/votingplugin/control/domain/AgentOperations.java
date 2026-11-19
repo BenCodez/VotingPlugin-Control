@@ -20,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings", "vote-sites-editor", "rewards-editor", "proxy-method", "common-settings", "vote-logging", "vote-party");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings", "vote-sites-editor", "rewards-editor", "proxy-method", "common-settings", "vote-logging", "vote-party", "managed-fields");
     private final Map<UUID, Grant> grants = new HashMap<>();
     private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
@@ -162,6 +162,28 @@ public final class AgentOperations {
                 return Map.of("nodeId", request.nodeId(), "state", observation.state());
             });
         }
+    }
+
+    public synchronized Object managedFieldsCatalog(String token, FieldsCatalog request) {
+        authorize(token, "managed-fields");
+        return Map.of("fields", ManagedFields.catalog(request.file(), true));
+    }
+
+    public synchronized Object readManagedFields(String token, FieldsRead request) {
+        Grant grant = authorize(token, "managed-fields");
+        return withStableTopology(() -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.readAgentManagedFields(grant.id(), request.nodeId(), request.file()));
+        });
+    }
+
+    public synchronized Object previewManagedFields(String token, FieldsPreview request) {
+        Grant grant = authorize(token, "managed-fields");
+        return withStableTopology(() -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.previewAgentManagedFields(grant.id(), request.nodeId(),
+                    parseId(request.readOperationId()), request.overrides()));
+        });
     }
 
     public synchronized void requireGuidedAccess(String token) {
@@ -563,6 +585,9 @@ public final class AgentOperations {
     public record Discovery(Integer offset) { }
     public record HealthRequest(List<String> nodeIds) { }
     public record RefreshHealth(String nodeId) { }
+    public record FieldsCatalog(String file) { }
+    public record FieldsRead(String nodeId, String file) { }
+    public record FieldsPreview(String nodeId, String readOperationId, Map<String, Object> overrides) { }
     public record GuidedRead(String nodeId, String preset, String evidence) { }
     public record GuidedTarget(String nodeId, String presetReadId, String presenceReadId) { }
     public record GuidedPreview(String preset, List<GuidedTarget> targets, Map<String, Object> overrides) { }

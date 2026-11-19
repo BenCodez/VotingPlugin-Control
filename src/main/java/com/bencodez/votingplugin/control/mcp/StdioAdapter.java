@@ -2,6 +2,7 @@ package com.bencodez.votingplugin.control.mcp;
 
 import com.bencodez.votingplugin.control.domain.GeneralSettingsDocument;
 import com.bencodez.votingplugin.control.domain.GuidedSettings;
+import com.bencodez.votingplugin.control.domain.ManagedFields;
 import com.bencodez.votingplugin.control.domain.VoteSitesDocument;
 
 import com.fasterxml.jackson.core.StreamReadConstraints;
@@ -149,6 +150,11 @@ public final class StdioAdapter {
     }
 
     private static boolean validResult(String route, JsonNode result) {
+        if ("fields-catalog".equals(route)) {
+            if (!fields(result, Set.of("fields"))) return false;
+            return ManagedFields.files().stream().anyMatch(file -> result.path("fields")
+                    .equals(JSON.valueToTree(ManagedFields.catalog(file, true))));
+        }
         if ("topology".equals(route)) return validTopology(result);
         if ("health".equals(route)) return validHealth(result);
         if ("health-refresh".equals(route)) {
@@ -268,6 +274,7 @@ public final class StdioAdapter {
         Set<String> keys = new java.util.HashSet<>(GeneralSettingsDocument.editableKeys());
         keys.addAll(VoteSitesDocument.editableKeys());
         keys.addAll(GuidedSettings.resultKeys());
+        keys.addAll(ManagedFields.agentPaths());
         keys.addAll(Set.of("siteKey", "rewardsConfigured", "rewardField", "rewardValue", "method", "useBungeecord"));
         keys.addAll(Set.of("name", "exists", "serviceSite", "voteUrl", "enabled", "displayName", "priority",
                 "hidden", "voteDelay", "material", "displayItem.amount", "sendVotesToAllServers", "blockedServers"));
@@ -342,6 +349,34 @@ public final class StdioAdapter {
         tools.put("refresh_node_health", new Tool("refresh_node_health", "health-refresh",
                 "Queue the read-only Network Doctor observation for an authorized node.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));
+        var managedFile = Map.of("type", "string", "enum", ManagedFields.files());
+        var fieldProperties = new LinkedHashMap<String, Object>();
+        for (String file : ManagedFields.files()) {
+            for (var field : ManagedFields.catalog(file, true)) {
+                var schema = switch (field.kind()) {
+                    case BOOLEAN -> flag;
+                    case INTEGER -> Map.of("type", "integer", "minimum", field.minimum(), "maximum", field.maximum());
+                    case CHOICE -> Map.of("type", "string", "enum", field.choices());
+                    case IDENTIFIER_LIST -> Map.of("type", "array", "maxItems", 24,
+                            "items", Map.of("type", "string", "pattern", "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"));
+                    case TEXT_LIST -> throw new IllegalStateException("Free-text lists are browser-only");
+                };
+                fieldProperties.put(field.path(), schema);
+            }
+        }
+        var managedOverrides = new LinkedHashMap<>(object(fieldProperties, List.of()));
+        managedOverrides.put("minProperties", 1);
+        managedOverrides.put("maxProperties", ManagedFields.MAX_EDITS);
+        tools.put("list_configuration_fields", new Tool("list_configuration_fields", "fields-catalog",
+                "List agent-editable field names and value types for one managed configuration file.",
+                object(Map.of("file", managedFile), List.of("file"))));
+        tools.put("read_configuration_fields", new Tool("read_configuration_fields", "fields-read",
+                "Read present typed configuration fields on one authorized node. The source file stays in Control.",
+                object(Map.of("nodeId", node, "file", managedFile), List.of("nodeId", "file"))));
+        tools.put("preview_configuration_fields", new Tool("preview_configuration_fields", "fields-preview",
+                "Preview one to eight typed edits to the file bound to a current read. Browser approval is required.",
+                object(Map.of("nodeId", node, "readOperationId", id, "overrides", managedOverrides),
+                        List.of("nodeId", "readOperationId", "overrides"))));
         var guidedPreset = Map.of("type", "string", "enum", List.of("common-settings", "vote-logging", "vote-party"));
         var guidedTarget = object(Map.of("nodeId", node, "presetReadId", id, "presenceReadId", id),
                 List.of("nodeId", "presetReadId", "presenceReadId"));

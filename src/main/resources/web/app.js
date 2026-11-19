@@ -3903,6 +3903,8 @@ async function waitForDeployment(operation, generation) {
 }
 
 function discardAuthenticationState(reason) {
+  if (typedFieldsDialog.open) typedFieldsDialog.close();
+  clearTypedFields();
   clearAgentCredential();
   agentGrantForm.reset();
   agentGrants.replaceChildren();
@@ -4234,9 +4236,11 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
   rememberVoteLoggingRestart(operation);
   const applied = operation.type === 'APPLY'
     && Object.values(operation.results || {}).some(result => result?.success);
+  const previousGeneration = inputGeneration;
   if (applied) {
     invalidateConfigurationReads();
     invalidateGuidedSetupReads();
+    options.onApplyInvalidation?.(previousGeneration);
     if (tabFromHash() === 'quick-setup') window.setTimeout(() => void autoLoadTab('quick-setup'), 0);
     if (tabFromHash() === 'overview') {
       text(dataOverview, 'Configuration changed; refreshing server overview…');
@@ -4884,6 +4888,165 @@ async function loadFileConfiguration(automatic = false) {
     }
   }
 }
+
+const typedFieldsDialog = document.querySelector('#managed-fields-dialog');
+const typedFieldsKey = document.querySelector('#managed-fields-key');
+const typedFieldsValue = document.querySelector('#managed-fields-value');
+const typedFieldsStatus = document.querySelector('#managed-fields-status');
+const typedFieldsPreview = document.querySelector('#managed-fields-preview');
+const typedFieldsApply = document.querySelector('#managed-fields-apply');
+let typedFields = null;
+
+function typedFieldsCurrent(editor, generation = inputGeneration) {
+  return typedFieldsDialog.open && editor === typedFields && authenticated
+    && editor.authGeneration === authenticationGeneration && editor.generation === generation
+    && editor.file === configurationFile.value && editor.nodeId === selectedConfigurationNodeId()
+    && editor.sessionId === nodeIndex.get(editor.nodeId)?.sessionId;
+}
+
+function discardTypedFieldApproval(editor) {
+  const approval = editor?.approval;
+  if (!editor) return;
+  editor.previewRequest = null;
+  editor.approval = null;
+  discardTypedFieldOperation(editor, approval);
+}
+
+function discardTypedFieldOperation(editor, approval) {
+  if (approval && authenticated && editor.authGeneration === authenticationGeneration && !logoutInFlight) {
+    void authorized('/api/v1/configuration/managed-fields/discard-preview', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(approval)
+    }).catch(() => {});
+  }
+}
+
+function clearTypedFields() {
+  discardTypedFieldApproval(typedFields);
+  typedFields = null;
+  typedFieldsKey.replaceChildren();
+  typedFieldsValue.value = '';
+  text(typedFieldsStatus, '');
+  typedFieldsPreview.disabled = true;
+  typedFieldsApply.disabled = true;
+}
+
+function selectTypedField() {
+  if (!typedFields) return;
+  discardTypedFieldApproval(typedFields);
+  typedFieldsApply.disabled = true;
+  const row = typedFields.fields.get(typedFieldsKey.value);
+  typedFieldsValue.value = row ? JSON.stringify(row.value, null, 2) : '';
+  typedFieldsPreview.disabled = !row;
+  text(typedFieldsStatus, row ? row.field.kind.toLowerCase().replaceAll('_', ' ') : 'This file has no present typed fields.');
+}
+
+document.querySelector('#open-managed-fields').addEventListener('click', async () => {
+  if (!authenticated || configurationDirty || configurationSourceKind !== 'READ' || !lastFileReadOperation) {
+    text(fileOperationStatus, 'Load the current file and clear unsaved YAML changes before editing typed fields.');
+    return;
+  }
+  clearTypedFields();
+  const nodeId = selectedConfigurationNodeId();
+  const editor = {nodeId, sessionId: nodeIndex.get(nodeId)?.sessionId, file: configurationFile.value,
+    readOperationId: lastFileReadOperation.operationId, authGeneration: authenticationGeneration,
+    generation: inputGeneration, fields: new Map()};
+  typedFields = editor;
+  typedFieldsDialog.showModal();
+  text(typedFieldsStatus, 'Loading typed fields…');
+  try {
+    const rows = await authorized('/api/v1/configuration/managed-fields/state', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({readOperationId: editor.readOperationId, nodeId, file: editor.file})
+    });
+    if (!typedFieldsCurrent(editor)) return;
+    for (const row of rows) {
+      editor.fields.set(row.field.path, row);
+      const option = text(document.createElement('option'), row.field.path);
+      option.value = row.field.path;
+      typedFieldsKey.append(option);
+    }
+    selectTypedField();
+  } catch (error) {
+    if (typedFieldsCurrent(editor)) text(typedFieldsStatus, error.message);
+  }
+});
+
+typedFieldsKey.addEventListener('change', selectTypedField);
+typedFieldsValue.addEventListener('input', () => {
+  const previewPending = Boolean(typedFields?.previewRequest);
+  discardTypedFieldApproval(typedFields);
+  typedFieldsApply.disabled = true;
+  if (previewPending) typedFieldsPreview.disabled = !typedFields.fields.has(typedFieldsKey.value);
+});
+typedFieldsDialog.addEventListener('close', clearTypedFields);
+
+typedFieldsPreview.addEventListener('click', async () => {
+  const editor = typedFields;
+  if (!editor || !typedFieldsCurrent(editor)) return;
+  const key = typedFieldsKey.value;
+  const input = typedFieldsValue.value;
+  discardTypedFieldApproval(editor);
+  const request = {};
+  editor.previewRequest = request;
+  const requestCurrent = () => editor.previewRequest === request && typedFieldsCurrent(editor)
+    && key === typedFieldsKey.value && input === typedFieldsValue.value;
+  let approval;
+  typedFieldsApply.disabled = true;
+  typedFieldsPreview.disabled = true;
+  try {
+    const proposal = await authorized('/api/v1/configuration/managed-fields/preview', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({readOperationId: editor.readOperationId, nodeId: editor.nodeId, file: editor.file,
+        overrides: {[key]: JSON.parse(input)}})
+    });
+    approval = {previewOperationId: proposal.operation.operationId};
+    if (!requestCurrent()) return;
+    const operation = await waitForOperation(proposal.operation, typedFieldsStatus, operationContext(),
+      {contextCurrent: requestCurrent});
+    if (!requestCurrent()) return;
+    if (operation.browserReviewReady) {
+      editor.approval = approval;
+      approval = null;
+      const restart = editor.file === 'bungeeconfig.yml'
+        ? '\nRestart the node separately before assuming the running transport changed.' : '';
+      text(typedFieldsStatus, `${editor.nodeId} · ${editor.file} · ${key}\n${proposal.before[key]} → ${proposal.after[key]}${restart}`);
+      typedFieldsApply.disabled = false;
+    }
+  } catch (error) {
+    if (requestCurrent()) text(typedFieldsStatus, error.message);
+  } finally {
+    discardTypedFieldOperation(editor, approval);
+    if (requestCurrent()) {
+      editor.previewRequest = null;
+      typedFieldsPreview.disabled = false;
+    }
+  }
+});
+
+typedFieldsApply.addEventListener('click', async () => {
+  const editor = typedFields;
+  if (!editor?.approval || !typedFieldsCurrent(editor)) return;
+  const approval = editor.approval;
+  editor.approval = null;
+  typedFieldsApply.disabled = true;
+  typedFieldsPreview.disabled = true;
+  try {
+    // The shared Apply helper advances the generation before queueing work.
+    editor.generation = inputGeneration + 1;
+    const result = await startConfigurationOperation('/api/v1/configuration/managed-fields/apply', approval, typedFieldsStatus, {
+      onApplyInvalidation: previousGeneration => {
+        if (typedFieldsCurrent(editor, previousGeneration)) editor.generation = inputGeneration;
+      }
+    });
+    if (!typedFieldsCurrent(editor)) return;
+    // Shared Apply invalidation schedules the file reload for the active context.
+    if (result.state === 'SUCCEEDED') typedFieldsDialog.close();
+  } catch (error) {
+    if (typedFieldsCurrent(editor)) text(typedFieldsStatus, error.message);
+  } finally {
+    if (typedFieldsCurrent(editor)) typedFieldsPreview.disabled = false;
+  }
+});
 
 readFileConfiguration.addEventListener('click', () => { void loadFileConfiguration(false); });
 

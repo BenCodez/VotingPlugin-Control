@@ -167,3 +167,17 @@ cannot return the complete expected diff. Each node applies its own revision and
 - **Vote Party** requires both quick-setup versions and a typed v2 READ with an explicit enabled value.
   It edits enablement, threshold, recipient flags and a nonblank broadcast. Legacy v1-only connectors and
   inconsistent READ replies are unavailable for this agent workflow. Reward commands remain browser-managed.
+
+
+## Typed managed-file fields
+
+Grant **Read and preview typed managed-file fields** and **Track operations**. Use
+`list_configuration_fields` to obtain the exact field catalog for a managed file,
+`read_configuration_fields` on one authorized node, and `preview_configuration_fields` with
+that read operation ID and up to eight explicit typed overrides. The status result returns only
+present agent-visible values. List values are rendered as quoted lists and edits take JSON arrays.
+
+The connector must confirm the same source revision, masked document and exact leaf paths before
+browser approval. The proposal preserves all bytes outside selected values. Missing keys, ambiguous
+mappings and lists with internal comments require the existing browser workflow. Commands, free-text
+lists and database fields are absent from the MCP catalog. See [configuration coverage](configuration-coverage.md).
