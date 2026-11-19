@@ -20,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings", "vote-sites-editor", "rewards-editor");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings", "vote-sites-editor", "rewards-editor", "proxy-method");
     private final Map<UUID, Grant> grants = new HashMap<>();
     private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
@@ -90,6 +90,7 @@ public final class AgentOperations {
 
     public synchronized void revoke(UUID id) {
         operations.auditAgentGrant(id, "REVOKED");
+        operations.revokeCoordinatedAgent(id);
         grants.remove(id);
         healthRefreshes.remove(id);
     }
@@ -161,6 +162,35 @@ public final class AgentOperations {
                 return Map.of("nodeId", request.nodeId(), "state", observation.state());
             });
         }
+    }
+
+    public synchronized Object readProxyMethod(String token, ProxyMethodRead request) {
+        Grant grant = authorize(token, "proxy-method");
+        return withStableTopology(() -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.readAgentProxyMethod(grant.id(), request.nodeId(), request.method()));
+        });
+    }
+
+    public synchronized Object previewProxyMethod(String token, ProxyMethodPreview request) {
+        Grant grant = authorize(token, "proxy-method");
+        if (request.targets() == null || request.targets().size() < 2
+                || request.targets().size() > ConfigurationOperations.MAX_AGENT_TARGETS) {
+            throw invalid("An explicit proxy and 2 to 10 targets are required");
+        }
+        return withStableTopology(() -> {
+            requireNode(grant, request.proxyNodeId());
+            Map<String, UUID> reads = new LinkedHashMap<>();
+            for (SitePolicyTarget target : request.targets()) {
+                if (target == null) throw invalid("Invalid target");
+                requireNode(grant, target.nodeId());
+                if (reads.putIfAbsent(target.nodeId(), parseId(target.readOperationId())) != null) {
+                    throw invalid("Targets must be unique");
+                }
+            }
+            return project(operations.previewAgentProxyMethod(grant.id(), request.proxyNodeId(), request.method(),
+                    reads, grant.expiresAt()));
+        });
     }
 
     public synchronized Object readReward(String token, RewardRead request) {
@@ -351,7 +381,7 @@ public final class AgentOperations {
         var preview = operations.get(id);
         Grant grant = grants.get(preview.agentId());
         if (grant == null || !clock.instant().isBefore(grant.expiresAt())) throw invalid("Agent grant is unavailable");
-        return withStableScope(grant, () -> {
+        return withStableTopology(() -> {
             if (!permittedNodes(grant).containsAll(preview.nodeStates().keySet())) {
                 throw invalid("Preview target is outside the current grant scope");
             }
@@ -389,6 +419,14 @@ public final class AgentOperations {
             if ("APPLY".equals(operation.type()) && value.success() && operation.configuration() != null
                     && "bungeeconfig.yml".equals(operation.configuration().fileName())) {
                 item.put("restartRequired", true);
+            }
+            if ("APPLY".equals(operation.type()) && ManagedConfiguration.PROXY_METHOD.equals(operation.configuration().preset())) {
+                item.put("persistence", value.success() ? "REPORTED_PERSISTED"
+                        : value.rolledBack() ? "ROLLED_BACK" : "UNCONFIRMED");
+                if (value.success() && !value.reloaded()) {
+                    item.put("restartAfterAcknowledgement", true);
+                    item.put("runtimeReadiness", "UNKNOWN");
+                }
             }
             results.put(node, item);
         });
@@ -484,6 +522,8 @@ public final class AgentOperations {
     public record Discovery(Integer offset) { }
     public record HealthRequest(List<String> nodeIds) { }
     public record RefreshHealth(String nodeId) { }
+    public record ProxyMethodRead(String nodeId, String method) { }
+    public record ProxyMethodPreview(String proxyNodeId, String method, List<SitePolicyTarget> targets) { }
     public record RewardRead(String nodeId, String siteKey, String rewardName, String field) { }
     public record RewardPreview(String nodeId, String readOperationId, Object value) { }
     public record VoteSitesEditorRead(String nodeId, String siteKey) { }

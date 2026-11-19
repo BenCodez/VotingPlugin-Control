@@ -197,11 +197,16 @@ public final class StdioAdapter {
             var row = results.next();
             JsonNode details = row.getValue();
             if (!result.path("nodes").has(row.getKey())
-                    || !fields(details, Set.of("code", "success", "rolledBack", "reloaded", "restartRequired"))
+                    || !fields(details, Set.of("code", "success", "rolledBack", "reloaded", "restartRequired",
+                            "persistence", "restartAfterAcknowledgement", "runtimeReadiness"))
                     || !details.path("code").asText().matches("[A-Z][A-Z0-9_]{0,63}")
                     || !details.path("success").isBoolean() || !details.path("rolledBack").isBoolean()
                     || !details.path("reloaded").isBoolean()
-                    || details.has("restartRequired") && !details.path("restartRequired").isBoolean()) return false;
+                    || details.has("restartRequired") && !details.path("restartRequired").isBoolean()
+                    || details.has("persistence") && !Set.of("REPORTED_PERSISTED", "ROLLED_BACK", "UNCONFIRMED")
+                            .contains(details.path("persistence").asText())
+                    || details.has("restartAfterAcknowledgement") && !details.path("restartAfterAcknowledgement").isBoolean()
+                    || details.has("runtimeReadiness") && !"UNKNOWN".equals(details.path("runtimeReadiness").asText())) return false;
         }
         return true;
     }
@@ -261,7 +266,7 @@ public final class StdioAdapter {
         JsonNode values = result.path("values");
         Set<String> keys = new java.util.HashSet<>(GeneralSettingsDocument.editableKeys());
         keys.addAll(VoteSitesDocument.editableKeys());
-        keys.addAll(Set.of("siteKey", "rewardsConfigured", "rewardField", "rewardValue"));
+        keys.addAll(Set.of("siteKey", "rewardsConfigured", "rewardField", "rewardValue", "method", "useBungeecord"));
         keys.addAll(Set.of("name", "exists", "serviceSite", "voteUrl", "enabled", "displayName", "priority",
                 "hidden", "voteDelay", "material", "displayItem.amount", "sendVotesToAllServers", "blockedServers"));
         if (!"READ".equals(result.path("type").asText()) || !fields(values, keys)) return false;
@@ -335,6 +340,15 @@ public final class StdioAdapter {
         tools.put("refresh_node_health", new Tool("refresh_node_health", "health-refresh",
                 "Queue the read-only Network Doctor observation for an authorized node.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));
+        var method = Map.of("type", "string", "enum", List.of("PLUGINMESSAGING", "REDIS", "MQTT", "SOCKETS", "MYSQL", "HTTP"));
+        var rolloutTarget = object(Map.of("nodeId", node, "readOperationId", id), List.of("nodeId", "readOperationId"));
+        tools.put("read_proxy_method", new Tool("read_proxy_method", "proxy-method-read",
+                "Read the current method on an authorized node for a proposed transport capability.",
+                object(Map.of("nodeId", node, "method", method), List.of("nodeId", "method"))));
+        tools.put("preview_proxy_method", new Tool("preview_proxy_method", "proxy-method-preview",
+                "Preview one method for an authorized proxy and all its reported backends. Browser approval is required.",
+                object(Map.of("proxyNodeId", node, "method", method, "targets", Map.of("type", "array",
+                        "minItems", 2, "maxItems", 10, "items", rolloutTarget)), List.of("proxyNodeId", "method", "targets"))));
         var rewardFields = Map.of(
                 "type", "string", "pattern", "^(Money|Chance|Messages[.](Player|Broadcast)|Items[.][A-Za-z0-9_-]{1,64}[.](Material|Amount))$");
         var rewardSelector = new LinkedHashMap<>(object(Map.of("nodeId", node, "siteKey", name,

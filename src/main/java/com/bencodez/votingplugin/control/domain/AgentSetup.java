@@ -144,6 +144,33 @@ final class AgentSetup {
         }
     }
 
+    static ManagedConfiguration proxyMethod(String method) {
+        var configuration = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null,
+                ManagedConfiguration.PROXY_METHOD, method == null ? Map.of() : Map.of("method", method));
+        configuration.validateProposal();
+        return configuration;
+    }
+
+    static Map<String, String> proxyMethodValues(ManagedConfiguration configuration, boolean backend) {
+        if (configuration == null) throw new IllegalArgumentException("Missing method read");
+        String method = configuration.options().get("method");
+        proxyMethod(method);
+        if (!backend) return Map.of("method", method);
+        String enabled = configuration.options().getOrDefault("useBungeecord", "");
+        if (!List.of("true", "false").contains(enabled)) throw new IllegalArgumentException("Missing backend state");
+        return Map.of("method", method, "useBungeecord", enabled);
+    }
+
+    static Set<String> proxyMethodChanges(Map<String, String> before, String method) {
+        var paths = new HashSet<String>();
+        boolean backend = before.containsKey("useBungeecord");
+        if (!before.get("method").equals(method)) {
+            paths.add(backend ? "changed BungeeMethod" : "change proxy method from " + before.get("method") + " to " + method);
+        }
+        if (backend && !"true".equals(before.get("useBungeecord"))) paths.add("changed UseBungeecord");
+        return Set.copyOf(paths);
+    }
+
     static final String SITE_POLICY = "auto-create-vote-sites";
 
     static ManagedConfiguration sitePolicy(Boolean enabled) {

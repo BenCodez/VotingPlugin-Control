@@ -129,3 +129,18 @@ Select an existing money, chance, player or broadcast message, or named item mat
 Preview uses that read operation ID and one replacement scalar. Control checks the source, revision and exact
 changed path before browser approval. Command payloads, reward creation or removal, raw files, and execution
 are outside this tool surface.
+
+
+## Coordinated network proposals
+
+**Read and preview coordinated proxy method changes** and **Track operations** allow
+`read_proxy_method` and `preview_proxy_method`. Read each peer using the intended method to select its capability,
+then submit the exact proxy and every backend in its fresh reported topology, with one read ID per peer.
+The total limit is ten nodes. HTTP requires `config.proxy-method.v2`; legacy methods require
+`config.proxy-method.v1`. Backends also require `config.quick-setup.v1`.
+Control binds the preview to the exact participants, node sessions and per-target revisions.
+The proxy revision covers the method enum. Changes to other proxy transport settings are outside that revision.
+Control applies backends first and waits for their durable success before issuing work to the proxy.
+Per-peer status distinguishes reported persistence, rollback, and unconfirmed persistence.
+Proxy acknowledgement can trigger the existing connector’s runtime replacement, but runtime readiness remains unknown.
+A partial rollout requires a fresh review and can leave some backends changed.

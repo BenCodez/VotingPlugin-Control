@@ -1147,18 +1147,23 @@ async function reviewAgentPreview(operationId) {
       ['blockedServers', `[${configuration.blockedServers.join(', ')}]`]
     ] : Object.entries(configuration.domain === 'file' ? (after || {}) : configuration.options);
     if (configuration.preset === 'vote-site') fields.push(['displayItem.amount', '1']);
-    const fieldDetails = prior => fields.map(([key, value]) =>
+    const methodRollout = configuration.preset === 'proxy-method';
+    const fieldDetails = prior => [...fields, ...(methodRollout && Object.hasOwn(prior, 'useBungeecord')
+      ? [['useBungeecord', 'true']] : [])].map(([key, value]) =>
       `${configuration.preset === 'auto-create-vote-sites' ? 'enabled (current effective value)' : key}: ${(configuration.preset !== 'vote-site' || prior.exists === 'true') && Object.hasOwn(prior, key)
         ? JSON.stringify(prior[key]) : '(absent)'} → ${JSON.stringify(value)}`).join('\n');
     const targets = Object.entries(beforeByNode || {});
     const details = targets.length > 1 ? targets.map(([nodeId, prior]) =>
       `${nodeId} · revision ${operation.results?.[nodeId]?.revision || '(pending)'}\n${fieldDetails(prior)}`).join('\n\n')
       : fieldDetails(before);
+    const rolloutNote = methodRollout
+      ? '\nBackends persist and reload first. Partial persistence is possible. Proxy runtime replacement follows acknowledgement. Proxy revision covers the method only.'
+      : '';
     text(agentReviewDetail, `Agent ${operation.agentId}
 ${operationSummary(operation)}
 
 Proposed settings
-${details}`);
+${details}${rolloutNote}`);
     text(agentReviewStatus, operation.browserReviewReady ? 'Review the listed changes before applying.'
       : 'This preview is not ready for approval. Refresh Activity to check again.');
     agentReviewApply.disabled = !operation.browserReviewReady;

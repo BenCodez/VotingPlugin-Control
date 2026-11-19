@@ -638,6 +638,91 @@ class AgentOperationsTest {
         }
     }
 
+    @Test void proxyMethodRolloutRequiresEveryPeerAndPreservesBackendFirstPartialResults() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(10));
+        var sessions = Map.of("proxy", UUID.randomUUID(), "first", UUID.randomUUID(), "second", UUID.randomUUID());
+        var proxyCaps = Set.of("presence.snapshot", "config.proxy-method.v1");
+        var backendCaps = Set.of("config.quick-setup.v1", "config.proxy-method.v1");
+        var members = List.of(new BackendServerIdentity("first", "First", false, true, 0),
+                new BackendServerIdentity("second", "Second", false, true, 0));
+        sessions.forEach((node, session) -> registry.register(new NodeRegistration(node, session, node,
+                "proxy".equals(node) ? "VELOCITY" : "BUKKIT", "fixture", 1,
+                "proxy".equals(node) ? proxyCaps : backendCaps, Set.of())));
+        registry.replacePresence("proxy", new PresenceSnapshot(sessions.get("proxy"), 1, 1, members));
+        try (var operations = new ConfigurationOperations(registry, new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var grant = agents.issue(new AgentOperations.Issue(null, List.of("proxy-method", "status"), 30, "proxy"));
+            var limited = agents.issue(new AgentOperations.Issue(List.of("proxy", "first"), List.of("proxy-method"), 30, null));
+            assertThrows(ValidationException.class, () -> agents.readProxyMethod(grant.token(),
+                    new AgentOperations.ProxyMethodRead("first", "HTTP")));
+            var targets = new java.util.ArrayList<AgentOperations.SitePolicyTarget>();
+            var revisions = Map.of("proxy", AgentSetup.documentDigest("PLUGINMESSAGING"),
+                    "first", "a".repeat(64), "second", "b".repeat(64));
+            for (String node : List.of("proxy", "first", "second")) {
+                boolean proxy = "proxy".equals(node);
+                UUID session = sessions.get(node);
+                UUID id = (UUID) ((Map<?, ?>) agents.readProxyMethod(grant.token(),
+                        new AgentOperations.ProxyMethodRead(node, "REDIS"))).get("operationId");
+                var read = operations.claim(node, session);
+                assertEquals(proxy ? "proxy-method" : "proxy-backend", read.configuration().preset());
+                var selector = new ManagedConfiguration("quick-setup", null, List.of(), null, null,
+                        read.configuration().preset(), proxy ? Map.of("method", "PLUGINMESSAGING")
+                                : Map.of("method", "PLUGINMESSAGING", "useBungeecord", "false", "server", "example"));
+                operations.complete(id, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revisions.get(node), selector, List.of(), false, false, read.attemptId()));
+                var projected = (Map<?, ?>) agents.status(grant.token(), id);
+                assertFalse(projected.toString().contains("example"));
+                targets.add(new AgentOperations.SitePolicyTarget(node, id.toString()));
+            }
+            var request = new AgentOperations.ProxyMethodPreview("proxy", "REDIS", targets);
+            assertThrows(SecurityException.class, () -> agents.previewProxyMethod(limited.token(), request));
+            assertThrows(ValidationException.class, () -> agents.previewProxyMethod(grant.token(),
+                    new AgentOperations.ProxyMethodPreview("proxy", "REDIS", targets.subList(0, 2))));
+            var changes = Map.of("proxy", List.of("change proxy method from PLUGINMESSAGING to REDIS"),
+                    "first", List.of("changed UseBungeecord", "changed BungeeMethod"),
+                    "second", List.of("changed UseBungeecord", "changed BungeeMethod"));
+            UUID preview = (UUID) ((Map<?, ?>) agents.previewProxyMethod(grant.token(), request)).get("operationId");
+            assertThrows(ValidationException.class, () -> agents.approve(preview));
+            for (String node : sessions.keySet()) {
+                var task = operations.claim(node, sessions.get(node));
+                operations.complete(preview, node, new ConfigurationTaskResult(sessions.get(node), true, "OK", "fixture",
+                        revisions.get(node), task.configuration(), changes.get(node), false, false, task.attemptId()));
+            }
+            assertNull(operations.get(preview).approvalToken());
+            assertTrue(operations.get(preview).browserReviewReady());
+            clock.now = clock.now.plus(Duration.ofMinutes(5));
+            assertThrows(ValidationException.class, () -> agents.approve(preview));
+            registry.replacePresence("proxy", new PresenceSnapshot(sessions.get("proxy"), 1, 2, members));
+            assertThrows(ValidationException.class, () -> agents.approve(preview));
+            UUID refreshed = (UUID) ((Map<?, ?>) agents.previewProxyMethod(grant.token(), request)).get("operationId");
+            for (String node : sessions.keySet()) {
+                var task = operations.claim(node, sessions.get(node));
+                operations.complete(refreshed, node, new ConfigurationTaskResult(sessions.get(node), true, "OK", "fixture",
+                        revisions.get(node), task.configuration(), changes.get(node), false, false, task.attemptId()));
+            }
+            UUID apply = agents.approve(refreshed).operationId();
+            assertNull(operations.claim("proxy", sessions.get("proxy")));
+            for (String backend : List.of("first", "second")) {
+                boolean success = "first".equals(backend);
+                var task = operations.claim(backend, sessions.get(backend));
+                assertEquals(revisions.get(backend), task.expectedRevision());
+                operations.complete(apply, backend, new ConfigurationTaskResult(sessions.get(backend), success,
+                        success ? "OK" : "RELOAD_FAILED", "fixture", success ? "c".repeat(64) : null,
+                        success ? task.configuration() : null, List.of(), success, !success, task.attemptId()));
+            }
+            assertNull(operations.claim("proxy", sessions.get("proxy")));
+            var status = (Map<?, ?>) agents.status(grant.token(), apply);
+            assertEquals("COMPLETED_WITH_ERRORS", status.get("state"));
+            var results = (Map<?, ?>) status.get("results");
+            assertEquals("REPORTED_PERSISTED", ((Map<?, ?>) results.get("first")).get("persistence"));
+            assertEquals("ROLLED_BACK", ((Map<?, ?>) results.get("second")).get("persistence"));
+            assertEquals("DEPENDENCY_FAILED", ((Map<?, ?>) results.get("proxy")).get("code"));
+            agents.revoke(grant.id());
+            assertThrows(SecurityException.class, () -> agents.status(grant.token(), apply));
+        }
+    }
+
     private static final class MutableClock extends Clock {
         private Instant now = Instant.EPOCH;
 
