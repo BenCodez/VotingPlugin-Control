@@ -5,6 +5,8 @@ import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
 import com.bencodez.votingplugin.control.protocol.InspectionQuery;
 import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.bencodez.votingplugin.control.protocol.PresenceSnapshot;
+import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
+import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -191,6 +193,53 @@ class AgentOperationsTest {
         assertEquals("OPERATION_LIMIT", assertThrows(ValidationException.class,
                 () -> ops.refreshAgentHealth("fixture-12")).code());
         assertEquals("RUNNING", ops.create("fixture-12", new InspectionQuery("network-health", Map.of())).state());
+    }
+
+    @Test void routingPreviewUsesExactReadRevisionAndOriginalState() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("proxy", session, "Proxy", "VELOCITY", "fixture", 1,
+                Set.of(ConfigurationOperations.CAPABILITY), Set.of()));
+        try (var operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var readOnly = agents.issue(new AgentOperations.Issue(List.of("proxy"), List.of("read"), 10, null));
+            assertThrows(SecurityException.class, () -> agents.readRouting(readOnly.token(),
+                    new AgentOperations.RoutingRead("proxy")));
+            UUID principal = UUID.randomUUID();
+            var current = new ProxyRoutingConfiguration(false, List.of());
+            var proposal = new ProxyRoutingConfiguration(true, List.of("backend-a"));
+            var read = operations.createAgentProxyRouting(principal, "proxy", null, null);
+            var readTask = operations.claim("proxy", session);
+            String revision = "a".repeat(64);
+            operations.complete(read.operationId(), "proxy", routingResult(session, readTask.attemptId(),
+                    revision, current, List.of()));
+            var invalid = operations.createAgentProxyRouting(principal, "proxy", proposal, read.operationId());
+            var invalidTask = operations.claim("proxy", session);
+            operations.complete(invalid.operationId(), "proxy", routingResult(session, invalidTask.attemptId(),
+                    revision, proposal, List.of()));
+            assertFalse(operations.get(invalid.operationId()).browserReviewReady());
+            var preview = operations.createAgentProxyRouting(principal, "proxy", proposal, read.operationId());
+            var previewTask = operations.claim("proxy", session);
+            operations.complete(preview.operationId(), "proxy", routingResult(session, previewTask.attemptId(),
+                    revision, current, List.of("sendVotesToAllServers: false -> true",
+                            "blockedServers: [] -> [backend-a]")));
+            assertTrue(operations.get(preview.operationId()).browserReviewReady());
+            org.junit.jupiter.api.Assertions.assertNull(operations.get(preview.operationId()).approvalToken());
+            assertThrows(ValidationException.class, () -> operations.createApply(preview.operationId(), "invalid"));
+            var apply = operations.approveAgentPreview(preview.operationId());
+            var applyTask = operations.claim("proxy", session);
+            assertEquals(apply.operationId(), applyTask.operationId());
+            assertEquals(revision, applyTask.expectedRevision());
+            assertThrows(ValidationException.class, () -> operations.approveAgentPreview(preview.operationId()));
+        }
+    }
+
+    private static ConfigurationTaskResult routingResult(UUID session, UUID attempt, String revision,
+            ProxyRoutingConfiguration configuration, List<String> changes) {
+        return new ConfigurationTaskResult(session, true, "OK", "fixture", revision,
+                configuration, changes, false, false, attempt);
     }
 
     private static final class MutableClock extends Clock {

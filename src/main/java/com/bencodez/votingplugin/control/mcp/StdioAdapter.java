@@ -249,7 +249,7 @@ public final class StdioAdapter {
         JsonNode values = result.path("values");
         if (!"READ".equals(result.path("type").asText()) || !fields(values, Set.of("name", "exists",
                 "serviceSite", "voteUrl", "enabled", "displayName", "priority", "hidden", "voteDelay", "material",
-                "displayItem.amount"))) {
+                "displayItem.amount", "sendVotesToAllServers", "blockedServers"))) {
             return false;
         }
         for (JsonNode value : values) if (!value.isTextual()) return false;
@@ -322,6 +322,14 @@ public final class StdioAdapter {
         tools.put("refresh_node_health", new Tool("refresh_node_health", "health-refresh",
                 "Queue the read-only Network Doctor observation for an authorized node.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));
+        tools.put("read_proxy_routing", new Tool("read_proxy_routing", "routing-read",
+                "Read routing settings on one authorized proxy.",
+                object(Map.of("nodeId", node), List.of("nodeId"))));
+        tools.put("preview_proxy_routing", new Tool("preview_proxy_routing", "routing-preview",
+                "Preview routing settings for browser approval on one authorized proxy.",
+                object(Map.of("nodeId", node, "readOperationId", id, "sendVotesToAllServers", flag,
+                        "blockedServers", Map.of("type", "array", "items", node, "maxItems", 256, "uniqueItems", true)),
+                        List.of("nodeId", "readOperationId", "sendVotesToAllServers", "blockedServers"))));
         tools.put("read_setup", new Tool("read_setup", "read", "Read one named backend vote site.",
                 object(Map.of("nodeId", node, "name", name), List.of("nodeId", "name"))));
         tools.put("preview_setup", new Tool("preview_setup", "preview",

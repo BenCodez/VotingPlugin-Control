@@ -117,10 +117,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         ValidatedTargets targets = validateTargets(List.of(nodeId), QUICK_SETUP_CAPABILITY);
         if (!"BUKKIT".equalsIgnoreCase(targets.platforms().get(nodeId))) throw invalid("Agent setup requires a Bukkit node");
         validateConfigurationTargets(targets, configuration);
-        var retained = operations.values().stream().filter(op -> agent.equals(op.agent)).toList();
-        if (retained.size() >= 48 || retained.stream().filter(op -> !op.complete()).count() >= 4) {
-            throw invalid("Agent operation limit reached");
-        }
+        requireAgentCapacity(agent);
         if (readId == null) {
             var selector = ManagedConfiguration.file("VoteSites.yml", null);
             ValidatedTargets readTargets = validateTargets(List.of(nodeId), FILE_CAPABILITY);
@@ -144,6 +141,43 @@ public final class ConfigurationOperations implements AutoCloseable {
                 Map.of(nodeId, result.revision()), agent);
         operations.get(preview.operationId()).agentBefore = read.agentBefore;
         return preview;
+    }
+
+    synchronized OperationView createAgentProxyRouting(UUID agent, String nodeId,
+            ProxyRoutingConfiguration routing, UUID readId) {
+        prune();
+        requireAgentCapacity(agent);
+        ValidatedTargets targets = validateTargets(List.of(nodeId), CAPABILITY);
+        if ("BUKKIT".equals(targets.platforms().get(nodeId))) throw invalid("Routing requires a proxy node");
+        if (readId == null) {
+            return create("READ", targets, ManagedConfiguration.proxy(new ProxyRoutingConfiguration(false, List.of())),
+                    null, Map.of(), agent);
+        }
+        StoredOperation read = agentOperation(agent, readId);
+        ConfigurationTaskResult result = read.results.get(nodeId);
+        if (!"READ".equals(read.type) || !ManagedConfiguration.PROXY_ROUTING.equals(read.configuration.domain())
+                || result == null || !result.success()
+                || !Objects.equals(result.sessionId(), targets.sessions().get(nodeId))) {
+            throw invalid("A successful routing READ in the current proxy session is required");
+        }
+        Map<String, String> requested = AgentSetup.routingValues(ManagedConfiguration.proxy(routing));
+        if (AgentSetup.routingChanges(read.agentBefore, requested).stream().anyMatch(change -> change.length() > 500)) {
+            throw invalid("Routing diff exceeds the review limit");
+        }
+        byte[] token = new byte[32];
+        random.nextBytes(token);
+        OperationView preview = create("PREVIEW", targets, ManagedConfiguration.proxy(routing),
+                Base64.getUrlEncoder().withoutPadding().encodeToString(token),
+                Map.of(nodeId, result.revision()), agent);
+        operations.get(preview.operationId()).agentBefore = read.agentBefore;
+        return preview;
+    }
+
+    private void requireAgentCapacity(UUID agent) {
+        var retained = operations.values().stream().filter(op -> agent.equals(op.agent)).toList();
+        if (retained.size() >= 48 || retained.stream().filter(op -> !op.complete()).count() >= 4) {
+            throw invalid("Agent operation limit reached");
+        }
     }
 
     public synchronized AgentReview getAgentReview(UUID id) {
@@ -687,7 +721,7 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private boolean cancelChangedAgentTarget(StoredOperation operation, NodeStatus node) {
-        if (operation.agent == null || ("BUKKIT".equalsIgnoreCase(node.platform())
+        if (operation.agent == null || (Objects.equals(operation.targetPlatforms.get(node.nodeId()), node.platform())
                 && Objects.equals(operation.targetSessions.get(node.nodeId()), node.sessionId()))) return false;
         automaticCancellation(operation, node.nodeId(), node.sessionId(), "TARGET_CHANGED",
                 "Agent operation target reconnected or changed role", "TARGET_CHANGED");
@@ -862,6 +896,20 @@ public final class ConfigurationOperations implements AutoCloseable {
         return node.sessionId();
     }
 
+    private static boolean agentPreviewReviewable(StoredOperation operation, ConfigurationTaskResult result) {
+        if (!ManagedConfiguration.PROXY_ROUTING.equals(operation.configuration.domain())) {
+            return operation.configuration.equals(result.configuration())
+                    && AgentSetup.reviewableChanges(operation.configuration, operation.agentBefore, result.changes());
+        }
+        try {
+            return operation.agentBefore.equals(AgentSetup.routingValues(result.configuration()))
+                    && AgentSetup.routingChanges(operation.agentBefore,
+                            AgentSetup.routingValues(operation.configuration)).equals(result.changes());
+        } catch (IllegalArgumentException unsafe) {
+            return false;
+        }
+    }
+
     private OperationView completeCurrentSession(UUID operationId, String nodeId, ConfigurationTaskResult result,
             NodeStatus node) {
         StoredOperation operation = operations.get(operationId);
@@ -901,8 +949,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                 && (result.changes().size() >= 20 || result.changes().contains("additional changes omitted")
                 || retainedChangeBytes + result.changes().stream().mapToLong(
                         change -> change.getBytes(StandardCharsets.UTF_8).length).sum() > MAX_RETAINED_CHANGE_BYTES
-                || !operation.configuration.equals(result.configuration())
-                || !AgentSetup.reviewableChanges(operation.configuration, operation.agentBefore, result.changes()))) {
+                || !agentPreviewReviewable(operation, result))) {
             result = new ConfigurationTaskResult(result.sessionId(), false, "DIFF_UNAVAILABLE",
                     "Preview changes cannot be reviewed completely", null, (ManagedConfiguration) null,
                     List.of(), false, false, result.attemptId());
@@ -910,12 +957,14 @@ public final class ConfigurationOperations implements AutoCloseable {
         Map<String, String> agentRead = Map.of();
         if (operation.agent != null && "READ".equals(operation.type) && result.success()) {
             try {
-                agentRead = AgentSetup.readSite(operation.agentSite, result.configuration());
-                result = new ConfigurationTaskResult(result.sessionId(), true, "OK", "Named site read",
+                agentRead = ManagedConfiguration.PROXY_ROUTING.equals(operation.configuration.domain())
+                        ? AgentSetup.routingValues(result.configuration())
+                        : AgentSetup.readSite(operation.agentSite, result.configuration());
+                result = new ConfigurationTaskResult(result.sessionId(), true, "OK", "Scoped configuration read",
                         result.revision(), (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
             } catch (IllegalArgumentException unreviewable) {
                 result = new ConfigurationTaskResult(result.sessionId(), false, "DIFF_UNAVAILABLE",
-                        "VoteSites.yml or the named site cannot be represented safely", null,
+                        "The requested configuration cannot be represented safely", null,
                         (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
             }
         }

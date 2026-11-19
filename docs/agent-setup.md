@@ -65,3 +65,12 @@ Select **Topology and diagnostics** when issuing a grant to enable `get_topology
   and restart-required flags. Missing, stale or unsupported evidence remains unknown. A truncated report is incomplete.
 
 These tools do not expose raw inspection data, player lookup, vote logs, health evidence values, or restart controls.
+
+## Optional proxy routing
+
+Select **Read and preview proxy routing** to enable `read_proxy_routing` and `preview_proxy_routing`. The grant
+also needs **Track operations** to retrieve READ results and apply status. Routing targets one enrolled proxy with
+`config.proxy-routing.v1`. Preview takes the current routing READ ID, an explicit `sendVotesToAllServers` Boolean
+and the complete `blockedServers` list. The proxy must report the same revision and exact changes. Apply uses the
+browser review and the existing proxy reload and rollback workflow. Long diffs and server identifiers outside
+the bounded MCP schema require the Control browser editor.

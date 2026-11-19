@@ -2,6 +2,7 @@ package com.bencodez.votingplugin.control.domain;
 
 import com.bencodez.votingplugin.control.protocol.ManagedConfiguration;
 import com.bencodez.votingplugin.control.protocol.NodeStatus;
+import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
 import java.util.HashSet;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -19,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing");
     private final Map<UUID, Grant> grants = new HashMap<>();
     private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
@@ -160,6 +161,27 @@ public final class AgentOperations {
                 return Map.of("nodeId", request.nodeId(), "state", observation.state());
             });
         }
+    }
+
+    public synchronized Object readRouting(String token, RoutingRead request) {
+        Grant grant = authorize(token, "routing");
+        return withStableScope(grant, () -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.createAgentProxyRouting(grant.id(), request.nodeId(), null, null));
+        });
+    }
+
+    public synchronized Object previewRouting(String token, RoutingPreview request) {
+        Grant grant = authorize(token, "routing");
+        if (request.sendVotesToAllServers() == null || request.blockedServers() == null
+                || request.blockedServers().size() > 256) throw invalid("Complete routing settings are required");
+        request.blockedServers().forEach(AgentOperations::validateNodeId);
+        var proposal = new ProxyRoutingConfiguration(request.sendVotesToAllServers(), request.blockedServers());
+        return withStableScope(grant, () -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.createAgentProxyRouting(grant.id(), request.nodeId(), proposal,
+                    parseId(request.readOperationId())));
+        });
     }
 
     public synchronized Object read(String token, Read request) {
@@ -345,6 +367,9 @@ public final class AgentOperations {
     public record Discovery(Integer offset) { }
     public record HealthRequest(List<String> nodeIds) { }
     public record RefreshHealth(String nodeId) { }
+    public record RoutingRead(String nodeId) { }
+    public record RoutingPreview(String nodeId, String readOperationId, Boolean sendVotesToAllServers,
+                                 List<String> blockedServers) { }
     public record Issued(UUID id, String token, Instant expiresAt) { }
     public record GrantView(UUID id, List<String> nodeIds, Set<String> actions, Instant expiresAt, String proxyNodeId, int nodeCount) { }
     public record Read(String nodeId, String name) { }

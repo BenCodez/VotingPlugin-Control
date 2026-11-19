@@ -707,7 +707,7 @@
       </section>
 
       <dialog id="agent-review">
-        <h2>Review agent vote-site preview</h2>
+        <h2>Review agent configuration preview</h2>
         <pre id="agent-review-detail"></pre>
         <p id="agent-review-status" role="status"></p>
         <button type="button" id="agent-review-apply" disabled>Approve and apply</button>
@@ -740,6 +740,7 @@
             <label><input name="actions" value="preview" type="checkbox" checked> Preview</label>
             <label><input name="actions" value="status" type="checkbox" checked> Track operations</label>
             <label><input type="checkbox" name="actions" value="health"> Topology and diagnostics</label>
+            <label><input type="checkbox" name="actions" value="routing"> Read and preview proxy routing</label>
             <button type="submit">Issue agent credential</button>
             <button type="button" id="agent-grant-refresh">List active grants</button>
           </form>

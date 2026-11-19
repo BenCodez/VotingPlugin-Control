@@ -73,6 +73,21 @@ final class AgentSetup {
         }
     }
 
+    static Map<String, String> routingValues(ManagedConfiguration configuration) {
+        if (configuration == null || !ManagedConfiguration.PROXY_ROUTING.equals(configuration.domain())
+                || configuration.blockedServers().stream().anyMatch(id -> !id.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}"))) {
+            throw new IllegalArgumentException("Routing must contain exact server identifiers");
+        }
+        return Map.of("sendVotesToAllServers", configuration.sendVotesToAllServers().toString(),
+                "blockedServers", configuration.blockedServers().toString());
+    }
+
+    static List<String> routingChanges(Map<String, String> before, Map<String, String> after) {
+        return List.of("sendVotesToAllServers", "blockedServers").stream()
+                .filter(key -> !before.get(key).equals(after.get(key)))
+                .map(key -> key + ": " + before.get(key) + " -> " + after.get(key)).toList();
+    }
+
     static boolean reviewableChanges(ManagedConfiguration configuration, Map<String, String> before,
                                      List<String> changes) {
         String root = "changed VoteSites." + configuration.options().get("name") + ".";

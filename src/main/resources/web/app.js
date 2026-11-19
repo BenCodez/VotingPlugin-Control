@@ -1140,9 +1140,14 @@ async function reviewAgentPreview(operationId) {
   try {
     const {operation, before} = await agentAdmin('review', {operationId});
     if (agentReviewId !== operationId || !agentReview.open) return;
-    const options = operation.configuration.options;
-    const details = [...Object.entries(options), ['displayItem.amount', '1']]
-      .map(([key, value]) => `${key}: ${before.exists === 'true' && Object.hasOwn(before, key)
+    const configuration = operation.configuration;
+    const routing = configuration.domain === 'proxy-routing';
+    const fields = routing ? [
+      ['sendVotesToAllServers', String(configuration.sendVotesToAllServers)],
+      ['blockedServers', `[${configuration.blockedServers.join(', ')}]`]
+    ] : [...Object.entries(configuration.options), ['displayItem.amount', '1']];
+    const details = fields.map(([key, value]) =>
+      `${key}: ${(routing || before.exists === 'true') && Object.hasOwn(before, key)
         ? JSON.stringify(before[key]) : '(absent)'} → ${JSON.stringify(value)}`).join('\n');
     text(agentReviewDetail, `Agent ${operation.agentId}
 ${operationSummary(operation)}
