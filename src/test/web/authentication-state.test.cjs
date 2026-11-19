@@ -43,6 +43,12 @@ function harness() {
     return elements.get(selector);
   };
   const context = {
+    typedFields: {approval: null}, typedFieldsDialog: element('#managed-fields-dialog'),
+    typedFieldsKey: element('#managed-fields-key'), typedFieldsValue: element('#managed-fields-value'),
+    typedFieldsStatus: element('#managed-fields-status'), typedFieldsPreview: element('#managed-fields-preview'),
+    typedFieldsApply: element('#managed-fields-apply'),
+    agentCredentialOutput: Object.assign(new Element(), {querySelector: element}),
+    agentGrantForm: new Element(), agentGrants: new Element(), agentGrantStatus: new Element(), agentReview: new Element(),
     settingsHealthReader: null, settingsEditor: {clear() {}}, voteSitesEditor: {clear() {}}, rewardsEditor: {clear() {}},
     workspace: {logout() {}}, registryAvailable: true, authenticationGeneration: 3, authenticated: true, csrfToken: 'csrf',
     approvedPreview: {}, approvedFilePreview: {}, approvedQuickPreview: {}, loadedQuickSetup: {}, quickSetupDirty: true,
@@ -82,7 +88,8 @@ function harness() {
     updateConfigurationButtons() {}, updateExtendedButtons() {}, text(target, value) { target.textContent = value; }
   };
   vm.createContext(context);
-  vm.runInContext([declaration('clearSessionRewardFileOptions'), declaration('discardAuthenticationState')].join('\n'),
+  vm.runInContext(['clearSessionRewardFileOptions', 'discardTypedFieldApproval', 'clearTypedFields', 'clearAgentCredential',
+    'discardAuthenticationState'].map(declaration).join('\n'),
     context, {filename: 'authentication-state.js'});
   return {context, element};
 }
@@ -92,6 +99,9 @@ test('sign-out and session expiry share teardown that clears Vote Sites and Rewa
   assert.match(appSource, /authorized\('\/api\/v1\/auth\/logout', \{method: 'POST'\}\)[\s\S]*discardAuthenticationState\('Signed out\.'/);
   for (const reason of ['Signed out.', 'Session expired. Sign in again.']) {
     const {context, element} = harness();
+    const typedDialog = element('#managed-fields-dialog'); typedDialog.open = true;
+    element('#managed-fields-key').replaceChildren(new Element());
+    element('#managed-fields-value').value = 'draft configuration';
     const dialog = element('#vote-site-add-dialog'); dialog.open = true;
     element('#vote-site-search').value = 'draft site'; element('#vote-site-filter').value = 'partial'; element('#vote-site-ack').checked = true;
     element('#rewards-search').value = 'draft reward'; element('#rewards-operation').value = 'REPLACE_LIST';
@@ -103,6 +113,12 @@ test('sign-out and session expiry share teardown that clears Vote Sites and Rewa
     context.configurationFile.value = dynamicOption.value;
     context.yamlEditorSearch.value = 'database-password';
     vm.runInContext(`discardAuthenticationState(${JSON.stringify(reason)})`, context);
+    assert.equal(typedDialog.closeCalled, true);
+    assert.equal(context.typedFields, null);
+    assert.equal(element('#managed-fields-key').children.length, 0);
+    assert.equal(element('#managed-fields-value').value, '');
+    assert.equal(element('#managed-fields-preview').disabled, true);
+    assert.equal(element('#managed-fields-apply').disabled, true);
     assert.equal(element('#vote-site-form').resetCalled, true);
     assert.equal(element('#vote-site-add-form').resetCalled, true);
     assert.equal(dialog.closeCalled, true);
