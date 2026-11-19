@@ -242,6 +242,42 @@ class AgentOperationsTest {
                 configuration, changes, false, false, attempt);
     }
 
+    @Test void transportRequiresBothGrantedPeersAndRejectsReconnectedBackend() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID proxySession = UUID.randomUUID();
+        UUID backendSession = UUID.randomUUID();
+        registry.register(new NodeRegistration("proxy", proxySession, "Proxy", "VELOCITY", "fixture", 1,
+                Set.of("presence.snapshot", ConfigurationOperations.TRANSPORT_TEST_CAPABILITY), Set.of()));
+        registry.register(new NodeRegistration("backend", backendSession, "Backend", "BUKKIT", "fixture", 1,
+                Set.of(), Set.of()));
+        registry.replacePresence("proxy", new PresenceSnapshot(proxySession, 1, 1, List.of(
+                new BackendServerIdentity("backend", "Backend", false, true, 0))));
+        try (var operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var request = new AgentOperations.TransportRequest("proxy", "backend");
+            var limited = agents.issue(new AgentOperations.Issue(List.of("proxy"), List.of("transport"), 10, null));
+            assertThrows(SecurityException.class, () -> agents.checkTransport(limited.token(), request));
+            var grant = agents.issue(new AgentOperations.Issue(List.of("proxy", "backend"),
+                    List.of("transport", "status"), 10, null));
+            Map<?, ?> queued = (Map<?, ?>) agents.checkTransport(grant.token(), request);
+            UUID id = (UUID) queued.get("operationId");
+            var claim = operations.claim("proxy", proxySession);
+            assertEquals("READ", claim.type());
+            assertEquals("communication-test", claim.configuration().preset());
+            assertEquals("backend", claim.configuration().options().get("server"));
+            registry.register(new NodeRegistration("backend", UUID.randomUUID(), "Backend", "BUKKIT", "fixture", 1,
+                    Set.of(), Set.of()));
+            operations.complete(id, "proxy", new ConfigurationTaskResult(proxySession, true, "OK", "fixture",
+                    "a".repeat(64), claim.configuration(), List.of(), false, false, claim.attemptId()));
+            var result = (Map<?, ?>) agents.status(grant.token(), id);
+            assertEquals("COMPLETED_WITH_ERRORS", result.get("state"));
+            assertTrue(result.get("results").toString().contains("TARGET_CHANGED"));
+            assertFalse(result.containsKey("approvalToken"));
+        }
+    }
+
     private static final class MutableClock extends Clock {
         private Instant now = Instant.EPOCH;
 

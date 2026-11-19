@@ -47,7 +47,7 @@ public final class AgentHealth {
                 || evaluation.checks().stream().anyMatch(check -> check.affectedNodes().size() > 3), checks);
     }
 
-    private static boolean fresh(NodeStatus node, Instant observed, Instant now) {
+    static boolean fresh(NodeStatus node, Instant observed, Instant now) {
         return node.online() && node.acceptedCapabilities().contains("presence.snapshot") && observed != null
                 && !observed.isAfter(now) && observed.isAfter(now.minus(TOPOLOGY_MAX_AGE));
     }

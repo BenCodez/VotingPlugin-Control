@@ -322,6 +322,9 @@ public final class StdioAdapter {
         tools.put("refresh_node_health", new Tool("refresh_node_health", "health-refresh",
                 "Queue the read-only Network Doctor observation for an authorized node.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));
+        tools.put("check_transport", new Tool("check_transport", "transport",
+                "Run a non-vote status probe between an authorized proxy and backend.",
+                object(Map.of("proxyNodeId", node, "backendNodeId", node), List.of("proxyNodeId", "backendNodeId"))));
         tools.put("read_proxy_routing", new Tool("read_proxy_routing", "routing-read",
                 "Read routing settings on one authorized proxy.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));

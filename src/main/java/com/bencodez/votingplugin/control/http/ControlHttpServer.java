@@ -1134,6 +1134,7 @@ public final class ControlHttpServer implements AutoCloseable {
             case "nodes" -> "discover";
             case "topology", "health", "health-refresh" -> "health";
             case "routing-read", "routing-preview" -> "routing";
+            case "transport" -> "transport";
             case "read", "preview", "status" -> route;
             default -> null;
         };
@@ -1150,6 +1151,7 @@ public final class ControlHttpServer implements AutoCloseable {
                 case "topology" -> agentOperations.topology(token, read(exchange, AgentOperations.Discovery.class, true));
                 case "health" -> agentOperations.health(token, read(exchange, AgentOperations.HealthRequest.class, true));
                 case "health-refresh" -> agentOperations.refreshHealth(token, read(exchange, AgentOperations.RefreshHealth.class, true));
+                case "transport" -> agentOperations.checkTransport(token, read(exchange, AgentOperations.TransportRequest.class, true));
                 case "routing-read" -> agentOperations.readRouting(token, read(exchange, AgentOperations.RoutingRead.class, true));
                 case "routing-preview" -> agentOperations.previewRouting(token, read(exchange, AgentOperations.RoutingPreview.class, true));
                 case "read" -> agentOperations.read(token, read(exchange, AgentOperations.Read.class, true));

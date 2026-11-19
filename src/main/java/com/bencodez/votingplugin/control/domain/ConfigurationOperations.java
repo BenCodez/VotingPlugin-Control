@@ -173,6 +173,43 @@ public final class ConfigurationOperations implements AutoCloseable {
         return preview;
     }
 
+    synchronized OperationView createAgentTransportCheck(UUID agent, String proxyId, String backendId) {
+        prune();
+        requireAgentCapacity(agent);
+        ValidatedTargets targets = validateTargets(List.of(proxyId), TRANSPORT_TEST_CAPABILITY);
+        NodeStatus proxy = registry.find(proxyId);
+        NodeStatus backend = registry.find(backendId);
+        if (!transportPeerAvailable(proxy, backend)) {
+            throw new ValidationException("NODE_UNAVAILABLE", "A live, reported proxy/backend relationship is required", List.of());
+        }
+        var selector = new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null,
+                ManagedConfiguration.COMMUNICATION_TEST, Map.of("server", backendId));
+        selector.validateProposal();
+        OperationView view = create("READ", targets, selector, null, Map.of(), agent);
+        operations.get(view.operationId()).agentPeerSession = backend.sessionId();
+        return view;
+    }
+
+    private boolean transportPeerAvailable(NodeStatus proxy, NodeStatus backend) {
+        return proxy != null && !"BUKKIT".equals(proxy.platform()) && backend != null && backend.online()
+                && "BUKKIT".equals(backend.platform())
+                && AgentHealth.fresh(proxy, registry.topologyObservedAt(proxy.nodeId()), clock.instant())
+                && proxy.backends().stream().anyMatch(member -> member.backendId().equals(backend.nodeId()));
+    }
+
+    synchronized boolean agentTransportCurrent(UUID agent, UUID id) {
+        StoredOperation operation = agentOperation(agent, id);
+        String proxyId = operation.states.keySet().iterator().next();
+        NodeStatus proxy = registry.find(proxyId);
+        return proxy != null && Objects.equals(operation.targetSessions.get(proxyId), proxy.sessionId())
+                && agentTransportPeerCurrent(operation, proxy);
+    }
+
+    private boolean agentTransportPeerCurrent(StoredOperation operation, NodeStatus proxy) {
+        NodeStatus backend = registry.find(operation.configuration.options().get("server"));
+        return transportPeerAvailable(proxy, backend) && operation.agentPeerSession.equals(backend.sessionId());
+    }
+
     private void requireAgentCapacity(UUID agent) {
         var retained = operations.values().stream().filter(op -> agent.equals(op.agent)).toList();
         if (retained.size() >= 48 || retained.stream().filter(op -> !op.complete()).count() >= 4) {
@@ -722,7 +759,8 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     private boolean cancelChangedAgentTarget(StoredOperation operation, NodeStatus node) {
         if (operation.agent == null || (Objects.equals(operation.targetPlatforms.get(node.nodeId()), node.platform())
-                && Objects.equals(operation.targetSessions.get(node.nodeId()), node.sessionId()))) return false;
+                && Objects.equals(operation.targetSessions.get(node.nodeId()), node.sessionId())
+                && (operation.agentPeerSession == null || agentTransportPeerCurrent(operation, node)))) return false;
         automaticCancellation(operation, node.nodeId(), node.sessionId(), "TARGET_CHANGED",
                 "Agent operation target reconnected or changed role", "TARGET_CHANGED");
         return true;
@@ -955,7 +993,8 @@ public final class ConfigurationOperations implements AutoCloseable {
                     List.of(), false, false, result.attemptId());
         }
         Map<String, String> agentRead = Map.of();
-        if (operation.agent != null && "READ".equals(operation.type) && result.success()) {
+        if (operation.agent != null && operation.agentPeerSession == null
+                && "READ".equals(operation.type) && result.success()) {
             try {
                 agentRead = ManagedConfiguration.PROXY_ROUTING.equals(operation.configuration.domain())
                         ? AgentSetup.routingValues(result.configuration())
@@ -1432,6 +1471,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         private boolean approvalUsed;
         private UUID agent;
         private String agentSite;
+        private UUID agentPeerSession;
         private Map<String, String> agentBefore = Map.of();
 
         private StoredOperation(UUID id, String type, ManagedConfiguration configuration, String approvalToken,

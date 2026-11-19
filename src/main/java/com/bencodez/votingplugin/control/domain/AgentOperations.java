@@ -20,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport");
     private final Map<UUID, Grant> grants = new HashMap<>();
     private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
@@ -163,6 +163,15 @@ public final class AgentOperations {
         }
     }
 
+    public synchronized Object checkTransport(String token, TransportRequest request) {
+        Grant grant = authorize(token, "transport");
+        return withStableTopology(() -> {
+            requireNode(grant, request.proxyNodeId());
+            requireNode(grant, request.backendNodeId());
+            return project(operations.createAgentTransportCheck(grant.id(), request.proxyNodeId(), request.backendNodeId()));
+        });
+    }
+
     public synchronized Object readRouting(String token, RoutingRead request) {
         Grant grant = authorize(token, "routing");
         return withStableScope(grant, () -> {
@@ -222,10 +231,22 @@ public final class AgentOperations {
 
     public synchronized Object status(String token, UUID id) {
         Grant grant = authorize(token, "status");
-        return withStableScope(grant, () -> {
+        return withStableTopology(() -> {
             var operation = operations.getAgentOperation(grant.id(), id);
             operation.nodeStates().keySet().forEach(nodeId -> requireNode(grant, nodeId));
             var projected = project(operation);
+            if (ManagedConfiguration.COMMUNICATION_TEST.equals(operation.configuration().preset())) {
+                String backend = operation.configuration().options().get("server");
+                requireNode(grant, backend);
+                if (!operations.agentTransportCurrent(grant.id(), id)) {
+                    String proxy = operation.nodeStates().keySet().iterator().next();
+                    projected.put("state", "COMPLETED_WITH_ERRORS");
+                    projected.put("nodes", Map.of(proxy, "COMPLETE"));
+                    projected.put("results", Map.of(proxy,
+                            Map.of("code", "TARGET_CHANGED", "success", false, "reloaded", false, "rolledBack", false)));
+                }
+                return projected;
+            }
             if ("READ".equals(operation.type()) && "SUCCEEDED".equals(operation.state())) {
                 projected.put("values", operations.agentReadValues(grant.id(), id));
             }
@@ -250,7 +271,10 @@ public final class AgentOperations {
     }
 
     private <T> T withStableScope(Grant grant, Supplier<T> action) {
-        if (grant.proxyNodeId() == null) return action.get();
+        return grant.proxyNodeId() == null ? action.get() : withStableTopology(action);
+    }
+
+    private <T> T withStableTopology(Supplier<T> action) {
         // Configuration claims and completions already acquire the operations
         // monitor before entering the registry. Preserve that order.
         synchronized (operations) {
@@ -368,6 +392,7 @@ public final class AgentOperations {
     public record HealthRequest(List<String> nodeIds) { }
     public record RefreshHealth(String nodeId) { }
     public record RoutingRead(String nodeId) { }
+    public record TransportRequest(String proxyNodeId, String backendNodeId) { }
     public record RoutingPreview(String nodeId, String readOperationId, Boolean sendVotesToAllServers,
                                  List<String> blockedServers) { }
     public record Issued(UUID id, String token, Instant expiresAt) { }

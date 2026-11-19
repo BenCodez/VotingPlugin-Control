@@ -74,3 +74,10 @@ also needs **Track operations** to retrieve READ results and apply status. Routi
 and the complete `blockedServers` list. The proxy must report the same revision and exact changes. Apply uses the
 browser review and the existing proxy reload and rollback workflow. Long diffs and server identifiers outside
 the bounded MCP schema require the Control browser editor.
+
+## Optional transport check
+
+Select **Run non-vote transport checks** and **Track operations** to run `check_transport` and retrieve its result.
+The request names one authorized proxy and one authorized enrolled backend on a fresh reported link. Both must be
+online, and the proxy must negotiate `config.transport-test.v1`. The existing status probe sends no vote and changes
+no configuration. Results are scoped to the two node sessions and contain status codes rather than raw probe messages.
