@@ -261,7 +261,7 @@ public final class StdioAdapter {
         JsonNode values = result.path("values");
         Set<String> keys = new java.util.HashSet<>(GeneralSettingsDocument.editableKeys());
         keys.addAll(VoteSitesDocument.editableKeys());
-        keys.addAll(Set.of("siteKey", "rewardsConfigured"));
+        keys.addAll(Set.of("siteKey", "rewardsConfigured", "rewardField", "rewardValue"));
         keys.addAll(Set.of("name", "exists", "serviceSite", "voteUrl", "enabled", "displayName", "priority",
                 "hidden", "voteDelay", "material", "displayItem.amount", "sendVotesToAllServers", "blockedServers"));
         if (!"READ".equals(result.path("type").asText()) || !fields(values, keys)) return false;
@@ -335,6 +335,21 @@ public final class StdioAdapter {
         tools.put("refresh_node_health", new Tool("refresh_node_health", "health-refresh",
                 "Queue the read-only Network Doctor observation for an authorized node.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));
+        var rewardFields = Map.of(
+                "type", "string", "pattern", "^(Money|Chance|Messages[.](Player|Broadcast)|Items[.][A-Za-z0-9_-]{1,64}[.](Material|Amount))$");
+        var rewardSelector = new LinkedHashMap<>(object(Map.of("nodeId", node, "siteKey", name,
+                "rewardName", Map.of("type", "string", "pattern", "^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$"),
+                "field", rewardFields), List.of("nodeId", "field")));
+        rewardSelector.put("oneOf", List.of(Map.of("required", List.of("siteKey")), Map.of("required", List.of("rewardName"))));
+        tools.put("read_reward_field", new Tool("read_reward_field", "reward-read",
+                "Read one supported scalar field from an inline vote-site reward or one named reward.",
+                rewardSelector));
+        tools.put("preview_reward_field", new Tool("preview_reward_field", "reward-preview",
+                "Preview replacing the exact scalar selected by a current reward read. Browser approval is required.",
+                object(Map.of("nodeId", node, "readOperationId", id, "value",
+                        Map.of("oneOf", List.of(Map.of("type", "number", "minimum", 0),
+                                Map.of("type", "string", "maxLength", 500)))),
+                        List.of("nodeId", "readOperationId", "value"))));
         Map<String, Object> editorFields = Map.of(
                 "Enabled", flag, "Hidden", flag, "Name", Map.of("type", "string", "maxLength", 200),
                 "ServiceSite", Map.of("type", "string", "minLength", 1, "maxLength", 2048),

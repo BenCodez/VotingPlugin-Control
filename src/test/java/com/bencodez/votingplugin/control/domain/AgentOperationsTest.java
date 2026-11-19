@@ -581,6 +581,63 @@ class AgentOperationsTest {
         }
     }
 
+    @Test void typedRewardsBindOneSupportedFieldAndPreserveAllOtherRewardData() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        String node = "backend";
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration(node, session, node, "BUKKIT", "fixture", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY, ManagedConfiguration.REWARD_FILE_CAPABILITY), Set.of()));
+        try (var operations = new ConfigurationOperations(registry, new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var grant = agents.issue(new AgentOperations.Issue(List.of(node), List.of("rewards-editor", "status"), 10, null));
+            var other = agents.issue(new AgentOperations.Issue(List.of(node), List.of("rewards-editor", "status"), 10, null));
+            assertThrows(IllegalArgumentException.class, () -> agents.readReward(grant.token(),
+                    new AgentOperations.RewardRead(node, null, "../Example", "Money")));
+            assertThrows(IllegalArgumentException.class, () -> agents.readReward(grant.token(),
+                    new AgentOperations.RewardRead(node, "Example", null, "Commands")));
+            for (boolean named : List.of(false, true)) {
+                var request = new AgentOperations.RewardRead(node, named ? null : "Example", named ? "Example" : null, "Money");
+                UUID id = (UUID) ((Map<?, ?>) agents.readReward(grant.token(), request)).get("operationId");
+                String file = named ? "Rewards/Example.yml" : "VoteSites.yml";
+                String path = named ? "Money" : "VoteSites.Example.Rewards.Money";
+                String yaml = named ? "Money: 5\nCommands:\n- sample-action\n"
+                        : "VoteSites:\n  Example:\n    Rewards:\n      Money: 5\n      Commands:\n      - sample-action\n";
+                String revision = "a".repeat(64);
+                var source = ManagedConfiguration.file(file, yaml);
+                var read = operations.claim(node, session);
+                assertEquals(file, read.configuration().fileName());
+                operations.complete(id, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revision, source, List.of(), false, false, read.attemptId()));
+                var status = (Map<?, ?>) agents.status(grant.token(), id);
+                assertEquals(Map.of("rewardField", "Money", "rewardValue", "5"), status.get("values"));
+                assertFalse(status.toString().contains("sample-action"));
+                var previewRequest = new AgentOperations.RewardPreview(node, id.toString(), 7);
+                assertThrows(ValidationException.class, () -> agents.previewReward(other.token(), previewRequest));
+                assertThrows(ValidationException.class, () -> agents.previewReward(grant.token(),
+                        new AgentOperations.RewardPreview(node, id.toString(), List.of("sample-action"))));
+                UUID denied = (UUID) ((Map<?, ?>) agents.previewReward(grant.token(), previewRequest)).get("operationId");
+                var bad = operations.claim(node, session);
+                operations.complete(denied, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revision, source, List.of("changed " + path, "changed Commands"),
+                        false, false, bad.attemptId()));
+                assertFalse(operations.get(denied).browserReviewReady());
+                UUID preview = (UUID) ((Map<?, ?>) agents.previewReward(grant.token(), previewRequest)).get("operationId");
+                var task = operations.claim(node, session);
+                assertEquals(yaml.replace("Money: 5", "Money: 7"), task.configuration().content());
+                operations.complete(preview, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revision, source, List.of("changed " + path), false, false, task.attemptId()));
+                assertEquals(Map.of(file + " / " + path, "7"), operations.getAgentReview(preview).after());
+                assertNull(operations.get(preview).approvalToken());
+                var apply = agents.approve(preview);
+                var applyTask = operations.claim(node, session);
+                assertEquals(revision, applyTask.expectedRevision());
+                operations.complete(apply.operationId(), node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        "b".repeat(64), task.configuration(), List.of("changed " + path), true, false, applyTask.attemptId()));
+            }
+        }
+    }
+
     private static final class MutableClock extends Clock {
         private Instant now = Instant.EPOCH;
 

@@ -148,7 +148,7 @@ class AgentMcpHttpTest {
         new StdioAdapter(base.toString(), token).run(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), frames);
         var replies = frames.toString(StandardCharsets.UTF_8).lines().toList();
         assertEquals(4, replies.size());
-        assertEquals(17, json.readTree(replies.get(1)).path("result").path("tools").size());
+        assertEquals(19, json.readTree(replies.get(1)).path("result").path("tools").size());
         assertEquals("proxy-a", json.readTree(replies.get(2)).path("result").path("structuredContent")
                 .path("items").get(0).path("nodeId").asText());
         assertEquals(applyId, json.readTree(replies.get(3)).path("result").path("structuredContent")

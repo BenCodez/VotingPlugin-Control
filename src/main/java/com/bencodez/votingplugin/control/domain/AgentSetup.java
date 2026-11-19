@@ -94,6 +94,39 @@ final class AgentSetup {
         return Map.copyOf(values);
     }
 
+    record RewardField(String file, String scope, String field) {
+        static RewardField select(String siteKey, String rewardName, String field) {
+            if ((siteKey == null) == (rewardName == null) || field == null
+                    || !field.matches("Money|Chance|Messages[.](Player|Broadcast)|Items[.][A-Za-z0-9_-]{1,64}[.](Material|Amount)")) {
+                throw new IllegalArgumentException("Select one reward and one supported scalar field");
+            }
+            if (siteKey != null && siteKey.matches("[A-Za-z0-9_-]{1,64}")) {
+                return new RewardField("VoteSites.yml", "VoteSites." + siteKey + ".Rewards", field);
+            }
+            if (rewardName != null && rewardName.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,99}")) {
+                return new RewardField("Rewards/" + rewardName + ".yml", "$", field);
+            }
+            throw new IllegalArgumentException("Invalid reward selector");
+        }
+
+        String changePath() {
+            return "$".equals(scope) ? field : scope + "." + field;
+        }
+
+        Map<String, String> values(String content) {
+            var selected = RewardsDocument.inventory(content, file).stream()
+                    .filter(row -> scope.equals(row.path())).findFirst().orElseThrow(IllegalArgumentException::new);
+            if (!selected.editable() || !List.of("PRESENT", "EMPTY").contains(selected.status())) {
+                throw new IllegalArgumentException("Reward scope is missing or unsupported");
+            }
+            Object value = selected.fields().get(field);
+            if (!(value instanceof String text) || text.length() > 500) {
+                throw new IllegalArgumentException("Reward field must already be a reviewable scalar");
+            }
+            return Map.of("rewardField", field, "rewardValue", text);
+        }
+    }
+
     static Map<String, String> settingsValues(Map<String, GeneralSettingsDocument.Field> fields) {
         Map<String, String> values = new LinkedHashMap<>();
         fields.forEach((key, field) -> {

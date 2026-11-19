@@ -118,3 +118,14 @@ more changed fields. Remove takes no fields. A site with inline Rewards or unrev
 The proposal preserves unrelated sites and sections. Control checks the current redacted source and complete changed
 paths against the reviewed proposal before making browser approval available. MCP returns typed fields and a Rewards
 presence indicator, and omits raw documents and approval material.
+
+
+## Optional typed Rewards editor
+
+Grant **Read and preview typed Reward fields** and **Track operations** to use `read_reward_field`
+and `preview_reward_field` on one Bukkit backend. Select an exact `siteKey` for an inline reward with
+`config.files.v1`, or an exact `rewardName` for an enrolled named reward file with `config.reward-files.v1`.
+Select an existing money, chance, player or broadcast message, or named item material or amount field.
+Preview uses that read operation ID and one replacement scalar. Control checks the source, revision and exact
+changed path before browser approval. Command payloads, reward creation or removal, raw files, and execution
+are outside this tool surface.

@@ -300,6 +300,26 @@ public final class ConfigurationOperations implements AutoCloseable {
         return createVoteSitesPreview(readId, nodeId, action, siteKey, fields, agent);
     }
 
+    synchronized OperationView readAgentReward(UUID agent, String nodeId, AgentSetup.RewardField field) {
+        prune();
+        requireAgentCapacity(agent);
+        var selector = ManagedConfiguration.file(field.file(), null);
+        ValidatedTargets targets = validateTargets(List.of(nodeId), selector.capability());
+        validateConfigurationTargets(targets, selector);
+        var read = create("READ", targets, selector, null, Map.of(), agent);
+        operations.get(read.operationId()).agentRewardField = field;
+        return read;
+    }
+
+    synchronized OperationView previewAgentReward(UUID agent, String nodeId, UUID readId, Object value) {
+        prune();
+        requireAgentCapacity(agent);
+        var field = agentOperation(agent, readId).agentRewardField;
+        if (field == null) throw invalid("A typed reward field read is required");
+        return createRewardsPreview(readId, nodeId, field.file(), field.scope(), "SET_SCALAR",
+                field.field(), value, agent, field);
+    }
+
     private void requireAgentCapacity(UUID agent) {
         var retained = operations.values().stream().filter(op -> agent.equals(op.agent)).toList();
         if (retained.size() >= 48 || retained.stream().filter(op -> !op.complete()).count() >= 4) {
@@ -629,6 +649,11 @@ public final class ConfigurationOperations implements AutoCloseable {
             String rewardPath, String action, String field, Object value) {
         StoredOperation read = operations.get(readId);
         if (read != null && read.agent != null) throw invalid("Agent reads require the agent editor");
+        return createRewardsPreview(readId, nodeId, fileName, rewardPath, action, field, value, null, null);
+    }
+
+    private OperationView createRewardsPreview(UUID readId, String nodeId, String fileName,
+            String rewardPath, String action, String field, Object value, UUID agent, AgentSetup.RewardField agentField) {
         if (!"VoteSites.yml".equals(fileName) && !isNamedRewardFile(fileName))
             throw invalid("This reward scope is advanced-only");
         ConfigurationTaskResult snapshot = fileSnapshot(readId, nodeId, fileName);
@@ -645,8 +670,27 @@ public final class ConfigurationOperations implements AutoCloseable {
         validateConfigurationTargets(targets, configuration);
         byte[] token = new byte[32];
         random.nextBytes(token);
-        return create("PREVIEW", targets, configuration,
-                Base64.getUrlEncoder().withoutPadding().encodeToString(token), Map.of(nodeId, snapshot.revision()));
+        String approval = Base64.getUrlEncoder().withoutPadding().encodeToString(token);
+        var revisions = Map.of(nodeId, snapshot.revision());
+        if (agent == null) return create("PREVIEW", targets, configuration, approval, revisions);
+        String prior;
+        String next;
+        try {
+            prior = agentField.values(snapshot.configuration().content()).get("rewardValue");
+            next = agentField.values(proposal).get("rewardValue");
+        } catch (IllegalArgumentException unsupported) {
+            throw invalid("Reward field cannot be reviewed safely");
+        }
+        if (prior.equals(next)) throw invalid("Reward field has no reviewable change");
+        var preview = create("PREVIEW", targets, configuration, approval, revisions, agent);
+        var stored = operations.get(preview.operationId());
+        String path = agentField.changePath();
+        String label = fileName + " / " + path;
+        stored.agentBefore = Map.of(label, prior);
+        stored.agentAfter = Map.of(label, next);
+        stored.agentDocumentDigest = AgentSetup.documentDigest(snapshot.configuration().content());
+        stored.agentExpectedChanges = Set.of("changed " + path);
+        return preview;
     }
 
     public record RewardsState(UUID readOperationId, String nodeId, String fileName, UUID sessionId, String revision,
@@ -1169,6 +1213,11 @@ public final class ConfigurationOperations implements AutoCloseable {
                     }
                     agentRead = AgentSetup.settingsValues(GeneralSettingsDocument.fields(result.configuration().content(),
                             GeneralSettingsDocument.profileForFile(operation.configuration.fileName())));
+                } else if (operation.agentRewardField != null) {
+                    if (result.configuration() == null || result.configuration().content() == null) {
+                        throw new IllegalArgumentException("Missing redacted reward source");
+                    }
+                    agentRead = operation.agentRewardField.values(result.configuration().content());
                 } else if (operation.agentEditorSite != null) {
                     if (result.configuration() == null || result.configuration().content() == null) {
                         throw new IllegalArgumentException("Missing redacted VoteSites source");
@@ -1664,6 +1713,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         private UUID agent;
         private String agentSite;
         private String agentEditorSite;
+        private AgentSetup.RewardField agentRewardField;
         private boolean agentGeneralSettings;
         private String agentDocumentDigest;
         private Set<String> agentExpectedChanges = Set.of();

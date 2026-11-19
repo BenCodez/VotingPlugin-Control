@@ -20,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings", "vote-sites-editor");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings", "vote-sites-editor", "rewards-editor");
     private final Map<UUID, Grant> grants = new HashMap<>();
     private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
@@ -161,6 +161,24 @@ public final class AgentOperations {
                 return Map.of("nodeId", request.nodeId(), "state", observation.state());
             });
         }
+    }
+
+    public synchronized Object readReward(String token, RewardRead request) {
+        Grant grant = authorize(token, "rewards-editor");
+        return withStableTopology(() -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.readAgentReward(grant.id(), request.nodeId(),
+                    AgentSetup.RewardField.select(request.siteKey(), request.rewardName(), request.field())));
+        });
+    }
+
+    public synchronized Object previewReward(String token, RewardPreview request) {
+        Grant grant = authorize(token, "rewards-editor");
+        return withStableTopology(() -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.previewAgentReward(grant.id(), request.nodeId(),
+                    parseId(request.readOperationId()), request.value()));
+        });
     }
 
     public synchronized Object readVoteSitesEditor(String token, VoteSitesEditorRead request) {
@@ -466,6 +484,8 @@ public final class AgentOperations {
     public record Discovery(Integer offset) { }
     public record HealthRequest(List<String> nodeIds) { }
     public record RefreshHealth(String nodeId) { }
+    public record RewardRead(String nodeId, String siteKey, String rewardName, String field) { }
+    public record RewardPreview(String nodeId, String readOperationId, Object value) { }
     public record VoteSitesEditorRead(String nodeId, String siteKey) { }
     public record VoteSitesEditorPreview(String nodeId, String siteKey, String readOperationId,
                                          String action, Map<String, Object> fields) { }
