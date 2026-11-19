@@ -3903,6 +3903,8 @@ async function waitForDeployment(operation, generation) {
 }
 
 function discardAuthenticationState(reason) {
+  if (typedFieldsDialog.open) typedFieldsDialog.close();
+  clearTypedFields();
   clearAgentCredential();
   agentGrantForm.reset();
   agentGrants.replaceChildren();
@@ -4884,6 +4886,152 @@ async function loadFileConfiguration(automatic = false) {
     }
   }
 }
+
+const typedFieldsDialog = document.querySelector('#managed-fields-dialog');
+const typedFieldsKey = document.querySelector('#managed-fields-key');
+const typedFieldsValue = document.querySelector('#managed-fields-value');
+const typedFieldsStatus = document.querySelector('#managed-fields-status');
+const typedFieldsPreview = document.querySelector('#managed-fields-preview');
+const typedFieldsApply = document.querySelector('#managed-fields-apply');
+let typedFields = null;
+
+function typedFieldsCurrent(editor) {
+  return typedFieldsDialog.open && editor === typedFields && authenticated
+    && editor.authGeneration === authenticationGeneration && editor.generation === inputGeneration
+    && editor.file === configurationFile.value && editor.nodeId === selectedConfigurationNodeId()
+    && editor.sessionId === nodeIndex.get(editor.nodeId)?.sessionId;
+}
+
+function discardTypedFieldApproval(editor) {
+  const approval = editor?.approval;
+  if (!approval) return;
+  editor.approval = null;
+  if (authenticated && editor.authGeneration === authenticationGeneration && !logoutInFlight) {
+    void authorized('/api/v1/configuration/managed-fields/discard-preview', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(approval)
+    }).catch(() => {});
+  }
+}
+
+function clearTypedFields() {
+  discardTypedFieldApproval(typedFields);
+  typedFields = null;
+  typedFieldsKey.replaceChildren();
+  typedFieldsValue.value = '';
+  text(typedFieldsStatus, '');
+  typedFieldsPreview.disabled = true;
+  typedFieldsApply.disabled = true;
+}
+
+function selectTypedField() {
+  if (!typedFields) return;
+  discardTypedFieldApproval(typedFields);
+  typedFieldsApply.disabled = true;
+  const row = typedFields.fields.get(typedFieldsKey.value);
+  typedFieldsValue.value = row ? JSON.stringify(row.value, null, 2) : '';
+  typedFieldsPreview.disabled = !row;
+  text(typedFieldsStatus, row ? row.field.kind.toLowerCase().replaceAll('_', ' ') : 'This file has no present typed fields.');
+}
+
+document.querySelector('#open-managed-fields').addEventListener('click', async () => {
+  if (!authenticated || configurationDirty || configurationSourceKind !== 'READ' || !lastFileReadOperation) {
+    text(fileOperationStatus, 'Load the current file and clear unsaved YAML changes before editing typed fields.');
+    return;
+  }
+  clearTypedFields();
+  const nodeId = selectedConfigurationNodeId();
+  const editor = {nodeId, sessionId: nodeIndex.get(nodeId)?.sessionId, file: configurationFile.value,
+    readOperationId: lastFileReadOperation.operationId, authGeneration: authenticationGeneration,
+    generation: inputGeneration, fields: new Map()};
+  typedFields = editor;
+  typedFieldsDialog.showModal();
+  text(typedFieldsStatus, 'Loading typed fields…');
+  try {
+    const rows = await authorized('/api/v1/configuration/managed-fields/state', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({readOperationId: editor.readOperationId, nodeId, file: editor.file})
+    });
+    if (!typedFieldsCurrent(editor)) return;
+    for (const row of rows) {
+      editor.fields.set(row.field.path, row);
+      const option = text(document.createElement('option'), row.field.path);
+      option.value = row.field.path;
+      typedFieldsKey.append(option);
+    }
+    selectTypedField();
+  } catch (error) {
+    if (typedFieldsCurrent(editor)) text(typedFieldsStatus, error.message);
+  }
+});
+
+typedFieldsKey.addEventListener('change', selectTypedField);
+typedFieldsValue.addEventListener('input', () => {
+  discardTypedFieldApproval(typedFields);
+  typedFieldsApply.disabled = true;
+});
+typedFieldsDialog.addEventListener('close', clearTypedFields);
+
+typedFieldsPreview.addEventListener('click', async () => {
+  const editor = typedFields;
+  if (!editor || !typedFieldsCurrent(editor)) return;
+  const key = typedFieldsKey.value;
+  const input = typedFieldsValue.value;
+  discardTypedFieldApproval(editor);
+  typedFieldsApply.disabled = true;
+  typedFieldsPreview.disabled = true;
+  try {
+    const proposal = await authorized('/api/v1/configuration/managed-fields/preview', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({readOperationId: editor.readOperationId, nodeId: editor.nodeId, file: editor.file,
+        overrides: {[key]: JSON.parse(input)}})
+    });
+    editor.approval = {previewOperationId: proposal.operation.operationId};
+    const requestCurrent = () => typedFieldsCurrent(editor) && key === typedFieldsKey.value && input === typedFieldsValue.value;
+    if (!requestCurrent()) {
+      discardTypedFieldApproval(editor);
+      return;
+    }
+    const operation = await waitForOperation(proposal.operation, typedFieldsStatus, operationContext(),
+      {contextCurrent: requestCurrent});
+    if (!typedFieldsCurrent(editor)) return;
+    if (operation.browserReviewReady) {
+      const restart = editor.file === 'bungeeconfig.yml'
+        ? '\nRestart the node separately before assuming the running transport changed.' : '';
+      text(typedFieldsStatus, `${editor.nodeId} · ${editor.file} · ${key}\n${proposal.before[key]} → ${proposal.after[key]}${restart}`);
+      typedFieldsApply.disabled = false;
+    }
+  } catch (error) {
+    if (typedFieldsCurrent(editor)) text(typedFieldsStatus, error.message);
+  } finally {
+    if (typedFieldsCurrent(editor)) typedFieldsPreview.disabled = false;
+  }
+});
+
+typedFieldsApply.addEventListener('click', async () => {
+  const editor = typedFields;
+  if (!editor?.approval || !typedFieldsCurrent(editor)) return;
+  const approval = editor.approval;
+  editor.approval = null;
+  typedFieldsApply.disabled = true;
+  typedFieldsPreview.disabled = true;
+  try {
+    // The shared Apply helper advances the generation before queueing work.
+    editor.generation = inputGeneration + 1;
+    const result = await startConfigurationOperation('/api/v1/configuration/managed-fields/apply', approval, typedFieldsStatus);
+    if (!typedFieldsCurrent(editor)) return;
+    if (result.state === 'SUCCEEDED') {
+      fileReadCache.clear();
+      lastFileReadOperation = null;
+      typedFieldsDialog.close();
+      await loadFileConfiguration(true);
+      text(fileOperationStatus, operationSummary(result));
+    }
+  } catch (error) {
+    if (typedFieldsCurrent(editor)) text(typedFieldsStatus, error.message);
+  } finally {
+    if (typedFieldsCurrent(editor)) typedFieldsPreview.disabled = false;
+  }
+});
 
 readFileConfiguration.addEventListener('click', () => { void loadFileConfiguration(false); });
 

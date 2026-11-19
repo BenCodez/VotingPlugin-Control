@@ -378,11 +378,25 @@
                 <span><output id="editor-position">Line 1, Column 1</output> · <output id="yaml-editor-statistics">1 line · 0 characters</output><br>Tab inserts two spaces · Ctrl/⌘+S previews only; use Approve and apply to save</span>
                 <div class="operation-actions">
                   <button id="read-file-configuration" class="secondary" type="button" disabled hidden>Retry read</button>
+                  <button id="open-managed-fields" class="secondary" type="button">Edit typed fields</button>
                   <button id="preview-file-configuration" type="button" disabled>Preview file</button>
                   <button id="apply-file-configuration" type="button" disabled>Approve and apply</button>
                 </div>
               </div>
             </form>
+            <dialog id="managed-fields-dialog" aria-labelledby="managed-fields-title">
+              <h3 id="managed-fields-title">Typed configuration fields</h3>
+              <label for="managed-fields-key">Field</label>
+              <select id="managed-fields-key"></select>
+              <label for="managed-fields-value">Value (JSON)</label>
+              <textarea id="managed-fields-value" rows="4" maxlength="12000" spellcheck="false"></textarea>
+              <pre id="managed-fields-status" aria-live="polite"></pre>
+              <div class="action-row">
+                <button id="managed-fields-preview" type="button" disabled>Preview change</button>
+                <button id="managed-fields-apply" type="button" disabled>Approve and apply</button>
+                <form method="dialog"><button class="secondary" type="submit">Close</button></form>
+              </div>
+            </dialog>
             <pre id="file-operation-status" aria-live="polite">Choose an online Bukkit node with file control.</pre>
           </section>
         </div>
@@ -744,6 +758,7 @@
             <label><input type="checkbox" name="actions" value="transport"> Run non-vote transport checks</label>
             <label><input type="checkbox" name="actions" value="site-policy"> Read and preview automatic vote-site creation</label>
             <label><input type="checkbox" name="actions" value="site-policy-batch"> Preview automatic vote-site creation across multiple backends</label>
+            <label><input type="checkbox" name="actions" value="managed-fields"> Read and preview typed managed-file fields</label>
             <label><input type="checkbox" name="actions" value="common-settings"> Read and preview common voting settings</label>
             <label><input type="checkbox" name="actions" value="vote-logging"> Read and preview VoteLog settings</label>
             <label><input type="checkbox" name="actions" value="vote-party"> Read and preview Vote Party v2 settings</label>
