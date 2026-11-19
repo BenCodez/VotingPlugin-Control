@@ -20,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy");
     private final Map<UUID, Grant> grants = new HashMap<>();
     private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
@@ -161,6 +161,24 @@ public final class AgentOperations {
                 return Map.of("nodeId", request.nodeId(), "state", observation.state());
             });
         }
+    }
+
+    public synchronized Object readSitePolicy(String token, SitePolicyRead request) {
+        Grant grant = authorize(token, "site-policy");
+        return withStableScope(grant, () -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.createAgentSitePolicy(grant.id(), request.nodeId(), null, null));
+        });
+    }
+
+    public synchronized Object previewSitePolicy(String token, SitePolicyPreview request) {
+        Grant grant = authorize(token, "site-policy");
+        if (request.enabled() == null) throw invalid("An explicit enabled value is required");
+        return withStableScope(grant, () -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.createAgentSitePolicy(grant.id(), request.nodeId(), request.enabled(),
+                    parseId(request.readOperationId())));
+        });
     }
 
     public synchronized Object checkTransport(String token, TransportRequest request) {
@@ -391,6 +409,8 @@ public final class AgentOperations {
     public record Discovery(Integer offset) { }
     public record HealthRequest(List<String> nodeIds) { }
     public record RefreshHealth(String nodeId) { }
+    public record SitePolicyRead(String nodeId) { }
+    public record SitePolicyPreview(String nodeId, String readOperationId, Boolean enabled) { }
     public record RoutingRead(String nodeId) { }
     public record TransportRequest(String proxyNodeId, String backendNodeId) { }
     public record RoutingPreview(String nodeId, String readOperationId, Boolean sendVotesToAllServers,

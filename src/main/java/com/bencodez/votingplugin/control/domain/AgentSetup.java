@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.HashSet;
+import java.util.Set;
 
 final class AgentSetup {
     private static final Map<String, String> DEFAULTS = Map.of(
@@ -71,6 +72,21 @@ final class AgentSetup {
         } catch (IllegalArgumentException e) {
             return false;
         }
+    }
+
+    static final String SITE_POLICY = "auto-create-vote-sites";
+
+    static ManagedConfiguration sitePolicy(Boolean enabled) {
+        return new ManagedConfiguration(ManagedConfiguration.QUICK_SETUP, null, List.of(), null, null, SITE_POLICY,
+                enabled == null ? Map.of() : Map.of("enabled", enabled.toString()));
+    }
+
+    static Map<String, String> sitePolicyValues(ManagedConfiguration configuration) {
+        if (configuration == null || !SITE_POLICY.equals(configuration.preset())
+                || !Set.of(Map.of("enabled", "true"), Map.of("enabled", "false")).contains(configuration.options())) {
+            throw new IllegalArgumentException("Expected the explicit vote-site creation policy");
+        }
+        return configuration.options();
     }
 
     static Map<String, String> routingValues(ManagedConfiguration configuration) {

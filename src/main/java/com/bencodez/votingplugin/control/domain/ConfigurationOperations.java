@@ -173,6 +173,29 @@ public final class ConfigurationOperations implements AutoCloseable {
         return preview;
     }
 
+    synchronized OperationView createAgentSitePolicy(UUID agent, String nodeId, Boolean enabled, UUID readId) {
+        prune();
+        requireAgentCapacity(agent);
+        ValidatedTargets targets = validateTargets(List.of(nodeId), QUICK_SETUP_CAPABILITY);
+        if (!"BUKKIT".equals(targets.platforms().get(nodeId))) throw invalid("Site policy requires a Bukkit backend");
+        var configuration = AgentSetup.sitePolicy(enabled);
+        if (readId == null) return create("READ", targets, configuration, null, Map.of(), agent);
+        StoredOperation read = agentOperation(agent, readId);
+        ConfigurationTaskResult current = read.results.get(nodeId);
+        if (!"READ".equals(read.type) || !AgentSetup.SITE_POLICY.equals(read.configuration.preset())
+                || current == null || !current.success() || !Objects.equals(current.sessionId(), targets.sessions().get(nodeId))) {
+            throw invalid("A successful site-policy READ in the current backend session is required");
+        }
+        if (read.agentBefore.equals(configuration.options())) throw invalid("Site policy is already set to the requested value");
+        byte[] token = new byte[32];
+        random.nextBytes(token);
+        OperationView preview = create("PREVIEW", targets, configuration,
+                Base64.getUrlEncoder().withoutPadding().encodeToString(token),
+                Map.of(nodeId, current.revision()), agent);
+        operations.get(preview.operationId()).agentBefore = read.agentBefore;
+        return preview;
+    }
+
     synchronized OperationView createAgentTransportCheck(UUID agent, String proxyId, String backendId) {
         prune();
         requireAgentCapacity(agent);
@@ -935,6 +958,10 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private static boolean agentPreviewReviewable(StoredOperation operation, ConfigurationTaskResult result) {
+        if (AgentSetup.SITE_POLICY.equals(operation.configuration.preset())) {
+            return operation.configuration.equals(result.configuration())
+                    && result.changes().equals(List.of("changed AutoCreateVoteSites"));
+        }
         if (!ManagedConfiguration.PROXY_ROUTING.equals(operation.configuration.domain())) {
             return operation.configuration.equals(result.configuration())
                     && AgentSetup.reviewableChanges(operation.configuration, operation.agentBefore, result.changes());
@@ -998,7 +1025,9 @@ public final class ConfigurationOperations implements AutoCloseable {
             try {
                 agentRead = ManagedConfiguration.PROXY_ROUTING.equals(operation.configuration.domain())
                         ? AgentSetup.routingValues(result.configuration())
-                        : AgentSetup.readSite(operation.agentSite, result.configuration());
+                        : AgentSetup.SITE_POLICY.equals(operation.configuration.preset())
+                            ? AgentSetup.sitePolicyValues(result.configuration())
+                            : AgentSetup.readSite(operation.agentSite, result.configuration());
                 result = new ConfigurationTaskResult(result.sessionId(), true, "OK", "Scoped configuration read",
                         result.revision(), (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
             } catch (IllegalArgumentException unreviewable) {

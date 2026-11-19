@@ -1145,9 +1145,10 @@ async function reviewAgentPreview(operationId) {
     const fields = routing ? [
       ['sendVotesToAllServers', String(configuration.sendVotesToAllServers)],
       ['blockedServers', `[${configuration.blockedServers.join(', ')}]`]
-    ] : [...Object.entries(configuration.options), ['displayItem.amount', '1']];
+    ] : Object.entries(configuration.options);
+    if (configuration.preset === 'vote-site') fields.push(['displayItem.amount', '1']);
     const details = fields.map(([key, value]) =>
-      `${key}: ${(routing || before.exists === 'true') && Object.hasOwn(before, key)
+      `${configuration.preset === 'auto-create-vote-sites' ? 'enabled (current effective value)' : key}: ${(configuration.preset !== 'vote-site' || before.exists === 'true') && Object.hasOwn(before, key)
         ? JSON.stringify(before[key]) : '(absent)'} → ${JSON.stringify(value)}`).join('\n');
     text(agentReviewDetail, `Agent ${operation.agentId}
 ${operationSummary(operation)}

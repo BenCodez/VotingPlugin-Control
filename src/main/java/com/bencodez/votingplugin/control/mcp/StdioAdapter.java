@@ -322,6 +322,13 @@ public final class StdioAdapter {
         tools.put("refresh_node_health", new Tool("refresh_node_health", "health-refresh",
                 "Queue the read-only Network Doctor observation for an authorized node.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));
+        tools.put("read_site_policy", new Tool("read_site_policy", "site-policy-read",
+                "Read automatic vote-site creation policy on one authorized backend.",
+                object(Map.of("nodeId", node), List.of("nodeId"))));
+        tools.put("preview_site_policy", new Tool("preview_site_policy", "site-policy-preview",
+                "Preview automatic vote-site creation policy for browser approval.",
+                object(Map.of("nodeId", node, "readOperationId", id, "enabled", flag),
+                        List.of("nodeId", "readOperationId", "enabled"))));
         tools.put("check_transport", new Tool("check_transport", "transport",
                 "Run a non-vote status probe between an authorized proxy and backend.",
                 object(Map.of("proxyNodeId", node, "backendNodeId", node), List.of("proxyNodeId", "backendNodeId"))));

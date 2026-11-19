@@ -278,6 +278,47 @@ class AgentOperationsTest {
         }
     }
 
+    @Test void sitePolicyRequiresSeparateGrantAndExactOneFieldPreview() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration("backend", session, "Backend", "BUKKIT", "fixture", 1,
+                Set.of(ConfigurationOperations.QUICK_SETUP_CAPABILITY), Set.of()));
+        try (var operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var legacy = agents.issue(new AgentOperations.Issue(List.of("backend"), List.of("read", "preview"), 10, null));
+            var request = new AgentOperations.SitePolicyRead("backend");
+            assertThrows(SecurityException.class, () -> agents.readSitePolicy(legacy.token(), request));
+            var granted = agents.issue(new AgentOperations.Issue(List.of("backend"), List.of("site-policy", "status"), 10, null));
+            var read = (Map<?, ?>) agents.readSitePolicy(granted.token(), request);
+            UUID readId = (UUID) read.get("operationId");
+            var readTask = operations.claim("backend", session);
+            String revision = "a".repeat(64);
+            operations.complete(readId, "backend", new ConfigurationTaskResult(session, true, "OK", "fixture", revision,
+                    AgentSetup.sitePolicy(false), List.of(), false, false, readTask.attemptId()));
+            assertEquals(Map.of("enabled", "false"), ((Map<?, ?>) agents.status(granted.token(), readId)).get("values"));
+            var proposal = new AgentOperations.SitePolicyPreview("backend", readId.toString(), true);
+            var invalid = (Map<?, ?>) agents.previewSitePolicy(granted.token(), proposal);
+            var invalidTask = operations.claim("backend", session);
+            UUID invalidId = (UUID) invalid.get("operationId");
+            operations.complete(invalidId, "backend", new ConfigurationTaskResult(session, true, "OK", "fixture", revision,
+                    AgentSetup.sitePolicy(true), List.of("changed AutoCreateVoteSites", "changed ProcessRewards"),
+                    false, false, invalidTask.attemptId()));
+            assertFalse(operations.get(invalidId).browserReviewReady());
+            var preview = (Map<?, ?>) agents.previewSitePolicy(granted.token(), proposal);
+            var previewTask = operations.claim("backend", session);
+            UUID previewId = (UUID) preview.get("operationId");
+            operations.complete(previewId, "backend", new ConfigurationTaskResult(session, true, "OK", "fixture", revision,
+                    AgentSetup.sitePolicy(true), List.of("changed AutoCreateVoteSites"), false, false, previewTask.attemptId()));
+            assertTrue(operations.get(previewId).browserReviewReady());
+            assertThrows(ValidationException.class, () -> operations.createApply(previewId, "invalid"));
+            agents.approve(previewId);
+            assertEquals(revision, operations.claim("backend", session).expectedRevision());
+            assertThrows(ValidationException.class, () -> agents.approve(previewId));
+        }
+    }
+
     private static final class MutableClock extends Clock {
         private Instant now = Instant.EPOCH;
 

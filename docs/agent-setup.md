@@ -81,3 +81,11 @@ Select **Run non-vote transport checks** and **Track operations** to run `check_
 The request names one authorized proxy and one authorized enrolled backend on a fresh reported link. Both must be
 online, and the proxy must negotiate `config.transport-test.v1`. The existing status probe sends no vote and changes
 no configuration. Results are scoped to the two node sessions and contain status codes rather than raw probe messages.
+
+## Optional automatic vote-site creation policy
+
+Select **Read and preview automatic vote-site creation** and **Track operations** to use `read_site_policy` and
+`preview_site_policy` on an authorized Bukkit backend with `config.quick-setup.v1`. Preview takes the operation ID
+from the current policy read and an explicit Boolean `enabled`. Control requires the same file revision and a diff
+limited to `AutoCreateVoteSites`. The prior value is the backend’s effective value, including its default where applicable.
+The operator reviews and applies the change in the browser.
