@@ -1137,6 +1137,7 @@ public final class ControlHttpServer implements AutoCloseable {
             case "transport" -> "transport";
             case "site-policy-read", "site-policy-preview" -> "site-policy";
             case "site-policy-batch" -> "site-policy-batch";
+            case "guided-read", "guided-preview" -> "guided";
             case "proxy-method-read", "proxy-method-preview" -> "proxy-method";
             case "reward-read", "reward-preview" -> "rewards-editor";
             case "vote-sites-editor-read", "vote-sites-editor-preview" -> "vote-sites-editor";
@@ -1149,7 +1150,8 @@ public final class ControlHttpServer implements AutoCloseable {
             return;
         }
         try {
-            agentOperations.requireAccess(token, action);
+            if ("guided".equals(action)) agentOperations.requireGuidedAccess(token);
+            else agentOperations.requireAccess(token, action);
             Object result = switch (route) {
                 case "nodes" -> {
                     yield agentOperations.discover(token, read(exchange, AgentOperations.Discovery.class, true));
@@ -1157,6 +1159,8 @@ public final class ControlHttpServer implements AutoCloseable {
                 case "topology" -> agentOperations.topology(token, read(exchange, AgentOperations.Discovery.class, true));
                 case "health" -> agentOperations.health(token, read(exchange, AgentOperations.HealthRequest.class, true));
                 case "health-refresh" -> agentOperations.refreshHealth(token, read(exchange, AgentOperations.RefreshHealth.class, true));
+                case "guided-read" -> agentOperations.readGuided(token, read(exchange, AgentOperations.GuidedRead.class, true));
+                case "guided-preview" -> agentOperations.previewGuided(token, read(exchange, AgentOperations.GuidedPreview.class, true));
                 case "proxy-method-read" -> agentOperations.readProxyMethod(token, read(exchange, AgentOperations.ProxyMethodRead.class, true));
                 case "proxy-method-preview" -> agentOperations.previewProxyMethod(token, read(exchange, AgentOperations.ProxyMethodPreview.class, true));
                 case "reward-read" -> agentOperations.readReward(token, read(exchange, AgentOperations.RewardRead.class, true));

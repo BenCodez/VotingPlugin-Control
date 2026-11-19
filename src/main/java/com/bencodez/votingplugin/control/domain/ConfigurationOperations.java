@@ -320,6 +320,71 @@ public final class ConfigurationOperations implements AutoCloseable {
                 field.field(), value, agent, field);
     }
 
+    synchronized OperationView readAgentGuided(UUID agent, String nodeId, GuidedSettings preset, boolean presence) {
+        prune();
+        requireAgentCapacity(agent);
+        var targets = validateTargets(List.of(nodeId), preset.capability());
+        validateTargets(List.of(nodeId), QUICK_SETUP_CAPABILITY);
+        validateTargets(List.of(nodeId), FILE_CAPABILITY);
+        if (!"BUKKIT".equals(targets.platforms().get(nodeId))) throw invalid("Guided setup requires a Bukkit backend");
+        var selector = presence ? ManagedConfiguration.file(preset.file(), null) : preset.selector();
+        var read = create("READ", targets, selector, null, Map.of(), agent);
+        operations.get(read.operationId()).agentGuidedRead = preset;
+        return read;
+    }
+
+    synchronized OperationView previewAgentGuided(UUID agent, GuidedSettings preset,
+            Map<String, AgentOperations.GuidedReadIds> ids, Map<String, Object> overrides) {
+        prune();
+        requireAgentCapacity(agent);
+        var targets = validateTargets(new ArrayList<>(ids.keySet()), preset.capability());
+        validateTargets(new ArrayList<>(ids.keySet()), QUICK_SETUP_CAPABILITY);
+        var revisions = new LinkedHashMap<String, String>();
+        var before = new LinkedHashMap<String, Map<String, String>>();
+        Map<String, String> proposal = null;
+        var after = new LinkedHashMap<String, String>();
+        for (var entry : ids.entrySet()) {
+            String nodeId = entry.getKey();
+            var read = agentOperation(agent, entry.getValue().typed());
+            var fileRead = agentOperation(agent, entry.getValue().presence());
+            var typed = read.results.get(nodeId);
+            if (!"READ".equals(read.type) || read.agentGuidedRead != preset
+                    || !ManagedConfiguration.QUICK_SETUP.equals(read.configuration.domain())
+                    || fileRead.agentGuidedRead != preset || typed == null || !typed.success()
+                    || !Objects.equals(typed.sessionId(), targets.sessions().get(nodeId))) {
+                throw new ValidationException("READ_REQUIRED", "Read the typed preset and managed file again", List.of(nodeId));
+            }
+            var snapshot = fileSnapshot(fileRead.id, nodeId, preset.file());
+            if (!snapshot.sessionId().equals(typed.sessionId()) || !snapshot.revision().equals(typed.revision())) {
+                throw new ValidationException("STALE_REVISION", "Preset and file must agree on revision; repeat both reads", List.of(nodeId));
+            }
+            GuidedSettings.Evidence evidence;
+            try {
+                evidence = preset.evidence(snapshot.configuration().content(), read.agentBefore, overrides);
+            } catch (IllegalArgumentException unsupported) {
+                throw new ValidationException("GUIDED_EVIDENCE_UNAVAILABLE", unsupported.getMessage(), List.of(nodeId));
+            }
+            if (evidence.after().isEmpty()) throw new ValidationException("NO_CHANGE", "No reviewable change on this target", List.of(nodeId));
+            if (proposal != null && !proposal.equals(evidence.options())) {
+                throw new ValidationException("INCOMPATIBLE_TARGETS", "Use separate previews for differing retained settings", List.of(nodeId));
+            }
+            proposal = evidence.options();
+            before.put(nodeId, evidence.before());
+            after.putAll(evidence.after());
+            revisions.put(nodeId, snapshot.revision());
+        }
+        byte[] token = new byte[32];
+        random.nextBytes(token);
+        var preview = create("PREVIEW", targets, preset.configuration(proposal),
+                Base64.getUrlEncoder().withoutPadding().encodeToString(token), revisions, agent);
+        var stored = operations.get(preview.operationId());
+        stored.agentGuidedPreview = preset;
+        stored.agentBeforeByNode = Map.copyOf(before);
+        if (before.size() == 1) stored.agentBefore = before.values().iterator().next();
+        stored.agentAfter = Map.copyOf(after);
+        return preview;
+    }
+
     synchronized OperationView readAgentProxyMethod(UUID agent, String nodeId, String method) {
         prune();
         requireAgentCapacity(agent);
@@ -446,6 +511,10 @@ public final class ConfigurationOperations implements AutoCloseable {
         return "READ".equals(operation.type) ? operation.agentBefore : Map.of();
     }
 
+    synchronized Set<String> agentVoteLogRestartTargets(UUID agent, UUID id) {
+        return agentOperation(agent, id).agentVoteLogRestartTargets;
+    }
+
     synchronized UUID agentApplyId(UUID agent, UUID previewId) {
         return operations.values().stream().filter(op -> agent.equals(op.agent) && "APPLY".equals(op.type)
                 && previewId.equals(op.sourceOperationId)).map(op -> op.id).findFirst().orElse(null);
@@ -504,6 +573,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         ValidatedTargets targets = validateTargets(new ArrayList<>(preview.states.keySet()),
                 preview.configuration.capability());
         validateApprovedTargets(preview, targets);
+        if (preview.agentGuidedPreview != null) validateTargets(targets.nodeIds(), QUICK_SETUP_CAPABILITY);
         validateConfigurationTargets(targets, preview.configuration);
         validateProxyMethodTargets(targets, preview.configuration);
         rejectOverlappingProxyMethodApply(targets, preview.configuration);
@@ -514,6 +584,12 @@ public final class ConfigurationOperations implements AutoCloseable {
         StoredOperation apply = store("APPLY", targets, preview.configuration,
                 null, revisions, preview.id, preview.agent);
         apply.agentProxyRollout = preview.agentProxyRollout;
+        apply.agentGuidedPreview = preview.agentGuidedPreview;
+        if (preview.agentGuidedPreview == GuidedSettings.LOG) {
+            apply.agentVoteLogRestartTargets = preview.agentBeforeByNode.entrySet().stream()
+                    .filter(row -> row.getValue().containsKey("VoteLogging.Enabled")).map(Map.Entry::getKey)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        }
         preview.approvalUsed = true;
         try {
             if (browserAgentReview) {
@@ -1088,6 +1164,10 @@ public final class ConfigurationOperations implements AutoCloseable {
 
     private boolean cancelLostCapability(StoredOperation operation, NodeStatus node) {
         if (node.online() && node.acceptedCapabilities().contains(operation.configuration.capability())
+                && (operation.agentGuidedRead == null
+                    || node.acceptedCapabilities().containsAll(Set.copyOf(List.of(QUICK_SETUP_CAPABILITY,
+                            operation.agentGuidedRead.capability(), FILE_CAPABILITY))))
+                && (operation.agentGuidedPreview == null || node.acceptedCapabilities().contains(QUICK_SETUP_CAPABILITY))
                 && (operation.agentMethodReadCapability == null
                     || node.acceptedCapabilities().contains(operation.agentMethodReadCapability)
                     && (!"BUKKIT".equals(node.platform()) || node.acceptedCapabilities().contains(QUICK_SETUP_CAPABILITY)))) return false;
@@ -1248,6 +1328,12 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     private static boolean agentPreviewReviewable(StoredOperation operation, String nodeId, ConfigurationTaskResult result) {
+        if (operation.agentGuidedPreview != null) {
+            var changes = operation.agentBeforeByNode.get(nodeId).keySet().stream()
+                    .map(path -> "changed " + path).collect(java.util.stream.Collectors.toSet());
+            return operation.configuration.equals(result.configuration())
+                    && changes.size() == result.changes().size() && changes.equals(Set.copyOf(result.changes()));
+        }
         if (operation.agentProxyRollout != null) {
             var changes = AgentSetup.proxyMethodChanges(operation.agentBeforeByNode.get(nodeId),
                     operation.configuration.options().get("method"));
@@ -1304,7 +1390,16 @@ public final class ConfigurationOperations implements AutoCloseable {
                 || cancelLostCapability(operation, node)) {
             return view(operation);
         }
-        validateResultConfiguration(operation, result, node);
+        try {
+            validateResultConfiguration(operation, result, node);
+        } catch (ValidationException incompatible) {
+            if (operation.agentGuidedRead == null || !ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())) {
+                throw incompatible;
+            }
+            result = new ConfigurationTaskResult(result.sessionId(), false, "UNSUPPORTED",
+                    "The connector did not return the required versioned preset READ", null,
+                    (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
+        }
         if ("PREVIEW".equals(operation.type) && result.success()
                 && operation.expectedRevisions.containsKey(nodeId)
                 && !Objects.equals(operation.expectedRevisions.get(nodeId), result.revision())) {
@@ -1325,7 +1420,17 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (operation.agent != null && operation.agentPeerSession == null
                 && "READ".equals(operation.type) && result.success()) {
             try {
-                if (operation.agentGeneralSettings) {
+                if (operation.agentGuidedRead != null) {
+                    if (ManagedConfiguration.FILE.equals(operation.configuration.domain())) {
+                        if (result.configuration() == null || result.configuration().content() == null) {
+                            throw new IllegalArgumentException("Missing masked presence evidence");
+                        }
+                    } else {
+                        agentRead = operation.agentGuidedRead.effectiveValues(result.configuration());
+                        result = new ConfigurationTaskResult(result.sessionId(), true, "OK", "Scoped configuration read",
+                                result.revision(), (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
+                    }
+                } else if (operation.agentGeneralSettings) {
                     if (result.configuration() == null || result.configuration().content() == null) {
                         throw new IllegalArgumentException("Missing redacted settings");
                     }
@@ -1359,7 +1464,8 @@ public final class ConfigurationOperations implements AutoCloseable {
                             result.revision(), (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
                 }
             } catch (IllegalArgumentException unreviewable) {
-                result = new ConfigurationTaskResult(result.sessionId(), false, "DIFF_UNAVAILABLE",
+                result = new ConfigurationTaskResult(result.sessionId(), false,
+                        operation.agentGuidedRead == null ? "DIFF_UNAVAILABLE" : "GUIDED_EVIDENCE_UNAVAILABLE",
                         "The requested configuration cannot be represented safely", null,
                         (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
             }
@@ -1378,7 +1484,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             if ("APPLY".equals(operation.type) && result.success()) {
                 configurationGeneration++;
             }
-            if (requiresVoteLoggingRestart(operation, result)) {
+            if (requiresVoteLoggingRestart(operation, nodeId, result)) {
                 reclaimStaleRestartSessions(nodeId);
                 voteLoggingRestartSessions.remove(nodeId);
                 voteLoggingRestartSessions.put(nodeId, result.sessionId());
@@ -1506,12 +1612,12 @@ public final class ConfigurationOperations implements AutoCloseable {
                 result.revision(), configuration, changes, result.reloaded(), result.rolledBack(), result.attemptId());
     }
 
-    private static boolean requiresVoteLoggingRestart(StoredOperation operation, ConfigurationTaskResult result) {
+    private static boolean requiresVoteLoggingRestart(StoredOperation operation, String nodeId, ConfigurationTaskResult result) {
         return result.success() && "APPLY".equals(operation.type)
                 && ManagedConfiguration.QUICK_SETUP.equals(operation.configuration.domain())
                 && "vote-logging".equals(operation.configuration.preset())
-                && result.changes().stream()
-                .anyMatch(change -> change.matches(".*VoteLogging\\.(Enabled|UseMainMySQL)\\b.*"));
+                && (operation.agentVoteLogRestartTargets.contains(nodeId) || result.changes().stream()
+                .anyMatch(change -> change.matches(".*VoteLogging\\.(Enabled|UseMainMySQL)\\b.*")));
     }
 
     private void reclaimStaleRestartSessions(String incomingNodeId) {
@@ -1852,6 +1958,9 @@ public final class ConfigurationOperations implements AutoCloseable {
         private String agentEditorSite;
         private AgentSetup.RewardField agentRewardField;
         private boolean agentGeneralSettings;
+        private GuidedSettings agentGuidedRead;
+        private GuidedSettings agentGuidedPreview;
+        private Set<String> agentVoteLogRestartTargets = Set.of();
         private String agentDocumentDigest;
         private Set<String> agentExpectedChanges = Set.of();
         private Map<String, String> agentAfter = Map.of();

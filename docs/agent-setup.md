@@ -1,6 +1,6 @@
 # Configure a vote site with an MCP agent
 
-VotingPlugin Control can provide a local stdio MCP connection to Codex CLI and Claude Code. The agent can discover authorized enrolled nodes, read one named vote site on a Bukkit backend, preview a change and track the result. The owner reviews and applies the preview in Control. The backend uses existing managed-file and quick-setup capabilities over the current task protocol.
+VotingPlugin Control provides a local stdio MCP connection. The packaged adapter has been exercised through Codex CLI App Server. Claude Code configuration is documented below, and its runtime compatibility remains unverified. The agent can discover authorized enrolled nodes, read one named vote site on a Bukkit backend, preview a change and track the result. The owner reviews and applies the preview in Control. The backend uses existing managed-file and quick-setup capabilities over the current task protocol.
 
 ## Enable MCP management
 
@@ -34,13 +34,13 @@ Launch Claude Code with the two environment variables available to the process. 
 claude mcp add --transport stdio --scope local votingplugin-control -- java -jar /absolute/path/votingplugin-control-all.jar mcp
 ```
 
-Use `/mcp` to check the connection. [Claude Code MCP configuration](https://code.claude.com/docs/en/mcp)
+Check the connection in Claude Code with `/mcp`. [Claude Code MCP configuration](https://code.claude.com/docs/en/mcp)
 
 ## Review and apply
 
 Ask the agent to choose an authorized node, read the exact site name and prepare a preview. The agent returns a review path on the configured Control origin. You can also open **Activity → Review agent preview**. The review lists the agent grant, target, changed configuration paths and effective proposed values. Control reads the redacted main `VoteSites.yml` through its managed-file service and extracts only the named site's typed values. It discards the full document after extraction. The review shows the preset's proposed display item amount of one and the prior value when present. Control blocks approval if the file has an ambiguous structure or the node's changed paths do not match the revision-bound typed diff. Split VoteSites files are outside this setup flow. The URL must use HTTP(S) and omit userinfo, query and fragment. Only put public vote-site information in the guided fields.
 
-Approve in the browser to queue the exact preview. The agent can poll the preview operation for the resulting apply ID and then track the apply. A changed file revision, changed session, lost capability, expired grant or incomplete diff requires a new eligible preview. The MCP server exposes four tools:
+Approve in the browser to queue the exact preview. The agent can poll the preview operation for the resulting apply ID and then track the apply. A changed file revision, changed session, lost capability, expired grant or incomplete diff requires a new eligible preview. Use these tools for the guided named-site workflow:
 
 | Tool | Arguments |
 |---|---|
@@ -49,7 +49,7 @@ Approve in the browser to queue the exact preview. The agent can poll the previe
 | `preview_setup` | `nodeId`, `readOperationId`, `options`. Options require `name`, `serviceSite` and `voteUrl` and may include `enabled`, `displayName`, `priority`, `hidden`, `voteDelay` and `material`. |
 | `get_operation` | `operationId`. Only operations from the current grant are visible. |
 
-The adapter can prepare work for a single enrolled backend per operation. Deployment, enrollment, restarts and raw file editing use their existing administrator workflows.
+The guided named-site workflow targets one enrolled backend per operation. Deployment, enrollment, restarts and raw file editing use their existing administrator workflows.
 
 ## Optional topology and diagnostics
 
@@ -144,3 +144,26 @@ Control applies backends first and waits for their durable success before issuin
 Per-peer status distinguishes reported persistence, rollback, and unconfirmed persistence.
 Proxy acknowledgement can trigger the existing connector’s runtime replacement, but runtime readiness remains unknown.
 A partial rollout requires a fresh review and can leave some backends changed.
+
+
+## Guided common settings, VoteLog, and Vote Party
+
+Grant the individual preset action and **Track operations** to use `read_guided_settings` and
+`preview_guided_settings`. On each explicit backend, read the preset twice with `PRESET` and `PRESENCE`
+as the evidence selector. The presence read is an internal masked managed-file read. Its raw document stays in Control.
+Preview requires both successful read IDs from the same grant, session and file revision. A mismatched revision requires
+both reads again. This matches file revisions from two independent reads.
+
+A proposal accepts up to four explicit targets. Each must accept the same typed proposal, including the values
+retained from its preset read. If the targets need different proposals, preview them separately. An absent key is
+shown with its effective default. Approval stays unavailable if an unselected key would be materialized or a node
+cannot return the complete expected diff. Each node applies its own revision and reports its result separately.
+
+- **Common settings** edits reward processing, the extra all-sites check, and the missing-service message setting.
+  Automatic site creation, fake-vote counting and update checking keep their existing tools.
+- **VoteLog** edits enablement and purge retention. Retention is `-1` to disable automatic purging or 1–3650 days.
+  Database selection and connection settings remain administrator-managed in the browser. A change to logging
+  enablement requires a VotingPlugin restart, which this tool does not initiate.
+- **Vote Party** requires both quick-setup versions and a typed v2 READ with an explicit enabled value.
+  It edits enablement, threshold, recipient flags and a nonblank broadcast. Legacy v1-only connectors and
+  inconsistent READ replies are unavailable for this agent workflow. Reward commands remain browser-managed.

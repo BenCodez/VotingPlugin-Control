@@ -1142,14 +1142,15 @@ async function reviewAgentPreview(operationId) {
     if (agentReviewId !== operationId || !agentReview.open) return;
     const configuration = operation.configuration;
     const routing = configuration.domain === 'proxy-routing';
+    const guided = Boolean(after && Object.keys(after).length) && ['common-settings', 'vote-logging', 'vote-party'].includes(configuration.preset);
     const fields = routing ? [
       ['sendVotesToAllServers', String(configuration.sendVotesToAllServers)],
       ['blockedServers', `[${configuration.blockedServers.join(', ')}]`]
-    ] : Object.entries(configuration.domain === 'file' ? (after || {}) : configuration.options);
+    ] : Object.entries(configuration.domain === 'file' || guided ? (after || {}) : configuration.options);
     if (configuration.preset === 'vote-site') fields.push(['displayItem.amount', '1']);
     const methodRollout = configuration.preset === 'proxy-method';
     const fieldDetails = prior => [...fields, ...(methodRollout && Object.hasOwn(prior, 'useBungeecord')
-      ? [['useBungeecord', 'true']] : [])].map(([key, value]) =>
+      ? [['useBungeecord', 'true']] : [])].filter(([key]) => !guided || Object.hasOwn(prior, key)).map(([key, value]) =>
       `${configuration.preset === 'auto-create-vote-sites' ? 'enabled (current effective value)' : key}: ${(configuration.preset !== 'vote-site' || prior.exists === 'true') && Object.hasOwn(prior, key)
         ? JSON.stringify(prior[key]) : '(absent)'} → ${JSON.stringify(value)}`).join('\n');
     const targets = Object.entries(beforeByNode || {});

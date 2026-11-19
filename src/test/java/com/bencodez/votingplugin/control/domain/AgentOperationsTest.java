@@ -723,6 +723,146 @@ class AgentOperationsTest {
         }
     }
 
+    @Test void guidedVoteLogChecksPresenceAndRevisionsBeforePartialBatchApply() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        var sessions = Map.of("first", UUID.randomUUID(), "second", UUID.randomUUID(), "legacy", UUID.randomUUID());
+        var caps = Set.of(ConfigurationOperations.FILE_CAPABILITY, "config.quick-setup.v1");
+        sessions.forEach((node, session) -> registry.register(new NodeRegistration(node, session, node,
+                "BUKKIT", "fixture", 1, caps, Set.of())));
+        try (var operations = new ConfigurationOperations(registry, new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var grant = agents.issue(new AgentOperations.Issue(List.copyOf(sessions.keySet()), List.of("vote-logging", "vote-party", "status"), 10, null));
+            var limited = agents.issue(new AgentOperations.Issue(List.of("first"), List.of("vote-logging"), 10, null));
+            assertThrows(ValidationException.class, () -> agents.readGuided(grant.token(),
+                    new AgentOperations.GuidedRead("legacy", "vote-party", "PRESET")));
+            var typed = GuidedSettings.LOG.configuration(Map.of("enabled", "false", "purgeDays", "30", "useMainMySQL", "true"));
+            String revision = "a".repeat(64);
+            var targets = new java.util.ArrayList<AgentOperations.GuidedTarget>();
+            UUID stale = null;
+            for (String node : List.of("first", "second")) {
+                UUID session = sessions.get(node);
+                UUID preset = guidedRead(agents, operations, grant.token(), node, session,
+                        GuidedSettings.LOG, "PRESET", revision, typed);
+                String yaml = "VoteLogging:\n  PurgeDays: 30\n  UseMainMySQL: true\n"
+                        + ("first".equals(node) ? "" : "  Enabled: false\n");
+                var masked = ManagedConfiguration.file("Config.yml", yaml);
+                UUID presence = guidedRead(agents, operations, grant.token(), node, session,
+                        GuidedSettings.LOG, "PRESENCE", revision, masked);
+                targets.add(new AgentOperations.GuidedTarget(node, preset.toString(), presence.toString()));
+                if ("first".equals(node)) {
+                    stale = guidedRead(agents, operations, grant.token(), node, session,
+                            GuidedSettings.LOG, "PRESENCE", "b".repeat(64), masked);
+                    assertFalse(agents.status(grant.token(), presence).toString().contains("UseMainMySQL"));
+                }
+            }
+            String staleId = stale.toString();
+            assertEquals("STALE_REVISION", assertThrows(ValidationException.class, () -> agents.previewGuided(grant.token(),
+                    new AgentOperations.GuidedPreview("vote-logging", List.of(new AgentOperations.GuidedTarget("first",
+                            targets.get(0).presetReadId(), staleId)), Map.of("enabled", true)))).code());
+            var request = new AgentOperations.GuidedPreview("vote-logging", targets, Map.of("enabled", true));
+            assertThrows(SecurityException.class, () -> agents.previewGuided(limited.token(), request));
+            assertThrows(ValidationException.class, () -> agents.previewGuided(grant.token(),
+                    new AgentOperations.GuidedPreview("vote-logging", targets, Map.of("useMainMySQL", false))));
+            UUID preview = (UUID) ((Map<?, ?>) agents.previewGuided(grant.token(), request)).get("operationId");
+            var review = operations.getAgentReview(preview);
+            assertEquals(Map.of("VoteLogging.Enabled", "(absent; effective false)"), review.beforeByNode().get("first"));
+            assertEquals(Map.of("VoteLogging.Enabled", "false"), review.beforeByNode().get("second"));
+            assertThrows(ValidationException.class, () -> agents.approve(preview));
+            for (var target : targets) {
+                String node = target.nodeId();
+                var task = operations.claim(node, sessions.get(node));
+                operations.complete(preview, node, new ConfigurationTaskResult(sessions.get(node), true, "OK", "fixture",
+                        revision, task.configuration(), List.of("changed VoteLogging.Enabled"), false, false, task.attemptId()));
+            }
+            assertNull(operations.get(preview).approvalToken());
+            UUID apply = agents.approve(preview).operationId();
+            for (var target : targets) {
+                String node = target.nodeId();
+                var task = operations.claim(node, sessions.get(node));
+                assertEquals(revision, task.expectedRevision());
+                boolean success = "first".equals(node);
+                operations.complete(apply, node, new ConfigurationTaskResult(sessions.get(node), success,
+                        success ? "OK" : "STALE_REVISION", "fixture", success ? "c".repeat(64) : null,
+                        success ? task.configuration() : null, List.of(),
+                        success, false, task.attemptId()));
+            }
+            var terminal = (Map<?, ?>) agents.status(grant.token(), apply);
+            assertEquals("COMPLETED_WITH_ERRORS", terminal.get("state"));
+            assertEquals(true, ((Map<?, ?>) ((Map<?, ?>) terminal.get("results")).get("first")).get("restartRequired"));
+            assertEquals(sessions.get("first"), operations.listView().voteLoggingRestartSessions().get("first"));
+            registry.register(new NodeRegistration("first", UUID.randomUUID(), "first", "BUKKIT", "fixture", 1, caps, Set.of()));
+            assertThrows(ValidationException.class, () -> agents.previewGuided(grant.token(), request));
+        }
+    }
+
+    @Test void guidedVotePartyRequiresVersionTwoReadAndExactDiff() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        String node = "backend";
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration(node, session, node, "BUKKIT", "fixture", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY, "config.quick-setup.v1", "config.quick-setup.v2"), Set.of()));
+        try (var operations = new ConfigurationOperations(registry, new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var grant = agents.issue(new AgentOperations.Issue(List.of(node), List.of("vote-party", "status"), 10, null));
+            String revision = "a".repeat(64);
+            var old = GuidedSettings.PARTY.configuration(Map.of("votesRequired", "20", "giveAllPlayers", "false",
+                    "onlineOnly", "true", "broadcast", ""));
+            UUID unsupported = guidedRead(agents, operations, grant.token(), node, session,
+                    GuidedSettings.PARTY, "PRESET", revision, old);
+            assertEquals("COMPLETED_WITH_ERRORS", ((Map<?, ?>) agents.status(grant.token(), unsupported)).get("state"));
+            var typed = GuidedSettings.PARTY.configuration(Map.of("enabled", "false", "votesRequired", "20",
+                    "giveAllPlayers", "false", "onlineOnly", "true", "broadcast", "", "rewardCommandCount", "2"));
+            UUID preset = guidedRead(agents, operations, grant.token(), node, session,
+                    GuidedSettings.PARTY, "PRESET", revision, typed);
+            var masked = ManagedConfiguration.file("SpecialRewards.yml", "VoteParty:\n  VotesRequired: 20\n"
+                    + "  GiveAllPlayers: false\n  GiveOnlinePlayersOnly: true\n");
+            UUID presence = guidedRead(agents, operations, grant.token(), node, session,
+                    GuidedSettings.PARTY, "PRESENCE", revision, masked);
+            var targets = List.of(new AgentOperations.GuidedTarget(node, preset.toString(), presence.toString()));
+            assertFalse(agents.status(grant.token(), preset).toString().contains("rewardCommandCount"));
+            assertThrows(ValidationException.class, () -> agents.previewGuided(grant.token(),
+                    new AgentOperations.GuidedPreview("vote-party", targets, Map.of("votesRequired", 25))));
+            UUID preview = (UUID) ((Map<?, ?>) agents.previewGuided(grant.token(),
+                    new AgentOperations.GuidedPreview("vote-party", targets, Map.of("enabled", false)))).get("operationId");
+            var task = operations.claim(node, session);
+            assertEquals("false", task.configuration().options().get("enabled"));
+            assertFalse(task.configuration().options().containsKey("command"));
+            assertFalse(task.configuration().options().containsKey("broadcast"));
+            operations.complete(preview, node, new ConfigurationTaskResult(session, true, "OK", "fixture", revision,
+                    task.configuration(), List.of("additional changes omitted"), false, false, task.attemptId()));
+            assertFalse(operations.get(preview).browserReviewReady());
+        }
+    }
+
+    @Test void guidedCommonPreservesExistingGeneralSettingsAndRejectsUnreviewableKeys() {
+        var effective = Map.of("processRewards", "true", "autoCreateVoteSites", "true",
+                "extraAllSitesCheck", "false", "countFakeVotes", "true",
+                "disableNoServiceSiteMessage", "false", "disableUpdateChecking", "false");
+        String yaml = "ProcessRewards: true\nAutoCreateVoteSites: true\nExtraAllSitesCheck: false\n"
+                + "CountFakeVotes: true\nDisableNoServiceSiteMessage: false\nDisableUpdateChecking: false\n";
+        var settings = GuidedSettings.COMMON;
+        var proposal = settings.evidence(yaml, effective, Map.of("extraAllSitesCheck", true));
+        assertEquals(Map.of("ExtraAllSitesCheck", "false"), proposal.before());
+        assertEquals(Map.of("ExtraAllSitesCheck", "true"), proposal.after());
+        assertThrows(IllegalArgumentException.class, () -> settings.evidence(yaml, effective, Map.of("countFakeVotes", false)));
+        assertThrows(IllegalArgumentException.class, () -> settings.evidence(yaml.replace("AutoCreateVoteSites: true\n", ""),
+                effective, Map.of("extraAllSitesCheck", true)));
+        assertThrows(IllegalArgumentException.class, () -> settings.evidence(yaml + "extrAAllSitesCheck: false\n",
+                effective, Map.of("extraAllSitesCheck", true)));
+    }
+
+    private static UUID guidedRead(AgentOperations agents, ConfigurationOperations operations, String credential,
+            String node, UUID session, GuidedSettings preset, String evidence, String revision, ManagedConfiguration result) {
+        UUID id = (UUID) ((Map<?, ?>) agents.readGuided(credential, new AgentOperations.GuidedRead(node, preset.action(), evidence)))
+                .get("operationId");
+        var task = operations.claim(node, session);
+        operations.complete(id, node, new ConfigurationTaskResult(session, true, "OK", "fixture", revision, result,
+                List.of(), false, false, task.attemptId()));
+        return id;
+    }
+
     private static final class MutableClock extends Clock {
         private Instant now = Instant.EPOCH;
 

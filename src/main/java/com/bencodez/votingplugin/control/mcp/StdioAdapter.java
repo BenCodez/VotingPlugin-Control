@@ -1,6 +1,7 @@
 package com.bencodez.votingplugin.control.mcp;
 
 import com.bencodez.votingplugin.control.domain.GeneralSettingsDocument;
+import com.bencodez.votingplugin.control.domain.GuidedSettings;
 import com.bencodez.votingplugin.control.domain.VoteSitesDocument;
 
 import com.fasterxml.jackson.core.StreamReadConstraints;
@@ -266,6 +267,7 @@ public final class StdioAdapter {
         JsonNode values = result.path("values");
         Set<String> keys = new java.util.HashSet<>(GeneralSettingsDocument.editableKeys());
         keys.addAll(VoteSitesDocument.editableKeys());
+        keys.addAll(GuidedSettings.resultKeys());
         keys.addAll(Set.of("siteKey", "rewardsConfigured", "rewardField", "rewardValue", "method", "useBungeecord"));
         keys.addAll(Set.of("name", "exists", "serviceSite", "voteUrl", "enabled", "displayName", "priority",
                 "hidden", "voteDelay", "material", "displayItem.amount", "sendVotesToAllServers", "blockedServers"));
@@ -340,6 +342,23 @@ public final class StdioAdapter {
         tools.put("refresh_node_health", new Tool("refresh_node_health", "health-refresh",
                 "Queue the read-only Network Doctor observation for an authorized node.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));
+        var guidedPreset = Map.of("type", "string", "enum", List.of("common-settings", "vote-logging", "vote-party"));
+        var guidedTarget = object(Map.of("nodeId", node, "presetReadId", id, "presenceReadId", id),
+                List.of("nodeId", "presetReadId", "presenceReadId"));
+        var guidedOverrides = object(Map.of("processRewards", flag, "extraAllSitesCheck", flag,
+                "disableNoServiceSiteMessage", flag, "enabled", flag, "giveAllPlayers", flag, "onlineOnly", flag,
+                "purgeDays", Map.of("anyOf", List.of(Map.of("const", -1), Map.of("type", "integer", "minimum", 1, "maximum", 3650))),
+                "votesRequired", Map.of("type", "integer", "minimum", 1, "maximum", 100000),
+                "broadcast", Map.of("type", "string", "minLength", 1, "maxLength", 500)), List.of());
+        tools.put("read_guided_settings", new Tool("read_guided_settings", "guided-read",
+                "Collect one typed preset read or a non-exported masked key-presence read. Both must match to preview.",
+                object(Map.of("nodeId", node, "preset", guidedPreset, "evidence",
+                        Map.of("enum", List.of("PRESET", "PRESENCE"))), List.of("nodeId", "preset", "evidence"))));
+        tools.put("preview_guided_settings", new Tool("preview_guided_settings", "guided-preview",
+                "Preview common settings, VoteLog or Vote Party with both READ ids per target and browser approval.",
+                object(Map.of("preset", guidedPreset, "targets", Map.of("type", "array",
+                        "items", guidedTarget, "minItems", 1, "maxItems", 4), "overrides", guidedOverrides),
+                        List.of("preset", "targets", "overrides"))));
         var method = Map.of("type", "string", "enum", List.of("PLUGINMESSAGING", "REDIS", "MQTT", "SOCKETS", "MYSQL", "HTTP"));
         var rolloutTarget = object(Map.of("nodeId", node, "readOperationId", id), List.of("nodeId", "readOperationId"));
         tools.put("read_proxy_method", new Tool("read_proxy_method", "proxy-method-read",

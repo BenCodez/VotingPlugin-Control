@@ -20,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings", "vote-sites-editor", "rewards-editor", "proxy-method");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings", "vote-sites-editor", "rewards-editor", "proxy-method", "common-settings", "vote-logging", "vote-party");
     private final Map<UUID, Grant> grants = new HashMap<>();
     private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
@@ -162,6 +162,42 @@ public final class AgentOperations {
                 return Map.of("nodeId", request.nodeId(), "state", observation.state());
             });
         }
+    }
+
+    public synchronized void requireGuidedAccess(String token) {
+        if (authorize(token, null).actions().stream().noneMatch(Set.of("common-settings", "vote-logging", "vote-party")::contains)) {
+            denied();
+        }
+    }
+
+    public synchronized Object readGuided(String token, GuidedRead request) {
+        var preset = GuidedSettings.select(request.preset());
+        Grant grant = authorize(token, preset.action());
+        if (!List.of("PRESET", "PRESENCE").contains(request.evidence() == null ? "" : request.evidence())) {
+            throw invalid("Choose PRESET or PRESENCE evidence");
+        }
+        return withStableTopology(() -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.readAgentGuided(grant.id(), request.nodeId(), preset, "PRESENCE".equals(request.evidence())));
+        });
+    }
+
+    public synchronized Object previewGuided(String token, GuidedPreview request) {
+        var preset = GuidedSettings.select(request.preset());
+        Grant grant = authorize(token, preset.action());
+        if (request.targets() == null || request.targets().isEmpty() || request.targets().size() > 4) {
+            throw invalid("Supply 1 to 4 explicit targets");
+        }
+        return withStableTopology(() -> {
+            Map<String, GuidedReadIds> reads = new LinkedHashMap<>();
+            for (var target : request.targets()) {
+                if (target == null) throw invalid("Invalid target");
+                requireNode(grant, target.nodeId());
+                var ids = new GuidedReadIds(parseId(target.presetReadId()), parseId(target.presenceReadId()));
+                if (reads.putIfAbsent(target.nodeId(), ids) != null) throw invalid("Targets must be unique");
+            }
+            return project(operations.previewAgentGuided(grant.id(), preset, reads, request.overrides()));
+        });
     }
 
     public synchronized Object readProxyMethod(String token, ProxyMethodRead request) {
@@ -353,7 +389,7 @@ public final class AgentOperations {
         return withStableTopology(() -> {
             var operation = operations.getAgentOperation(grant.id(), id);
             operation.nodeStates().keySet().forEach(nodeId -> requireNode(grant, nodeId));
-            var projected = project(operation);
+            var projected = project(operation, operations.agentVoteLogRestartTargets(grant.id(), id));
             if (ManagedConfiguration.COMMUNICATION_TEST.equals(operation.configuration().preset())) {
                 String backend = operation.configuration().options().get("server");
                 requireNode(grant, backend);
@@ -402,6 +438,10 @@ public final class AgentOperations {
     }
 
     private static Map<String, Object> project(ConfigurationOperations.OperationView operation) {
+        return project(operation, Set.of());
+    }
+
+    private static Map<String, Object> project(ConfigurationOperations.OperationView operation, Set<String> restartTargets) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("operationId", operation.operationId());
         result.put("type", operation.type());
@@ -417,7 +457,8 @@ public final class AgentOperations {
             item.put("rolledBack", value.rolledBack());
             item.put("reloaded", value.reloaded());
             if ("APPLY".equals(operation.type()) && value.success() && operation.configuration() != null
-                    && "bungeeconfig.yml".equals(operation.configuration().fileName())) {
+                    && ("bungeeconfig.yml".equals(operation.configuration().fileName())
+                        || restartTargets.contains(node))) {
                 item.put("restartRequired", true);
             }
             if ("APPLY".equals(operation.type()) && ManagedConfiguration.PROXY_METHOD.equals(operation.configuration().preset())) {
@@ -444,7 +485,7 @@ public final class AgentOperations {
         }
         Grant grant = grants.get(id);
         if (grant == null || !clock.instant().isBefore(grant.expiresAt())
-                || !MessageDigest.isEqual(grant.verifier(), digest(token)) || !grant.actions().contains(action)) {
+                || !MessageDigest.isEqual(grant.verifier(), digest(token)) || action != null && !grant.actions().contains(action)) {
             return denied();
         }
         return grant;
@@ -522,6 +563,10 @@ public final class AgentOperations {
     public record Discovery(Integer offset) { }
     public record HealthRequest(List<String> nodeIds) { }
     public record RefreshHealth(String nodeId) { }
+    public record GuidedRead(String nodeId, String preset, String evidence) { }
+    public record GuidedTarget(String nodeId, String presetReadId, String presenceReadId) { }
+    public record GuidedPreview(String preset, List<GuidedTarget> targets, Map<String, Object> overrides) { }
+    record GuidedReadIds(UUID typed, UUID presence) { }
     public record ProxyMethodRead(String nodeId, String method) { }
     public record ProxyMethodPreview(String proxyNodeId, String method, List<SitePolicyTarget> targets) { }
     public record RewardRead(String nodeId, String siteKey, String rewardName, String field) { }
