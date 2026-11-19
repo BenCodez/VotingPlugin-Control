@@ -4236,9 +4236,11 @@ async function waitForOperation(operation, statusElement = operationStatus, cont
   rememberVoteLoggingRestart(operation);
   const applied = operation.type === 'APPLY'
     && Object.values(operation.results || {}).some(result => result?.success);
+  const previousGeneration = inputGeneration;
   if (applied) {
     invalidateConfigurationReads();
     invalidateGuidedSetupReads();
+    options.onApplyInvalidation?.(previousGeneration);
     if (tabFromHash() === 'quick-setup') window.setTimeout(() => void autoLoadTab('quick-setup'), 0);
     if (tabFromHash() === 'overview') {
       text(dataOverview, 'Configuration changed; refreshing server overview…');
@@ -4895,9 +4897,9 @@ const typedFieldsPreview = document.querySelector('#managed-fields-preview');
 const typedFieldsApply = document.querySelector('#managed-fields-apply');
 let typedFields = null;
 
-function typedFieldsCurrent(editor) {
+function typedFieldsCurrent(editor, generation = inputGeneration) {
   return typedFieldsDialog.open && editor === typedFields && authenticated
-    && editor.authGeneration === authenticationGeneration && editor.generation === inputGeneration
+    && editor.authGeneration === authenticationGeneration && editor.generation === generation
     && editor.file === configurationFile.value && editor.nodeId === selectedConfigurationNodeId()
     && editor.sessionId === nodeIndex.get(editor.nodeId)?.sessionId;
 }
@@ -5017,7 +5019,11 @@ typedFieldsApply.addEventListener('click', async () => {
   try {
     // The shared Apply helper advances the generation before queueing work.
     editor.generation = inputGeneration + 1;
-    const result = await startConfigurationOperation('/api/v1/configuration/managed-fields/apply', approval, typedFieldsStatus);
+    const result = await startConfigurationOperation('/api/v1/configuration/managed-fields/apply', approval, typedFieldsStatus, {
+      onApplyInvalidation: previousGeneration => {
+        if (typedFieldsCurrent(editor, previousGeneration)) editor.generation = inputGeneration;
+      }
+    });
     if (!typedFieldsCurrent(editor)) return;
     if (result.state === 'SUCCEEDED') {
       fileReadCache.clear();
