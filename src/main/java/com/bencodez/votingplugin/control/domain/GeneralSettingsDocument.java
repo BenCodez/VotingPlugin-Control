@@ -107,6 +107,18 @@ public final class GeneralSettingsDocument {
         return patched.toString();
     }
 
+    public static Set<String> editableKeys() {
+        Set<String> keys = new java.util.TreeSet<>();
+        BACKEND_SPECS.forEach(spec -> keys.add(spec.key()));
+        PROXY_SPECS.forEach(spec -> keys.add(spec.key()));
+        return Collections.unmodifiableSet(keys);
+    }
+
+    static List<String> reviewedChangedPaths(Profile profile, Map<String, Field> before, Map<String, Field> after) {
+        return specs(profile).stream().filter(spec -> !before.get(spec.key()).equals(after.get(spec.key())))
+                .map(spec -> "changed " + spec.rawKey()).toList();
+    }
+
     public static Profile profileForFile(String fileName) {
         if ("Config.yml".equals(fileName)) return Profile.BACKEND;
         if ("bungeeconfig.yml".equals(fileName)) return Profile.PROXY;

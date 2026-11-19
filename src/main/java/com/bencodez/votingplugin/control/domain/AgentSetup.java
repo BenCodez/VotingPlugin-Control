@@ -74,6 +74,23 @@ final class AgentSetup {
         }
     }
 
+    static Map<String, String> settingsValues(Map<String, GeneralSettingsDocument.Field> fields) {
+        Map<String, String> values = new LinkedHashMap<>();
+        fields.forEach((key, field) -> {
+            if (field.status() == GeneralSettingsDocument.Status.AVAILABLE) values.put(key, field.value().toString());
+        });
+        return Map.copyOf(values);
+    }
+
+    static String documentDigest(String document) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(document.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException failure) {
+            throw new IllegalStateException(failure);
+        }
+    }
+
     static final String SITE_POLICY = "auto-create-vote-sites";
 
     static ManagedConfiguration sitePolicy(Boolean enabled) {

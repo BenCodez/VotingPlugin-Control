@@ -20,7 +20,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health", "routing", "transport", "site-policy", "site-policy-batch", "general-settings");
     private final Map<UUID, Grant> grants = new HashMap<>();
     private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
@@ -161,6 +161,23 @@ public final class AgentOperations {
                 return Map.of("nodeId", request.nodeId(), "state", observation.state());
             });
         }
+    }
+
+    public synchronized Object readGeneralSettings(String token, GeneralSettingsRead request) {
+        Grant grant = authorize(token, "general-settings");
+        return withStableTopology(() -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.readAgentGeneralSettings(grant.id(), request.nodeId()));
+        });
+    }
+
+    public synchronized Object previewGeneralSettings(String token, GeneralSettingsPreview request) {
+        Grant grant = authorize(token, "general-settings");
+        return withStableTopology(() -> {
+            requireNode(grant, request.nodeId());
+            return project(operations.previewAgentGeneralSettings(grant.id(), request.nodeId(),
+                    parseId(request.readOperationId()), request.overrides()));
+        });
     }
 
     public synchronized Object readSitePolicy(String token, SitePolicyRead request) {
@@ -334,6 +351,10 @@ public final class AgentOperations {
             item.put("success", value.success());
             item.put("rolledBack", value.rolledBack());
             item.put("reloaded", value.reloaded());
+            if ("APPLY".equals(operation.type()) && value.success() && operation.configuration() != null
+                    && "bungeeconfig.yml".equals(operation.configuration().fileName())) {
+                item.put("restartRequired", true);
+            }
             results.put(node, item);
         });
         result.put("results", results);
@@ -428,6 +449,8 @@ public final class AgentOperations {
     public record Discovery(Integer offset) { }
     public record HealthRequest(List<String> nodeIds) { }
     public record RefreshHealth(String nodeId) { }
+    public record GeneralSettingsRead(String nodeId) { }
+    public record GeneralSettingsPreview(String nodeId, String readOperationId, Map<String, Object> overrides) { }
     public record SitePolicyRead(String nodeId) { }
     public record SitePolicyPreview(String nodeId, String readOperationId, Boolean enabled) { }
     public record SitePolicyTarget(String nodeId, String readOperationId) { }

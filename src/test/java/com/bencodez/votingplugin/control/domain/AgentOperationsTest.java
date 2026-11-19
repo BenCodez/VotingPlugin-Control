@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -391,6 +392,100 @@ class AgentOperationsTest {
             var results = (Map<?, ?>) status.get("results");
             assertEquals(true, ((Map<?, ?>) results.get("backend-a")).get("reloaded"));
             assertEquals(true, ((Map<?, ?>) results.get("backend-b")).get("rolledBack"));
+        }
+    }
+
+    @Test void generalSettingsEditorRetainsOnlyTypedReviewAndFlagsProxyRestart() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        for (boolean proxy : List.of(false, true)) {
+            UUID session = UUID.randomUUID();
+            String node = proxy ? "proxy" : "backend";
+            String file = proxy ? "bungeeconfig.yml" : "Config.yml";
+            String capability = proxy ? ConfigurationOperations.PROXY_FILE_CAPABILITY : ConfigurationOperations.FILE_CAPABILITY;
+            registry.register(new NodeRegistration(node, session, node, proxy ? "VELOCITY" : "BUKKIT", "fixture", 1,
+                    Set.of(capability), Set.of()));
+            Path auditDirectory = java.nio.file.Files.createDirectory(directory.resolve(node));
+            try (var operations = new ConfigurationOperations(registry, new ConfigurationAuditLog(auditDirectory, clock), clock)) {
+                var agents = new AgentOperations(registry, operations, clock);
+                var grant = agents.issue(new AgentOperations.Issue(List.of(node), List.of("general-settings", "status"), 10, null));
+                var other = agents.issue(new AgentOperations.Issue(List.of(node), List.of("general-settings"), 10, null));
+                UUID readId = (UUID) ((Map<?, ?>) agents.readGeneralSettings(grant.token(),
+                        new AgentOperations.GeneralSettingsRead(node))).get("operationId");
+                String content = "OnlineMode: false\nUnmanaged: preserved\n";
+                String revision = "a".repeat(64);
+                var current = ManagedConfiguration.file(file, content);
+                var readTask = operations.claim(node, session);
+                assertEquals(file, readTask.configuration().fileName());
+                operations.complete(readId, node, new ConfigurationTaskResult(session, true, "OK", "fixture", revision,
+                        current, List.of(), false, false, readTask.attemptId()));
+                var result = (Map<?, ?>) agents.status(grant.token(), readId);
+                assertEquals(Map.of("OnlineMode", "false"), result.get("values"));
+                assertFalse(result.toString().contains("Unmanaged"));
+                var request = new AgentOperations.GeneralSettingsPreview(node, readId.toString(), Map.of("OnlineMode", true));
+                assertThrows(ValidationException.class, () -> agents.previewGeneralSettings(other.token(), request));
+                assertThrows(ValidationException.class, () -> agents.previewGeneralSettings(grant.token(),
+                        new AgentOperations.GeneralSettingsPreview(node, readId.toString(), Map.of("Unmanaged", true))));
+                assertThrows(ValidationException.class, () -> operations.createGeneralSettingsPreview(readId, node,
+                        Map.of("OnlineMode", true)));
+                UUID invalid = (UUID) ((Map<?, ?>) agents.previewGeneralSettings(grant.token(), request)).get("operationId");
+                var invalidTask = operations.claim(node, session);
+                operations.complete(invalid, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revision, current, List.of("changed OnlineMode", "changed Unmanaged"),
+                        false, false, invalidTask.attemptId()));
+                assertFalse(operations.get(invalid).browserReviewReady());
+                UUID preview = (UUID) ((Map<?, ?>) agents.previewGeneralSettings(grant.token(), request)).get("operationId");
+                var previewTask = operations.claim(node, session);
+                assertEquals(content.replace("false", "true"), previewTask.configuration().content());
+                operations.complete(preview, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revision, current, List.of("changed OnlineMode"), false, false, previewTask.attemptId()));
+                assertTrue(operations.get(preview).browserReviewReady());
+                assertEquals(Map.of("OnlineMode", "true"), operations.getAgentReview(preview).after());
+                assertThrows(ValidationException.class, () -> operations.createApply(preview, "invalid"));
+                var apply = agents.approve(preview);
+                var applyTask = operations.claim(node, session);
+                assertEquals(revision, applyTask.expectedRevision());
+                operations.complete(apply.operationId(), node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        "b".repeat(64), applyTask.configuration(), List.of("changed OnlineMode"),
+                        !proxy, false, applyTask.attemptId()));
+                var terminal = (Map<?, ?>) agents.status(grant.token(), apply.operationId());
+                var row = (Map<?, ?>) ((Map<?, ?>) terminal.get("results")).get(node);
+                assertEquals(proxy, Boolean.TRUE.equals(row.get("restartRequired")));
+                assertFalse(terminal.toString().contains("Unmanaged"));
+            }
+        }
+    }
+
+    @Test void pendingAgentFileReviewsLeaveCapacityForBrowserReadAndApply() throws Exception {
+        MutableClock clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        String node = "backend";
+        UUID session = UUID.randomUUID();
+        registry.register(new NodeRegistration(node, session, node, "BUKKIT", "fixture", 1,
+                Set.of(ConfigurationOperations.FILE_CAPABILITY), Set.of()));
+        try (var operations = new ConfigurationOperations(registry, new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var grant = agents.issue(new AgentOperations.Issue(List.of(node), List.of("general-settings"), 10, null));
+            var read = new AgentOperations.GeneralSettingsRead(node);
+            var current = ManagedConfiguration.file("Config.yml", "OnlineMode: false\n");
+            UUID firstPreview = null;
+            for (int slot = 0; slot < 6; slot++) {
+                UUID readId = (UUID) ((Map<?, ?>) agents.readGeneralSettings(grant.token(), read)).get("operationId");
+                var readTask = operations.claim(node, session);
+                operations.complete(readId, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        "a".repeat(64), current, List.of(), false, false, readTask.attemptId()));
+                var proposal = new AgentOperations.GeneralSettingsPreview(node, readId.toString(), Map.of("OnlineMode", true));
+                UUID previewId = (UUID) ((Map<?, ?>) agents.previewGeneralSettings(grant.token(), proposal)).get("operationId");
+                var previewTask = operations.claim(node, session);
+                operations.complete(previewId, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        "a".repeat(64), current, List.of("changed OnlineMode"), false, false, previewTask.attemptId()));
+                assertTrue(operations.get(previewId).browserReviewReady());
+                if (slot == 0) firstPreview = previewId;
+            }
+            var denied = assertThrows(ValidationException.class, () -> agents.readGeneralSettings(grant.token(), read));
+            assertEquals("OPERATION_LIMIT", denied.code());
+            assertNotNull(operations.createRead(List.of(node), ManagedConfiguration.file("Config.yml", null)));
+            assertNotNull(agents.approve(firstPreview));
         }
     }
 

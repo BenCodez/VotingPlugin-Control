@@ -98,3 +98,12 @@ Obtain a current policy read for each target with the same grant. Pass one Boole
 queueing the batch. Any failed or stale preview blocks approval for the entire batch. The browser lists each prior
 value and revision. An approved apply can still fail on individual nodes. Inspect each node's outcome and rollback
 indicator before taking further action.
+
+## Optional typed General Settings
+
+Grant **Read and preview typed General Settings** and **Track operations**. Use `read_general_settings` on one
+authorized backend or proxy, then pass its current read ID and typed `overrides` to `preview_general_settings`.
+The tool selects the fixed file for the target role and uses Control's curated General Settings schema. It returns
+available typed fields, while redacted documents stay within Control's existing bounded retention. The node must
+return the same current revision, redacted document, and expected changed paths before browser approval. A successful
+proxy-file apply reports `restartRequired`; the operator restarts through the existing owner workflow.

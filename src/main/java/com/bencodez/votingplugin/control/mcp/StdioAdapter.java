@@ -1,5 +1,7 @@
 package com.bencodez.votingplugin.control.mcp;
 
+import com.bencodez.votingplugin.control.domain.GeneralSettingsDocument;
+
 import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.core.StreamReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
@@ -194,10 +196,11 @@ public final class StdioAdapter {
             var row = results.next();
             JsonNode details = row.getValue();
             if (!result.path("nodes").has(row.getKey())
-                    || !fields(details, Set.of("code", "success", "rolledBack", "reloaded"))
+                    || !fields(details, Set.of("code", "success", "rolledBack", "reloaded", "restartRequired"))
                     || !details.path("code").asText().matches("[A-Z][A-Z0-9_]{0,63}")
                     || !details.path("success").isBoolean() || !details.path("rolledBack").isBoolean()
-                    || !details.path("reloaded").isBoolean()) return false;
+                    || !details.path("reloaded").isBoolean()
+                    || details.has("restartRequired") && !details.path("restartRequired").isBoolean()) return false;
         }
         return true;
     }
@@ -255,11 +258,10 @@ public final class StdioAdapter {
 
     private static boolean validValues(JsonNode result) {
         JsonNode values = result.path("values");
-        if (!"READ".equals(result.path("type").asText()) || !fields(values, Set.of("name", "exists",
-                "serviceSite", "voteUrl", "enabled", "displayName", "priority", "hidden", "voteDelay", "material",
-                "displayItem.amount", "sendVotesToAllServers", "blockedServers"))) {
-            return false;
-        }
+        Set<String> keys = new java.util.HashSet<>(GeneralSettingsDocument.editableKeys());
+        keys.addAll(Set.of("name", "exists", "serviceSite", "voteUrl", "enabled", "displayName", "priority",
+                "hidden", "voteDelay", "material", "displayItem.amount", "sendVotesToAllServers", "blockedServers"));
+        if (!"READ".equals(result.path("type").asText()) || !fields(values, keys)) return false;
         for (JsonNode value : values) if (!value.isTextual()) return false;
         return true;
     }
@@ -330,6 +332,17 @@ public final class StdioAdapter {
         tools.put("refresh_node_health", new Tool("refresh_node_health", "health-refresh",
                 "Queue the read-only Network Doctor observation for an authorized node.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));
+        Map<String, Object> settings = new LinkedHashMap<>();
+        for (String key : GeneralSettingsDocument.editableKeys()) {
+            settings.put(key, Map.of("oneOf", List.of(flag, Map.of("type", "string", "maxLength", 32))));
+        }
+        tools.put("read_general_settings", new Tool("read_general_settings", "settings-read",
+                "Read curated settings for one authorized backend or proxy.",
+                object(Map.of("nodeId", node), List.of("nodeId"))));
+        tools.put("preview_general_settings", new Tool("preview_general_settings", "settings-preview",
+                "Preview typed General Settings changes for browser approval.",
+                object(Map.of("nodeId", node, "readOperationId", id, "overrides", object(settings, List.of())),
+                        List.of("nodeId", "readOperationId", "overrides"))));
         tools.put("read_site_policy", new Tool("read_site_policy", "site-policy-read",
                 "Read automatic vote-site creation policy on one authorized backend.",
                 object(Map.of("nodeId", node), List.of("nodeId"))));

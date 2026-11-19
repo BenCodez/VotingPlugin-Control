@@ -1138,14 +1138,14 @@ async function reviewAgentPreview(operationId) {
   text(agentReviewStatus, 'Loading preview…');
   if (!agentReview.open) agentReview.showModal();
   try {
-    const {operation, before, beforeByNode} = await agentAdmin('review', {operationId});
+    const {operation, before, beforeByNode, after} = await agentAdmin('review', {operationId});
     if (agentReviewId !== operationId || !agentReview.open) return;
     const configuration = operation.configuration;
     const routing = configuration.domain === 'proxy-routing';
     const fields = routing ? [
       ['sendVotesToAllServers', String(configuration.sendVotesToAllServers)],
       ['blockedServers', `[${configuration.blockedServers.join(', ')}]`]
-    ] : Object.entries(configuration.options);
+    ] : Object.entries(configuration.domain === 'file' ? (after || {}) : configuration.options);
     if (configuration.preset === 'vote-site') fields.push(['displayItem.amount', '1']);
     const fieldDetails = prior => fields.map(([key, value]) =>
       `${configuration.preset === 'auto-create-vote-sites' ? 'enabled (current effective value)' : key}: ${(configuration.preset !== 'vote-site' || prior.exists === 'true') && Object.hasOwn(prior, key)
