@@ -19,21 +19,30 @@ import java.util.UUID;
 import java.util.function.Supplier;
 
 public final class AgentOperations {
-    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status");
+    private static final Set<String> ACTIONS = Set.of("discover", "read", "preview", "status", "health");
     private final Map<UUID, Grant> grants = new HashMap<>();
+    private final Map<UUID, Instant> healthRefreshes = new HashMap<>();
     private final NodeRegistry registry;
     private final ConfigurationOperations operations;
     private final Clock clock;
+    private final InspectionOperations inspections;
     private final SecureRandom random = new SecureRandom();
 
     public AgentOperations(NodeRegistry registry, ConfigurationOperations operations, Clock clock) {
+        this(registry, operations, new InspectionOperations(registry, clock), clock);
+    }
+
+    public AgentOperations(NodeRegistry registry, ConfigurationOperations operations,
+                           InspectionOperations inspections, Clock clock) {
         this.registry = registry;
         this.operations = operations;
+        this.inspections = inspections;
         this.clock = clock;
     }
 
     public synchronized Issued issue(Issue request) {
         grants.values().removeIf(grant -> !clock.instant().isBefore(grant.expiresAt()));
+        healthRefreshes.keySet().retainAll(grants.keySet());
         if (request == null || request.actions() == null || request.actions().isEmpty()
                 || request.actions().size() > ACTIONS.size()
                 || request.actions().stream().anyMatch(action -> action == null || !ACTIONS.contains(action))
@@ -81,6 +90,7 @@ public final class AgentOperations {
     public synchronized void revoke(UUID id) {
         operations.auditAgentGrant(id, "REVOKED");
         grants.remove(id);
+        healthRefreshes.remove(id);
     }
 
     public synchronized void requireAccess(String token, String action) {
@@ -103,6 +113,53 @@ public final class AgentOperations {
             if (end < grant.nodes().size()) results.put("nextOffset", end);
             return results;
         });
+    }
+
+    public synchronized AgentHealth.Topology topology(String token, Discovery request) {
+        Grant grant = authorize(token, "health");
+        return registry.withStableTopology(() -> {
+            List<String> scope = grant.nodes();
+            int offset = request.offset() == null ? 0 : request.offset();
+            if (offset < 0 || offset > scope.size()) throw invalid("Invalid topology offset");
+            int end = Math.min(offset + 50, scope.size());
+            Set<String> allowed = permittedNodes(grant);
+            var rows = scope.subList(offset, end).stream().filter(allowed::contains).map(registry::find)
+                    .filter(java.util.Objects::nonNull).map(node -> AgentHealth.topologyRow(
+                            registry, node, allowed, clock.instant())).toList();
+            return new AgentHealth.Topology(rows, !allowed.isEmpty() && end < scope.size() ? end : null);
+        });
+    }
+
+    public synchronized AgentHealth.Report health(String token, HealthRequest request) {
+        Grant grant = authorize(token, "health");
+        List<String> requested = request.nodeIds();
+        if (requested == null || requested.isEmpty() || requested.size() > 25
+                || new HashSet<>(requested).size() != requested.size()) {
+            throw invalid("Health requires 1 to 25 distinct target nodes");
+        }
+        requested.forEach(AgentOperations::validateNodeId);
+        synchronized (inspections) {
+            return registry.withStableTopology(() -> {
+                Set<String> allowed = permittedNodes(grant);
+                if (!allowed.containsAll(requested)) denied();
+                return AgentHealth.report(registry, inspections, requested, clock.instant());
+            });
+        }
+    }
+
+    public synchronized Map<String, Object> refreshHealth(String token, RefreshHealth request) {
+        Grant grant = authorize(token, "health");
+        synchronized (inspections) {
+            return registry.withStableTopology(() -> {
+                requireNode(grant, request.nodeId());
+                Instant now = clock.instant();
+                Instant last = healthRefreshes.get(grant.id());
+                if (last != null && now.isBefore(last.plusSeconds(2))) throw invalid("Wait before refreshing another node");
+                var observation = inspections.refreshAgentHealth(request.nodeId());
+                healthRefreshes.put(grant.id(), now);
+                return Map.of("nodeId", request.nodeId(), "state", observation.state());
+            });
+        }
     }
 
     public synchronized Object read(String token, Read request) {
@@ -286,6 +343,8 @@ public final class AgentOperations {
 
     public record Issue(List<String> nodeIds, List<String> actions, Integer minutes, String proxyNodeId) { }
     public record Discovery(Integer offset) { }
+    public record HealthRequest(List<String> nodeIds) { }
+    public record RefreshHealth(String nodeId) { }
     public record Issued(UUID id, String token, Instant expiresAt) { }
     public record GrantView(UUID id, List<String> nodeIds, Set<String> actions, Instant expiresAt, String proxyNodeId, int nodeCount) { }
     public record Read(String nodeId, String name) { }

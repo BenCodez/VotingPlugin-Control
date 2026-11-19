@@ -65,7 +65,17 @@ public final class InspectionOperations {
         this(registry, null, clock);
     }
 
+    private static final int MAX_AGENT_HEALTH = 12;
+
     public synchronized InspectionView create(String nodeId, InspectionQuery query) {
+        return create(nodeId, query, false);
+    }
+
+    synchronized InspectionView refreshAgentHealth(String nodeId) {
+        return create(nodeId, new InspectionQuery("network-health", Map.of()), true);
+    }
+
+    private InspectionView create(String nodeId, InspectionQuery query, boolean agentHealth) {
         prune();
         if (query == null) throw invalid("inspection query is required");
         if (nodeId == null || !NODE_ID.matcher(nodeId).matches()) throw invalid("nodeId is invalid");
@@ -76,12 +86,28 @@ public final class InspectionOperations {
                 || query.requiresRewardFiles() && !node.acceptedCapabilities().contains(InspectionQuery.REWARD_FILE_CAPABILITY)) {
             throw new ValidationException("NODE_UNAVAILABLE", "Node cannot answer inspection queries", List.of(nodeId));
         }
+        if (agentHealth) {
+            var last = inspections.values().stream().filter(item -> item.nodeId.equals(nodeId)
+                    && item.query.requiresNetworkHealth() && item.targetSession.equals(node.sessionId()))
+                    .reduce((first, second) -> second).orElse(null);
+            if (last != null && (!"COMPLETE".equals(last.state)
+                    || last.createdAt.isAfter(clock.instant().minusSeconds(30)))) return view(last);
+            if (inspections.values().stream().filter(item -> item.agentHealth).count() >= MAX_AGENT_HEALTH) {
+                var evictable = inspections.values().stream()
+                        .filter(item -> item.agentHealth && "COMPLETE".equals(item.state)).findFirst().orElse(null);
+                if (evictable == null) throw new ValidationException("OPERATION_LIMIT",
+                        "Agent health observation limit reached", List.of());
+                append("INSPECTION_EVICTED", evictable.id, evictable.nodeId, evictable.query.kind());
+                inspections.remove(evictable.id);
+            }
+        }
         evictOldestCompletedAtCapacity();
         if (inspections.size() >= MAX_INSPECTIONS) {
             throw new ValidationException("OPERATION_LIMIT", "Too many retained inspections", List.of());
         }
         UUID id = UUID.randomUUID();
         StoredInspection stored = new StoredInspection(id, nodeId, node.sessionId(), query, clock.instant());
+        stored.agentHealth = agentHealth;
         inspections.put(id, stored);
         try {
             // Deliberately record only the query type. Player names and filter values are not audit metadata.
@@ -521,7 +547,7 @@ public final class InspectionOperations {
         Iterator<Map.Entry<UUID, StoredInspection>> iterator = inspections.entrySet().iterator();
         while (iterator.hasNext()) {
             StoredInspection stored = iterator.next().getValue();
-            if (!"COMPLETE".equals(stored.state) || !stored.terminalResultObserved) continue;
+            if (!"COMPLETE".equals(stored.state) || !(stored.agentHealth || stored.terminalResultObserved)) continue;
             append("INSPECTION_EVICTED", stored.id, stored.nodeId, stored.query.kind());
             iterator.remove();
             return;
@@ -550,6 +576,7 @@ public final class InspectionOperations {
         private UUID attemptId;
         private InspectionTaskResult result;
         private boolean terminalResultObserved;
+        private boolean agentHealth;
 
         private StoredInspection(UUID id, String nodeId, UUID targetSession, InspectionQuery query, Instant createdAt) {
             this.id = id;

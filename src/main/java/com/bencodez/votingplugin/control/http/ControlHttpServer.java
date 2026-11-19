@@ -298,7 +298,7 @@ public final class ControlHttpServer implements AutoCloseable {
         json.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
                 .maxNestingDepth(20).maxStringLength(ManagedConfiguration.MAX_CONTENT + 4096)
                 .maxNumberLength(64).build());
-        agentOperations = new AgentOperations(registry, configurationOperations, clock);
+        agentOperations = new AgentOperations(registry, configurationOperations, inspectionOperations, clock);
         agentJson = json.copy().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .disable(com.fasterxml.jackson.databind.MapperFeature.ALLOW_COERCION_OF_SCALARS)
                 .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT);
@@ -1132,6 +1132,7 @@ public final class ControlHttpServer implements AutoCloseable {
         String route = path.substring(AGENT_API.length());
         String action = switch (route) {
             case "nodes" -> "discover";
+            case "topology", "health", "health-refresh" -> "health";
             case "read", "preview", "status" -> route;
             default -> null;
         };
@@ -1145,6 +1146,9 @@ public final class ControlHttpServer implements AutoCloseable {
                 case "nodes" -> {
                     yield agentOperations.discover(token, read(exchange, AgentOperations.Discovery.class, true));
                 }
+                case "topology" -> agentOperations.topology(token, read(exchange, AgentOperations.Discovery.class, true));
+                case "health" -> agentOperations.health(token, read(exchange, AgentOperations.HealthRequest.class, true));
+                case "health-refresh" -> agentOperations.refreshHealth(token, read(exchange, AgentOperations.RefreshHealth.class, true));
                 case "read" -> agentOperations.read(token, read(exchange, AgentOperations.Read.class, true));
                 case "preview" -> agentOperations.preview(token, read(exchange, AgentOperations.Preview.class, true));
                 case "status" -> agentOperations.status(token, readAgentId(exchange));

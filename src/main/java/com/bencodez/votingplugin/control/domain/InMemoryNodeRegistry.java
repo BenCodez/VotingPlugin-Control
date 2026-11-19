@@ -98,7 +98,8 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
             StoredNode replacement = new StoredNode(registration.nodeId(), registration.sessionId(),
                     registration.displayName().trim(), registration.platform(), registration.pluginVersion().trim(),
                     registration.protocolVersion(), registration.capabilities(), accepted(registration.capabilities()),
-                    registration.detectedPlugins(), backends, sequence, now, now);
+                    registration.detectedPlugins(), backends, sequence, now, now,
+                    sequence < 0 ? null : existing.topologyObservedAt);
             result.set(replacement);
             return replacement;
         });
@@ -123,7 +124,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
             StoredNode updated = new StoredNode(existing.nodeId, existing.sessionId, existing.displayName,
                     existing.platform, existing.pluginVersion, existing.protocolVersion, heartbeat.capabilities(),
                     accepted(heartbeat.capabilities()), existing.detectedPlugins, existing.backends,
-                    existing.snapshotSequence, now, now);
+                    existing.snapshotSequence, now, now, existing.topologyObservedAt);
             result.set(updated);
             return updated;
         });
@@ -157,7 +158,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
             StoredNode updated = new StoredNode(existing.nodeId, existing.sessionId, existing.displayName,
                     existing.platform, existing.pluginVersion, existing.protocolVersion,
                     existing.advertisedCapabilities, existing.acceptedCapabilities, existing.detectedPlugins,
-                    sorted, snapshot.sequence(), now, now);
+                    sorted, snapshot.sequence(), now, now, now);
             applied.set(true);
             retainedBackends = replacementTotal;
             result.set(updated);
@@ -201,6 +202,12 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
         StoredNode node = nodes.get(nodeId);
         if (node == null) throw new ValidationException("NODE_NOT_FOUND", "Node is not registered", List.of());
         requireSession(node, sessionId);
+    }
+
+    @Override
+    public Instant topologyObservedAt(String nodeId) {
+        StoredNode node = nodes.get(nodeId);
+        return node == null ? null : node.topologyObservedAt;
     }
 
     /** Runs one task mutation while replacement registration for this node is excluded. */
@@ -361,7 +368,7 @@ public final class InMemoryNodeRegistry implements NodeRegistry {
                               String pluginVersion, int protocolVersion, Set<String> advertisedCapabilities,
                               Set<String> acceptedCapabilities, Set<String> detectedPlugins,
                               List<BackendServerIdentity> backends,
-                              long snapshotSequence, Instant lastSeen, Instant lastAuthenticatedUpdate) {
+                              long snapshotSequence, Instant lastSeen, Instant lastAuthenticatedUpdate, Instant topologyObservedAt) {
         private StoredNode {
             advertisedCapabilities = Set.copyOf(advertisedCapabilities);
             acceptedCapabilities = Set.copyOf(acceptedCapabilities);

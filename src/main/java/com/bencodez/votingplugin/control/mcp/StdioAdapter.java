@@ -145,6 +145,12 @@ public final class StdioAdapter {
     }
 
     private static boolean validResult(String route, JsonNode result) {
+        if ("topology".equals(route)) return validTopology(result);
+        if ("health".equals(route)) return validHealth(result);
+        if ("health-refresh".equals(route)) {
+            return fields(result, Set.of("nodeId", "state")) && nodeId(result.path("nodeId"))
+                    && Set.of("RUNNING", "SUCCEEDED", "FAILED").contains(result.path("state").asText());
+        }
         if ("nodes".equals(route)) {
             JsonNode items = result.path("items");
             if (!fields(result, Set.of("items", "nextOffset")) || !items.isArray() || items.size() > 50) return false;
@@ -186,6 +192,57 @@ public final class StdioAdapter {
                 && details.path("code").asText().matches("[A-Z][A-Z0-9_]{0,63}")
                 && details.path("success").isBoolean() && details.path("rolledBack").isBoolean()
                 && details.path("reloaded").isBoolean();
+    }
+
+    private static boolean validTopology(JsonNode result) {
+        JsonNode items = result.path("items");
+        if (!fields(result, Set.of("items", "nextOffset")) || !items.isArray() || items.size() > 50) return false;
+        if (result.hasNonNull("nextOffset") && (!result.path("nextOffset").isIntegralNumber()
+                || !result.path("nextOffset").canConvertToInt() || result.path("nextOffset").intValue() < 1
+                || result.path("nextOffset").intValue() > 4097)) return false;
+        for (JsonNode row : items) {
+            if (!fields(row, Set.of("nodeId", "platform", "online", "topologyObservedAt", "topologyFresh",
+                    "backendIds", "linksTruncated")) || !nodeId(row.path("nodeId"))
+                    || !Set.of("VELOCITY", "BUNGEECORD", "BUKKIT").contains(row.path("platform").asText())
+                    || !row.path("online").isBoolean() || !row.path("topologyFresh").isBoolean()
+                    || !row.path("linksTruncated").isBoolean()
+                    || row.hasNonNull("topologyObservedAt") && !timestamp(row.path("topologyObservedAt"))
+                    || !nodeList(row.path("backendIds"), 6)) return false;
+        }
+        return true;
+    }
+
+    private static boolean validHealth(JsonNode result) {
+        JsonNode checks = result.path("checks");
+        if (!fields(result, Set.of("generatedAt", "truncated", "checks")) || !timestamp(result.path("generatedAt"))
+                || !result.path("truncated").isBoolean() || !checks.isArray() || checks.size() > 75) return false;
+        for (JsonNode check : checks) {
+            if (!fields(check, Set.of("id", "status", "affectedNodes", "restartRequired"))
+                    || !check.path("id").asText().matches("[a-zA-Z][a-zA-Z0-9.-]{0,95}")
+                    || !Set.of("PASS", "WARNING", "FAIL", "UNKNOWN", "INFO").contains(check.path("status").asText())
+                    || !check.path("restartRequired").isBoolean() || !nodeList(check.path("affectedNodes"), 3)) return false;
+        }
+        return true;
+    }
+
+    private static boolean nodeList(JsonNode nodes, int maximum) {
+        if (!nodes.isArray() || nodes.size() > maximum) return false;
+        for (JsonNode node : nodes) if (!nodeId(node)) return false;
+        return true;
+    }
+
+    private static boolean nodeId(JsonNode node) {
+        return node.isTextual() && node.asText().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
+    }
+
+    private static boolean timestamp(JsonNode node) {
+        if (!node.isTextual() || node.asText().length() > 40) return false;
+        try {
+            java.time.Instant.parse(node.asText());
+            return true;
+        } catch (java.time.format.DateTimeParseException failure) {
+            return false;
+        }
     }
 
     private static boolean validValues(JsonNode result) {
@@ -257,6 +314,14 @@ public final class StdioAdapter {
         Map<String, Object> text = Map.of("type", "string", "minLength", 1, "maxLength", 200);
         tools.put("list_nodes", new Tool("list_nodes", "nodes", "List authorized enrolled Control nodes.",
                 object(Map.of("offset", Map.of("type", "integer", "minimum", 0, "maximum", 4097)), List.of())));
+        tools.put("get_topology", new Tool("get_topology", "topology", "Read scoped node topology and observation freshness.",
+                object(Map.of("offset", Map.of("type", "integer", "minimum", 0, "maximum", 4097)), List.of())));
+        tools.put("get_network_health", new Tool("get_network_health", "health", "Read scoped Network Doctor checks from current evidence.",
+                object(Map.of("nodeIds", Map.of("type", "array", "items", node, "minItems", 1,
+                        "maxItems", 25, "uniqueItems", true)), List.of("nodeIds"))));
+        tools.put("refresh_node_health", new Tool("refresh_node_health", "health-refresh",
+                "Queue the read-only Network Doctor observation for an authorized node.",
+                object(Map.of("nodeId", node), List.of("nodeId"))));
         tools.put("read_setup", new Tool("read_setup", "read", "Read one named backend vote site.",
                 object(Map.of("nodeId", node, "name", name), List.of("nodeId", "name"))));
         tools.put("preview_setup", new Tool("preview_setup", "preview",

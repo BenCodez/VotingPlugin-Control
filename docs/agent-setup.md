@@ -50,3 +50,18 @@ Approve in the browser to queue the exact preview. The agent can poll the previe
 | `get_operation` | `operationId`. Only operations from the current grant are visible. |
 
 The adapter can prepare work for a single enrolled backend per operation. Deployment, enrollment, restarts and raw file editing use their existing administrator workflows.
+
+## Optional topology and diagnostics
+
+Select **Topology and diagnostics** when issuing a grant to enable `get_topology`, `get_network_health` and
+`refresh_node_health`. The other actions do not enable these tools.
+
+- `get_topology` accepts an optional page offset. It reports only authorized nodes and links. Each proxy row shows when
+  Control received its last topology snapshot and whether it is less than five minutes old. Links may be truncated.
+- `refresh_node_health` queues the existing read-only Network Doctor inspection for one authorized, capable node.
+  Wait at least two seconds between requests on the same grant. Control coalesces queued or recent observations
+  and reserves shared inspection capacity for browser and administrator requests.
+- `get_network_health` accepts 1–25 exact authorized node IDs. It returns bounded check IDs, statuses, affected node IDs
+  and restart-required flags. Missing, stale or unsupported evidence remains unknown. A truncated report is incomplete.
+
+These tools do not expose raw inspection data, player lookup, vote logs, health evidence values, or restart controls.

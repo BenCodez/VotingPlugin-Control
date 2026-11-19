@@ -148,12 +148,34 @@ class AgentMcpHttpTest {
         new StdioAdapter(base.toString(), token).run(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), frames);
         var replies = frames.toString(StandardCharsets.UTF_8).lines().toList();
         assertEquals(4, replies.size());
-        assertEquals(4, json.readTree(replies.get(1)).path("result").path("tools").size());
+        assertEquals(7, json.readTree(replies.get(1)).path("result").path("tools").size());
         assertEquals("proxy-a", json.readTree(replies.get(2)).path("result").path("structuredContent")
                 .path("items").get(0).path("nodeId").asText());
         assertEquals(applyId, json.readTree(replies.get(3)).path("result").path("structuredContent")
                 .path("applyOperationId").asText());
         assertFalse(replies.get(3).contains("approvalToken"));
+        String healthRequest = json.writeValueAsString(Map.of("nodeIds", java.util.List.of("proxy-a")));
+        assertAuthFailure(send("POST", "/api/v1/agent/health", healthRequest, token));
+        String healthGrant = json.writeValueAsString(Map.of("nodeIds", java.util.List.of("proxy-a"),
+                "actions", java.util.List.of("health"), "minutes", 10));
+        String healthCredential = json.readTree(sendWithHeaders("POST", "/api/v1/agent-admin/issue",
+                healthGrant, browser).body()).path("token").asText();
+        String healthFrames = """
+                {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}
+                {"jsonrpc":"2.0","method":"notifications/initialized"}
+                {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_topology","arguments":{}}}
+                {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_network_health","arguments":%s}}
+                """.formatted(healthRequest);
+        frames.reset();
+        new StdioAdapter(base.toString(), healthCredential).run(
+                new ByteArrayInputStream(healthFrames.getBytes(StandardCharsets.UTF_8)), frames);
+        var healthReplies = frames.toString(StandardCharsets.UTF_8).lines().toList();
+        assertEquals(3, healthReplies.size());
+        assertEquals("proxy-a", json.readTree(healthReplies.get(1)).path("result").path("structuredContent")
+                .path("items").get(0).path("nodeId").asText());
+        assertTrue(java.util.stream.StreamSupport.stream(json.readTree(healthReplies.get(2)).path("result")
+                .path("structuredContent").path("checks").spliterator(), false)
+                .anyMatch(check -> "UNKNOWN".equals(check.path("status").asText())));
         assertEquals(200, sendWithHeaders("POST", "/api/v1/agent-admin/revoke",
                 json.writeValueAsString(Map.of("operationId", grant.path("id").asText())), browser).statusCode());
         assertAuthFailure(send("POST", "/api/v1/agent/status", selector, token));
