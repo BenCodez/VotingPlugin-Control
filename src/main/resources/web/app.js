@@ -5025,13 +5025,8 @@ typedFieldsApply.addEventListener('click', async () => {
       }
     });
     if (!typedFieldsCurrent(editor)) return;
-    if (result.state === 'SUCCEEDED') {
-      fileReadCache.clear();
-      lastFileReadOperation = null;
-      typedFieldsDialog.close();
-      await loadFileConfiguration(true);
-      text(fileOperationStatus, operationSummary(result));
-    }
+    // Shared Apply invalidation schedules the file reload for the active context.
+    if (result.state === 'SUCCEEDED') typedFieldsDialog.close();
   } catch (error) {
     if (typedFieldsCurrent(editor)) text(typedFieldsStatus, error.message);
   } finally {

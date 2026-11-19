@@ -16,6 +16,9 @@ function harness() {
   let click;
   let finish;
   let rereads = 0;
+  let finishRead;
+  const read = new Promise(resolve => { finishRead = resolve; });
+  const scheduled = [];
   const terminal = new Promise(resolve => { finish = resolve; });
   const noop = () => {};
   const editor = {authGeneration: 1, generation: 1, file: 'Config.yml', nodeId: 'backend',
@@ -30,7 +33,7 @@ function harness() {
     dedicatedSetupApprovals: new Map(), fileReadCache: new Map(), settingsHealthGeneration: 0,
     dashboardConfigurationGeneration: 0, settingsEditor: null, settingsHealthReader: null,
     voteSitesEditor: null, rewardsEditor: null, autoLoadPending: new Set(),
-    tabFromHash: () => 'configurations', window: {setTimeout: noop},
+    tabFromHash: () => 'configurations', window: {setTimeout: callback => scheduled.push(callback)},
     operationContext: () => ({}), operationContextCurrent: () => true,
     operationSummary: operation => operation.state, text: (target, value) => { target.textContent = value; },
     authorized: async (url, request) => {
@@ -38,7 +41,11 @@ function harness() {
       assert.deepEqual(JSON.parse(request.body), {previewOperationId: 'preview'});
       return terminal;
     },
-    loadFileConfiguration: async () => { rereads++; },
+    loadFileConfiguration: async () => { rereads++; await read; },
+    autoLoadTab: tab => {
+      assert.equal(tab, 'configurations');
+      return ctx.loadFileConfiguration(true);
+    },
     updateConfigurationButtons: noop, updateExtendedButtons: noop, syncYamlEditorView: noop,
     rememberOperation: noop, rememberVoteLoggingRestart: noop, invalidateGuidedSetupReads: noop,
     invalidateDashboardInspection: noop
@@ -48,17 +55,24 @@ function harness() {
     + section('function invalidateConfigurationReads(', 'async function loadEnrollments(')
     + section('function typedFieldsCurrent(', 'function discardTypedFieldApproval(')
     + section("typedFieldsApply.addEventListener('click'", 'readFileConfiguration.addEventListener('), ctx);
-  return {ctx, click, finish, rereads: () => rereads};
+  return {ctx, click, finish, finishRead, scheduled, rereads: () => rereads};
 }
 
-test('successful typed Apply closes the dialog and rereads after shared invalidation', async () => {
-  const {ctx, click, finish, rereads} = harness();
+test('successful typed Apply closes the dialog and relies on the one scheduled reread', async () => {
+  const {ctx, click, finish, finishRead, scheduled, rereads} = harness();
   const pending = click();
   finish({type: 'APPLY', state: 'SUCCEEDED', results: {backend: {success: true}}});
-  await pending;
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(ctx.inputGeneration, 3);
+  assert.equal(scheduled.length, 1);
+  const refresh = scheduled.shift()();
+  ctx.configurationFile.value = 'GUI.yml';
+  ctx.fileOperationStatus.textContent = 'Loading GUI.yml';
+  finishRead();
+  await Promise.all([pending, refresh]);
   assert.equal(ctx.typedFieldsDialog.open, false);
   assert.equal(rereads(), 1);
+  assert.equal(ctx.fileOperationStatus.textContent, 'Loading GUI.yml');
 });
 
 for (const [name, change] of Object.entries({
