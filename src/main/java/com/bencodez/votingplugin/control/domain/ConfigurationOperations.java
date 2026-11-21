@@ -256,6 +256,67 @@ public final class ConfigurationOperations implements AutoCloseable {
         return transportPeerAvailable(proxy, backend) && operation.agentPeerSession.equals(backend.sessionId());
     }
 
+    synchronized OperationView readAgentManagedFields(UUID agent, String nodeId, String file) {
+        prune();
+        requireAgentCapacity(agent);
+        ManagedFields.catalog(file, true);
+        var selector = ManagedConfiguration.file(file, null);
+        var targets = validateTargets(List.of(nodeId), selector.capability());
+        validateConfigurationTargets(targets, selector);
+        var read = create("READ", targets, selector, null, Map.of(), agent);
+        operations.get(read.operationId()).agentManagedFieldRead = true;
+        return read;
+    }
+
+    synchronized OperationView previewAgentManagedFields(UUID agent, String nodeId, UUID readId,
+            Map<String, Object> overrides) {
+        prune();
+        requireAgentCapacity(agent);
+        var read = agentOperation(agent, readId);
+        if (!read.agentManagedFieldRead) throw invalid("A scoped typed configuration READ is required");
+        return createManagedFieldPreview(readId, nodeId, read.configuration.fileName(), overrides, agent).operation();
+    }
+
+    public synchronized List<ManagedFields.Entry> managedFieldState(UUID readId, String nodeId, String file) {
+        requireBrowserManagedFieldRead(readId, file);
+        return ManagedFields.read(file, fileSnapshot(readId, nodeId, file).configuration().content(), false);
+    }
+
+    public synchronized ManagedFieldPreview previewManagedFields(UUID readId, String nodeId, String file,
+            Map<String, Object> overrides) {
+        requireBrowserManagedFieldRead(readId, file);
+        return createManagedFieldPreview(readId, nodeId, file, overrides, null);
+    }
+
+    private void requireBrowserManagedFieldRead(UUID readId, String file) {
+        ManagedFields.catalog(file, false);
+        var read = operations.get(readId);
+        if (read != null && read.agent != null) throw invalid("An administrator managed-file READ is required");
+    }
+
+    private ManagedFieldPreview createManagedFieldPreview(UUID readId, String nodeId, String file,
+            Map<String, Object> overrides, UUID agent) {
+        var snapshot = fileSnapshot(readId, nodeId, file);
+        var content = snapshot.configuration().content();
+        var patch = ManagedFields.patch(file, content, overrides, agent != null);
+        var selector = ManagedConfiguration.file(file, patch.content());
+        var targets = validateTargets(List.of(nodeId), selector.capability());
+        validateConfigurationTargets(targets, selector);
+        byte[] approval = new byte[32];
+        random.nextBytes(approval);
+        var preview = create("PREVIEW", targets, selector, Base64.getUrlEncoder().withoutPadding().encodeToString(approval),
+                Map.of(nodeId, snapshot.revision()), agent);
+        var stored = operations.get(preview.operationId());
+        stored.managedFieldPreview = true;
+        stored.agentDocumentDigest = AgentSetup.documentDigest(content);
+        stored.agentExpectedChanges = patch.changes();
+        stored.agentBefore = patch.before();
+        stored.agentAfter = patch.after();
+        return new ManagedFieldPreview(preview, patch.before(), patch.after());
+    }
+
+    public record ManagedFieldPreview(OperationView operation, Map<String, String> before, Map<String, String> after) { }
+
     synchronized OperationView readAgentGeneralSettings(UUID agent, String nodeId) {
         prune();
         requireAgentCapacity(agent);
@@ -538,7 +599,7 @@ public final class ConfigurationOperations implements AutoCloseable {
             }
             throw invalid("Preview is unavailable for browser approval");
         }
-        return createApply(id, preview.approvalToken, true);
+        return createApply(id, preview.approvalToken, ApprovalRoute.AGENT_BROWSER);
     }
 
     private boolean agentReviewReady(StoredOperation operation) {
@@ -550,10 +611,35 @@ public final class ConfigurationOperations implements AutoCloseable {
     }
 
     public synchronized OperationView createApply(UUID previewId, String approvalToken) {
-        return createApply(previewId, approvalToken, false);
+        return createApply(previewId, approvalToken, ApprovalRoute.LEGACY);
     }
 
-    private OperationView createApply(UUID previewId, String approvalToken, boolean browserAgentReview) {
+    public synchronized OperationView approveManagedFields(UUID id) {
+        prune();
+        var preview = operations.get(id);
+        if (preview == null || !managedFieldReviewReady(preview)) throw invalid("Typed preview is unavailable for approval");
+        return createApply(id, preview.approvalToken, ApprovalRoute.FIELDS_BROWSER);
+    }
+
+    public synchronized void discardManagedFields(UUID id) {
+        prune();
+        var preview = operations.get(id);
+        if (preview == null || preview.agent != null || !preview.managedFieldPreview
+                || !"PREVIEW".equals(preview.type) || preview.approvalUsed) return;
+        audit.append("PREVIEW_DISCARDED", id, null, "MANAGED_FIELDS");
+        preview.approvalUsed = true;
+    }
+
+    private boolean managedFieldReviewReady(StoredOperation operation) {
+        return operation.agent == null && operation.managedFieldPreview && "PREVIEW".equals(operation.type)
+                && !operation.approvalUsed && operation.complete()
+                && operation.results.values().stream().allMatch(ConfigurationTaskResult::success)
+                && clock.instant().isBefore(operation.createdAt.plus(ACTIVE_RETENTION));
+    }
+
+    private enum ApprovalRoute { LEGACY, AGENT_BROWSER, FIELDS_BROWSER }
+
+    private OperationView createApply(UUID previewId, String approvalToken, ApprovalRoute route) {
         prune();
         LinkedHashMap<UUID, StoredOperation> priorOperations = new LinkedHashMap<>(operations);
         long priorChanges = retainedChangeBytes;
@@ -561,7 +647,9 @@ public final class ConfigurationOperations implements AutoCloseable {
         long priorFiles = retainedFileBytes;
         StoredOperation preview = operations.get(previewId);
         if (preview == null || !"PREVIEW".equals(preview.type)) throw invalid("preview operation was not found");
-        if ((preview.agent != null) != browserAgentReview) throw invalid("Preview requires its original approval route");
+        ApprovalRoute expected = preview.agent != null ? ApprovalRoute.AGENT_BROWSER
+                : preview.managedFieldPreview ? ApprovalRoute.FIELDS_BROWSER : ApprovalRoute.LEGACY;
+        if (route != expected) throw invalid("Preview requires its original approval route");
         if (!preview.complete() || preview.results.values().stream().anyMatch(result -> !result.success())) {
             throw new ValidationException("PREVIEW_INCOMPLETE", "Every node must pass preview before apply", List.of());
         }
@@ -592,7 +680,7 @@ public final class ConfigurationOperations implements AutoCloseable {
         }
         preview.approvalUsed = true;
         try {
-            if (browserAgentReview) {
+            if (route == ApprovalRoute.AGENT_BROWSER) {
                 audit.append("AGENT_APPLY_APPROVED", apply.id, targets.nodeIds().size() == 1 ? targets.nodeIds().get(0) : null,
                         preview.id.toString());
             } else {
@@ -1407,7 +1495,7 @@ public final class ConfigurationOperations implements AutoCloseable {
                     "Configuration changed since READ; read and preview again", null,
                     (ManagedConfiguration) null, List.of(), false, false, result.attemptId());
         }
-        if (operation.agent != null && "PREVIEW".equals(operation.type) && result.success()
+        if ((operation.agent != null || operation.managedFieldPreview) && "PREVIEW".equals(operation.type) && result.success()
                 && (result.changes().size() >= 20 || result.changes().contains("additional changes omitted")
                 || retainedChangeBytes + result.changes().stream().mapToLong(
                         change -> change.getBytes(StandardCharsets.UTF_8).length).sum() > MAX_RETAINED_CHANGE_BYTES
@@ -1420,7 +1508,14 @@ public final class ConfigurationOperations implements AutoCloseable {
         if (operation.agent != null && operation.agentPeerSession == null
                 && "READ".equals(operation.type) && result.success()) {
             try {
-                if (operation.agentGuidedRead != null) {
+                if (operation.agentManagedFieldRead) {
+                    if (result.configuration() == null) throw new IllegalArgumentException("Missing typed source");
+                    var values = new LinkedHashMap<String, String>();
+                    for (var row : ManagedFields.read(operation.configuration.fileName(), result.configuration().content(), true)) {
+                        values.put(row.field().path(), ManagedFields.display(row.value()));
+                    }
+                    agentRead = Map.copyOf(values);
+                } else if (operation.agentGuidedRead != null) {
                     if (ManagedConfiguration.FILE.equals(operation.configuration.domain())) {
                         if (result.configuration() == null || result.configuration().content() == null) {
                             throw new IllegalArgumentException("Missing masked presence evidence");
@@ -1758,7 +1853,8 @@ public final class ConfigurationOperations implements AutoCloseable {
                 ? "SUCCEEDED" : "COMPLETED_WITH_ERRORS") : "RUNNING";
         String approval = "PREVIEW".equals(operation.type) && operation.complete()
                 && operation.results.values().stream().allMatch(ConfigurationTaskResult::success)
-                && !operation.approvalUsed && operation.agent == null ? operation.approvalToken : null;
+                && !operation.approvalUsed && operation.agent == null && !operation.managedFieldPreview
+                ? operation.approvalToken : null;
         Map<String, ConfigurationTaskResult> results = operation.results;
         if (!includeRetainedContent) {
             LinkedHashMap<String, ConfigurationTaskResult> summaries = new LinkedHashMap<>();
@@ -1772,7 +1868,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         return new OperationView(operation.id, operation.type, state, operation.createdAt,
                 operation.configuration == null ? null : operation.configuration.publicView(),
                 Map.copyOf(operation.states), Map.copyOf(results), approval, operation.sourceOperationId,
-                operation.recovered, retryable(operation), operation.agent, agentReviewReady(operation));
+                operation.recovered, retryable(operation), operation.agent,
+                agentReviewReady(operation) || managedFieldReviewReady(operation));
     }
 
     private static boolean retryable(StoredOperation operation) {
@@ -1958,6 +2055,8 @@ public final class ConfigurationOperations implements AutoCloseable {
         private String agentEditorSite;
         private AgentSetup.RewardField agentRewardField;
         private boolean agentGeneralSettings;
+        private boolean agentManagedFieldRead;
+        private boolean managedFieldPreview;
         private GuidedSettings agentGuidedRead;
         private GuidedSettings agentGuidedPreview;
         private Set<String> agentVoteLogRestartTargets = Set.of();

@@ -863,6 +863,60 @@ class AgentOperationsTest {
         return id;
     }
 
+    @Test void managedFieldsRequireExactScopedReadAndNodePreviewBeforeBrowserApply() throws Exception {
+        var clock = new MutableClock();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        UUID session = UUID.randomUUID();
+        String node = "proxy";
+        registry.register(new NodeRegistration(node, session, node, "VELOCITY", "fixture", 1,
+                Set.of(ConfigurationOperations.PROXY_FILE_CAPABILITY), Set.of()));
+        try (var operations = new ConfigurationOperations(registry, new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, clock);
+            var grant = agents.issue(new AgentOperations.Issue(List.of(node), List.of("managed-fields", "status"), 10, null));
+            var other = agents.issue(new AgentOperations.Issue(List.of(node), List.of("managed-fields"), 10, null));
+            var ordinary = agents.issue(new AgentOperations.Issue(List.of(node), List.of("read", "preview"), 10, null));
+            var request = new AgentOperations.FieldsRead(node, "bungeeconfig.yml");
+            assertThrows(SecurityException.class, () -> agents.readManagedFields(ordinary.token(), request));
+            assertThrows(ValidationException.class, () -> agents.readManagedFields(grant.token(),
+                    new AgentOperations.FieldsRead(node, "Config.yml")));
+            UUID id = (UUID) ((Map<?, ?>) agents.readManagedFields(grant.token(), request)).get("operationId");
+            var source = ManagedConfiguration.file("bungeeconfig.yml", "ProxyBroadcast:\n  Scope:\n"
+                    + "    Servers: [lobby]\nDatabase:\n  MaxConnections: 3\n  Password: %s%n"
+                    .formatted("__VOTINGPLUGIN_CONTROL_REDACTED__"));
+            var read = operations.claim(node, session);
+            String revision = "a".repeat(64);
+            operations.complete(id, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                    revision, source, List.of(), false, false, read.attemptId()));
+            assertEquals(Map.of("ProxyBroadcast.Scope.Servers", "['lobby']"),
+                    ((Map<?, ?>) agents.status(grant.token(), id)).get("values"));
+            assertThrows(ValidationException.class, () -> operations.managedFieldState(id, node, "bungeeconfig.yml"));
+            var edits = new AgentOperations.FieldsPreview(node, id.toString(), Map.of("ProxyBroadcast.Scope.Servers", List.of("survival")));
+            assertThrows(ValidationException.class, () -> agents.previewManagedFields(other.token(), edits));
+            assertThrows(IllegalArgumentException.class, () -> agents.previewManagedFields(grant.token(),
+                    new AgentOperations.FieldsPreview(node, id.toString(), Map.of("Database.MaxConnections", 8))));
+            for (boolean exact : List.of(false, true)) {
+                UUID preview = (UUID) ((Map<?, ?>) agents.previewManagedFields(grant.token(), edits)).get("operationId");
+                var task = operations.claim(node, session);
+                assertEquals(source.content().replace("[lobby]", "['survival']"), task.configuration().content());
+                var current = exact ? source : ManagedConfiguration.file("bungeeconfig.yml",
+                        source.content().replace("MaxConnections: 3", "MaxConnections: 4"));
+                operations.complete(preview, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                        revision, current, List.of("changed ProxyBroadcast.Scope.Servers"), false, false, task.attemptId()));
+                assertEquals(exact, operations.get(preview).browserReviewReady());
+                assertNull(operations.get(preview).approvalToken());
+                if (exact) {
+                    assertThrows(ValidationException.class, () -> operations.createApply(preview, "invalid"));
+                    UUID apply = agents.approve(preview).operationId();
+                    var applyTask = operations.claim(node, session);
+                    assertEquals(revision, applyTask.expectedRevision());
+                    operations.complete(apply, node, new ConfigurationTaskResult(session, true, "OK", "fixture",
+                            "b".repeat(64), applyTask.configuration(), List.of(), false, false, applyTask.attemptId()));
+                    assertTrue(agents.status(grant.token(), apply).toString().contains("restartRequired=true"));
+                }
+            }
+        }
+    }
+
     private static final class MutableClock extends Clock {
         private Instant now = Instant.EPOCH;
 

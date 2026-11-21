@@ -148,7 +148,7 @@ class AgentMcpHttpTest {
         new StdioAdapter(base.toString(), token).run(new ByteArrayInputStream(input.getBytes(StandardCharsets.UTF_8)), frames);
         var replies = frames.toString(StandardCharsets.UTF_8).lines().toList();
         assertEquals(4, replies.size());
-        assertEquals(23, json.readTree(replies.get(1)).path("result").path("tools").size());
+        assertEquals(26, json.readTree(replies.get(1)).path("result").path("tools").size());
         assertEquals("proxy-a", json.readTree(replies.get(2)).path("result").path("structuredContent")
                 .path("items").get(0).path("nodeId").asText());
         assertEquals(applyId, json.readTree(replies.get(3)).path("result").path("structuredContent")
@@ -195,6 +195,60 @@ class AgentMcpHttpTest {
                         "revision", revision.repeat(64), "changes", changes, "configuration", configuration,
                         "attemptId", task.path("attemptId").asText())), nodeToken);
         assertEquals(200, response.statusCode(), response.body());
+    }
+
+    @Test void typedBrowserFieldEditorRequiresSessionAndCsrf() throws Exception {
+        String fixturePassphrase = UUID.randomUUID().toString();
+        credentials.setWebPassword(fixturePassphrase.toCharArray());
+        var login = send("POST", "/api/v1/auth/login", json.writeValueAsString(Map.of("password", fixturePassphrase)), null);
+        String cookie = login.headers().firstValue("Set-Cookie").orElseThrow().split(";", 2)[0];
+        var browser = Map.of("Cookie", cookie, "X-CSRF-Token", json.readTree(login.body()).path("csrfToken").asText());
+        String browserState = "/api/v1/configuration/managed-fields/state";
+        assertAuthFailure(send("POST", browserState, "{}", adminToken));
+        assertError(sendWithHeaders("POST", browserState, "{}", Map.of("Cookie", cookie)), 403, "CSRF_REQUIRED");
+        assertEquals(201, send("POST", "/api/v1/nodes/register", registration()
+                .replace("VELOCITY", "BUKKIT").replace("presence.snapshot", "config.files.v1"), nodeToken).statusCode());
+        String read = json.writeValueAsString(Map.of("nodeIds", java.util.List.of("proxy-a"),
+                "configuration", Map.of("domain", "file", "fileName", "SpecialRewards.yml")));
+        var start = sendWithHeaders("POST", "/api/v1/configuration/read", read, browser);
+        assertEquals(202, start.statusCode(), start.body());
+        String id = json.readTree(start.body()).path("operationId").asText();
+        var poll = send("POST", "/api/v1/nodes/proxy-a/operations", "{\"sessionId\":\"" + SESSION + "\"}", nodeToken);
+        String attempt = json.readTree(poll.body()).path("attemptId").asText();
+        String yaml = "VoteParty:\n  GlobalCommands: [sample-action]\n";
+        String result = json.writeValueAsString(Map.of("success", true, "code", "OK", "message", "fixture",
+                "sessionId", SESSION, "attemptId", attempt, "revision", "a".repeat(64), "changes", java.util.List.of(),
+                "configuration", Map.of("domain", "file", "fileName", "SpecialRewards.yml", "content", yaml)));
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/operations/" + id + "/result", result, nodeToken).statusCode());
+        String payload = json.writeValueAsString(Map.of("readOperationId", id, "nodeId", "proxy-a", "file", "SpecialRewards.yml"));
+        var fields = sendWithHeaders("POST", browserState, payload, browser);
+        assertEquals(200, fields.statusCode(), fields.body());
+        assertEquals("sample-action", json.readTree(fields.body()).get(0).path("value").get(0).asText());
+        var edit = json.readTree(payload).deepCopy();
+        ((com.fasterxml.jackson.databind.node.ObjectNode) edit).putObject("overrides")
+                .putArray("VoteParty.GlobalCommands").add("sample-next");
+        var queued = sendWithHeaders("POST", "/api/v1/configuration/managed-fields/preview", edit.toString(), browser);
+        assertEquals(202, queued.statusCode(), queued.body());
+        String preview = json.readTree(queued.body()).path("operation").path("operationId").asText();
+        var task = json.readTree(send("POST", "/api/v1/nodes/proxy-a/operations",
+                "{\"sessionId\":\"" + SESSION + "\"}", nodeToken).body());
+        assertTrue(task.path("configuration").path("content").asText().contains("sample-next"));
+        var previewResult = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(result);
+        previewResult.put("attemptId", task.path("attemptId").asText());
+        previewResult.putArray("changes").add("changed VoteParty.GlobalCommands");
+        assertEquals(200, send("POST", "/api/v1/nodes/proxy-a/operations/" + preview + "/result",
+                previewResult.toString(), nodeToken).statusCode());
+        var retained = json.readTree(get("/api/v1/operations/" + preview, adminToken).body());
+        assertTrue(retained.path("browserReviewReady").asBoolean());
+        assertTrue(retained.path("approvalToken").isNull() || retained.path("approvalToken").isMissingNode());
+        String approval = json.writeValueAsString(Map.of("previewOperationId", preview));
+        String browserApply = "/api/v1/configuration/managed-fields/apply";
+        assertAuthFailure(send("POST", browserApply, approval, adminToken));
+        assertError(sendWithHeaders("POST", browserApply, approval, Map.of("Cookie", cookie)), 403, "CSRF_REQUIRED");
+        var genericApply = json.writeValueAsString(Map.of("previewOperationId", preview, "approvalToken", "invalid"));
+        assertEquals(400, send("POST", "/api/v1/configuration/apply", genericApply, adminToken).statusCode());
+        assertEquals(202, sendWithHeaders("POST", browserApply, approval, browser).statusCode());
+        assertEquals(400, sendWithHeaders("POST", browserApply, approval, browser).statusCode());
     }
 
     private String registration() {

@@ -698,6 +698,35 @@ public final class ControlHttpServer implements AutoCloseable {
             send(exchange, 202, configurationOperations.createRead(request.nodeIds(), request.configuration()));
             return;
         }
+        if ((CONFIGURATION + "/managed-fields/state").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateWebSession(exchange, true);
+            ManagedFieldsState request = read(exchange, ManagedFieldsState.class, true);
+            send(exchange, 200, configurationOperations.managedFieldState(request.readOperationId(), request.nodeId(), request.file()));
+            return;
+        }
+        if ((CONFIGURATION + "/managed-fields/apply").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateWebSession(exchange, true);
+            ManagedFieldsApproval request = read(exchange, ManagedFieldsApproval.class, true);
+            send(exchange, 202, configurationOperations.approveManagedFields(request.previewOperationId()));
+            return;
+        }
+        if ((CONFIGURATION + "/managed-fields/discard-preview").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateWebSession(exchange, true);
+            ManagedFieldsApproval request = read(exchange, ManagedFieldsApproval.class, true);
+            configurationOperations.discardManagedFields(request.previewOperationId());
+            send(exchange, 200, Map.of("discarded", true));
+            return;
+        }
+        if ((CONFIGURATION + "/managed-fields/preview").equals(path)) {
+            requireMethod(exchange, "POST");
+            authenticateWebSession(exchange, true);
+            ManagedFieldsPreview request = read(exchange, ManagedFieldsPreview.class, true);
+            send(exchange, 202, configurationOperations.previewManagedFields(request.readOperationId(), request.nodeId(), request.file(), request.overrides()));
+            return;
+        }
         if ((CONFIGURATION + "/general-settings/state").equals(path)) {
             requireMethod(exchange, "POST");
             authenticateAdmin(exchange, true);
@@ -1137,6 +1166,7 @@ public final class ControlHttpServer implements AutoCloseable {
             case "transport" -> "transport";
             case "site-policy-read", "site-policy-preview" -> "site-policy";
             case "site-policy-batch" -> "site-policy-batch";
+            case "fields-catalog", "fields-read", "fields-preview" -> "managed-fields";
             case "guided-read", "guided-preview" -> "guided";
             case "proxy-method-read", "proxy-method-preview" -> "proxy-method";
             case "reward-read", "reward-preview" -> "rewards-editor";
@@ -1159,6 +1189,9 @@ public final class ControlHttpServer implements AutoCloseable {
                 case "topology" -> agentOperations.topology(token, read(exchange, AgentOperations.Discovery.class, true));
                 case "health" -> agentOperations.health(token, read(exchange, AgentOperations.HealthRequest.class, true));
                 case "health-refresh" -> agentOperations.refreshHealth(token, read(exchange, AgentOperations.RefreshHealth.class, true));
+                case "fields-catalog" -> agentOperations.managedFieldsCatalog(token, read(exchange, AgentOperations.FieldsCatalog.class, true));
+                case "fields-read" -> agentOperations.readManagedFields(token, read(exchange, AgentOperations.FieldsRead.class, true));
+                case "fields-preview" -> agentOperations.previewManagedFields(token, read(exchange, AgentOperations.FieldsPreview.class, true));
                 case "guided-read" -> agentOperations.readGuided(token, read(exchange, AgentOperations.GuidedRead.class, true));
                 case "guided-preview" -> agentOperations.previewGuided(token, read(exchange, AgentOperations.GuidedPreview.class, true));
                 case "proxy-method-read" -> agentOperations.readProxyMethod(token, read(exchange, AgentOperations.ProxyMethodRead.class, true));
@@ -1189,6 +1222,10 @@ public final class ControlHttpServer implements AutoCloseable {
             authenticationFailed();
         }
     }
+
+    private record ManagedFieldsApproval(UUID previewOperationId) { }
+    private record ManagedFieldsState(UUID readOperationId, String nodeId, String file) { }
+    private record ManagedFieldsPreview(UUID readOperationId, String nodeId, String file, Map<String, Object> overrides) { }
 
     private UUID readAgentId(HttpExchange exchange) throws IOException {
         AgentId request = read(exchange, AgentId.class, true);
