@@ -119,9 +119,9 @@
       </section>
 
       <section class="tab-panel" id="home-panel" data-panel="home" hidden>
-        <div class="page-heading"><div><p class="eyebrow">Management workspace</p><h2>What do you want to manage?</h2><p>Select one or more backend servers, or open Global Settings for the network tools.</p></div></div>
+        <div class="page-heading"><div><p class="eyebrow">Management workspace</p><h2>What do you want to manage?</h2><p>Select managed servers, or open Global Settings for the network tools. Each editor checks which selected servers it supports.</p></div></div>
         <button id="choose-global" class="global-choice secondary" type="button"><span class="setting-icon" aria-hidden="true">◎</span><span><strong>Global Settings / Network</strong><small>Topology, proxy communication, routing and explicit synchronization. Not a selection of every server.</small></span><span aria-hidden="true">→</span></button>
-        <div class="chooser-toolbar"><label>Search servers<input id="home-server-search" type="search" maxlength="100" placeholder="Name, node ID or platform…"></label><button id="home-select-all" type="button" class="secondary">Select eligible online backends</button><button id="home-clear" type="button" class="secondary">Clear</button><button id="home-refresh" type="button" class="secondary">Refresh</button></div>
+        <div class="chooser-toolbar"><label>Search servers<input id="home-server-search" type="search" maxlength="100" placeholder="Name, node ID or platform…"></label><button id="home-select-all-servers" type="button" class="secondary" hidden>Select all servers</button><button id="home-select-all" type="button" class="secondary">Select eligible online backends</button><button id="home-clear" type="button" class="secondary">Deselect all</button><button id="home-refresh" type="button" class="secondary">Refresh</button></div>
         <div id="home-nodes" class="nodes empty" aria-live="polite">Loading registered nodes…</div>
         <div class="chooser-selection"><div><strong id="home-selection-count">No servers selected</strong><div id="home-selection-chips" class="scope-chips"></div></div><button id="home-restore" type="button" class="secondary" hidden>Return to previous servers</button><button id="home-continue" type="button" disabled>Continue</button></div>
       </section>
@@ -744,7 +744,13 @@
         </div>
         <section class="card">
           <h3>Agent access</h3>
-          <p>Agent access is off by default. Set <code>CONTROL_MCP_ENABLED=true</code> on Control and restart to enable it.</p>
+          <form id="agent-access-form">
+            <label><input id="agent-access-enabled" type="checkbox" disabled> Enable MCP management</label>
+            <button id="agent-access-save" type="submit" disabled>Save MCP access</button>
+          </form>
+          <p id="agent-access-status" role="status">Checking MCP status…</p>
+          <p>Changes take effect without a restart. Turning access off revokes grants and prevents approval of their pending previews. Previously approved work can continue.</p>
+          <p>Connect Codex, Cezar, or another compatible client using the Control JAR’s <code>mcp</code> command, a scoped grant, and verified HTTPS or an SSH tunnel to a loopback origin.</p>
           <form id="agent-grant-form">
             <label>Exact node IDs (comma-separated) <input name="nodes" maxlength="3249"></label>
             <label>Or grant the enrolled network of this proxy <input name="proxy" maxlength="64"></label>
@@ -766,7 +772,7 @@
             <label><input type="checkbox" name="actions" value="rewards-editor"> Read and preview typed Reward fields</label>
             <label><input type="checkbox" name="actions" value="vote-sites-editor"> Read and preview typed Vote Sites edits</label>
             <label><input type="checkbox" name="actions" value="general-settings"> Read and preview typed General Settings</label>
-            <button type="submit">Issue agent credential</button>
+            <button type="submit" id="agent-grant-issue" disabled>Issue agent credential</button>
             <button type="button" id="agent-grant-refresh">List active grants</button>
           </form>
           <p id="agent-grant-status" role="status"></p>

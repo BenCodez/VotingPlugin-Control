@@ -6,6 +6,7 @@ import com.bencodez.votingplugin.control.artifact.ArtifactStore;
 import com.bencodez.votingplugin.control.artifact.JenkinsVotingPluginSource;
 import com.bencodez.votingplugin.control.artifact.ArtifactStore.ArtifactException;
 import com.bencodez.votingplugin.control.domain.AgentOperations;
+import com.bencodez.votingplugin.control.domain.AgentAccessSettings;
 import com.bencodez.votingplugin.control.domain.NodeRegistry;
 import com.bencodez.votingplugin.control.domain.RegistrySnapshot;
 import com.bencodez.votingplugin.control.domain.ConfigurationOperations;
@@ -117,7 +118,6 @@ public final class ControlHttpServer implements AutoCloseable {
     private static final String AGENT_OWNER = "/api/v1/agent-admin/";
     private static final int AGENT_REQUEST_BYTES = 16 * 1024;
     private final AgentOperations agentOperations;
-    private final boolean agentEnabled;
     private final ObjectMapper agentJson;
     private final HttpServer server;
     private final ObjectMapper json;
@@ -276,7 +276,6 @@ public final class ControlHttpServer implements AutoCloseable {
                       ArtifactStore artifactStore, DeploymentOperations deploymentOperations,
                       Clock clock, java.util.function.LongSupplier nanoTime, boolean secureCookies,
                       Set<String> trustedProxyAddresses, String launchId, boolean agentEnabled) throws IOException {
-        this.agentEnabled = agentEnabled;
         this.registry = Objects.requireNonNull(registry, "registry");
         this.identity = Objects.requireNonNull(identity, "identity");
         this.credentials = Objects.requireNonNull(credentials, "credentials");
@@ -298,7 +297,8 @@ public final class ControlHttpServer implements AutoCloseable {
         json.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
                 .maxNestingDepth(20).maxStringLength(ManagedConfiguration.MAX_CONTENT + 4096)
                 .maxNumberLength(64).build());
-        agentOperations = new AgentOperations(registry, configurationOperations, inspectionOperations, clock);
+        agentOperations = new AgentOperations(registry, configurationOperations, inspectionOperations, clock,
+                new AgentAccessSettings(credentials.dataDirectory(), agentEnabled));
         agentJson = json.copy().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .disable(com.fasterxml.jackson.databind.MapperFeature.ALLOW_COERCION_OF_SCALARS)
                 .disable(DeserializationFeature.ACCEPT_FLOAT_AS_INT);
@@ -397,7 +397,7 @@ public final class ControlHttpServer implements AutoCloseable {
                         "RETRY_REQUIRES_INPUT", "TARGET_CHANGED", "OPERATION_CONFLICT",
                         "ARTIFACT_LIFECYCLE_BUSY" -> 409;
                 case "UNSUPPORTED_MEDIA_TYPE" -> 415;
-                case "LOCAL_NETWORK_REQUIRED" -> 403;
+                case "LOCAL_NETWORK_REQUIRED", "AGENT_DISABLED" -> 403;
                 default -> 400;
             };
             error(exchange, status, e.code(), e.getMessage(), e.details());
@@ -1116,13 +1116,40 @@ public final class ControlHttpServer implements AutoCloseable {
     }
 
     private void routeAgent(HttpExchange exchange, String path) throws IOException {
-        if (!agentEnabled) {
-            error(exchange, 403, "AGENT_DISABLED", "MCP management is disabled on this Control instance", List.of());
-            return;
-        }
         if (exchange.getRequestURI().getRawQuery() != null
                 || !path.equals(exchange.getRequestURI().getRawPath())) {
             throw new IllegalArgumentException("Invalid agent route");
+        }
+        if ((AGENT_OWNER + "status").equals(path)) {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                authenticateWebSession(exchange, false);
+                send(exchange, 200, agentOperations.accessStatus());
+                return;
+            }
+            requireMethod(exchange, "POST");
+            authenticateWebSession(exchange, true);
+            var request = read(exchange, AgentAccessUpdate.class, true);
+            if (request.enabled() == null) throw new IllegalArgumentException("Enabled is required");
+            AgentOperations.AccessStatus status;
+            try {
+                status = agentOperations.setEnabled(request.enabled());
+            } catch (IOException failure) {
+                error(exchange, 503, "AGENT_SETTINGS_UNAVAILABLE", request.enabled()
+                        ? "Could not confirm the saved MCP preference"
+                        : "MCP is disabled for this process, but the restart preference could not be confirmed", List.of());
+                return;
+            } catch (com.bencodez.votingplugin.control.domain.ConfigurationAuditLog.AuditException failure) {
+                error(exchange, 503, "AGENT_AUDIT_UNAVAILABLE", request.enabled()
+                        ? "MCP enablement was not applied because the audit is unavailable"
+                        : "MCP is disabled and grants are revoked, but the audit could not be recorded", List.of());
+                return;
+            }
+            send(exchange, 200, status);
+            return;
+        }
+        if (!agentOperations.enabled()) {
+            error(exchange, 403, "AGENT_DISABLED", "MCP management is disabled on this Control instance", List.of());
+            return;
         }
         if (path.startsWith(AGENT_OWNER)) {
             switch (path.substring(AGENT_OWNER.length())) {
@@ -1145,7 +1172,7 @@ public final class ControlHttpServer implements AutoCloseable {
                 case "review" -> {
                     requireMethod(exchange, "POST");
                     authenticateWebSession(exchange, true);
-                    send(exchange, 200, configurationOperations.getAgentReview(readAgentId(exchange)));
+                    send(exchange, 200, agentOperations.review(readAgentId(exchange)));
                 }
                 case "approve" -> {
                     requireMethod(exchange, "POST");
@@ -1233,6 +1260,7 @@ public final class ControlHttpServer implements AutoCloseable {
     }
 
     private record AgentId(String operationId) { }
+    private record AgentAccessUpdate(Boolean enabled) { }
 
     private <T> T read(HttpExchange exchange, Class<T> type) throws IOException {
         return read(exchange, type, false);

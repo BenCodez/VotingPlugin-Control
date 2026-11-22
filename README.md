@@ -14,6 +14,8 @@ The scope-first WebUI and legacy single-source editing boundary are documented i
 
 ## Features
 
+- Select all enrolled proxies and backends in the workspace, or select only eligible online backends. Each editor keeps its own capability and target checks.
+
 - **Read-only Network Doctor:** grouped FAIL/WARNING/UNKNOWN setup checks across observed proxy/backend networks,
   path-aware Votifier forwarding checks, capability-negotiated bounded diagnostics, and a redacted structured JSON download.
   Unsupported or missing evidence remains UNKNOWN; [check coverage and limits](docs/network-doctor.md).
@@ -46,7 +48,7 @@ VotingPlugin Control is designed to manage and troubleshoot a VotingPlugin netwo
 
 - Run guided setup for standalone and proxy/backend networks.
 - Configure common settings through searchable presets.
-- Use Codex CLI or a compatible local stdio MCP client to read and preview a named backend vote site or automatic site-creation policy for up to ten explicit backends through opt-in local MCP, then review and apply it in Control. Separately grant agents scoped topology, Network Doctor checks, proxy routing previews, non-vote transport checks, and typed General Settings, Vote Sites, and Rewards editor previews. Network grants can include coordinated proxy-method previews and guided common settings, VoteLog, and Vote Party v2. See [agent setup](docs/agent-setup.md).
+- Use Codex CLI or a compatible local stdio MCP client to read and preview a named backend vote site or automatic site-creation policy for up to ten explicit backends through local MCP, which is off by default and can be enabled or disabled from the WebUI without restarting. Then review and apply it in Control. Separately grant agents scoped topology, Network Doctor checks, proxy routing previews, non-vote transport checks, and typed General Settings, Vote Sites, and Rewards editor previews. Network grants can include coordinated proxy-method previews and guided common settings, VoteLog, and Vote Party v2. See [agent setup](docs/agent-setup.md).
 - Edit allowlisted nested settings and bounded lists in the Full YAML workbench, or prepare scoped MCP previews for agent-visible fields. Command lists and database pool settings remain available to browser administrators. See [configuration coverage](docs/configuration-coverage.md).
 - Set up or synchronize Vote Sites while preserving existing rewards and sensitive values.
 - Configure automatic Vote Site creation.

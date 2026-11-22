@@ -112,6 +112,10 @@ public final class ConfigurationOperations implements AutoCloseable {
         audit.append("AGENT_GRANT", agent, null, outcome);
     }
 
+    synchronized void auditAgentAccess(String outcome) {
+        audit.append("AGENT_ACCESS", null, null, outcome);
+    }
+
     public synchronized OperationView createAgentVoteSite(UUID agent, String nodeId,
             ManagedConfiguration configuration, UUID readId) {
         prune();

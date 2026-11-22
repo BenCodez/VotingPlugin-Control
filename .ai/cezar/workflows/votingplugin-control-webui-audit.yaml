@@ -1,0 +1,12 @@
+name: VotingPlugin-Control WebUI Audit
+description: Inspect rendered Control pages with a private, read-only browser session.
+steps:
+  - id: browser-audit
+    type: check
+    name: Run rendered WebUI audit
+    secrets:
+      - VOTINGPLUGIN_CONTROL_WEBUI_PASSWORD
+      - VP_CONTROL_AUDIT_ORIGIN
+    command: >-
+      test -n "$CEZ_ARTIFACTS_DIR" &&
+      VP_CONTROL_AUDIT_OUTPUT="$CEZ_ARTIFACTS_DIR/webui-audit" timeout 180 node scripts/webui-audit.cjs

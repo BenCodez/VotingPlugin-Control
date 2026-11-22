@@ -67,6 +67,54 @@ class AgentMcpHttpTest {
         assertEquals(200, get("/api/v1/nodes", adminToken).statusCode());
     }
 
+    private Map<String, String> signIn(String passphrase) throws Exception {
+        var response = send("POST", "/api/v1/auth/login",
+                json.writeValueAsString(Map.of("password", passphrase)), null);
+        assertEquals(200, response.statusCode());
+        return Map.of("Cookie", response.headers().firstValue("Set-Cookie").orElseThrow().split(";", 2)[0],
+                "X-CSRF-Token", json.readTree(response.body()).path("csrfToken").asText());
+    }
+
+    @Test void ownerCanToggleAgentAccessAndPersistItsPreference() throws Exception {
+        stop();
+        start(false);
+        String passphrase = UUID.randomUUID().toString();
+        credentials.setWebPassword(passphrase.toCharArray());
+        String path = "/api/v1/agent-admin/status";
+        assertAuthFailure(get(path, adminToken));
+        var browser = signIn(passphrase);
+        var status = sendWithHeaders("GET", path, null, browser);
+        assertEquals(200, status.statusCode());
+        assertFalse(json.readTree(status.body()).path("enabled").asBoolean());
+        assertError(sendWithHeaders("POST", path, "{\"enabled\":true}", Map.of("Cookie", browser.get("Cookie"))),
+                403, "CSRF_REQUIRED");
+        assertEquals(200, sendWithHeaders("POST", path, "{\"enabled\":true}", browser).statusCode());
+        String issue = json.writeValueAsString(Map.of("nodeIds", java.util.List.of("proxy-a"),
+                "actions", java.util.List.of("discover"), "minutes", 10));
+        var grant = sendWithHeaders("POST", "/api/v1/agent-admin/issue", issue, browser);
+        assertEquals(201, grant.statusCode());
+        var grantBody = json.readTree(grant.body());
+        String issuedToken = grantBody.path("token").asText();
+        assertEquals(200, send("POST", "/api/v1/agent/nodes", "{}", issuedToken).statusCode());
+        var disabled = sendWithHeaders("POST", path, "{\"enabled\":false}", browser);
+        assertEquals(200, disabled.statusCode());
+        assertEquals(0, json.readTree(disabled.body()).path("activeGrants").asInt(-1));
+        assertError(send("POST", "/api/v1/agent/nodes", "{}", issuedToken), 403, "AGENT_DISABLED");
+        assertEquals(200, sendWithHeaders("POST", path, "{\"enabled\":true}", browser).statusCode());
+        assertAuthFailure(send("POST", "/api/v1/agent/nodes", "{}", issuedToken));
+
+        stop();
+        start(false);
+        browser = signIn(passphrase);
+        assertTrue(json.readTree(sendWithHeaders("GET", path, null, browser).body()).path("enabled").asBoolean());
+        assertEquals(200, sendWithHeaders("POST", path, "{\"enabled\":false}", browser).statusCode());
+        stop();
+        start(true);
+        assertFalse(json.readTree(sendWithHeaders("GET", path, null, signIn(passphrase)).body())
+                .path("enabled").asBoolean());
+        assertEquals(200, get("/api/v1/nodes", adminToken).statusCode());
+    }
+
     @Test void agentVoteSiteUsesScopedReadAndBrowserOnlyApproval() throws Exception {
         String fixturePassphrase = UUID.randomUUID().toString();
         credentials.setWebPassword(fixturePassphrase.toCharArray());
