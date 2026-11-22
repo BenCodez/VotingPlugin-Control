@@ -212,3 +212,24 @@ test('logout clears persisted workspace and does not restore it for the next ses
   assert.deepEqual([...next.selectedTargetIds], []);
   assert.equal(next.inspectedServerId, '');
 });
+
+test('explicit all-server selection preserves enrolled proxies and supports deselection', () => {
+  const storage = session();
+  const nodes = [
+    {...backend('backend'), online: true},
+    {nodeId: 'proxy', platform: 'VELOCITY', online: true},
+    {nodeId: 'offline-proxy', platform: 'BUNGEECORD', online: false},
+    {nodeId: 'unknown', platform: 'UNKNOWN', online: true}
+  ];
+  const workspace = new Workspace(storage);
+  assert.equal(workspace.selectAllServers(nodes, 2), false);
+  assert.equal(workspace.selectedTargetIds.size, 0);
+  assert.equal(workspace.selectAllServers(nodes, 3), true);
+  assert.deepEqual([...workspace.selectedTargetIds], ['backend', 'proxy', 'offline-proxy']);
+  const restored = new Workspace(storage).restore(nodes);
+  restored.toggleTarget('proxy').reconcile(nodes);
+  assert.deepEqual([...restored.selectedTargetIds], ['backend', 'offline-proxy']);
+  restored.clearTargets();
+  assert.equal(restored.selectedTargetIds.size, 0);
+  assert.equal(restored.includesProxyTargets, false);
+});

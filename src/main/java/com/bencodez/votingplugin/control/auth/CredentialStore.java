@@ -62,6 +62,8 @@ public final class CredentialStore {
         Files.createDirectories(directory);
     }
 
+    public Path dataDirectory() { return directory; }
+
     /** Rotates or creates a node credential and returns the secret exactly once. */
     public String rotateNode(String nodeId) throws IOException {
         validateNodeId(nodeId);

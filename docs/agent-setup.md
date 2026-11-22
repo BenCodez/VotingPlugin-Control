@@ -4,7 +4,11 @@ VotingPlugin Control provides a local stdio MCP connection. The packaged adapter
 
 ## Enable MCP management
 
-Control disables the agent API by default. Set `CONTROL_MCP_ENABLED=true` on the Control server and restart that service to enable it. The client adapter cannot enable server access. Remove the setting or set it to `false` and restart Control to disable it. See the [management coverage matrix](mcp-network-coverage.md) for supported tools.
+Control disables the agent API by default. Sign in as the owner and open **Access → Agent access**. Select **Enable MCP management** and save. The page shows the current server state and the number of active grants. Changes take effect without restarting Control or the proxy.
+
+The saved setting in the Control data directory takes precedence over `CONTROL_MCP_ENABLED`. With no saved preference, `CONTROL_MCP_ENABLED=true` preserves startup opt-in behavior. Hosted Control uses the same persistent data directory and needs no environment forwarding for the WebUI switch. Keep that directory across upgrades. If Control cannot validate or save the preference, the page reports the failure and the instance fails closed on an unreadable preference at startup.
+
+Disabling MCP revokes all active grants and prevents approval of their pending previews. Enabling again requires fresh grants. Operations already approved keep their normal lifecycle. The client adapter cannot enable server access. See the [management coverage matrix](mcp-network-coverage.md) for supported tools.
 
 ## Connect a client
 

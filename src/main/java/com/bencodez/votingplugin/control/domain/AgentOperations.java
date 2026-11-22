@@ -27,6 +27,7 @@ public final class AgentOperations {
     private final ConfigurationOperations operations;
     private final Clock clock;
     private final InspectionOperations inspections;
+    private final AgentAccessSettings accessSettings;
     private final SecureRandom random = new SecureRandom();
 
     public AgentOperations(NodeRegistry registry, ConfigurationOperations operations, Clock clock) {
@@ -35,13 +36,45 @@ public final class AgentOperations {
 
     public AgentOperations(NodeRegistry registry, ConfigurationOperations operations,
                            InspectionOperations inspections, Clock clock) {
+        this(registry, operations, inspections, clock, null);
+    }
+
+    public AgentOperations(NodeRegistry registry, ConfigurationOperations operations,
+                           InspectionOperations inspections, Clock clock, AgentAccessSettings settings) {
         this.registry = registry;
         this.operations = operations;
         this.inspections = inspections;
         this.clock = clock;
+        this.accessSettings = settings;
     }
 
+    public synchronized boolean enabled() {
+        return accessSettings == null || accessSettings.enabled();
+    }
+
+    public synchronized AccessStatus accessStatus() {
+        return new AccessStatus(enabled(), list().size(), accessSettings != null && accessSettings.available());
+    }
+
+    public synchronized AccessStatus setEnabled(boolean enabled) throws java.io.IOException {
+        if (accessSettings == null) throw new java.io.IOException("Agent access preference unavailable");
+        accessSettings.save(enabled);
+        if (!enabled) {
+            // Grant IDs are never reused. Existing previews lose their approval authority.
+            grants.clear();
+            healthRefreshes.clear();
+        }
+        return accessStatus();
+    }
+
+    private void requireEnabled() {
+        if (!enabled()) throw new ValidationException("AGENT_DISABLED", "MCP management is disabled", List.of());
+    }
+
+    public record AccessStatus(boolean enabled, int activeGrants, boolean configurable) { }
+
     public synchronized Issued issue(Issue request) {
+        requireEnabled();
         grants.values().removeIf(grant -> !clock.instant().isBefore(grant.expiresAt()));
         healthRefreshes.keySet().retainAll(grants.keySet());
         if (request == null || request.actions() == null || request.actions().isEmpty()
@@ -435,15 +468,24 @@ public final class AgentOperations {
         });
     }
 
+    public synchronized ConfigurationOperations.AgentReview review(UUID id) {
+        return withActivePreviewGrant(id, () -> operations.getAgentReview(id));
+    }
+
     public synchronized ConfigurationOperations.OperationView approve(UUID id) {
-        var preview = operations.get(id);
+        return withActivePreviewGrant(id, () -> operations.approveAgentPreview(id));
+    }
+
+    private <T> T withActivePreviewGrant(UUID id, Supplier<T> action) {
+        requireEnabled();
+        var preview = operations.getAgentReview(id).operation();
         Grant grant = grants.get(preview.agentId());
         if (grant == null || !clock.instant().isBefore(grant.expiresAt())) throw invalid("Agent grant is unavailable");
         return withStableTopology(() -> {
             if (!permittedNodes(grant).containsAll(preview.nodeStates().keySet())) {
                 throw invalid("Preview target is outside the current grant scope");
             }
-            return operations.approveAgentPreview(id);
+            return action.get();
         });
     }
 
@@ -498,6 +540,7 @@ public final class AgentOperations {
     }
 
     private Grant authorize(String token, String action) {
+        requireEnabled();
         if (token == null || !token.matches("vp-agent-[0-9a-f-]{36}\\.[A-Za-z0-9_-]{43}")) return denied();
         UUID id;
         try {

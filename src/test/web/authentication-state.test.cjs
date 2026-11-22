@@ -48,6 +48,8 @@ function harness() {
     typedFieldsStatus: element('#managed-fields-status'), typedFieldsPreview: element('#managed-fields-preview'),
     typedFieldsApply: element('#managed-fields-apply'),
     agentCredentialOutput: Object.assign(new Element(), {querySelector: element}),
+    agentAccessRequest: 0, agentAccessState: null, agentAccessSaving: false, agentGrantIssuing: false, agentAccessEnabled: new Element(), agentAccessSave: new Element(),
+    agentAccessStatus: new Element(), agentGrantIssue: new Element(),
     agentGrantForm: new Element(), agentGrants: new Element(), agentGrantStatus: new Element(), agentReview: new Element(),
     settingsHealthReader: null, settingsEditor: {clear() {}}, voteSitesEditor: {clear() {}}, rewardsEditor: {clear() {}},
     workspace: {logout() {}}, registryAvailable: true, authenticationGeneration: 3, authenticated: true, csrfToken: 'csrf',

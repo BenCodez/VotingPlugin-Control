@@ -1083,8 +1083,70 @@ function clearAgentCredential() {
   agentCredentialOutput.hidden = true;
 }
 
+const agentAccessForm = document.querySelector('#agent-access-form');
+const agentAccessEnabled = document.querySelector('#agent-access-enabled');
+const agentAccessSave = document.querySelector('#agent-access-save');
+const agentAccessStatus = document.querySelector('#agent-access-status');
+const agentGrantIssue = document.querySelector('#agent-grant-issue');
+let agentAccessRequest = 0;
+let agentAccessSaving = false;
+let agentAccessState = null;
+let agentGrantIssuing = false;
+
+function showAgentAccess(status) {
+  agentAccessState = status;
+  agentAccessEnabled.checked = status.enabled;
+  agentAccessEnabled.disabled = !status.configurable || agentAccessSaving;
+  agentAccessSave.disabled = !status.configurable || agentAccessSaving || agentGrantIssuing;
+  agentGrantIssue.disabled = !status.enabled || agentAccessSaving || agentGrantIssuing;
+  text(agentAccessStatus, status.configurable
+    ? `MCP ${status.enabled ? 'enabled' : 'disabled'} · ${status.activeGrants} active grants`
+    : 'MCP is disabled because the saved preference could not be read.');
+  if (!status.enabled) {
+    clearAgentCredential();
+    agentGrants.replaceChildren();
+  }
+}
+
+async function refreshAgentAccess() {
+  if (!authenticated || agentAccessSaving) return;
+  const request = ++agentAccessRequest;
+  const generation = authenticationGeneration;
+  try {
+    const status = await agentAdmin('status');
+    if (request !== agentAccessRequest || generation !== authenticationGeneration) return;
+    showAgentAccess(status);
+    if (status.enabled) await loadAgentGrants();
+  } catch (error) {
+    if (request === agentAccessRequest && generation === authenticationGeneration) text(agentAccessStatus, error.message);
+  }
+}
+
+agentAccessForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!authenticated || agentAccessSaving || agentGrantIssuing) return;
+  ++agentAccessRequest;
+  const generation = authenticationGeneration;
+  agentAccessSaving = true;
+  agentAccessEnabled.disabled = agentAccessSave.disabled = agentGrantIssue.disabled = true;
+  clearAgentCredential();
+  try {
+    await agentAdmin('status', {enabled: agentAccessEnabled.checked});
+    if (generation === authenticationGeneration) text(agentGrantStatus, 'MCP preference saved.');
+  } catch (error) {
+    if (generation === authenticationGeneration) text(agentGrantStatus, error.message);
+  } finally {
+    if (generation === authenticationGeneration) {
+      agentAccessSaving = false;
+      await refreshAgentAccess();
+    }
+  }
+});
+
 async function loadAgentGrants() {
+  const request = agentAccessRequest;
   const grants = await agentAdmin('grants');
+  if (request !== agentAccessRequest) return;
   agentGrants.replaceChildren(...grants.map(grant => {
     const row = document.createElement('p');
     const scope = grant.proxyNodeId ? `Proxy ${grant.proxyNodeId} · ${grant.nodeCount} enrolled nodes`
@@ -1097,7 +1159,7 @@ async function loadAgentGrants() {
       clearAgentCredential();
       try {
         await agentAdmin('revoke', {operationId: grant.id});
-        await loadAgentGrants();
+        await refreshAgentAccess();
       } catch (error) { text(agentGrantStatus, error.message); }
       finally { revoke.disabled = false; }
     });
@@ -1108,9 +1170,11 @@ async function loadAgentGrants() {
 
 agentGrantForm.addEventListener('submit', async event => {
   event.preventDefault();
+  if (!authenticated || !agentAccessState?.enabled || agentAccessSaving || agentGrantIssuing) return;
   clearAgentCredential();
-  const button = event.submitter;
-  button.disabled = true;
+  const generation = authenticationGeneration;
+  agentGrantIssuing = true;
+  agentAccessSave.disabled = agentGrantIssue.disabled = true;
   try {
     const form = new FormData(agentGrantForm);
     const grant = await agentAdmin('issue', {
@@ -1119,16 +1183,24 @@ agentGrantForm.addEventListener('submit', async event => {
       actions: form.getAll('actions'),
       minutes: Number(form.get('minutes'))
     });
+    if (generation !== authenticationGeneration || !agentAccessState?.enabled) return;
     agentCredentialOutput.querySelector('input').value = grant.token;
     agentCredentialOutput.hidden = false;
     text(agentGrantStatus, `Grant expires at ${grant.expiresAt}.`);
-    await loadAgentGrants();
-  } catch (error) { text(agentGrantStatus, error.message); }
-  finally { button.disabled = false; }
+    await refreshAgentAccess();
+  } catch (error) {
+    if (generation === authenticationGeneration) text(agentGrantStatus, error.message);
+  }
+  finally {
+    if (generation === authenticationGeneration) {
+      agentGrantIssuing = false;
+      if (agentAccessState) showAgentAccess(agentAccessState);
+    }
+  }
 });
 
 document.querySelector('#agent-grant-refresh').addEventListener('click', () => {
-  loadAgentGrants().catch(error => text(agentGrantStatus, error.message));
+  void refreshAgentAccess();
 });
 
 async function reviewAgentPreview(operationId) {
@@ -1696,8 +1768,10 @@ function nodeCard(node) {
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
   checkbox.disabled = !isBackend(node);
+  if (isProxy(node) && workspace.includesProxyTargets) checkbox.disabled = false;
+  const selectable = !checkbox.disabled;
   checkbox.checked = workspace.selectedTargetIds.has(node.nodeId);
-  selector.title = isBackend(node) ? 'Select a management target. Selection never writes configuration.'
+  selector.title = selectable ? 'Select a management target. Selection never writes configuration.'
     : 'Proxy nodes are managed through Global Settings, not Bukkit configuration.';
   checkbox.addEventListener('change', () => {
     if (checkbox.checked && workspace.selectedTargetIds.size >= MAX_CONFIGURATION_TARGETS) {
@@ -1709,7 +1783,7 @@ function nodeCard(node) {
       checkbox.checked = workspace.selectedTargetIds.has(node.nodeId);
     }
   });
-  selector.append(checkbox, document.createTextNode(isBackend(node) ? 'Select backend workspace target' : 'Global / Network only'));
+  selector.append(checkbox, document.createTextNode(selectable ? 'Select workspace target' : 'Global / Network only'));
 
   const list = document.createElement('ul');
   list.className = 'node-backends';
@@ -1805,7 +1879,14 @@ function renderHomeChooser() {
   if (!items.length) text(homeNodes, registryAvailable ? 'No registered servers match this filter.' : 'Network data unavailable. Refresh to retry.');
   if (items.length > 100) homeNodes.append(text(document.createElement('p'), 'Showing the first 100 matches. Refine your search to find more nodes.'));
   homeNodes.classList.toggle('empty', !items.length);
-  text(document.querySelector('#home-selection-count'), `${workspace.selectedTargetIds.size} backend${workspace.selectedTargetIds.size === 1 ? '' : 's'} selected`);
+  const selectAll = document.querySelector('#home-select-all-servers');
+  const available = ControlWorkspace.selectableServers(allNodeItems).length;
+  selectAll.hidden = !registryAvailable || !available;
+  selectAll.disabled = available > MAX_CONFIGURATION_TARGETS;
+  selectAll.title = selectAll.disabled ? `A workspace supports up to ${MAX_CONFIGURATION_TARGETS} servers.` : '';
+  const count = workspace.selectedTargetIds.size;
+  const proxies = [...workspace.selectedTargetIds].filter(id => isProxy(nodeIndex.get(id))).length;
+  text(document.querySelector('#home-selection-count'), `${count} server${count === 1 ? '' : 's'} selected${proxies ? ` (${proxies} proxy, ${count - proxies} backend)` : ''}`);
   renderChips(document.querySelector('#home-selection-chips'));
   document.querySelector('#home-continue').disabled = !registryAvailable || !workspace.selectedTargetIds.size;
   document.querySelector('#home-restore').hidden = workspace.managementScope !== 'GLOBAL' || !workspace.previousTargetIds.size;
@@ -1855,6 +1936,7 @@ function changeWorkspaceTargets(change) {
 function workspaceTargetNeedsReplacement(id) {
   const proxyTarget = workspace.selectedTargetIds.size === 1
     && isProxy(nodeIndex.get([...workspace.selectedTargetIds][0]));
+  if (workspace.includesProxyTargets && workspace.selectedTargetIds.has(id)) return false;
   return !workspace.managementScope || (isProxy(nodeIndex.get(id))
     ? workspace.selectedTargetIds.size !== 1 || !workspace.selectedTargetIds.has(id) : proxyTarget);
 }
@@ -2199,6 +2281,7 @@ function finishAutoLoad(tab) {
 
 async function autoLoadTab(tab) {
   if (!authenticated) return;
+  if (tab === 'access') { await refreshAgentAccess(); return; }
   if (tab === 'general-settings') { await settingsEditor?.read(false); return; }
   if (tab === 'vote-sites') {
     await voteSitesEditor?.read(false);
@@ -2290,7 +2373,7 @@ function chooseDefaultServer(items) {
 function renderServerPicker() {
   const previousValue = selectedServerId;
   const ordered = allNodeItems.filter(node => workspace.managementScope === 'GLOBAL' || node.nodeId === selectedServerId
-    || isBackend(node) && (workspace.selectedTargetIds.has(node.nodeId) || node.nodeId === workspace.inspectedServerId)).sort((left, right) => {
+    || workspace.selectedTargetIds.has(node.nodeId) || isBackend(node) && node.nodeId === workspace.inspectedServerId).sort((left, right) => {
     const roleOrder = Number(isProxy(left)) - Number(isProxy(right));
     return roleOrder || left.displayName.localeCompare(right.displayName);
   });
@@ -3903,6 +3986,12 @@ async function waitForDeployment(operation, generation) {
 }
 
 function discardAuthenticationState(reason) {
+  ++agentAccessRequest;
+  agentAccessState = null;
+  agentAccessSaving = agentGrantIssuing = false;
+  agentAccessEnabled.checked = false;
+  agentAccessEnabled.disabled = agentAccessSave.disabled = agentGrantIssue.disabled = true;
+  text(agentAccessStatus, 'Sign in to check MCP status.');
   if (typedFieldsDialog.open) typedFieldsDialog.close();
   clearTypedFields();
   clearAgentCredential();
@@ -6362,6 +6451,11 @@ serverPicker.addEventListener('change', () => selectPrimaryServer(serverPicker.v
 configurationTarget.addEventListener('change', () => selectConfigurationTarget(configurationTarget.value));
 homeSearch.addEventListener('input', renderHomeChooser);
 document.querySelector('#home-refresh').addEventListener('click', () => loadNodes());
+document.querySelector('#home-select-all-servers').addEventListener('click', () => {
+  const count = ControlWorkspace.selectableServers(allNodeItems).length;
+  if (!registryAvailable || !count || count > MAX_CONFIGURATION_TARGETS) return;
+  changeWorkspaceTargets(() => workspace.selectAllServers(allNodeItems, MAX_CONFIGURATION_TARGETS));
+});
 document.querySelector('#home-select-all').addEventListener('click', () => changeWorkspaceTargets(() => workspace.selectEligible(allNodeItems, MAX_CONFIGURATION_TARGETS)));
 document.querySelector('#home-clear').addEventListener('click', () => changeWorkspaceTargets(() => workspace.clearTargets()));
 document.querySelector('#home-continue').addEventListener('click', openScopeOverview);
@@ -6943,7 +7037,7 @@ function openVoteSiteAdd(prefill = {}) {
 async function refreshVoteSiteObservations() {
   const context = voteSitesContext();
   if (voteSiteHealthFlight && voteSiteHealthFlight.context === context) return voteSiteHealthFlight.promise;
-  const eligible = [...workspace.selectedTargetIds].map(id => nodeIndex.get(id)).filter(node => node?.online
+  const eligible = [...workspace.selectedTargetIds].map(id => nodeIndex.get(id)).filter(node => isBackend(node) && node.online
     && node.acceptedCapabilities?.includes('data.inspect.v1')).slice(0, 8);
   const container = document.querySelector('#vote-sites-detected');
   if (!eligible.length) { text(container, 'No selected backend currently supports read-only vote-site health inspection.'); return; }

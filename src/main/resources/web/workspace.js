@@ -26,6 +26,14 @@
     return ids.size === 1 ? 'SERVER' : ids.size > 1 ? 'MULTI_SERVER' : null;
   }
 
+  function isProxy(node) {
+    return node && ['VELOCITY', 'BUNGEECORD'].includes(String(node.platform || '').toUpperCase());
+  }
+
+  function selectableServers(nodes) {
+    return [...idSet(nodes.filter(node => isBukkit(node) || isProxy(node)).map(node => node.nodeId))];
+  }
+
   function safeDecode(value) {
     try {
       const decoded = decodeURIComponent(value);
@@ -143,6 +151,7 @@
 
     login() {
       this.managementScope = null;
+      this.includesProxyTargets = false;
       this.selectedTargetIds = new Set();
       this.inspectedServerId = '';
       this.previousTargetIds = new Set();
@@ -160,6 +169,7 @@
       if (!this.storage || typeof this.storage.setItem !== 'function') return this;
       const snapshot = {
         managementScope: this.managementScope,
+        includesProxyTargets: this.includesProxyTargets,
         selectedTargetIds: [...this.selectedTargetIds],
         previousTargetIds: this.managementScope === 'GLOBAL' ? [...this.previousTargetIds] : [],
         inspectedServerId: this.inspectedServerId || '',
@@ -179,6 +189,7 @@
       try { snapshot = JSON.parse(this.storage.getItem(SESSION_KEY) || 'null'); } catch (_) { snapshot = null; }
       if (!snapshot || typeof snapshot !== 'object') return this;
       const scope = snapshot.managementScope;
+      this.includesProxyTargets = snapshot.includesProxyTargets === true;
       const ids = idSet(snapshot.selectedTargetIds);
       if (scope === 'GLOBAL') {
         this.managementScope = 'GLOBAL';
@@ -202,7 +213,8 @@
       return this;
     }
 
-    setTargets(ids) {
+    setTargets(ids, includesProxyTargets = false) {
+      this.includesProxyTargets = includesProxyTargets;
       this.selectedTargetIds = idSet(ids);
       this.managementScope = scopeFor(this.selectedTargetIds);
       this.persist();
@@ -213,7 +225,7 @@
       if (typeof id !== 'string' || !id.trim()) return this;
       const targets = new Set(this.selectedTargetIds);
       if (targets.has(id)) targets.delete(id); else targets.add(id);
-      return this.setTargets(targets);
+      return this.setTargets(targets, this.includesProxyTargets);
     }
 
     clearTargets() { return this.setTargets([]); }
@@ -244,10 +256,9 @@
       const proxyCandidates = this.managementScope === 'GLOBAL' ? this.previousTargetIds : this.selectedTargetIds;
       const proxyOnly = proxyCandidates.size === 1
         && [...proxyCandidates].some(id => (Array.isArray(nodes) ? nodes : [])
-          .some(node => node && node.nodeId === id
-            && ['VELOCITY', 'BUNGEECORD'].includes(String(node.platform || '').toUpperCase())));
+          .some(node => isProxy(node) && node.nodeId === id));
       const validIds = new Set((Array.isArray(nodes) ? nodes : [])
-        .filter(node => isBukkit(node) || proxyOnly && node && node.nodeId === [...proxyCandidates][0])
+        .filter(node => isBukkit(node) || isProxy(node) && (this.includesProxyTargets || proxyOnly && proxyCandidates.has(node.nodeId)))
         .map(node => node.nodeId));
       const keep = ids => new Set([...ids].filter(id => validIds.has(id)));
       this.selectedTargetIds = keep(this.selectedTargetIds);
@@ -256,6 +267,13 @@
       if (this.managementScope !== 'GLOBAL') this.managementScope = scopeFor(this.selectedTargetIds);
       this.persist();
       return this;
+    }
+
+    selectAllServers(nodes, max) {
+      const ids = selectableServers(nodes);
+      if (!ids.length || ids.length > max) return false;
+      this.setTargets(ids, true);
+      return true;
     }
 
     selectEligible(nodes, max) {
@@ -271,5 +289,5 @@
     }
   }
 
-  return {Workspace, parseRoute, formatRoute, SESSION_KEY};
+  return {Workspace, parseRoute, formatRoute, selectableServers, SESSION_KEY};
 }));
