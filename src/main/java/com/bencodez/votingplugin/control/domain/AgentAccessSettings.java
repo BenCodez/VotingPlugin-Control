@@ -73,10 +73,10 @@ public final class AgentAccessSettings {
             }
             Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             directorySync.force(directory);
-            enabled = value;
         } finally {
             Files.deleteIfExists(temporary);
         }
+        enabled = value;
     }
 
     private void checkPath() throws IOException {
