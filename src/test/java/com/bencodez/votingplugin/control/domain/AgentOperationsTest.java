@@ -7,6 +7,8 @@ import com.bencodez.votingplugin.control.protocol.NodeRegistration;
 import com.bencodez.votingplugin.control.protocol.PresenceSnapshot;
 import com.bencodez.votingplugin.control.protocol.ProxyRoutingConfiguration;
 import com.bencodez.votingplugin.control.protocol.ConfigurationTaskResult;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
@@ -29,6 +31,49 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class AgentOperationsTest {
     @TempDir Path directory;
+
+    @Test void disableRevokesEvenWhenDirectoryFlushFails() throws Exception {
+        Clock clock = Clock.systemUTC();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        var settings = new AgentAccessSettings(directory, true, ignored -> {
+            throw new IOException("Synthetic flush failure");
+        });
+        try (var operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, null, clock, settings);
+            var grant = agents.issue(new AgentOperations.Issue(List.of("backend-a"), List.of("discover"), 1, null));
+            assertThrows(IOException.class, () -> agents.setEnabled(false));
+            assertFalse(agents.enabled());
+            assertTrue(agents.list().isEmpty());
+            assertThrows(ValidationException.class,
+                    () -> agents.discover(grant.token(), new AgentOperations.Discovery(null)));
+            String audit = Files.readString(directory.resolve("configuration-audit.jsonl"));
+            assertTrue(audit.contains("DISABLED_SAVE_UNCONFIRMED_GRANTS_REVOKED:1"));
+            assertFalse(audit.contains(grant.token()));
+            assertThrows(IOException.class, () -> agents.setEnabled(true));
+            assertFalse(agents.enabled());
+            assertFalse(new AgentAccessSettings(directory, true).enabled());
+        }
+    }
+
+    @Test void auditFailureBlocksEnableWithoutPreventingDurableDisable() throws Exception {
+        Clock clock = Clock.systemUTC();
+        var registry = new InMemoryNodeRegistry(clock, Duration.ofMinutes(2));
+        var settings = new AgentAccessSettings(directory, true);
+        try (var operations = new ConfigurationOperations(registry,
+                new ConfigurationAuditLog(directory, clock), clock)) {
+            var agents = new AgentOperations(registry, operations, null, clock, settings);
+            agents.issue(new AgentOperations.Issue(List.of("backend-a"), List.of("discover"), 1, null));
+            Files.writeString(directory.resolve("configuration-audit.jsonl"), "synthetic damaged audit");
+            assertThrows(ConfigurationAuditLog.AuditException.class, () -> agents.setEnabled(false));
+            assertFalse(agents.enabled());
+            assertTrue(agents.list().isEmpty());
+            assertFalse(new AgentAccessSettings(directory, true).enabled());
+            assertThrows(ConfigurationAuditLog.AuditException.class, () -> agents.setEnabled(true));
+            assertFalse(agents.enabled());
+            assertFalse(new AgentAccessSettings(directory, true).enabled());
+        }
+    }
 
     @Test void grantEnforcesActionsExpiryAndProcessLifetime() throws Exception {
         MutableClock clock = new MutableClock();

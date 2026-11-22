@@ -58,11 +58,37 @@ public final class AgentOperations {
 
     public synchronized AccessStatus setEnabled(boolean enabled) throws java.io.IOException {
         if (accessSettings == null) throw new java.io.IOException("Agent access preference unavailable");
-        accessSettings.save(enabled);
-        if (!enabled) {
-            // Grant IDs are never reused. Existing previews lose their approval authority.
+        if (enabled) {
+            operations.auditAgentAccess("ENABLE_REQUESTED");
+            boolean previouslyEnabled = accessSettings.enabled();
+            try {
+                accessSettings.save(true);
+            } catch (java.io.IOException failure) {
+                if (!previouslyEnabled) {
+                    try {
+                        accessSettings.save(false);
+                    } catch (java.io.IOException recoveryFailure) {
+                        failure.addSuppressed(recoveryFailure);
+                    }
+                }
+                throw failure;
+            }
+        } else {
+            accessSettings.disableRuntime();
+            int revoked = grants.size();
             grants.clear();
             healthRefreshes.clear();
+            try {
+                accessSettings.save(false);
+            } catch (java.io.IOException failure) {
+                try {
+                    operations.auditAgentAccess("DISABLED_SAVE_UNCONFIRMED_GRANTS_REVOKED:" + revoked);
+                } catch (ConfigurationAuditLog.AuditException auditFailure) {
+                    failure.addSuppressed(auditFailure);
+                }
+                throw failure;
+            }
+            operations.auditAgentAccess("DISABLED_GRANTS_REVOKED:" + revoked);
         }
         return accessStatus();
     }

@@ -1134,7 +1134,14 @@ public final class ControlHttpServer implements AutoCloseable {
             try {
                 status = agentOperations.setEnabled(request.enabled());
             } catch (IOException failure) {
-                error(exchange, 503, "AGENT_SETTINGS_UNAVAILABLE", "Could not save the MCP preference", List.of());
+                error(exchange, 503, "AGENT_SETTINGS_UNAVAILABLE", request.enabled()
+                        ? "Could not confirm the saved MCP preference"
+                        : "MCP is disabled for this process, but the restart preference could not be confirmed", List.of());
+                return;
+            } catch (com.bencodez.votingplugin.control.domain.ConfigurationAuditLog.AuditException failure) {
+                error(exchange, 503, "AGENT_AUDIT_UNAVAILABLE", request.enabled()
+                        ? "MCP enablement was not applied because the audit is unavailable"
+                        : "MCP is disabled and grants are revoked, but the audit could not be recorded", List.of());
                 return;
             }
             send(exchange, 200, status);

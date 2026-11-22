@@ -14,11 +14,17 @@ import java.nio.file.StandardOpenOption;
 public final class AgentAccessSettings {
     private final Path directory;
     private final Path file;
+    private final DirectorySync directorySync;
     private volatile boolean enabled;
     private final boolean available;
 
     public AgentAccessSettings(Path directory, boolean startupDefault) {
+        this(directory, startupDefault, DurableFiles::forceDirectory);
+    }
+
+    AgentAccessSettings(Path directory, boolean startupDefault, DirectorySync directorySync) {
         this.directory = directory;
+        this.directorySync = directorySync;
         this.file = directory.resolve("agent-access.v1");
         boolean loaded = false;
         boolean readable = false;
@@ -49,6 +55,13 @@ public final class AgentAccessSettings {
 
     public boolean enabled() { return enabled; }
 
+    void disableRuntime() { enabled = false; }
+
+    @FunctionalInterface
+    interface DirectorySync {
+        void force(Path directory) throws IOException;
+    }
+
     void save(boolean value) throws IOException {
         if (!available) throw new IOException("Agent access preference unavailable");
         checkPath();
@@ -59,13 +72,8 @@ public final class AgentAccessSettings {
                 channel.force(true);
             }
             Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            directorySync.force(directory);
             enabled = value;
-            try {
-                DurableFiles.forceDirectory(directory);
-            } catch (IOException failure) {
-                System.getLogger(AgentAccessSettings.class.getName()).log(System.Logger.Level.WARNING,
-                        "Could not flush the agent access preference directory");
-            }
         } finally {
             Files.deleteIfExists(temporary);
         }

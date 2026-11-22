@@ -143,7 +143,7 @@ function harness() {
     calls
   };
   vm.createContext(context);
-  const names = ['text', 'formatDateTime', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
+  const names = ['text', 'formatDateTime', 'agentReviewFromHash', 'applyAuthenticatedSession', 'isProxy', 'isBackend', 'roleLabel', 'platformLabel',
     'friendlyCapability', 'managedCapabilities', 'proxyReportsFor', 'backendCard', 'nodePresence', 'nodeCard',
     'ordinaryTargetIds', 'comparisonTargetIds', 'confirmDiscardWorkspaceDrafts', 'changeWorkspaceTargets',
     'workspaceTargetNeedsReplacement', 'inspectWorkspaceServer', 'renderTopology', 'openScopeOverview', 'enterGlobalWorkspace', 'applyNavigationRoute', 'startConfigurationOperation',
