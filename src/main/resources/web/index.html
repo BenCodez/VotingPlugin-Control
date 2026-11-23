@@ -754,7 +754,11 @@
           <form id="agent-grant-form">
             <label>Exact node IDs (comma-separated) <input name="nodes" maxlength="3249"></label>
             <label>Or grant the enrolled network of this proxy <input name="proxy" maxlength="64"></label>
-            <label>Expires after (minutes) <input name="minutes" type="number" min="1" max="1440" value="60" required></label>
+            <label>Lifetime <input name="lifetime" type="number" min="1" max="129600" step="1" value="60" required></label>
+            <label>Lifetime unit <select name="lifetimeUnit">
+              <option value="minutes">Minutes</option><option value="hours">Hours</option><option value="days">Days</option>
+            </select></label>
+            <p>Choose a whole duration up to 90 days. Grants are invalidated when Control restarts.</p>
             <label><input name="actions" value="discover" type="checkbox" checked> Discover</label>
             <label><input name="actions" value="read" type="checkbox" checked> Read</label>
             <label><input name="actions" value="preview" type="checkbox" checked> Preview</label>

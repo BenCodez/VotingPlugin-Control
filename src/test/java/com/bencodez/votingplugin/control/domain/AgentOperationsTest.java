@@ -81,13 +81,16 @@ class AgentOperationsTest {
         try (var operations = new ConfigurationOperations(registry,
                 new ConfigurationAuditLog(directory, clock), clock)) {
             var agents = new AgentOperations(registry, operations, clock);
-            var grant = agents.issue(new AgentOperations.Issue(List.of("backend-a"), List.of("discover"), 1, null));
+            var grant = agents.issue(new AgentOperations.Issue(List.of("backend-a"), List.of("discover"), 129600, null));
+            assertEquals(clock.instant().plus(Duration.ofDays(90)), grant.expiresAt());
             agents.discover(grant.token(), new AgentOperations.Discovery(null));
             assertThrows(SecurityException.class, () -> agents.read(grant.token(),
                     new AgentOperations.Read("backend-a", "example")));
             var restarted = new AgentOperations(registry, operations, clock);
             assertThrows(SecurityException.class, () -> restarted.discover(grant.token(), new AgentOperations.Discovery(null)));
 
+            clock.now = grant.expiresAt().minusNanos(1);
+            agents.discover(grant.token(), new AgentOperations.Discovery(null));
             clock.now = grant.expiresAt();
             assertThrows(SecurityException.class, () -> agents.discover(grant.token(), new AgentOperations.Discovery(null)));
             assertEquals(List.of(), agents.list());

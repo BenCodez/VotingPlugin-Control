@@ -99,6 +99,8 @@ public final class AgentOperations {
 
     public record AccessStatus(boolean enabled, int activeGrants, boolean configurable) { }
 
+    private static final int MAX_GRANT_MINUTES = 90 * 24 * 60;
+
     public synchronized Issued issue(Issue request) {
         requireEnabled();
         grants.values().removeIf(grant -> !clock.instant().isBefore(grant.expiresAt()));
@@ -106,7 +108,7 @@ public final class AgentOperations {
         if (request == null || request.actions() == null || request.actions().isEmpty()
                 || request.actions().size() > ACTIONS.size()
                 || request.actions().stream().anyMatch(action -> action == null || !ACTIONS.contains(action))
-                || request.minutes() == null || request.minutes() < 1 || request.minutes() > 1440
+                || request.minutes() == null || request.minutes() < 1 || request.minutes() > MAX_GRANT_MINUTES
                 || grants.size() >= 64) throw invalid("Invalid agent grant or grant limit reached");
         NodeStatus root = null;
         Set<String> nodes;
