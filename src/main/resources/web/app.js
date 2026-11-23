@@ -1177,16 +1177,23 @@ agentGrantForm.addEventListener('submit', async event => {
   agentAccessSave.disabled = agentGrantIssue.disabled = true;
   try {
     const form = new FormData(agentGrantForm);
+    const amount = form.get('lifetime');
+    const unit = form.get('lifetimeUnit');
+    const multiplier = new Map([['minutes', 1], ['hours', 60], ['days', 1440]]).get(unit);
+    const minutes = Number(amount) * multiplier;
+    if (!/^[0-9]+$/.test(amount) || !Number.isSafeInteger(minutes) || minutes < 1 || minutes > 129600) {
+      throw new Error('Choose a whole grant lifetime from 1 minute to 90 days.');
+    }
     const grant = await agentAdmin('issue', {
       nodeIds: form.get('nodes').split(',').map(id => id.trim()).filter(Boolean),
       proxyNodeId: form.get('proxy').trim() || null,
       actions: form.getAll('actions'),
-      minutes: Number(form.get('minutes'))
+      minutes
     });
     if (generation !== authenticationGeneration || !agentAccessState?.enabled) return;
     agentCredentialOutput.querySelector('input').value = grant.token;
     agentCredentialOutput.hidden = false;
-    text(agentGrantStatus, `Grant expires at ${grant.expiresAt}.`);
+    text(agentGrantStatus, `Grant lifetime: ${Number(amount)} ${Number(amount) === 1 ? unit.slice(0, -1) : unit}. Expires at ${grant.expiresAt}.`);
     await refreshAgentAccess();
   } catch (error) {
     if (generation === authenticationGeneration) text(agentGrantStatus, error.message);

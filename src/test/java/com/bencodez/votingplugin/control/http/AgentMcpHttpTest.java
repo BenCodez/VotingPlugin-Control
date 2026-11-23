@@ -89,8 +89,12 @@ class AgentMcpHttpTest {
         assertError(sendWithHeaders("POST", path, "{\"enabled\":true}", Map.of("Cookie", browser.get("Cookie"))),
                 403, "CSRF_REQUIRED");
         assertEquals(200, sendWithHeaders("POST", path, "{\"enabled\":true}", browser).statusCode());
+        for (String invalid : java.util.List.of("0", "129601", "1.5", "\"60\"", "null")) {
+            String request = "{\"nodeIds\":[\"proxy-a\"],\"actions\":[\"discover\"],\"minutes\":" + invalid + "}";
+            assertEquals(400, sendWithHeaders("POST", "/api/v1/agent-admin/issue", request, browser).statusCode());
+        }
         String issue = json.writeValueAsString(Map.of("nodeIds", java.util.List.of("proxy-a"),
-                "actions", java.util.List.of("discover"), "minutes", 10));
+                "actions", java.util.List.of("discover"), "minutes", 129600));
         var grant = sendWithHeaders("POST", "/api/v1/agent-admin/issue", issue, browser);
         assertEquals(201, grant.statusCode());
         var grantBody = json.readTree(grant.body());
