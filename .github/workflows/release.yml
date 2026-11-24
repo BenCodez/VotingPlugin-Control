@@ -250,20 +250,19 @@ jobs:
           }
 
           verify_owned_draft() {
-            release_json="$(gh_api "repos/$GITHUB_REPOSITORY/releases/$draft_id")"
-            release_is_draft="$(jq -r '.draft' <<< "$release_json")"
-            release_tag_name="$(jq -r '.tag_name' <<< "$release_json")"
-            release_is_owned="$(
-              jq -r '((.body // "") | test("<!-- workflow-run:[0-9]+:[0-9]+ -->"))' \
-                <<< "$release_json"
-            )"
-            if [[ "$release_is_draft" != "true" \
-                || "$release_tag_name" != "$RELEASE_TAG" \
-                || "$release_is_owned" != "true" ]]; then
+            if ! release_json="$(gh_api "repos/$GITHUB_REPOSITORY/releases/$draft_id")"; then
+              echo "::error::Could not read the workflow-owned draft"
+              return 1
+            fi
+            if ! jq -e --arg id "$draft_id" --arg tag "$RELEASE_TAG" '
+              (.id | tostring) == $id
+              and .draft == true
+              and .tag_name == $tag
+              and ((.body // "") | test("<!-- workflow-run:[0-9]+:[0-9]+ -->"))
+            ' <<< "$release_json" >/dev/null; then
               echo "::error::Workflow-owned draft changed while the release was building"
               return 1
             fi
-            release_body="$(jq -r '.body // ""' <<< "$release_json")"
           }
 
           ensure_asset() {
@@ -277,12 +276,17 @@ jobs:
                 '[.assets[] | select(.name == $name)] | length' <<< "$release_json"
             )"
             if [[ "$asset_count" == "0" ]]; then
-              gh release upload "$RELEASE_TAG" "$asset_path" \
-                --repo "$GITHUB_REPOSITORY"
-              return
+              if ! gh release upload "$RELEASE_TAG" "$asset_path" --repo "$GITHUB_REPOSITORY"; then
+                echo "::warning::Asset upload outcome uncertain; checking $asset_name without retry"
+              fi
+              verify_owned_draft || return 1
+              asset_count="$(
+                jq -r --arg name "$asset_name" \
+                  '[.assets[] | select(.name == $name)] | length' <<< "$release_json"
+              )"
             fi
             if [[ "$asset_count" != "1" ]]; then
-              echo "::error::Draft contains duplicate assets named $asset_name"
+              echo "::error::Expected exactly one draft asset named $asset_name"
               return 1
             fi
 
@@ -343,7 +347,7 @@ jobs:
           fi
 
           if [[ -z "$draft_id" ]]; then
-            draft_id="$(
+            if ! draft_id="$(
               gh_api --method POST "repos/$GITHUB_REPOSITORY/releases" \
                 -f tag_name="$RELEASE_TAG" \
                 -f name="$RELEASE_TAG" \
@@ -351,10 +355,20 @@ jobs:
                 -F draft=true \
                 -F generate_release_notes=true \
                 --jq '.id'
-            )"
-            if [[ -z "$draft_id" ]]; then
-              echo "::error::Created draft release did not return an ID"
-              false
+            )" || [[ ! "$draft_id" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::warning::Draft creation outcome uncertain; checking this run's draft without retry"
+              releases_json="$(
+                gh_api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"
+              )"
+              draft_id="$(
+                jq -er --arg tag "$RELEASE_TAG" --arg marker "$release_marker" '
+                  [.[][] | select(.tag_name == $tag)] |
+                  if length == 1 and .[0].draft == true
+                    and ((.[0].body // "") | contains($marker))
+                  then .[0].id else empty end
+                ' <<< "$releases_json"
+              )" || { echo "::error::Could not confirm the expected workflow draft"; exit 1; }
+              [[ "$draft_id" =~ ^[1-9][0-9]*$ ]] || exit 1
             fi
           fi
 
@@ -419,11 +433,12 @@ jobs:
               --arg body "$verified_body" \
               '{tag_name: $tag, target_commitish: $target, name: $name, body: $body, draft: false}'
           )"
-          published_json="$(
-            gh_api --method PATCH \
+          if ! gh_api --method PATCH \
               "repos/$GITHUB_REPOSITORY/releases/$draft_id" \
-              --input - <<< "$publish_payload"
-          )"
+              --input - <<< "$publish_payload" >/dev/null; then
+            echo "::warning::Publication outcome uncertain; checking the release by ID without retry"
+          fi
+          published_json="$(gh_api "repos/$GITHUB_REPOSITORY/releases/$draft_id")"
           published_assets_valid="$(
             jq -r \
               --arg jar "$JAR_ASSET_DIGEST" \
@@ -441,7 +456,8 @@ jobs:
                )] | length == 1)' \
               <<< "$published_json"
           )"
-          if [[ "$(jq -r '.immutable' <<< "$published_json")" != "true" \
+          if [[ "$(jq -r '.id' <<< "$published_json")" != "$draft_id" \
+              || "$(jq -r '.immutable' <<< "$published_json")" != "true" \
               || "$(jq -r '.draft' <<< "$published_json")" != "false" \
               || "$(jq -r '.tag_name' <<< "$published_json")" != "$RELEASE_TAG" \
               || "$(jq -r '.name' <<< "$published_json")" != "$RELEASE_TAG" \
